@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from bellwether.config.loader import POLICY_FILE, load_yaml_mapping, validate_document
+from bellwether.config.document import POLICY_FILE, load_yaml_mapping, validate_document
 from bellwether.config.models.policy import Policy
 from bellwether.errors import ConfigurationError, UserFacingProblem
 
