@@ -18,12 +18,10 @@ from bellwether.config.loader import (
     POLICY_FILE,
     load_config,
     load_manifest,
-    load_policy,
     load_scenarios,
     load_yaml_mapping,
     parse_config,
     parse_manifest,
-    parse_policy,
     parse_scenarios,
     resolve_model_id,
 )
@@ -44,6 +42,7 @@ from bellwether.config.models import (
     SkillManifest,
     Target,
 )
+from bellwether.config.policy_loader import load_policy, parse_policy
 from bellwether.config.templates import template_path, write_scaffold
 
 __all__ = [

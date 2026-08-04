@@ -16,6 +16,8 @@ __all__ = [
     "BellwetherError",
     "ConfigurationError",
     "PreconditionError",
+    "SkillError",
+    "TraceError",
     "UserFacingProblem",
 ]
 
@@ -65,6 +67,24 @@ class ConfigurationError(BellwetherError):
         head = f"{self.source}: {count} {noun}"
         body = "\n".join(problem.render() for problem in self.problems)
         return f"{head}\n{body}"
+
+
+class SkillError(BellwetherError):
+    """A skill package could not be read.
+
+    Reserved for problems that make the package unusable — no ``SKILL.md``, an
+    unreadable file. Problems that are *findings about* the skill, such as missing
+    frontmatter or a pinned model, are recorded on the package and reported, because a
+    skill Bellwether refuses to load is a skill Bellwether cannot tell you anything about.
+    """
+
+
+class TraceError(BellwetherError):
+    """An ARF trace could not be written or read as a well-formed document.
+
+    Distinct from an *incomplete* trace, which is not an error: a run that crashed has no
+    footer, and that absence is the signal that the trace is ``not_evaluable`` (§11.1).
+    """
 
 
 @dataclass

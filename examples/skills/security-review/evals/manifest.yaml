@@ -14,9 +14,18 @@ metadata:
   criticality: high               # selects the policy profile via `selection.by_criticality`
   review:
     last_human_review:
-      # The review applies to THIS version only. Where the current package_digest differs
-      # from the one recorded, the review gate evaluates to `stale`, which the verdict
-      # engine treats as not_evaluable, which blocks a required gate (§6.3).
+      # The review applies to THIS version only. Where the recorded digest differs from
+      # the package as it now stands, the review gate evaluates to `stale`, which the
+      # verdict engine treats as not_evaluable, which blocks a required gate (§6.3).
+      #
+      # The value to record is the package's *attestation* digest: the package digest
+      # computed with this field blanked. §6.2 records the digest inside a file the digest
+      # covers, which read literally is self-referential — writing it in would change it,
+      # so no review could ever be current. Blanking the recorded value before hashing
+      # covers everything a reviewer read, including the rest of this manifest, and makes
+      # recording the result stable. See docs/spec-notes.md.
+      #
+      # The zeros below are a placeholder, so this example evaluates to `stale`.
       date: 2026-07-14
       package_digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
       # Documentation for humans reading the repository. Separation of duties is

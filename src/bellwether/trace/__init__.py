@@ -9,12 +9,60 @@ Responsibility
 MUST NOT
     Do analysis. Metrics live in :mod:`bellwether.metrics`.
 
-Built by WP-3 and WP-7. Never merge planes by wall-clock sort: within an epoch, order by
-``(plane_priority, kind, normalized_target, stable_hash)``. WP-7 is the package most
-likely to be got subtly wrong, and WP-19's noise floor is the only test that proves it.
-``mypy --strict`` from the first commit.
+WP-3 built the schema, writer and reader. Canonicalization and epoch anchoring are WP-7:
+never merge planes by wall-clock sort — within an epoch, order by ``(plane_priority,
+kind, normalized_target, stable_hash)``. WP-7 is the package most likely to be got subtly
+wrong, and WP-19's noise floor is the only test that proves it.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from bellwether.trace.models import (
+    ARF_VERSION,
+    Action,
+    Actor,
+    CanonBlock,
+    Capability,
+    Correlation,
+    Coverage,
+    ExitReason,
+    IdentityBlock,
+    PlaneCoverage,
+    RunFooter,
+    RunHeader,
+    SandboxRef,
+    ScopeBlock,
+    SkillRef,
+    TargetRef,
+    TokenTotals,
+)
+from bellwether.trace.reader import Evaluability, Trace, iter_actions, parse_trace, read_trace
+from bellwether.trace.writer import TraceWriter, serialize_record, write_trace
+
+__all__ = [
+    "ARF_VERSION",
+    "Action",
+    "Actor",
+    "CanonBlock",
+    "Capability",
+    "Correlation",
+    "Coverage",
+    "Evaluability",
+    "ExitReason",
+    "IdentityBlock",
+    "PlaneCoverage",
+    "RunFooter",
+    "RunHeader",
+    "SandboxRef",
+    "ScopeBlock",
+    "SkillRef",
+    "TargetRef",
+    "TokenTotals",
+    "Trace",
+    "TraceWriter",
+    "iter_actions",
+    "parse_trace",
+    "read_trace",
+    "serialize_record",
+    "write_trace",
+]

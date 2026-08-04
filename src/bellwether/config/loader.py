@@ -15,23 +15,22 @@ from pydantic import BaseModel, ValidationError
 
 from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
-from bellwether.config.models.policy import Policy
 from bellwether.config.models.provider import is_placeholder_model_id
 from bellwether.config.models.scenarios import ScenarioSuite
 from bellwether.config.render import problems_from_validation_error
 from bellwether.errors import ConfigurationError, UserFacingProblem
 
 __all__ = [
+    "POLICY_FILE",
     "load_config",
     "load_manifest",
-    "load_policy",
     "load_scenarios",
     "load_yaml_mapping",
     "parse_config",
     "parse_manifest",
-    "parse_policy",
     "parse_scenarios",
     "resolve_model_id",
+    "validate_document",
 ]
 
 #: Default locations inside a skills repository (§5).
@@ -86,7 +85,7 @@ def load_yaml_mapping(path: Path) -> dict[str, Any]:
     return data
 
 
-def _validate[ModelT: BaseModel](
+def validate_document[ModelT: BaseModel](
     model: type[ModelT], data: dict[str, Any], source: Path | str
 ) -> ModelT:
     try:
@@ -101,7 +100,7 @@ def _validate[ModelT: BaseModel](
 
 
 def parse_config(data: dict[str, Any], source: Path | str = "config.yaml") -> Config:
-    return _validate(Config, data, source)
+    return validate_document(Config, data, source)
 
 
 def load_config(path: Path = CONFIG_FILE) -> Config:
@@ -163,70 +162,12 @@ def resolve_model_id(
 
 
 # ---------------------------------------------------------------------------
-# policy.yaml
-# ---------------------------------------------------------------------------
-
-
-def _deep_merge(base: Any, override: Any) -> Any:
-    """Recursively merge ``override`` over ``base``. Lists replace, they do not append.
-
-    A profile that raises one threshold must not silently drop every other gate. YAML's
-    own merge key (``<<: *defaults``) is a *shallow* merge, so ``medium``'s two-key
-    ``gates`` block would replace the whole default gate set — turning a profile that
-    reads as "stricter" into one that enforces almost nothing. Applying the defaults
-    again, deeply, is what makes the documented semantics true.
-
-    Lists replace rather than concatenate because a profile narrowing ``block_on`` to a
-    shorter list means the shorter list.
-    """
-    if isinstance(base, dict) and isinstance(override, dict):
-        merged = dict(base)
-        for key, value in override.items():
-            merged[key] = _deep_merge(base.get(key), value) if key in base else value
-        return merged
-    return override
-
-
-def parse_policy(data: dict[str, Any], source: Path | str = "policy.yaml") -> Policy:
-    """Validate a policy document, resolving profile inheritance first."""
-    raw = dict(data)
-    defaults = raw.get("defaults") or {}
-    if not isinstance(defaults, dict):
-        raise ConfigurationError(
-            source, [UserFacingProblem("defaults", "must be a mapping of profile settings")]
-        )
-    profiles = raw.get("profiles") or {}
-    if profiles and not isinstance(profiles, dict):
-        raise ConfigurationError(
-            source, [UserFacingProblem("profiles", "must be a mapping of profile name to settings")]
-        )
-    resolved: dict[str, Any] = {}
-    for name, profile in profiles.items():
-        if profile is None:
-            resolved[name] = dict(defaults)
-        elif isinstance(profile, dict):
-            resolved[name] = _deep_merge(defaults, profile)
-        else:
-            raise ConfigurationError(
-                source,
-                [UserFacingProblem(f"profiles.{name}", "must be a mapping of profile settings")],
-            )
-    if resolved:
-        raw["profiles"] = resolved
-    return _validate(Policy, raw, source)
-
-
-def load_policy(path: Path = POLICY_FILE) -> Policy:
-    return parse_policy(load_yaml_mapping(path), path)
-
-
-# ---------------------------------------------------------------------------
 # evals/manifest.yaml and evals/scenarios.yaml
 # ---------------------------------------------------------------------------
 
 
 def parse_manifest(data: dict[str, Any], source: Path | str = "manifest.yaml") -> SkillManifest:
-    return _validate(SkillManifest, data, source)
+    return validate_document(SkillManifest, data, source)
 
 
 def load_manifest(path: Path) -> SkillManifest:
@@ -234,7 +175,7 @@ def load_manifest(path: Path) -> SkillManifest:
 
 
 def parse_scenarios(data: dict[str, Any], source: Path | str = "scenarios.yaml") -> ScenarioSuite:
-    return _validate(ScenarioSuite, data, source)
+    return validate_document(ScenarioSuite, data, source)
 
 
 def load_scenarios(path: Path) -> ScenarioSuite:
