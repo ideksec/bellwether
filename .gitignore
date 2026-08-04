@@ -1,0 +1,28 @@
+# Bellwether evaluation artifacts (§17.1, §23)
+.bellwether-out/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Materialised corpus payloads — §24 stores these base64-encoded and a build step
+# expands them, so the expanded form must never be committed.
+tests/corpus/**/_materialized/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

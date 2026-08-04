@@ -1,0 +1,77 @@
+; Module boundaries from spec §8.1, enforced mechanically rather than by convention.
+;
+; The dependency graph MUST be acyclic and MUST flow:
+;   config -> skill -> scan -> sandbox -> harness -> capture -> trace
+;          -> assertions -> metrics -> verdict -> report -> cli
+;
+; `bellwether.determinism` and `bellwether.errors` are shared leaves, deliberately
+; outside the layered stack: every layer may use them and they import nothing from
+; the package.
+
+[importlinter]
+root_package = bellwether
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = §8.1 module layering
+type = layers
+layers =
+    bellwether.cli
+    bellwether.report
+    bellwether.verdict
+    bellwether.metrics
+    bellwether.assertions
+    bellwether.trace
+    bellwether.capture
+    bellwether.harness
+    bellwether.sandbox
+    bellwether.scan
+    bellwether.skill
+    bellwether.config
+exhaustive = False
+
+[importlinter:contract:metrics-not-verdict]
+name = §8.1 metrics must never import verdict
+type = forbidden
+source_modules =
+    bellwether.metrics
+forbidden_modules =
+    bellwether.verdict
+
+[importlinter:contract:policy-types]
+name = §8.1 nothing except verdict, report and cli may import policy types
+type = forbidden
+source_modules =
+    bellwether.skill
+    bellwether.scan
+    bellwether.sandbox
+    bellwether.harness
+    bellwether.capture
+    bellwether.trace
+    bellwether.assertions
+    bellwether.metrics
+forbidden_modules =
+    bellwether.config.models.policy
+
+[importlinter:contract:config-offline]
+name = §8.1 config must not touch the network
+type = forbidden
+source_modules =
+    bellwether.config
+forbidden_modules =
+    socket
+    ssl
+    http
+    urllib
+    httpx
+    requests
+    docker
+
+[importlinter:contract:sandbox-model-agnostic]
+name = §8.1 sandbox must not know about models or providers
+type = forbidden
+source_modules =
+    bellwether.sandbox
+forbidden_modules =
+    bellwether.harness
+    bellwether.config.models.provider
