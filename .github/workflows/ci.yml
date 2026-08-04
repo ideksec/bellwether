@@ -94,19 +94,35 @@ jobs:
       - name: Pull the test image
         run: docker pull -q "$BELLWETHER_TEST_IMAGE"
 
+      # Checked before the run, not after: a deselected-to-zero run reports success
+      # having asserted nothing, and this job exists precisely so that the container
+      # tests cannot pass by being absent.
+      #
+      # Ordered first for a second reason — collection runs as the normal user, and the
+      # test step below runs as root. Root touching the virtualenv leaves it owned by
+      # root, and any later step as the normal user then fails on permissions.
+      - name: Assert the container tests are collected
+        run: |
+          set +e
+          uv run pytest -m docker --collect-only -q
+          status=$?
+          set -e
+          # pytest exits 5 for "no tests collected" — a documented code, rather than a
+          # string match on output that changes between versions.
+          if [ "$status" -eq 5 ]; then
+            echo "::error::no container tests were collected; this job asserted nothing"
+            exit 1
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::collecting the container tests failed (exit $status)"
+            exit 1
+          fi
+
       # sudo because mounting the host-side overlay upper directory needs root — the
       # privilege the *host* has and the container does not, which is the whole capture
       # architecture in one line (§10.0).
+      #
+      # The interpreter is invoked directly rather than through `uv run`: uv would want
+      # to resolve and possibly rewrite the environment as root, and the environment
+      # belongs to the normal user.
       - name: Container integration tests
-        run: |
-          sudo -E env "PATH=$PATH" \
-            uv run pytest -m docker -v --no-header
-
-      # A deselected-to-zero run would otherwise report success having asserted nothing.
-      - name: Assert the container tests actually ran
-        run: |
-          collected=$(uv run pytest -m docker --collect-only -q 2>/dev/null | tail -1)
-          echo "collected: $collected"
-          case "$collected" in
-            "no tests ran"*|"") echo "::error::no container tests were collected"; exit 1 ;;
-          esac
+        run: sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker -v --no-header
