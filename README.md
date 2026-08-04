@@ -145,8 +145,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Project scaffolding, module boundaries, CI, determinism primitives | done |
 | `config.yaml`, `policy.yaml`, `evals/manifest.yaml`, `evals/scenarios.yaml` loading and validation | done |
 | `bellwether init`, `bellwether doctor` (configuration checks), `bellwether version` | done |
-| Skill parsing and the three digests | WP-2 |
-| ARF trace format and writer | WP-3 |
+| Skill parsing, the three digests, payload allowlist, executable inventory | done (WP-2) |
+| ARF trace schema, JSONL writer and reader, incomplete-trace detection | done (WP-3) |
 | Sandbox lifecycle, capture planes, harness adapters | WP-4 – WP-6 |
 | Epoch anchoring, platform baseline, assertions | WP-7 – WP-9 |
 | Metrics, verdict engine, reporting | WP-10 – WP-12 |
@@ -154,7 +154,9 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Corpus and acceptance | WP-20 |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
-they implement is [docs/spec.md](docs/spec.md).
+they implement is [docs/spec.md](docs/spec.md). Where the implementation had to resolve
+something the spec leaves ambiguous or gets wrong, the resolution is recorded in
+[docs/spec-notes.md](docs/spec-notes.md).
 
 ## Development
 
