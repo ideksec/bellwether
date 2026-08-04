@@ -1,0 +1,140 @@
+[project]
+name = "bellwether"
+version = "0.1.0.dev0"
+description = "A CI/CD harness for AI agent skills: run them, record what they did, measure the variance, render a verdict."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "The Bellwether authors" }]
+keywords = ["agent", "skills", "evaluation", "supply-chain", "ci"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+]
+
+dependencies = [
+    # Config, policy, ARF, and summary schemas (§22).
+    "pydantic>=2.7,<3",
+    "pyyaml>=6.0.1",
+    # CLI (§20, §22).
+    "typer>=0.12,<1",
+    # Report rendering (§17). Charts are hand-rolled inline SVG; no JS charting dep.
+    "jinja2>=3.1",
+    # Trajectory edit distance (§13.4).
+    "rapidfuzz>=3.9",
+    # Sandbox lifecycle (§9). Wrapped behind a Sandbox interface so backends can change.
+    "docker>=7.1",
+]
+
+[project.optional-dependencies]
+# Kept optional deliberately: the metrics module hand-rolls Wilson, BCa bootstrap, and
+# single-linkage clustering (§22) so contributors need no scientific stack.
+stats = ["scipy>=1.13"]
+
+[project.scripts]
+bellwether = "bellwether.cli:main"
+bw = "bellwether.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ideksec/bellweather"
+Source = "https://github.com/ideksec/bellweather"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bellwether"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "import-linter>=2.0",
+    "types-PyYAML>=6.0",
+]
+
+# ---------------------------------------------------------------------------
+# Lint / format
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "tools"]
+# The specification and build plan are reproduced verbatim; their fenced code blocks are
+# illustrative, not code this project formats.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "C4",        # comprehensions
+    "SIM",       # simplify
+    "RUF",       # ruff-specific
+    "PTH",       # use pathlib
+    "TID",       # tidy imports
+    "ARG",       # unused arguments
+    "N",         # pep8-naming
+]
+ignore = [
+    "E501",      # line length is handled by the formatter
+    # The specification is quoted throughout, section signs and all. Mathematical and
+    # typographic characters (§, –, ′, α) are deliberate, not homoglyph mistakes.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG001", "ARG002"]
+# Commands whose implementation has not landed still declare their full §20 argument
+# surface, so the CLI a user sees does not change shape when the work package lands.
+"src/bellwether/cli/app.py" = ["ARG001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bellwether"]
+
+# ---------------------------------------------------------------------------
+# Typing
+#
+# §22 requires `mypy --strict` on metrics, trace, verdict, and capture "at minimum".
+# We run strict over the whole package instead — it is cheaper to hold the line from
+# the first commit than to retrofit it, which is the same argument §24 makes about
+# determinism.
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/bellwether", "tools"]
+warn_unreachable = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["docker.*", "rapidfuzz.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+asyncio_mode = "auto"
+markers = [
+    "docker: requires a working Docker daemon (skipped by default in offline CI)",
+    "network: requires network access and a provider API key",
+    "xfail_documented: a deliberately-failing corpus test kept visible in CI (§24)",
+]
+filterwarnings = ["error"]

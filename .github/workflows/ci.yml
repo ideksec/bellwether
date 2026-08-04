@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Set, and deliberately not relied upon: §24 requires that ordering never depends on
+  # `hash()`. Pinning the seed makes an accidental dependency reproducible rather than
+  # intermittent; the tests still must not need it.
+  PYTHONHASHSEED: "0"
+  # Determinism of Bellwether's own output is a release requirement (§24), and locale is
+  # one of the ways it quietly stops holding.
+  LC_ALL: C.UTF-8
+  LANG: C.UTF-8
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --group dev --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Types
+        run: uv run mypy
+
+      # §8.1's acyclic module graph, enforced mechanically rather than by convention.
+      - name: Module boundaries
+        run: uv run lint-imports
+
+      # §16.3. The verdict vocabulary must not imply proof, and the rule fails the build.
+      - name: Language discipline
+        run: uv run python tools/language_lint.py
+
+      # Every test runs offline, with no API key.
+      - name: Tests
+        run: uv run pytest

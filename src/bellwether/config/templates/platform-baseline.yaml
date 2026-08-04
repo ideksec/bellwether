@@ -1,0 +1,32 @@
+apiVersion: bellwether/v1
+kind: PlatformBaseline
+
+# The infrastructural allowlist (spec §12.6): the paths, processes and tools that every
+# run touches regardless of which skill is under test. Subtracted from observations
+# before declared-vs-observed scope evaluation, so a harness reading its own
+# configuration is not reported as the skill exceeding its scope.
+#
+# Two rules that keep the subtraction honest:
+#   * a near-miss — a path that resolves close to, but not exactly onto, a baseline
+#     entry — is flagged at `medium` rather than absorbed, so
+#     `~/.cache/../.aws/credentials` raises a finding instead of disappearing;
+#   * traversal sequences never resolve *into* a baseline match.
+#
+# This file is versioned and keyed to the sandbox image: a baseline collected against a
+# different image describes a different platform. Bellwether refuses to apply one whose
+# `image` does not match the configured sandbox image.
+#
+# The loader and the default ruleset land in WP-8. Until then this file is a placeholder
+# and an empty baseline subtracts nothing, which is the conservative direction: it
+# over-reports rather than silently absorbing.
+
+version: 1
+image: null            # set to the sandbox image (with digest) this baseline was collected against
+
+paths:
+  read: []
+  write: []
+
+processes: []
+
+tools: []
