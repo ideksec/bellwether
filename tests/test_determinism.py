@@ -82,6 +82,13 @@ def test_canonicalize_rejects_types_it_cannot_order() -> None:
         canonicalize(object())
 
 
+def test_canonicalize_refuses_raw_bytes() -> None:
+    """Bytes are a Sequence, so without an explicit branch a blob becomes a list of
+    integers: valid JSON, silently useless, and invisible in a trace."""
+    with pytest.raises(TypeError, match="encode them first"):
+        canonical_json({"blob": b"\x00\x01"})
+
+
 def test_canonicalize_is_a_fixed_point_through_json() -> None:
     value = {"a": (1, 2), "b": {"x"}, "c": Path("src/bellwether")}
     once = canonical_json(value)
@@ -109,12 +116,47 @@ def test_format_float_is_locale_independent() -> None:
 
 def test_seeded_rng_is_reproducible_and_stream_separated() -> None:
     """§3.5 and §12.3: randomness is seeded, recorded, and separated by use."""
-    markers = SeededRng(20260804, "canary-markers")
-    paths = SeededRng(20260804, "canary-paths")
+    assert (
+        SeededRng(20260804, "canary-markers").token()
+        == SeededRng(20260804, "canary-markers").token()
+    )
+    assert (
+        SeededRng(20260804, "canary-markers").token() != SeededRng(20260804, "canary-paths").token()
+    )
+    assert (
+        SeededRng(20260804, "canary-markers").token()
+        != SeededRng(20260805, "canary-markers").token()
+    )
 
-    assert markers.token() == SeededRng(20260804, "canary-markers").token()
-    assert markers.token() != paths.token()
-    assert markers.token() != SeededRng(20260805, "canary-markers").token()
+
+def test_successive_draws_from_one_stream_differ() -> None:
+    """The regression test for a stream that re-seeded on every call.
+
+    Planting five canaries from one stream would otherwise have planted five identical
+    markers — the predictable-marker tell §3.5 exists to remove — while looking correct.
+    """
+    rng = SeededRng(20260804, "canary-markers")
+    assert len({rng.token(16) for _ in range(20)}) == 20
+
+    chooser = SeededRng(20260804, "canary-paths")
+    assert len({chooser.choice("abcdefghij") for _ in range(10)}) > 1
+
+
+def test_two_streams_with_the_same_label_produce_the_same_sequence() -> None:
+    """Reproducibility is sequence equality between instances, not self-repetition."""
+    first = SeededRng(20260804, "canary-markers")
+    second = SeededRng(20260804, "canary-markers")
+    assert [first.token(8) for _ in range(5)] == [second.token(8) for _ in range(5)]
+
+
+def test_a_derived_stream_is_independent_of_its_parents_position() -> None:
+    """Adding a draw to the parent must not shift what a sub-stream yields."""
+    untouched = SeededRng(20260804, "eval").derive("canaries").token()
+
+    parent = SeededRng(20260804, "eval")
+    parent.token()
+    parent.token()
+    assert parent.derive("canaries").token() == untouched
 
 
 def test_canary_tokens_carry_no_fixed_prefix() -> None:

@@ -24,6 +24,7 @@ from bellwether.skill.digests import (
     RECORDED_REVIEW_PLACEHOLDER,
     FileRecord,
     description_digest,
+    has_unusual_path_characters,
     merkle_digest,
     read_file_records,
 )
@@ -113,11 +114,17 @@ class SkillPackage:
             return "current"
         return "stale"
 
-    def review_age_days(self, today: dt.date | None = None) -> int | None:
+    def review_age_days(self, today: dt.date) -> int | None:
+        """Age of the recorded review, against a date the caller supplies.
+
+        Deliberately not defaulted to "now": the age feeds the ``human_review.max_age_days``
+        gate, and a gate whose input is read from the clock inside the function is a gate
+        whose result cannot be reproduced from the artifacts of the run that produced it.
+        """
         review = self._review()
         if review is None:
             return None
-        return review.age_days(today or dt.datetime.now(tz=dt.UTC).date())
+        return review.age_days(today)
 
     def _review(self) -> LastHumanReview | None:
         if self.manifest is None or self.manifest.metadata.review is None:
@@ -157,6 +164,12 @@ def load_skill(
     included = set(split.included)
 
     problems = list(parsed.problems)
+    unusual = [record.path for record in records if has_unusual_path_characters(record.path)]
+    if unusual:
+        problems.append(
+            "file name(s) containing control characters, which is worth a look: "
+            + ", ".join(repr(path) for path in unusual)
+        )
     if split.has_unmatched():
         problems.append(
             "not installed into the container because the payload allowlist did not match: "

@@ -37,6 +37,7 @@ __all__ = [
     "RECORDED_REVIEW_PLACEHOLDER",
     "FileRecord",
     "description_digest",
+    "has_unusual_path_characters",
     "merkle_digest",
     "read_file_records",
 ]
@@ -55,7 +56,14 @@ RECORDED_REVIEW_PLACEHOLDER = "<recorded-review-digest>"
 #: Domain separator and version for the merkle construction below. Recorded in the digest
 #: itself so that a future change to the construction is visible as a changed digest
 #: rather than as a silent comparison between two different things.
-DIGEST_FORMAT = "bellwether/skill-digest/1"
+#:
+#: Version 2 length-prefixes every field. Version 1 delimited them with newlines, and
+#: newlines are legal in POSIX filenames — so a package containing a file named
+#: ``a\nsha256:<hash>\nb`` produced the same digest as a package containing files ``a``
+#: and ``b``. A forgeable ``package_digest`` is a forgeable review attestation (§6.3) and
+#: a forgeable cache key (§19.2), so this is an integrity property, not a formatting
+#: preference.
+DIGEST_FORMAT = "bellwether/skill-digest/2"
 
 
 @dataclass(frozen=True, order=True)
@@ -112,29 +120,52 @@ def read_file_records(root: Path) -> list[FileRecord]:
 
 
 def merkle_digest(records: list[FileRecord]) -> str:
-    """Digest a set of files, order-independently.
+    """Digest a set of files, order-independently and unambiguously.
 
-    The input is ``DIGEST_FORMAT`` followed by one ``<path>\\n<sha256>\\n`` pair per file,
-    sorted by path. Sorting here as well as in the walk means the result does not depend
-    on the caller having preserved the walk's order — a subset such as the payload file
-    list is built by filtering, and a filter that reordered would otherwise change the
-    digest without changing the files.
+    The input is ``DIGEST_FORMAT``, then the file count, then for each file — sorted by
+    path — the byte length of the path followed by the path, and the byte length of the
+    digest followed by the digest.
+
+    **Every field is length-prefixed**, so no arrangement of file names can be read as a
+    different arrangement. Delimiting with a separator instead makes the encoding
+    ambiguous the moment a filename can contain that separator, and POSIX filenames can
+    contain almost anything.
+
+    Sorting here as well as in the walk means the result does not depend on the caller
+    having preserved the walk's order: a subset such as the payload file list is built by
+    filtering, and a filter that reordered would otherwise change the digest without
+    changing the files.
     """
     hasher = hashlib.sha256()
-    hasher.update(DIGEST_FORMAT.encode("utf-8"))
-    hasher.update(b"\n")
-    for record in sorted(records, key=lambda item: item.path):
-        hasher.update(record.path.encode("utf-8"))
-        hasher.update(b"\n")
-        hasher.update(record.sha256.encode("utf-8"))
-        hasher.update(b"\n")
+    _feed(hasher, DIGEST_FORMAT.encode("utf-8"))
+    ordered = sorted(records, key=lambda item: item.path)
+    hasher.update(len(ordered).to_bytes(8, "big"))
+    for record in ordered:
+        _feed(hasher, record.path.encode("utf-8"))
+        _feed(hasher, record.sha256.encode("utf-8"))
     return "sha256:" + hasher.hexdigest()
+
+
+def _feed(hasher: hashlib._Hash, data: bytes) -> None:
+    """Absorb one length-prefixed field."""
+    hasher.update(len(data).to_bytes(8, "big"))
+    hasher.update(data)
 
 
 def description_digest(description: str | None) -> str:
     """Digest the normalized ``description`` frontmatter field alone (§6.1)."""
-    return stable_hash_bytes(
-        (DIGEST_FORMAT + "\ndescription\n" + normalize_description(description or "")).encode(
-            "utf-8"
-        )
-    )
+    hasher = hashlib.sha256()
+    _feed(hasher, DIGEST_FORMAT.encode("utf-8"))
+    _feed(hasher, b"description")
+    _feed(hasher, normalize_description(description or "").encode("utf-8"))
+    return "sha256:" + hasher.hexdigest()
+
+
+def has_unusual_path_characters(path: str) -> bool:
+    """True where a path holds control characters worth a reviewer's attention.
+
+    Length-prefixing already makes the digest unambiguous, so this is not a correctness
+    control. A skill shipping a file whose name contains a newline is doing something a
+    reviewer should see, which is a different reason to report it.
+    """
+    return any(character < " " or character == "\x7f" for character in path)

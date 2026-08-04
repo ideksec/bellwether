@@ -16,6 +16,7 @@ import pytest
 from bellwether.errors import SkillError
 from bellwether.skill import (
     EVALS_DIR,
+    FileRecord,
     PayloadAllowlist,
     detect_interpreter,
     estimate_tokens,
@@ -92,6 +93,43 @@ def test_allowed_tools_may_be_a_comma_separated_string() -> None:
     assert parsed.frontmatter.allowed_tools == ["Read", "Grep", "Bash"]
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("allowed-tools", "5"), ("name", "[a, b]"), ("description", "12")],
+)
+def test_a_wrong_typed_known_field_is_recorded_not_raised(field: str, value: str) -> None:
+    """A skill is somebody else's file, often a third party's.
+
+    Letting a ValidationError out would both break the rule that problems are reported as
+    sentences, and let a malformed package stop the loader before any sandbox exists — so
+    a hostile skill could avoid being described at all by shipping `allowed-tools: 5`.
+    """
+    parsed = parse_skill_markdown(f"---\nname: x\ndescription: d\n{field}: {value}\n---\nb\n")
+
+    assert field in parsed.unusable_fields
+    assert any(f"{field!r} is not usable" in problem for problem in parsed.problems)
+    assert parsed.frontmatter is not None
+    assert parsed.body == "b\n"
+
+
+def test_frontmatter_that_is_wholly_unusable_still_parses() -> None:
+    parsed = parse_skill_markdown("---\nname: {a: 1}\ndescription: [x]\n---\nbody\n")
+    assert parsed.frontmatter is not None
+    assert set(parsed.unusable_fields) == {"name", "description"}
+
+
+def test_a_skill_with_a_wrong_typed_field_still_loads(tmp_path: Path) -> None:
+    root = tmp_path / "sloppy"
+    root.mkdir()
+    (root / "SKILL.md").write_text(
+        "---\nname: sloppy\ndescription: d\nallowed-tools: 5\n---\nbody\n", encoding="utf-8"
+    )
+    package = load_skill(root)
+    assert package.name == "sloppy"
+    assert package.declared_tools == ()
+    assert package.parsed.unusable_fields == {"allowed-tools": 5}
+
+
 def test_a_pinned_model_is_reported_as_a_problem() -> None:
     parsed = parse_skill_markdown("---\nname: x\ndescription: d\nmodel: some-model\n---\nbody\n")
     assert any("pins model" in problem for problem in parsed.problems)
@@ -151,6 +189,34 @@ def test_digests_are_reproducible_across_filesystem_orderings(
 def test_merkle_digest_does_not_depend_on_input_order(skill_dir: Path) -> None:
     records = read_file_records(skill_dir)
     assert merkle_digest(records) == merkle_digest(list(reversed(records)))
+
+
+def test_a_newline_in_a_file_name_cannot_forge_a_digest() -> None:
+    """Newlines are legal in POSIX filenames.
+
+    Delimiting the digest input with them let one file named ``a\\nsha256:...\\nb`` hash
+    identically to two files ``a`` and ``b``. A forgeable package_digest is a forgeable
+    review attestation (§6.3) and a forgeable cache key (§19.2), so every field is
+    length-prefixed.
+    """
+    forged = [FileRecord(path="a\nsha256:deadbeef\nb", sha256="sha256:x", size_bytes=1)]
+    genuine = [
+        FileRecord(path="a", sha256="sha256:deadbeef", size_bytes=1),
+        FileRecord(path="b", sha256="sha256:x", size_bytes=1),
+    ]
+    assert merkle_digest(forged) != merkle_digest(genuine)
+
+
+def test_a_control_character_in_a_file_name_is_reported(tmp_path: Path) -> None:
+    """Not a correctness control — length-prefixing handles that — but a skill shipping
+    such a file is doing something a reviewer should see."""
+    root = tmp_path / "odd"
+    root.mkdir()
+    (root / "SKILL.md").write_text("---\nname: odd\ndescription: d\n---\nbody\n", "utf-8")
+    (root / "we\nird.md").write_text("x", encoding="utf-8")
+
+    package = load_skill(root)
+    assert any("control characters" in problem for problem in package.problems)
 
 
 def test_payload_digest_is_unchanged_by_edits_under_evals(skill_dir: Path) -> None:
@@ -387,4 +453,4 @@ def test_a_skill_with_no_manifest_has_no_review() -> None:
     package = load_skill(EXAMPLE_SKILL, load_evals=False)
     assert package.manifest is None
     assert package.review_state() == "absent"
-    assert package.review_age_days() is None
+    assert package.review_age_days(dt.date(2026, 8, 4)) is None
