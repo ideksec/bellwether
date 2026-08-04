@@ -25,8 +25,30 @@ uv run ruff format --check .
 uv run mypy
 uv run lint-imports
 uv run python tools/language_lint.py
-uv run pytest
+uv run pytest -m "not docker"
 ```
+
+## The container integration tests
+
+The tests marked `docker` run small non-agentic container workloads with known behaviour
+and assert the capture plane records exactly the expected events (§24). They need a
+Docker daemon, and they need **root** — mounting the host-side overlay upper directory is
+the privilege the host has and the container does not, which is the whole capture
+architecture in one line (§10.0).
+
+```bash
+sudo -E env "PATH=$PATH" uv run pytest -m docker
+```
+
+They skip with a stated reason where either is missing. CI runs them as a separate job
+rather than letting them skip inside the main one: a suite that goes green with these
+quietly absent is exactly the clean-looking failure this project exists to distrust, so
+the job also asserts they were collected.
+
+In Claude Code on the web, `.claude/hooks/session-start.sh` starts the daemon at session
+start. Note that not every container registry is reachable under a restrictive egress
+policy — registries that redirect blobs to a CDN often are not — so
+`BELLWETHER_TEST_IMAGE` selects the image and defaults to one that serves its own blobs.
 
 ## Five rules that are enforced mechanically
 

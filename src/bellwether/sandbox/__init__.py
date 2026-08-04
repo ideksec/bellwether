@@ -22,6 +22,7 @@ runs inside the container (§10.0). Keep it that way.
 
 from __future__ import annotations
 
+from bellwether.sandbox.docker import ContainerResult, DockerBackend
 from bellwether.sandbox.fixtures import (
     DIRECTORY_MODE,
     EXECUTABLE_MODE,
@@ -34,6 +35,14 @@ from bellwether.sandbox.fixtures import (
 )
 from bellwether.sandbox.identifiers import SandboxIdentifiers, derive_identifiers
 from bellwether.sandbox.isolation import IsolationProfile, PinnedEnvironment
+from bellwether.sandbox.overlay import (
+    ChangeKind,
+    OverlayMount,
+    PathChange,
+    mount_overlay,
+    overlay_available,
+    read_overlay_diff,
+)
 from bellwether.sandbox.session import PreparedSandbox, SandboxBackend, prepare_sandbox
 from bellwether.sandbox.staging import StagedPayload, stage_payload
 from bellwether.sandbox.zones import (
@@ -51,8 +60,13 @@ __all__ = [
     "FILE_MODE",
     "NORMALIZED_MTIME",
     "ZONE_RULES",
+    "ChangeKind",
+    "ContainerResult",
+    "DockerBackend",
     "IsolationProfile",
     "MaterializedFixture",
+    "OverlayMount",
+    "PathChange",
     "PinnedEnvironment",
     "PreparedSandbox",
     "SandboxBackend",
@@ -65,8 +79,11 @@ __all__ = [
     "derive_identifiers",
     "fixture_digest",
     "materialize_fixture",
+    "mount_overlay",
     "normalize_container_path",
     "normalize_metadata",
+    "overlay_available",
     "prepare_sandbox",
+    "read_overlay_diff",
     "stage_payload",
 ]

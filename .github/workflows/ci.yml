@@ -22,6 +22,10 @@ env:
   # one of the ways it quietly stops holding.
   LC_ALL: C.UTF-8
   LANG: C.UTF-8
+  # Any small image works. This one serves blobs from the registry host rather than a
+  # CDN, so it also pulls under restrictive egress policies — including the environment
+  # these tests were first written in.
+  BELLWETHER_TEST_IMAGE: alpine:3.20
 
 jobs:
   check:
@@ -57,6 +61,52 @@ jobs:
       - name: Language discipline
         run: uv run python tools/language_lint.py
 
-      # Every test runs offline, with no API key.
+      # The offline suite: no API key, no daemon. The container tests are a separate
+      # job so that their absence here is a deselection rather than a silent skip.
       - name: Tests
-        run: uv run pytest
+        run: uv run pytest -m "not docker"
+
+  # §24 requires the capture-plane integration tests to run on the project's own CI
+  # runner, "so that degraded coverage is visible to maintainers". A suite that passes
+  # green with these quietly skipped is the clean-looking failure this tool exists to
+  # distrust — so this job asserts they were collected, and fails if they were not.
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --group dev --frozen
+
+      - name: Check the daemon and overlayfs
+        run: |
+          docker info --format 'docker {{.ServerVersion}} storage={{.Driver}}'
+          grep -q overlay /proc/filesystems && echo "overlayfs present"
+
+      - name: Pull the test image
+        run: docker pull -q "$BELLWETHER_TEST_IMAGE"
+
+      # sudo because mounting the host-side overlay upper directory needs root — the
+      # privilege the *host* has and the container does not, which is the whole capture
+      # architecture in one line (§10.0).
+      - name: Container integration tests
+        run: |
+          sudo -E env "PATH=$PATH" \
+            uv run pytest -m docker -v --no-header
+
+      # A deselected-to-zero run would otherwise report success having asserted nothing.
+      - name: Assert the container tests actually ran
+        run: |
+          collected=$(uv run pytest -m docker --collect-only -q 2>/dev/null | tail -1)
+          echo "collected: $collected"
+          case "$collected" in
+            "no tests ran"*|"") echo "::error::no container tests were collected"; exit 1 ;;
+          esac
