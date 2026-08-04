@@ -20,6 +20,7 @@ from bellwether.skill.digests import (
     DIGEST_FORMAT,
     FileRecord,
     description_digest,
+    has_unusual_path_characters,
     merkle_digest,
     read_file_records,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "description_digest",
     "detect_interpreter",
     "estimate_tokens",
+    "has_unusual_path_characters",
     "load_skill",
     "merkle_digest",
     "normalize_description",

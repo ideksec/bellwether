@@ -5,10 +5,12 @@ Done when: round-trip write→read is lossless; a truncated file is detected as 
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from bellwether.errors import TraceError
 from bellwether.trace import (
@@ -265,6 +267,29 @@ def test_streaming_stops_at_a_truncated_line(trace_path: Path) -> None:
     text = trace_path.read_text(encoding="utf-8")
     trace_path.write_text(text[: len(text) - 40], encoding="utf-8")
     assert [action.seq for action in iter_actions(trace_path)] == [1, 2]
+
+
+def test_a_naive_timestamp_is_refused() -> None:
+    """A naive datetime serialises with no offset, so two traces from differently
+    configured runners silently stop being comparable — and epoch anchoring (§11.5) reads
+    these timestamps."""
+    with pytest.raises(ValidationError, match="must carry a timezone"):
+        make_header(started_at=dt.datetime(2026, 8, 4, 9, 12, 33))
+    with pytest.raises(ValidationError, match="must carry a timezone"):
+        make_action(1, ts=dt.datetime(2026, 8, 4, 9, 12, 33))
+    with pytest.raises(ValidationError, match="must carry a timezone"):
+        make_footer(ended_at=dt.datetime(2026, 8, 4, 9, 12, 33))
+
+
+def test_timestamps_are_normalised_to_utc(tmp_path: Path) -> None:
+    """The same instant written in two zones must produce the same bytes."""
+    elsewhere = dt.timezone(dt.timedelta(hours=5, minutes=30))
+    instant = dt.datetime(2026, 8, 4, 9, 12, 33, tzinfo=dt.UTC)
+
+    here = serialize_record(make_action(1, ts=instant))
+    there = serialize_record(make_action(1, ts=instant.astimezone(elsewhere)))
+    assert here == there
+    assert '"ts":"2026-08-04T09:12:33Z"' in here
 
 
 def test_token_totals_keep_cache_reads_separate() -> None:

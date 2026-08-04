@@ -14,7 +14,14 @@ import unicodedata
 from typing import Any
 
 import yaml
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 
 __all__ = [
     "Frontmatter",
@@ -96,6 +103,11 @@ class ParsedSkillMarkdown(BaseModel):
     #: frontmatter still loads: recording the absence is more useful than refusing, since
     #: the absence is itself what a reviewer needs to know.
     problems: tuple[str, ...] = ()
+    #: Known fields whose value was the wrong shape — ``allowed-tools: 5`` — kept by name
+    #: and raw value so nothing is lost from the report. A third-party skill is
+    #: attacker-influenced input, and refusing to load one is refusing to say anything
+    #: about it.
+    unusable_fields: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def has_frontmatter(self) -> bool:
@@ -135,8 +147,7 @@ def parse_skill_markdown(text: str) -> ParsedSkillMarkdown:
             problems=(f"frontmatter must be a mapping, not a {type(loaded).__name__}",),
         )
 
-    frontmatter = Frontmatter.model_validate(loaded)
-    problems: list[str] = []
+    frontmatter, unusable, problems = _validate_leniently(loaded)
     if not frontmatter.name:
         problems.append("frontmatter has no 'name'")
     if not frontmatter.description:
@@ -145,4 +156,45 @@ def parse_skill_markdown(text: str) -> ParsedSkillMarkdown:
         problems.append(
             f"frontmatter pins model {frontmatter.model!r}, which interacts with the test matrix"
         )
-    return ParsedSkillMarkdown(frontmatter=frontmatter, body=body, problems=tuple(problems))
+    return ParsedSkillMarkdown(
+        frontmatter=frontmatter,
+        body=body,
+        problems=tuple(problems),
+        unusable_fields=unusable,
+    )
+
+
+def _validate_leniently(loaded: dict[str, Any]) -> tuple[Frontmatter, dict[str, Any], list[str]]:
+    """Validate frontmatter, setting aside fields whose value is the wrong shape.
+
+    A skill is somebody else's file, and often a third party's. Letting a
+    ``ValidationError`` out of here would both violate the rule that Bellwether reports
+    problems as sentences rather than stack traces, and let a malformed package stop the
+    loader before any sandbox exists — so a hostile skill could avoid being described at
+    all by shipping ``allowed-tools: 5``.
+
+    The offending fields are set aside by name with their raw value, so nothing is lost
+    from the report; everything else still parses.
+    """
+    rejected: dict[str, str] = {}
+    try:
+        return Frontmatter.model_validate(loaded), {}, []
+    except ValidationError as error:
+        for detail in error.errors():
+            if detail["loc"]:
+                rejected[str(detail["loc"][0])] = detail["msg"]
+
+    kept = {key: value for key, value in loaded.items() if key not in rejected}
+    unusable = {key: loaded[key] for key in rejected if key in loaded}
+    problems = [
+        f"frontmatter field {key!r} is not usable and was ignored: {message}"
+        for key, message in sorted(rejected.items())
+    ]
+
+    try:
+        return Frontmatter.model_validate(kept), unusable, problems
+    except ValidationError:
+        # Nothing salvageable. Still not an exception: an unparseable frontmatter is a
+        # finding about the skill, not a failure of the tool.
+        problems.append("frontmatter could not be parsed and was ignored entirely")
+        return Frontmatter(), dict(loaded), problems

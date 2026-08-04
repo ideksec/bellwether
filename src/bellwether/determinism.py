@@ -28,7 +28,6 @@ import hashlib
 import json
 import random
 from collections.abc import Hashable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +133,14 @@ def canonicalize(value: Any) -> Any:
         return value
     if isinstance(value, float):
         return round6(value)
+    if isinstance(value, bytes | bytearray | memoryview):
+        # Checked before the Sequence branch, which would otherwise turn a blob into a
+        # list of integers — valid JSON, silently useless, and impossible to notice in a
+        # trace. Bytes have no one right JSON form, so the caller has to choose.
+        raise TypeError(
+            "cannot canonicalize raw bytes for serialisation; encode them first — "
+            "stable_hash_bytes() for identity, or .hex() to carry the value"
+        )
     if isinstance(value, Mapping):
         return {str(key): canonicalize(item) for key, item in value.items()}
     if isinstance(value, set | frozenset):
@@ -162,7 +169,6 @@ def canonical_json(value: Any, *, indent: int | None = None) -> str:
     )
 
 
-@dataclass(frozen=True)
 class SeededRng:
     """A random source whose seed travels with its output.
 
@@ -172,24 +178,51 @@ class SeededRng:
 
     ``label`` separates independent streams drawn from the same evaluation seed, so
     adding a new use of randomness cannot shift the values another use would have drawn.
+    Use :meth:`derive` to open a further sub-stream rather than reaching for a new seed.
+
+    **Each instance is a stream, and successive draws differ.** An earlier version
+    re-seeded on every call, which made ``token()`` return the same value every time it
+    was asked — so planting five canaries would have planted five *identical* markers,
+    which is exactly the predictable-marker tell §3.5 exists to remove, while looking
+    like it worked. Reproducibility comes from two instances built with the same
+    ``(seed, label)`` producing the same *sequence*, never from one instance repeating
+    itself.
     """
 
-    seed: int
-    label: str
+    __slots__ = ("_random", "label", "seed")
+
+    def __init__(self, seed: int, label: str) -> None:
+        self.seed = seed
+        self.label = label
+        self._random = random.Random(_derive_seed(seed, label))
+
+    def __repr__(self) -> str:
+        return f"SeededRng(seed={self.seed!r}, label={self.label!r})"
+
+    def derive(self, label: str) -> SeededRng:
+        """Open an independent sub-stream under this one's seed.
+
+        The sub-stream's values do not depend on how many values this stream has already
+        produced, so adding a draw here cannot shift what a sub-stream yields.
+        """
+        return SeededRng(self.seed, f"{self.label}/{label}")
 
     def stream(self) -> random.Random:
-        """Return a fresh generator for this ``(seed, label)`` pair."""
-        derived = stable_hash(f"{self.seed}:{self.label}")
-        return random.Random(int(derived.removeprefix("sha256:")[:16], 16))
+        """The underlying generator, for callers needing the full ``random`` interface."""
+        return self._random
 
     def choice[T](self, population: Sequence[T]) -> T:
-        return self.stream().choice(population)
+        return self._random.choice(population)
 
     def sample[T](self, population: Sequence[T], k: int) -> list[T]:
-        return self.stream().sample(list(population), k)
+        return self._random.sample(list(population), k)
 
     def token(self, length: int = 32, *, alphabet: str | None = None) -> str:
         """Draw an opaque token with no fixed prefix or recognisable structure (§3.5)."""
         chars = alphabet or "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        stream = self.stream()
-        return "".join(stream.choice(chars) for _ in range(length))
+        return "".join(self._random.choice(chars) for _ in range(length))
+
+
+def _derive_seed(seed: int, label: str) -> int:
+    digest = stable_hash(f"{seed}:{label}")
+    return int(digest.removeprefix("sha256:")[:16], 16)

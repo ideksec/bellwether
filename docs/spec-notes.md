@@ -65,6 +65,32 @@ before hashing `evals/manifest.yaml`. This
 
 ---
 
+## §6.1 — Every field of the digest input is length-prefixed
+
+**Spec.** "SHA-256 of every file in the skill directory, and a merkle-style digest over
+the sorted set." It does not specify the encoding of the input to that digest.
+
+**Problem.** The first implementation joined `path\n<sha256>\n` per file. Newlines are
+legal in POSIX filenames, so a package containing a single file named
+`a\nsha256:deadbeef\nb` produced exactly the same digest as a package containing files
+`a` and `b` — a chosen-name collision available to whoever writes the skill.
+
+`package_digest` binds a human review (§6.3) and `payload_digest` keys the run cache
+(§19.2). A forgeable digest is a forgeable attestation and a poisonable cache, so this is
+an integrity property rather than a formatting preference.
+
+**Resolution.** `DIGEST_FORMAT` is now `bellwether/skill-digest/2` and every field —
+the domain separator, each path, each file digest — is length-prefixed, with the file
+count absorbed up front. No arrangement of names can be read as a different arrangement.
+The format version is part of the hashed input, so the change is visible as a changed
+digest rather than as a silent comparison between two different constructions.
+
+Control characters in a file name are additionally reported as a problem on the package.
+That is not a correctness control — length-prefixing handles that — but a skill shipping
+such a file is doing something a reviewer should see.
+
+---
+
 ## §6.1 — The executable bit is inventoried, not digested
 
 **Spec.** "SHA-256 of every file in the skill directory, and a merkle-style digest over

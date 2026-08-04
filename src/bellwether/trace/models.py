@@ -19,7 +19,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from bellwether import ARF_VERSION, CANON_VERSION
 from bellwether.constants import CAPTURE_PLANES
@@ -32,6 +32,7 @@ __all__ = [
     "Correlation",
     "Coverage",
     "ExitReason",
+    "Instant",
     "PlaneCoverage",
     "RunFooter",
     "RunHeader",
@@ -81,6 +82,26 @@ class ArfModel(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow", populate_by_name=True, protected_namespaces=())
+
+
+def _as_utc(value: dt.datetime) -> dt.datetime:
+    """Require an instant, not a wall-clock reading, and store it in UTC.
+
+    A naive datetime serialises with no offset, so two traces from differently-configured
+    runners silently stop being comparable — and epoch anchoring (§11.5) reads these
+    timestamps to assign events to epochs. Refusing the ambiguity at the boundary is
+    cheaper than discovering it as jitter in the noise floor.
+    """
+    if value.tzinfo is None:
+        raise ValueError(
+            "timestamp must carry a timezone; a naive datetime is a wall-clock reading, "
+            "not an instant, and traces from two runners could not be compared"
+        )
+    return value.astimezone(dt.UTC)
+
+
+#: An instant, normalised to UTC on the way in.
+Instant = Annotated[dt.datetime, AfterValidator(_as_utc)]
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +267,7 @@ class RunHeader(ArfModel):
     platform_baseline_version: str | None = None
     canon: CanonBlock = Field(default_factory=CanonBlock)
     coverage: Coverage = Field(default_factory=Coverage)
-    started_at: dt.datetime
+    started_at: Instant
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +322,7 @@ class Action(ArfModel):
 
     type: Literal["action"] = "action"
     seq: Annotated[int, Field(ge=0)]
-    ts: dt.datetime
+    ts: Instant
     plane: Plane
     kind: str
     actor: Actor | None = None
@@ -347,7 +368,7 @@ class RunFooter(ArfModel):
     """
 
     type: Literal["run_footer"] = "run_footer"
-    ended_at: dt.datetime
+    ended_at: Instant
     wall_clock_ms: Annotated[int, Field(ge=0)]
     exit_reason: ExitReason
     tokens: TokenTotals = Field(default_factory=TokenTotals)
