@@ -11,19 +11,19 @@ MUST NOT
 
 from __future__ import annotations
 
-from bellwether.config.loader import (
+from bellwether.config.config_loader import load_config, parse_config, resolve_model_id
+from bellwether.config.document import (
     CONFIG_DIR,
     CONFIG_FILE,
     PLATFORM_BASELINE_FILE,
     POLICY_FILE,
-    load_config,
+    load_yaml_mapping,
+)
+from bellwether.config.loader import (
     load_manifest,
     load_scenarios,
-    load_yaml_mapping,
-    parse_config,
     parse_manifest,
     parse_scenarios,
-    resolve_model_id,
 )
 from bellwether.config.models import (
     API_VERSION,

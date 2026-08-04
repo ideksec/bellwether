@@ -162,9 +162,22 @@ Lower layers import the specific submodules they need rather than the `bellwethe
 facade, which re-exports everything; the facade is for `cli`, `verdict` and `report`. The
 boundary is now visible in the file tree rather than only in a lint configuration.
 
-**Worth noting** because it is the contract earning its keep on day one: the design was
+The same thing happened again when `sandbox` landed: `sandbox` imports `skill`, `skill`
+imports a manifest loader, and a single loader module carried *provider* types along with
+it — breaking "the sandbox must not know about models". Document loading is now split by
+which layer consumes it:
+
+| Module | Holds | Consumed by |
+|---|---|---|
+| `config.document` | YAML reading, validation, path constants | everything |
+| `config.loader` | `evals/manifest.yaml`, `evals/scenarios.yaml` | `skill` upward |
+| `config.config_loader` | `config.yaml`, model-alias resolution | `harness` upward |
+| `config.policy_loader` | `policy.yaml` | `verdict`, `report`, `cli` |
+
+**Worth noting** because it is the contract earning its keep twice: both designs were
 fine on paper and wrong in the import graph, and nothing but the mechanical check would
-have said so.
+have said so. Neither transitive import let a lower layer *act* on what it reached — the
+boundary would simply have existed only in prose.
 
 ---
 
