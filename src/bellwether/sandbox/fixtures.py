@@ -13,6 +13,7 @@ byte- and metadata-identical.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -66,21 +67,36 @@ class MaterializedFixture:
     symlinks: tuple[str, ...] = ()
 
 
-def normalize_metadata(path: Path, *, is_dir: bool, executable: bool) -> None:
+def normalize_metadata(
+    path: Path,
+    *,
+    is_dir: bool,
+    executable: bool,
+    owner: tuple[int, int] | None = None,
+) -> None:
     """Flatten metadata on one materialised entry.
 
     Modes collapse to a fixed pair, except that the executable bit is preserved: a
     fixture whose script stops being executable is a broken fixture, and the run would
     fail for a reason that has nothing to do with the skill.
 
-    Ownership is left to the copying process's own uid — the container runs as a
-    non-root user with a fixed uid, and attempting to chown here would need privileges
-    the host process deliberately does not have.
+    ``owner`` is the ``(uid, gid)`` the container runs as. It matters: the workspace is
+    written by the host process and then written *into* by a non-root container user, so
+    a workspace left owned by the host uid is one the agent cannot write to at all. The
+    first hardened container run against this code failed exactly that way, on every
+    file, which reads as a skill that did nothing.
+
+    Where the host process lacks the privilege to chown, the ownership step is skipped
+    rather than raising: on a rootless runner the uid is already mapped and the chown
+    would be both impossible and unnecessary.
     """
     if is_dir:
         path.chmod(DIRECTORY_MODE)
     else:
         path.chmod(EXECUTABLE_MODE if executable else FILE_MODE)
+    if owner is not None:
+        with contextlib.suppress(PermissionError):
+            os.chown(path, owner[0], owner[1], follow_symlinks=False)
     os.utime(path, (NORMALIZED_MTIME, NORMALIZED_MTIME), follow_symlinks=False)
 
 
@@ -89,6 +105,7 @@ def materialize_fixture(
     destination: Path,
     *,
     exclude_from_digest: frozenset[str] | None = None,
+    owner: tuple[int, int] | None = None,
 ) -> MaterializedFixture:
     """Copy ``source`` to ``destination`` with normalised metadata.
 
@@ -100,6 +117,8 @@ def materialize_fixture(
             digest — the canary paths. §3.5 randomises canary markers per evaluation and
             §19 keys the run cache on ``fixture_digest``; without this exclusion the cache
             would miss on every evaluation.
+        owner: ``(uid, gid)`` the container runs as. A workspace the agent cannot write
+            to produces a run that looks like a skill which did nothing.
     """
     if not source.is_dir():
         raise FileNotFoundError(f"fixture directory not found: {source}")
@@ -118,11 +137,19 @@ def materialize_fixture(
 
         if origin.is_symlink():
             target.symlink_to(origin.readlink())
+            if owner is not None:
+                with contextlib.suppress(PermissionError):
+                    os.chown(target, owner[0], owner[1], follow_symlinks=False)
             symlinks.append(relative.as_posix())
             continue
 
         shutil.copyfile(origin, target)
-        normalize_metadata(target, is_dir=False, executable=bool(origin.stat().st_mode & 0o100))
+        normalize_metadata(
+            target,
+            is_dir=False,
+            executable=bool(origin.stat().st_mode & 0o100),
+            owner=owner,
+        )
 
     # Directories are normalised after their contents: writing a file into a directory
     # updates that directory's mtime, so stamping it first would be undone.
@@ -131,8 +158,8 @@ def materialize_fixture(
         key=lambda path: len(path.parts),
         reverse=True,
     ):
-        normalize_metadata(directory, is_dir=True, executable=False)
-    normalize_metadata(destination, is_dir=True, executable=False)
+        normalize_metadata(directory, is_dir=True, executable=False, owner=owner)
+    normalize_metadata(destination, is_dir=True, executable=False, owner=owner)
 
     excluded = exclude_from_digest or frozenset()
     digest, count, total = _digest_tree(destination, excluded)

@@ -211,3 +211,45 @@ helps nobody, on a document copied verbatim from the specification.
 **Resolution.** A `BeforeValidator` maps `False` to `"off"` and `True` to `"on"` on every
 enumeration whose members include such a word. Both spellings work; quoting is not
 required.
+
+---
+
+## §9.1 step 1 — The prepared workspace is chowned to the container uid
+
+**Spec.** "Normalize mtimes to a fixed epoch, and normalize ownership and mode bits."
+
+**Problem.** "Normalize ownership" was read as "leave it to the copying process", which is
+wrong in a way only a running container reveals. The host process prepares the workspace;
+a non-root container user then writes into it. Left owned by the host uid, *every* write
+fails with `EACCES` — and a run where the agent could not write anything reads as a skill
+that did nothing, not as a broken sandbox.
+
+The first hardened container run against this code failed exactly that way.
+
+**Resolution.** The workspace, the staged payload, and the overlay upper and work
+directories are chowned to the uid the container runs as. The isolation profile carries
+that uid numerically rather than by name: `--user agent` requires the image to define the
+account, whereas a uid always resolves and is the thing ownership has to match. Where the
+host process lacks the privilege to chown, the step is skipped rather than raising — on a
+rootless runner the uid is already mapped.
+
+---
+
+## §9.1 step 9 — Overlay whiteouts and copied-up parents
+
+**Spec.** "Read overlay upper directory and whiteouts; compute the filesystem diff from
+the host, partitioned by zone. This is O(changes), not O(tree)."
+
+**Detail the spec leaves out**, and which the diff is wrong without:
+
+- A deletion appears in the upper directory as a **character device with device number 0**,
+  not as an absence. Read naively it looks like an odd new file; read correctly it is the
+  difference between "the skill deleted your source tree" and "no changes observed".
+- A directory in the upper layer is usually just the **copied-up parent** of a changed
+  file, present so the child can exist. Reporting every one buries the actual changes. An
+  *opaque* directory — carrying `trusted.overlay.opaque` — is different and is reported.
+  Reading that xattr needs `CAP_SYS_ADMIN`; absent it, the directory is treated as ordinary
+  rather than guessed at, and its files are still reported.
+- `created` and `modified` are not distinguishable from the upper directory alone, since a
+  copy-up looks identical either way. They are separated by consulting the lower directory
+  for the changed paths only, which preserves the O(changes) property.

@@ -148,7 +148,7 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Skill parsing, the three digests, payload allowlist, executable inventory | done (WP-2) |
 | ARF trace schema, JSONL writer and reader, incomplete-trace detection | done (WP-3) |
 | Sandbox host side: zones, fixture materialisation, payload staging, identifiers, isolation profile | done (WP-4) |
-| Sandbox container backend: overlay mount, upper-dir diff, container lifecycle | WP-4, needs a Docker daemon |
+| Sandbox container backend: overlay mount, whiteout-aware upper-dir diff, container lifecycle | done (WP-4) |
 | Capture planes, harness adapters | WP-5 – WP-6 |
 | Epoch anchoring, platform baseline, assertions | WP-7 – WP-9 |
 | Metrics, verdict engine, reporting | WP-10 – WP-12 |

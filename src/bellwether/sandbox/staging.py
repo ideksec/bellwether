@@ -50,6 +50,7 @@ def stage_payload(
     destination: Path,
     *,
     install_path: str | PurePosixPath = "/home/agent/.claude/skills",
+    owner: tuple[int, int] | None = None,
 ) -> StagedPayload:
     """Copy a skill's payload into ``destination``, normalising metadata as it goes.
 
@@ -80,7 +81,12 @@ def stage_payload(
             continue
 
         target.write_bytes(origin.read_bytes())
-        normalize_metadata(target, is_dir=False, executable=bool(origin.stat().st_mode & 0o100))
+        normalize_metadata(
+            target,
+            is_dir=False,
+            executable=bool(origin.stat().st_mode & 0o100),
+            owner=owner,
+        )
         staged.append(relative)
 
     for directory in sorted(
@@ -88,8 +94,8 @@ def stage_payload(
         key=lambda path: len(path.parts),
         reverse=True,
     ):
-        normalize_metadata(directory, is_dir=True, executable=False)
-    normalize_metadata(destination, is_dir=True, executable=False)
+        normalize_metadata(directory, is_dir=True, executable=False, owner=owner)
+    normalize_metadata(destination, is_dir=True, executable=False, owner=owner)
 
     payload = StagedPayload(
         root=destination,

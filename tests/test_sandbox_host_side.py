@@ -349,7 +349,7 @@ def test_docker_flags_render_the_profile() -> None:
     assert "--read-only" in flags
     assert "--security-opt no-new-privileges" in flags
     assert "--pids-limit 512" in flags
-    assert "--user agent" in flags
+    assert "--user 1000:1000" in flags
 
 
 @pytest.mark.parametrize(
@@ -359,13 +359,36 @@ def test_docker_flags_render_the_profile() -> None:
         ({"cap_add": ("SYS_ADMIN",)}, "capabilities were added back"),
         ({"read_only_root": False}, "root filesystem was writable"),
         ({"docker_socket": True}, "equivalent to root on the host"),
-        ({"user": "root"}, "ran as root"),
+        ({"uid": 0}, "ran as root"),
     ],
 )
 def test_weakenings_are_reported(kwargs: dict[str, object], expected: str) -> None:
     """A run under a relaxed profile is still evidence — about a different situation."""
     violations = " ".join(IsolationProfile(**kwargs).violations())  # type: ignore[arg-type]
     assert expected in violations
+
+
+def test_the_workspace_is_owned_by_the_container_uid(
+    skill_dir: Path, fixture_source: Path, tmp_path: Path
+) -> None:
+    """The regression test for the first hardened container run.
+
+    The workspace is written by the host process and written *into* by a non-root
+    container user. Left owned by the host uid, every write fails with EACCES — which
+    reads as a skill that did nothing.
+    """
+    if os.geteuid() != 0:
+        pytest.skip("chown needs privileges this runner does not have")
+
+    prepared = prepare_sandbox(
+        load_skill(skill_dir), fixture_source, tmp_path / "run", rng=SeededRng(1, "run")
+    )
+    uid, gid = prepared.isolation.owner
+
+    for path in [prepared.workspace.root, prepared.upper_dir, prepared.work_dir]:
+        assert (path.stat().st_uid, path.stat().st_gid) == (uid, gid), path
+    for path in prepared.workspace.root.rglob("*"):
+        assert path.stat().st_uid == uid, path
 
 
 def test_the_pinned_environment_removes_varying_identifiers() -> None:

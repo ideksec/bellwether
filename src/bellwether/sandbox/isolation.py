@@ -51,7 +51,11 @@ class IsolationProfile:
     read_only_root: bool = True
     no_new_privileges: bool = True
     seccomp: str = "default"
-    user: str = "agent"
+    #: Numeric, not a name. `--user agent` requires the image to define that account;
+    #: a uid always resolves, and it is the uid the workspace has to be owned by.
+    uid: int = 1000
+    gid: int = 1000
+    user_name: str = "agent"
     #: 512 rather than 256: a Node-based harness plus a language server plus git plus
     #: Python approaches 256 in normal operation, and hitting the limit produces a
     #: ``sandbox_error`` that reads as a skill failure.
@@ -67,6 +71,11 @@ class IsolationProfile:
     #: The only writable paths. Everything else is read-only root filesystem.
     writable_paths: tuple[str, ...] = ("/work", "/tmp", "/home/agent/.claude")
     pinned: PinnedEnvironment = field(default_factory=PinnedEnvironment)
+
+    @property
+    def owner(self) -> tuple[int, int]:
+        """The ``(uid, gid)`` every prepared path must be owned by."""
+        return (self.uid, self.gid)
 
     def violations(self) -> list[str]:
         """Weakenings of the baseline that a report must state plainly.
@@ -88,7 +97,7 @@ class IsolationProfile:
             problems.append(
                 "the Docker socket was mounted, which is equivalent to root on the host"
             )
-        if self.user == "root":
+        if self.uid == 0:
             problems.append("the container ran as root")
         return problems
 
@@ -108,7 +117,7 @@ class IsolationProfile:
             flags.append("--read-only")
         if self.no_new_privileges:
             flags += ["--security-opt", "no-new-privileges"]
-        flags += ["--user", self.user]
+        flags += ["--user", f"{self.uid}:{self.gid}"]
         flags += ["--pids-limit", str(self.pids_limit)]
         flags += ["--memory", self.memory]
         flags += ["--cpus", str(self.cpus)]

@@ -11,6 +11,8 @@ harness, read the upper directory, tear down — belong to a :class:`SandboxBack
 
 from __future__ import annotations
 
+import contextlib
+import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol, runtime_checkable
@@ -92,22 +94,30 @@ def prepare_sandbox(
         randomize=randomize_identifiers,
     )
 
+    profile = isolation or IsolationProfile()
+
     workspace = materialize_fixture(
         fixture,
         root / "workspace",
         exclude_from_digest=canary_paths,
+        owner=profile.owner,
     )
-    payload = stage_payload(package, root / "payload")
+    payload = stage_payload(package, root / "payload", owner=profile.owner)
 
+    # The overlay upper and work directories are written *through* by the container's
+    # own uid, so they need the same ownership as the workspace. A root-owned upper dir
+    # makes every write fail with EACCES, which reads as a skill that did nothing.
     upper = root / "overlay" / "upper"
     work = root / "overlay" / "work"
-    upper.mkdir(parents=True, exist_ok=True)
-    work.mkdir(parents=True, exist_ok=True)
+    for directory in (upper, work):
+        directory.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(PermissionError):
+            os.chown(directory, *profile.owner)
 
     return PreparedSandbox(
         identifiers=identifiers,
         zones=zone_map,
-        isolation=isolation or IsolationProfile(),
+        isolation=profile,
         workspace=workspace,
         payload=payload,
         upper_dir=upper,
