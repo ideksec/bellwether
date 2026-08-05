@@ -303,6 +303,26 @@ def test_a_read_tool_call_maps_to_the_workspace_read_class() -> None:
     )
 
 
+def test_reading_the_workspace_root_itself_does_not_crash() -> None:
+    """Regression: a skill that reads or writes the workspace root — ``.`` or the bare
+    ``/work/<slug>`` — normalises to a path with no segments, which crashed
+    ``_first_segment`` with an IndexError. That is trivially and adversarially
+    triggerable (``read {path: "."}``), and canonicalize runs on every metrics pass, so
+    the crash took the whole analysis down. It must classify, not raise."""
+    for path in (".", "/work/a7f3c1", "/work/a7f3c1/"):
+        cap = capability_for(
+            action(0, 0, "harness", "tool_call", {"tool": "read", "input": {"path": path}}),
+            CTX,
+        )
+        assert cap is not None, path
+        assert cap.tier1 == "workspace_read", path
+        assert cap.tier2 == "workspace_read:", path
+    # And the full canonicalize path survives it end to end.
+    events = [action(0, 0, "harness", "tool_call", {"tool": "write", "input": {"path": "."}})]
+    canonical = canonicalize(events, CTX)
+    assert "workspace_write" in canonical.caps_t1
+
+
 def test_a_read_outside_the_workspace_is_the_outside_class() -> None:
     cap = capability_for(
         action(
