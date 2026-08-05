@@ -13,8 +13,76 @@ pass rate adjacent; every figure carries ``n_evaluable`` and the look it came fr
 "consistently failing" annotation appears wherever the pass rate is below 0.5; and the
 footer carries the §2 limitations verbatim. The §16.3 language lint applies to every
 template in this package.
+
+WP-12 ships ``summary.json`` (:mod:`.summary`), the three text figures (:mod:`.figures`),
+and the Markdown PR comment (:mod:`.markdown`). The findings containers, the artifact
+tree, and the static HTML report follow in later packages.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from bellwether.report.figures import (
+    STRIP_GLYPHS,
+    CapabilityRow,
+    StripCell,
+    StripRow,
+    TrajectoryCluster,
+    render_capability_heatmap,
+    render_strip_chart,
+    render_trajectory_clusters,
+)
+from bellwether.report.markdown import Figures, ScopeRow, render_pr_comment
+from bellwether.report.summary import (
+    SCHEMA_VERSION,
+    CapabilityProfileSummary,
+    ComponentExclusion,
+    ConsistencySummary,
+    CostSummary,
+    CrossModelSummary,
+    FunctionalSummary,
+    GateSummary,
+    MatrixSummary,
+    NoiseFloor,
+    PolicyRef,
+    RegressionSummary,
+    SecuritySummary,
+    SkillRef,
+    Summary,
+    VerdictSummary,
+    default_limitations,
+    render_summary_json,
+    summary_json_schema,
+)
+
+__all__ = [
+    "SCHEMA_VERSION",
+    "STRIP_GLYPHS",
+    "CapabilityProfileSummary",
+    "CapabilityRow",
+    "ComponentExclusion",
+    "ConsistencySummary",
+    "CostSummary",
+    "CrossModelSummary",
+    "Figures",
+    "FunctionalSummary",
+    "GateSummary",
+    "MatrixSummary",
+    "NoiseFloor",
+    "PolicyRef",
+    "RegressionSummary",
+    "ScopeRow",
+    "SecuritySummary",
+    "SkillRef",
+    "StripCell",
+    "StripRow",
+    "Summary",
+    "TrajectoryCluster",
+    "VerdictSummary",
+    "default_limitations",
+    "render_capability_heatmap",
+    "render_pr_comment",
+    "render_strip_chart",
+    "render_summary_json",
+    "render_trajectory_clusters",
+    "summary_json_schema",
+]

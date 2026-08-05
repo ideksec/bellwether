@@ -14,11 +14,13 @@ flock is about to move. It warns; it does not vouch.
 
 ## Status
 
-**Pre-v0.1. Under construction.** The scaffolding, configuration layer, skill parser,
-trace format, sandbox, the first two capture planes (harness events, filesystem by
-zone), the `api-loop` reference harness adapter, the canonicalization layer, the
-platform baseline, and the assertion engine are built and tested. The `claude-code`
-adapter, the network planes, metrics and the verdict engine are not.
+**Pre-v0.1. Under construction.** The whole offline analysis path is built and tested:
+the scaffolding, configuration layer, skill parser, trace format, sandbox, the first two
+capture planes (harness events, filesystem by zone), the `api-loop` reference harness
+adapter, the canonicalization layer, the platform baseline, the assertion engine, the
+metrics, the verdict engine, and the report layer (`summary.json` + the Markdown PR
+comment). What does not yet exist is the orchestrator that assembles them into a run, the
+network planes (recording proxy, DNS resolver, canaries), and the `claude-code` adapter.
 
 `bellwether run` is not usable yet and says so, naming the work package that brings it,
 rather than printing an empty result that would read as a clean run.
@@ -166,7 +168,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Assertions: deterministic catalogue, scope derivation, Declared vs Observed, run outcomes | done (WP-9) |
 | Metrics: Wilson/Pocock sequential design, risk-weighted capability Jaccard, trajectory clustering, BCI | done (WP-10) |
 | Verdict engine: per-target gate composition, precondition check, weight validation | done (WP-11) |
-| Reporting | WP-12 (next) |
+| Reporting: schema-versioned `summary.json`, the §13.8 figures, the Markdown PR comment | done (WP-12) |
+| Orchestrator (`bellwether run`) and the first-light checkpoint | next |
 | `claude-code` harness adapter | WP-17 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
 | Corpus and acceptance | WP-20 |

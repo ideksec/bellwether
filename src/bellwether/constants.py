@@ -17,6 +17,7 @@ __all__ = [
     "DEFAULT_CAPABILITY_WEIGHTS",
     "EXIT_REASONS",
     "POCOCK_BOUNDARY_Z",
+    "REPORT_LIMITATIONS",
     "RUNTIME_FINDING_KINDS",
     "SENSITIVE_DIRECTORIES",
     "TIER1_PARAMETERISED_CLASSES",
@@ -179,3 +180,34 @@ DEFAULT_CAPABILITY_WEIGHTS: Final[dict[str, int]] = {
 #: The weight an unlisted tier-1 class receives (§13.5.1). The floor is 1, never 0: a
 #: class the table did not foresee still counts, so it cannot vanish from the risk sum.
 DEFAULT_CAPABILITY_WEIGHT: Final[int] = 1
+
+#: The §2 honest-limitations footer, in the exact words the spec requires ("These MUST be
+#: stated in the README and in the generated report footer"). Every report §17 renders
+#: this verbatim and complete — a footer that drops one of these oversells by omission, so
+#: :mod:`bellwether.report` reads the whole tuple and never a subset. The wording is the
+#: authority; a divergence between this and the README is a bug in the README.
+REPORT_LIMITATIONS: Final[tuple[str, ...]] = (
+    # The one line carrying the word the language lint bans, quoted from §2 on purpose.
+    "Bellwether does not prove a skill is safe. N runs produce a distribution, not a "  # bw-lang-ok: the §2 limitation, stated verbatim
+    "proof — a skill clean in 50 observed runs may differ in the 51st, on a different "
+    "model version, or in a context Bellwether did not simulate. It is a strong "
+    "regression gate and a weak assurance gate: treat its output as evidence, not "
+    "attestation.",
+    "Bellwether is not a runtime control. It runs in CI, before deployment, and does not "
+    "sit in the production request path. It informs production controls; it does not "
+    "replace them.",
+    "Bellwether does not govern what a user can do. Its security value is concentrated on "
+    "third-party and shared skills — supply chain — not on policing an individual's own "
+    "local instructions.",
+    "Bellwether cannot fully sandbox a determined adversary. The sandbox raises cost and "
+    "captures evidence; it is not suitable for detonating known-malicious code without "
+    "further isolation.",
+    "Measured variance is a lower bound. Repetitions send near-identical prompts in close "
+    "succession — the ideal case for provider-side prompt caching — so real-world "
+    "variance is very likely higher than what is reported here.",
+    "Exfiltration detection has documented holes. Canary matching defeats naive copying, "
+    "not independently-encoded chunking, interleaving across runs, or a skill that "
+    "describes a secret rather than reproducing it.",
+    "Judged scores carry an unmeasured bias term. Judges are blinded to metadata, never "
+    "to content: model identity leaks through style, skill activity through content.",
+)

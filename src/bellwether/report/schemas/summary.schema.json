@@ -1,0 +1,737 @@
+{
+  "$defs": {
+    "CapabilityProfileSummary": {
+      "additionalProperties": false,
+      "description": "All three tiers (§13.5). ``rare_high_risk`` is the frequency-independent gate's\noutput and is never averaged into the smooth capability component — a single rare\nhigh-risk capability blocks regardless of how few runs exercised it.",
+      "properties": {
+        "rare_high_risk": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Rare High Risk",
+          "type": "array"
+        },
+        "tier1": {
+          "additionalProperties": true,
+          "title": "Tier1",
+          "type": "object"
+        },
+        "tier2": {
+          "additionalProperties": true,
+          "title": "Tier2",
+          "type": "object"
+        },
+        "tier3": {
+          "additionalProperties": true,
+          "title": "Tier3",
+          "type": "object"
+        }
+      },
+      "title": "CapabilityProfileSummary",
+      "type": "object"
+    },
+    "ComponentExclusion": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
+      ],
+      "title": "ComponentExclusion",
+      "type": "object"
+    },
+    "ConsistencySummary": {
+      "additionalProperties": false,
+      "description": "The BCI and its breakdown (§13.7). ``annotation`` carries \"consistently failing\"\nwherever the pass rate is below 0.5 — the composite must never be read as quality when\nit is measuring the consistency of *failure* — and ``pass_rate`` travels with it so no\nsurface can render the BCI alone (§13.3).",
+      "properties": {
+        "annotation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Annotation"
+        },
+        "bci": {
+          "title": "Bci",
+          "type": "number"
+        },
+        "capability_jaccard_plain": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability Jaccard Plain"
+        },
+        "capability_jaccard_weighted": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability Jaccard Weighted"
+        },
+        "components": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Components",
+          "type": "object"
+        },
+        "components_excluded": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ComponentExclusion"
+          },
+          "title": "Components Excluded",
+          "type": "array"
+        },
+        "components_used": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Components Used",
+          "type": "array"
+        },
+        "pass_rate": {
+          "title": "Pass Rate",
+          "type": "number"
+        },
+        "per_scenario": {
+          "additionalProperties": true,
+          "title": "Per Scenario",
+          "type": "object"
+        },
+        "weights_digest": {
+          "default": "",
+          "title": "Weights Digest",
+          "type": "string"
+        },
+        "weights_normalised_over": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Weights Normalised Over"
+        }
+      },
+      "required": [
+        "bci",
+        "pass_rate"
+      ],
+      "title": "ConsistencySummary",
+      "type": "object"
+    },
+    "CostSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "cache_read_tokens": {
+          "default": 0,
+          "title": "Cache Read Tokens",
+          "type": "integer"
+        },
+        "tokens": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Tokens",
+          "type": "object"
+        },
+        "usd": {
+          "default": 0.0,
+          "title": "Usd",
+          "type": "number"
+        },
+        "wall_clock_s": {
+          "default": 0.0,
+          "title": "Wall Clock S",
+          "type": "number"
+        }
+      },
+      "title": "CostSummary",
+      "type": "object"
+    },
+    "CrossModelSummary": {
+      "additionalProperties": false,
+      "description": "§14. ``planes_intersected`` records the coverage-class restriction: divergence is\ncomputed only over planes active in **both** targets, so a smaller capability set on a\nless-instrumented target is not misreported as a portability finding.",
+      "properties": {
+        "divergence": {
+          "additionalProperties": true,
+          "title": "Divergence",
+          "type": "object"
+        },
+        "planes_intersected": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Planes Intersected",
+          "type": "array"
+        },
+        "portability_findings": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Portability Findings",
+          "type": "array"
+        }
+      },
+      "title": "CrossModelSummary",
+      "type": "object"
+    },
+    "FunctionalSummary": {
+      "additionalProperties": false,
+      "description": "The pass-rate gate reading (§13.1). The gate is the Wilson **lower bound**, never\nthe point estimate — both travel so the report can render them adjacent and a reader\ncannot mistake ``0.86`` for the number that cleared the threshold.",
+      "properties": {
+        "ci_boundary": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ci Boundary"
+        },
+        "ci_nominal": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ci Nominal"
+        },
+        "decision": {
+          "enum": [
+            "pass",
+            "warn",
+            "block",
+            "not_evaluable"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "lower_bound": {
+          "title": "Lower Bound",
+          "type": "number"
+        },
+        "n_evaluable": {
+          "title": "N Evaluable",
+          "type": "integer"
+        },
+        "pass_rate": {
+          "title": "Pass Rate",
+          "type": "number"
+        },
+        "per_target": {
+          "additionalProperties": true,
+          "title": "Per Target",
+          "type": "object"
+        },
+        "stopped_at_look": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stopped At Look"
+        },
+        "threshold": {
+          "title": "Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "pass_rate",
+        "n_evaluable",
+        "lower_bound",
+        "threshold",
+        "decision"
+      ],
+      "title": "FunctionalSummary",
+      "type": "object"
+    },
+    "GateSummary": {
+      "additionalProperties": false,
+      "description": "One gate as the verdict recorded it (§16.2). Mirrors ``verdict.GateResult`` in the\nflat form a consumer wants — the worst status, the observed value and threshold that\nset it, and the reason — without importing the verdict dataclasses into the schema.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "observed": {
+          "default": "",
+          "title": "Observed",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "warn",
+            "block",
+            "not_evaluable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "threshold": {
+          "default": "",
+          "title": "Threshold",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "status"
+      ],
+      "title": "GateSummary",
+      "type": "object"
+    },
+    "MatrixSummary": {
+      "additionalProperties": false,
+      "description": "The shape of the run matrix and the sequential design it took (§13.1, §17.2).\n\n``sets_stopped_at_look`` and ``sets_held_open_for_capability`` are what let a reader\nsee *why* N is what it is — a set that stopped at look 1 carries a weaker claim than\none that ran to look 3, and the report must never let the two read alike.",
+      "properties": {
+        "boundary_z": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Boundary Z"
+        },
+        "descriptive_only": {
+          "default": false,
+          "title": "Descriptive Only",
+          "type": "boolean"
+        },
+        "design": {
+          "default": "sequential",
+          "enum": [
+            "sequential",
+            "fixed"
+          ],
+          "title": "Design",
+          "type": "string"
+        },
+        "escalation_truncated": {
+          "default": false,
+          "title": "Escalation Truncated",
+          "type": "boolean"
+        },
+        "looks": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Looks",
+          "type": "array"
+        },
+        "runs_completed": {
+          "title": "Runs Completed",
+          "type": "integer"
+        },
+        "runs_errored": {
+          "default": 0,
+          "title": "Runs Errored",
+          "type": "integer"
+        },
+        "runs_evaluable": {
+          "title": "Runs Evaluable",
+          "type": "integer"
+        },
+        "runs_excluded_quality": {
+          "default": 0,
+          "title": "Runs Excluded Quality",
+          "type": "integer"
+        },
+        "runs_not_evaluable": {
+          "default": 0,
+          "title": "Runs Not Evaluable",
+          "type": "integer"
+        },
+        "runs_planned": {
+          "title": "Runs Planned",
+          "type": "integer"
+        },
+        "scenarios": {
+          "title": "Scenarios",
+          "type": "integer"
+        },
+        "sets_held_open_for_capability": {
+          "default": 0,
+          "title": "Sets Held Open For Capability",
+          "type": "integer"
+        },
+        "sets_stopped_at_look": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Sets Stopped At Look",
+          "type": "object"
+        },
+        "targets": {
+          "title": "Targets",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "scenarios",
+        "targets",
+        "runs_planned",
+        "runs_completed",
+        "runs_evaluable"
+      ],
+      "title": "MatrixSummary",
+      "type": "object"
+    },
+    "NoiseFloor": {
+      "additionalProperties": false,
+      "properties": {
+        "calibrated_at": {
+          "title": "Calibrated At",
+          "type": "string"
+        },
+        "trajectory": {
+          "title": "Trajectory",
+          "type": "number"
+        }
+      },
+      "required": [
+        "trajectory",
+        "calibrated_at"
+      ],
+      "title": "NoiseFloor",
+      "type": "object"
+    },
+    "PolicyRef": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "title": "Digest",
+          "type": "string"
+        },
+        "profile": {
+          "title": "Profile",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile",
+        "digest"
+      ],
+      "title": "PolicyRef",
+      "type": "object"
+    },
+    "RegressionSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_digest": {
+          "default": "",
+          "title": "Baseline Digest",
+          "type": "string"
+        },
+        "deltas": {
+          "additionalProperties": true,
+          "title": "Deltas",
+          "type": "object"
+        }
+      },
+      "title": "RegressionSummary",
+      "type": "object"
+    },
+    "SecuritySummary": {
+      "additionalProperties": false,
+      "properties": {
+        "canary_leaks": {
+          "default": [],
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Canary Leaks",
+          "type": "array"
+        },
+        "runtime": {
+          "additionalProperties": true,
+          "title": "Runtime",
+          "type": "object"
+        },
+        "static": {
+          "additionalProperties": true,
+          "title": "Static",
+          "type": "object"
+        }
+      },
+      "title": "SecuritySummary",
+      "type": "object"
+    },
+    "SkillRef": {
+      "additionalProperties": false,
+      "properties": {
+        "criticality": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Criticality",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "package_digest": {
+          "title": "Package Digest",
+          "type": "string"
+        },
+        "payload_digest": {
+          "title": "Payload Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "package_digest",
+        "payload_digest",
+        "criticality"
+      ],
+      "title": "SkillRef",
+      "type": "object"
+    },
+    "VerdictSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "gates": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GateSummary"
+          },
+          "title": "Gates",
+          "type": "array"
+        },
+        "notes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "conditional",
+            "not_ready"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "VerdictSummary",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The top-level ``summary.json`` (§17.2).\n\n``limitations`` is required and rendered verbatim from :data:`REPORT_LIMITATIONS`; a\nsummary that ships without the §2 footer oversells by omission.",
+  "properties": {
+    "bellwether_version": {
+      "title": "Bellwether Version",
+      "type": "string"
+    },
+    "canon_version": {
+      "default": "1",
+      "title": "Canon Version",
+      "type": "string"
+    },
+    "capability_profile": {
+      "$ref": "#/$defs/CapabilityProfileSummary"
+    },
+    "consistency": {
+      "$ref": "#/$defs/ConsistencySummary"
+    },
+    "cost": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CostSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "crossmodel": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CrossModelSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "eval_id": {
+      "title": "Eval Id",
+      "type": "string"
+    },
+    "functional": {
+      "$ref": "#/$defs/FunctionalSummary"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "matrix": {
+      "$ref": "#/$defs/MatrixSummary"
+    },
+    "noise_floor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NoiseFloor"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "platform_baseline_version": {
+      "default": "",
+      "title": "Platform Baseline Version",
+      "type": "string"
+    },
+    "policy": {
+      "$ref": "#/$defs/PolicyRef"
+    },
+    "regression": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RegressionSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "security": {
+      "$ref": "#/$defs/SecuritySummary"
+    },
+    "skill": {
+      "$ref": "#/$defs/SkillRef"
+    },
+    "verdict": {
+      "$ref": "#/$defs/VerdictSummary"
+    }
+  },
+  "required": [
+    "eval_id",
+    "created_at",
+    "bellwether_version",
+    "skill",
+    "policy",
+    "matrix",
+    "verdict",
+    "functional",
+    "consistency",
+    "capability_profile",
+    "security",
+    "limitations"
+  ],
+  "title": "Bellwether summary.json (schema 1.0)",
+  "type": "object"
+}
