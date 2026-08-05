@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-9 work. **Update it at the end of a session, not the
+Last updated at the end of the WP-10 work. **Update it at the end of a session, not the
 start** — a status file that lags is worse than none, because it is trusted.
 
 ---
@@ -21,45 +21,54 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-7 — canonicalization and epoch anchoring | **done** |
 | WP-8 — platform baseline | **done** |
 | WP-9 — assertions, outcome composition, golden traces | **done** |
-| WP-10 — metrics | **next** |
-| WP-11 — verdict engine and precondition check | not started |
+| WP-10 — metrics | **done** |
+| WP-11 — verdict engine and precondition check | **next** |
 | WP-12 — reporting | not started |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-393 tests: 358 offline, 35 under the `docker` mark. All green.
+441 tests: 406 offline (including the WP-10 property suite), 35 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
 
-### What WP-9 built
+### What WP-10 built
 
-- **The deterministic catalogue** (`assertions/engine.py`) over an `EvidenceIndex`
-  extracted once per trace: activation, tool calls (bounds, `args_match`, sequences),
-  overlay-backed write assertions, output/duration/token/exit checks, workspace-backed
-  `content_match` and `artifact_valid`. Presence and absence claims are asymmetric —
-  presence can pass on Plane A evidence; absence needs the plane that could have seen
-  the thing, so the egress/DNS/credential/process assertions return `not_evaluable`
-  carrying the §10.7 reason until WP-13/15/16/18 land (spec-notes).
-- **Outcome composition** (`assertions/results.py`): §12.7's table exactly, including
-  the deliberate exit-reason split (timeout/oom/pids_limit fail; budget_exceeded/
-  cancelled are not_evaluable) and `excluded_quality` for egress-induced failures.
-- **Auto-derivation and Declared vs Observed** (`assertions/derive.py`): the
-  non-circular §12.5 derivation (deny lists and write/egress globs become catalogue
-  specs; allowlists are evaluated against the observation), and the scope table with
-  `supported` / `exceeded` / `unused` / `not_evaluable` at tier 3, post-baseline.
-  `unused` is an absence claim and gates on the plane accordingly.
-- The committed golden trace evaluates end-to-end offline — the WP-9 done-when — with
-  the honest outcome `not_evaluable` when a required claim has no plane.
+The full §13 metrics, in `bellwether.metrics` (which imports `assertions` but never
+`verdict` — the boundary is lint-enforced):
+
+- **`stats.py`**: Wilson score interval parameterised by z; the §13.1 achievable
+  lower-bound table reproduces to the published digits (test).
+- **`outcome.py`**: the §13.2 denominators (never collapsed), `p̂ = passes/n_evaluable`,
+  `outcome_consistency = 1 − 2·min(p̂,1−p̂)` (exact, rounding-independent), flake and
+  consistently-failing flags.
+- **`capability.py`**: core/peripheral sets, plain and risk-weighted tier-1 Jaccard with
+  `J(∅,∅)=1.0`, the §13.5.1 weight table (in constants), the rare-capability report and
+  the **frequency-independent** `max_rare_capability_risk` finding, directory
+  instability, the sensitive-directory hits. The §13.5.1.1 sensitivity table reproduces
+  exactly and the rare-capability gate fires identically at N=6/12/20 (the done-when).
+- **`trajectory.py`**: normalised edit distance (rapidfuzz), single-linkage clustering
+  (= connected components; deterministic output order), modal cluster share, mean
+  pairwise distance, informational `H_traj`, length dispersion, `at_noise_floor`.
+- **`trigger.py`**: normalised binary trigger entropy and its `1 − H` consistency.
+- **`sequential.py`**: the §13.1 look/decision table (6/12/20), the capability-agreement
+  continuation rule (`held_open_for_capability`), never-escalate-all-not_evaluable.
+- **`bci.py`**: the weighted composite with **mandatory renormalisation** over available
+  components, `components_used`/`components_excluded`, consistently-failing annotation.
+- **The mandatory property suite** (`tests/test_metrics.py`, hypothesis): bounds,
+  identity (`J_weighted == J_plain` at equal weights), monotonicity, the §11.4 edge
+  cases, renormalisation, rounding-independence, and the frequency properties.
 
 ## What to do next
 
-**WP-10 — metrics (§13).** The nondeterminism math: Wilson intervals with the Pocock
-boundary (`POCOCK_BOUNDARY_Z` is already in constants), plain and weighted capability
-Jaccard, trajectory clustering over WP-7's step sequences, directory instability, the
-sensitive-directory flag consuming `CanonicalTrace.sensitive_hits`, the BCI with
-renormalisation, and §11.4's specified edge cases (empty-set Jaccard = 1.0, entropy at
-N = 1 is `not_evaluable`, `0·log₂0 = 0`). §24 requires property-based tests for
-bounds, identity, monotonicity and renormalisation — budget for them.
+**WP-11 — the verdict engine and precondition check (§16).** Compose the §13 metrics and
+the §12 assertions/findings into a release verdict against `policy.yaml`: gate
+disposition (§16.2, `not_evaluable` blocks), the §16.4 precondition check that refuses a
+matrix whose policy needs evidence the declared capabilities cannot supply (this is where
+the `no_egress`-blocks-under-current-planes situation is caught *before* the matrix is
+paid for), config-load validation of the capability weights (no weight-0 on a `deny`
+class) and BCI weights, and the §21 enforced-settings refusal that currently lives only
+in `doctor`. `metrics` is the last layer below it; `verdict` may import both `metrics`
+and the policy models.
 
 ## Outstanding actions
 
@@ -164,6 +173,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Twenty-five entries. Read it before changing anything in the skill, sandbox, capture or
+  Twenty-seven entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.
