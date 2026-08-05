@@ -18,6 +18,7 @@ changes observed".
 
 from __future__ import annotations
 
+import hashlib
 import os
 import stat
 import subprocess
@@ -30,6 +31,7 @@ from bellwether.errors import BellwetherError
 
 __all__ = [
     "ChangeKind",
+    "FileType",
     "OverlayMount",
     "PathChange",
     "mount_overlay",
@@ -43,7 +45,16 @@ __all__ = [
 #: consulted.
 ChangeKind = Literal["created", "modified", "deleted", "mode_changed"]
 
+#: What kind of thing the path is. Recorded because it decides whether the content can be
+#: read at all — and because a skill creating a FIFO or a socket in its workspace is worth
+#: surfacing in its own right.
+FileType = Literal["regular", "symlink", "directory", "fifo", "socket", "device", "unknown"]
+
 _WHITEOUT_MODE = 0
+
+#: Content is hashed in chunks rather than read whole. A skill can write a file larger than
+#: the runner's memory, and the host-side collector must not be the thing that dies of it.
+_CHUNK_BYTES = 1 << 20
 
 
 @dataclass(frozen=True)
@@ -59,6 +70,15 @@ class PathChange:
     #: content diff (§9.1 step 5).
     mode: int | None = None
     is_directory: bool = False
+    file_type: FileType = "regular"
+
+    @property
+    def is_special(self) -> bool:
+        """True for a FIFO, socket or device — a path whose *presence* is the evidence.
+
+        These are never opened. Recording them is not the same as reading them.
+        """
+        return self.file_type in ("fifo", "socket", "device")
 
 
 @dataclass(frozen=True)
@@ -155,6 +175,7 @@ def read_overlay_diff(upper: Path, lower: Path | None = None) -> list[PathChange
                         kind="modified",
                         mode=stat.S_IMODE(info.st_mode),
                         is_directory=True,
+                        file_type="directory",
                     )
                 )
             continue
@@ -168,22 +189,64 @@ def read_overlay_diff(upper: Path, lower: Path | None = None) -> list[PathChange
                     sha256=stable_hash_bytes(f"symlink:{target}".encode()),
                     size_bytes=0,
                     mode=stat.S_IMODE(info.st_mode),
+                    file_type="symlink",
                 )
             )
             continue
 
-        content = absolute.read_bytes()
+        if not stat.S_ISREG(info.st_mode):
+            # A FIFO blocks on open until a writer appears, and nothing is going to write:
+            # opening one hangs the collector forever, with no timeout, *after* the
+            # container has already exited. A socket raises ENXIO instead. Either way the
+            # observed process would be deciding whether the observer ever finishes —
+            # a direct inversion of §10.0, available to any skill via `mkfifo`, which
+            # needs no capability and so survives `--cap-drop=ALL`.
+            #
+            # Presence and mode are recorded. The content is not read, because there is
+            # no content to read.
+            changes.append(
+                PathChange(
+                    path=relative,
+                    kind=_kind_for(relative, lower),
+                    mode=stat.S_IMODE(info.st_mode),
+                    file_type=_special_type(info.st_mode),
+                )
+            )
+            continue
+
+        digest, size = _hash_regular_file(absolute)
         changes.append(
             PathChange(
                 path=relative,
                 kind=_kind_for(relative, lower),
-                sha256=stable_hash_bytes(content),
-                size_bytes=len(content),
+                sha256=digest,
+                size_bytes=size,
                 mode=stat.S_IMODE(info.st_mode),
             )
         )
 
     return changes
+
+
+def _special_type(mode: int) -> FileType:
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISBLK(mode) or stat.S_ISCHR(mode):
+        return "device"
+    return "unknown"
+
+
+def _hash_regular_file(path: Path) -> tuple[str, int]:
+    """Digest a regular file without holding it in memory."""
+    hasher = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(_CHUNK_BYTES):
+            hasher.update(chunk)
+            size += len(chunk)
+    return "sha256:" + hasher.hexdigest(), size
 
 
 def _kind_for(relative: str, lower: Path | None) -> ChangeKind:

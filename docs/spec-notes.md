@@ -253,3 +253,74 @@ the host, partitioned by zone. This is O(changes), not O(tree)."
 - `created` and `modified` are not distinguishable from the upper directory alone, since a
   copy-up looks identical either way. They are separated by consulting the lower directory
   for the changed paths only, which preserves the O(changes) property.
+
+---
+
+## §10.0 — The collector never opens what the container chose to create
+
+**Spec.** "No component that produces evidence may execute inside the sandbox container."
+§9.1 step 9 reads the filesystem diff from the host-side overlay upper directory.
+
+**Problem.** Reading the diff meant calling `read_bytes()` on every non-directory entry.
+A named pipe blocks on open until a writer appears, and nothing is going to write — so the
+read never returns. That read happens on the host **after** the container has exited, so
+the container's wall-clock timeout does not bound it, and there is no other timeout.
+`mkfifo` needs no capability, so `--cap-drop=ALL` does not prevent a skill from creating
+one. A unix socket produces `ENXIO` instead — a crash rather than a hang, equally the
+container's choice.
+
+The observed process would decide whether the observer ever finishes. That is the same
+inversion §10.0 exists to prevent, arrived at from the other direction: not capture code
+running inside, but captured data steering the code outside.
+
+**Resolution.** Only a regular file is opened. FIFOs, sockets and device nodes are recorded
+by presence, type and mode — a skill creating one in its workspace is itself worth
+surfacing — and never read. Regular files are now hashed in fixed-size chunks rather than
+read whole, for the neighbouring reason: a skill can write a file larger than the runner's
+memory, and the collector must not be what dies of it.
+
+---
+
+## §6.1 — A declared skill name is never what builds a path
+
+**Spec.** Frontmatter `name` is recorded for "identity, collision detection". §9.1 step 3
+installs the payload at "the harness's expected skills location".
+
+**Problem.** The declared name flowed into the container mount target. In external mode
+(§5) that name is written by a third party, so it is attacker-controlled input to the
+trusted docker command line — and `PurePosixPath.__truediv__` *discards* its left operand
+when the right is absolute. `name: /etc` relocated the read-only payload mount to `/etc`;
+a name containing `:` injected extra fields into the `-v` spec and broke `docker run`
+outright, which is a reliable way for a skill to force its own run to `not_evaluable` —
+a §3.5 evaluation-evasion lever.
+
+**Resolution.** `SkillPackage.slug` derives an identifier that can be a path segment and an
+argument; everything structural uses it. The declared name is still reported verbatim,
+because what a skill claims to be is part of what a reviewer needs to see — it is simply
+never the thing that builds a path. Staging additionally asserts the derived install path
+stayed under the install root, so a future change that stops using the slug fails loudly
+rather than silently relocating a mount.
+
+---
+
+## §9.2 — A declared writable path needs an actual writable mount
+
+**Spec.** `writable_paths: ["/work", "/tmp", "/home/agent/.claude"]`, under a
+`--read-only` root filesystem "except for designated writable mounts".
+
+**Problem.** `IsolationProfile.writable_paths` was never consumed by anything. Under
+`--read-only`, a path with no mount is read-only however loudly the profile declares it,
+so `/home/agent/.claude` — the harness state zone of §10.2, where an adapter stores session
+state — was not writable. `SandboxConfig.writable_paths` had also drifted to a different
+default, omitting that path entirely.
+
+Latent only because no harness exists yet. WP-17 is the next thing to sit on it, and every
+state write would have failed with `EROFS`. That is the same failure shape as the ownership
+bug — a run where the agent could not write anything reads as a skill that did nothing —
+reached by a different route, which is why fixing ownership did not fix this.
+
+**Resolution.** The backend emits a writable mount for each declared writable path other
+than the workspace, which has its own bind. The read-only payload bind is emitted after
+them, so it sits on top of the writable parent rather than underneath it — verified by a
+container test asserting the harness state zone is writable while the installed payload
+still is not. The two `writable_paths` collections now agree, and both match §21.

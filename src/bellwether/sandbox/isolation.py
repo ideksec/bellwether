@@ -117,6 +117,10 @@ class IsolationProfile:
             flags.append("--read-only")
         if self.no_new_privileges:
             flags += ["--security-opt", "no-new-privileges"]
+        # Docker applies its default profile without being asked; a custom one silently
+        # doing nothing would be a weakening nobody could see.
+        if self.seccomp != "default":
+            flags += ["--security-opt", f"seccomp={self.seccomp}"]
         flags += ["--user", f"{self.uid}:{self.gid}"]
         flags += ["--pids-limit", str(self.pids_limit)]
         flags += ["--memory", self.memory]

@@ -48,7 +48,12 @@ class SandboxConfig(StrictModel):
     #: report routinely exceeds five minutes, and §12.2's ``exit_reason`` assertion turns
     #: those into failures that look like skill instability.
     timeout_seconds: Annotated[int, Field(ge=1)] = 900
-    writable_paths: list[str] = Field(default_factory=lambda: ["/work", "/tmp"])
+    #: Matches §21 and IsolationProfile.writable_paths. The harness state zone must be
+    #: here: under a read-only root, a path with no writable mount is read-only whatever
+    #: the profile declares.
+    writable_paths: list[str] = Field(
+        default_factory=lambda: ["/work", "/tmp", "/home/agent/.claude"]
+    )
     randomize_identifiers: bool = True
 
 

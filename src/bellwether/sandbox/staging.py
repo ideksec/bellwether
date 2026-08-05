@@ -97,9 +97,20 @@ def stage_payload(
         normalize_metadata(directory, is_dir=True, executable=False, owner=owner)
     normalize_metadata(destination, is_dir=True, executable=False, owner=owner)
 
+    install_root = PurePosixPath(install_path)
+    resolved_install = install_root / package.slug
+
+    # Asserted, not assumed. `PurePosixPath.__truediv__` discards the left operand when the
+    # right is absolute, so a declared name of `/etc` would silently relocate the mount.
+    # The slug cannot do that; this catches a future change that stops using it.
+    if not resolved_install.is_relative_to(install_root):
+        raise SkillError(
+            f"refusing to install: derived install path {resolved_install} escapes {install_root}"
+        )
+
     payload = StagedPayload(
         root=destination,
-        install_path=PurePosixPath(install_path) / package.name,
+        install_path=resolved_install,
         payload_digest=package.payload_digest,
         files=tuple(staged),
         refused_symlinks=tuple(refused),
