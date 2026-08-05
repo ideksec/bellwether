@@ -14,13 +14,18 @@ flock is about to move. It warns; it does not vouch.
 
 ## Status
 
-**Pre-v0.1. Under construction.** The scaffolding, configuration layer, and project
-tooling are in place; the sandbox, capture planes, metrics, and verdict engine are not.
+**Pre-v0.1. Under construction.** The scaffolding, configuration layer, skill parser,
+trace format and sandbox are built and tested. The capture planes, metrics and verdict
+engine are not.
 
 `bellwether run` is not usable yet and says so, naming the work package that brings it,
-rather than printing an empty result that would read as a clean run. See
-[docs/BUILDPLAN.md](docs/BUILDPLAN.md) for the ordering and
-[What is built](#what-is-built) for where things stand.
+rather than printing an empty result that would read as a clean run.
+
+**[docs/STATUS.md](docs/STATUS.md) is the current state of the build** — what is done,
+what is next, what is outstanding, and what a new contributor needs to know about the
+environment. [docs/BUILDPLAN.md](docs/BUILDPLAN.md) has the ordering.
+
+New here? [pitch.md](pitch.md) is the short version of what this is and why.
 
 ## What it is for
 
@@ -105,8 +110,11 @@ your own config and Bellwether refuses to run against an unfilled placeholder.
 `bellwether doctor` matters more than it sounds. The failure modes of this tool are mostly
 environmental, and several of them fail *silently in the direction that looks clean* — a
 proxy whose certificate is not trusted produces traces with zero egress, which reads as a
-skill that made no network calls. Doctor checks actively rather than assuming, and lists
-the checks it cannot yet run rather than omitting them.
+skill that made no network calls. Doctor probes actively rather than assuming — it will
+tell you whether a Docker daemon is reachable and whether a host-side overlay is
+obtainable, with the reason where either is not — and it lists the checks it cannot yet
+run rather than omitting them, because a check silently left out reads as a check that
+passed.
 
 ## Repository layout of a skills repo
 
@@ -144,12 +152,13 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 |---|---|
 | Project scaffolding, module boundaries, CI, determinism primitives | done |
 | `config.yaml`, `policy.yaml`, `evals/manifest.yaml`, `evals/scenarios.yaml` loading and validation | done |
-| `bellwether init`, `bellwether doctor` (configuration checks), `bellwether version` | done |
+| `bellwether init`, `bellwether doctor`, `bellwether version` | done |
 | Skill parsing, the three digests, payload allowlist, executable inventory | done (WP-2) |
 | ARF trace schema, JSONL writer and reader, incomplete-trace detection | done (WP-3) |
 | Sandbox host side: zones, fixture materialisation, payload staging, identifiers, isolation profile | done (WP-4) |
 | Sandbox container backend: overlay mount, whiteout-aware upper-dir diff, container lifecycle | done (WP-4) |
-| Capture planes, harness adapters | WP-5 – WP-6 |
+| Capture planes: host-owned event sink, filesystem plane by zone | WP-5, next |
+| Harness adapters (`api-loop`, `claude-code`) | WP-6, WP-17 |
 | Epoch anchoring, platform baseline, assertions | WP-7 – WP-9 |
 | Metrics, verdict engine, reporting | WP-10 – WP-12 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
@@ -170,10 +179,15 @@ uv run ruff format .                    # format
 uv run mypy                             # types, strict
 uv run lint-imports                     # module boundaries
 uv run python tools/language_lint.py    # verdict vocabulary
-uv run pytest                           # every test runs offline, with no API key
+uv run pytest -m "not docker"           # runs offline, with no API key
+
+# The container integration tests need a Docker daemon and root, because mounting the
+# host-side overlay upper directory is the privilege the host has and the container
+# does not — the capture architecture in one line.
+sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker
 ```
 
-Four rules are enforced by CI rather than by convention, because each is a rewrite if
+Five rules are enforced by CI rather than by convention, because each is a rewrite if
 retrofitted:
 
 - **Module boundaries.** The dependency graph flows
@@ -185,8 +199,11 @@ retrofitted:
   `config.yaml` is a bug.
 - **Language discipline.** The verdict vocabulary must not imply proof;
   `tools/language_lint.py` fails the build on the words that would.
+- **Types.** `mypy --strict` over the whole package.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the detail, [docs/STATUS.md](docs/STATUS.md)
+for where the build is, and [THREAT_MODEL.md](THREAT_MODEL.md) for what this does and
+does not defend against.
 
 ## Licence
 

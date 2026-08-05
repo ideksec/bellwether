@@ -31,6 +31,7 @@ from bellwether.config import (
 )
 from bellwether.determinism import canonical_json
 from bellwether.errors import BellwetherError, ConfigurationError
+from bellwether.sandbox import DockerBackend, overlay_available
 
 __all__ = ["ExitCode", "app", "main"]
 
@@ -148,8 +149,9 @@ def doctor(
     runner would produce, so a user learns before a forty-minute run which planes will
     be missing.
 
-    This build performs the configuration checks. The active environment probes land
-    with their capture planes; each is listed below with the work package that brings it.
+    Environment probes are performed where the machinery for them exists. The rest are
+    listed as pending with the work package that brings them, rather than omitted — a
+    doctor that silently leaves out a check it cannot run reads as a doctor that ran it.
     """
     checks: list[dict[str, str]] = []
     problems = 0
@@ -186,6 +188,26 @@ def doctor(
     for advisory in loaded_config.advisories():
         checks.append({"check": "advisory", "status": "warn", "detail": advisory})
 
+    # The sandbox probes that WP-4 made real. Reported as `warn` rather than `critical`:
+    # without them the filesystem plane degrades to unavailable, which the coverage block
+    # records with a reason (§10.7) — it does not silently pass.
+    backend_usable, backend_reason = DockerBackend().available()
+    checks.append(
+        {
+            "check": "docker daemon reachable",
+            "status": "ok" if backend_usable else "warn",
+            "detail": backend_reason,
+        }
+    )
+    overlay_usable, overlay_reason = overlay_available()
+    checks.append(
+        {
+            "check": "host-side overlay upper dir obtainable",
+            "status": "ok" if overlay_usable else "warn",
+            "detail": overlay_reason,
+        }
+    )
+
     for pending, work_package in _PENDING_DOCTOR_CHECKS:
         checks.append({"check": pending, "status": "pending", "detail": work_package})
 
@@ -205,8 +227,7 @@ def doctor(
 
 #: Environment probes doctor must perform, and the package that implements each (§20).
 _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
-    ("docker present; sandbox image pullable by digest", "WP-4"),
-    ("overlayfs upper dir readable from the host", "WP-4"),
+    ("sandbox image pullable by digest", "WP-20"),
     ("proxy CA trusted by every mechanism in §9.2, checked by a real request", "WP-14"),
     ("internal bridge blocks direct UDP/53 to a public resolver", "WP-15"),
     ("fanotify markable; eBPF loadable by the host agent", "WP-5"),
@@ -270,7 +291,11 @@ def show_trace(
     json_output: JsonFlag = False,
 ) -> None:
     """Pretty-print or filter one ARF trace."""
-    _not_yet("trace", "WP-3", "the ARF reader has not landed")
+    _not_yet(
+        "trace",
+        "WP-12",
+        "the ARF reader landed in WP-3, but nothing writes traces to an artifact tree yet",
+    )
 
 
 @app.command(name="report")

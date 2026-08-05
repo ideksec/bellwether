@@ -6,6 +6,10 @@ Report suspected vulnerabilities through GitHub's private vulnerability reportin
 repository ("Security" → "Report a vulnerability"). Please do not open a public issue for
 an unfixed vulnerability.
 
+If that option is not visible — it is a repository setting, and may not be enabled yet —
+open a regular issue saying only that you have a security report and how to reach you
+privately. Do not put the detail in it.
+
 Include what you did, what you observed, and what you expected. A reproducing skill
 package or configuration is the most useful thing you can send.
 

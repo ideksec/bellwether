@@ -86,6 +86,36 @@ def test_doctor_passes_on_a_fresh_scaffold(tmp_path: Path) -> None:
     assert any(check["status"] == "pending" for check in payload["checks"])
 
 
+def test_doctor_actually_probes_docker_and_overlayfs(tmp_path: Path) -> None:
+    """§20: doctor "MUST actively verify — not assume".
+
+    `DockerBackend.available()` and `overlay_available()` were written with reason strings
+    shaped for this output and then not called from it, leaving the two checks listed as
+    pending long after the machinery existed.
+    """
+    runner.invoke(app, ["init", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(tmp_path / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    checks = {check["check"]: check for check in json.loads(result.output)["checks"]}
+
+    for name in ("docker daemon reachable", "host-side overlay upper dir obtainable"):
+        assert name in checks, f"{name} is not probed"
+        assert checks[name]["status"] in ("ok", "warn")
+        # Whether or not it is available, the reason must be actionable — never an enum
+        # on its own (§10.7).
+        assert checks[name]["detail"].strip()
+        assert checks[name]["status"] != "pending"
+
+
 def test_doctor_refuses_a_disabled_enforced_setting(tmp_path: Path) -> None:
     runner.invoke(app, ["init", str(tmp_path)])
     config_path = tmp_path / ".bellwether" / "config.yaml"

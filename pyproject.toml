@@ -25,9 +25,11 @@ dependencies = [
     "jinja2>=3.1",
     # Trajectory edit distance (§13.4).
     "rapidfuzz>=3.9",
-    # Sandbox lifecycle (§9). Wrapped behind a Sandbox interface so backends can change.
-    "docker>=7.1",
 ]
+
+# Deliberately absent: the Docker SDK. The sandbox backend shells out to the `docker`
+# CLI, because the flags *are* the security boundary and an SDK call mapping arguments
+# to an API body is one more translation between the profile and what actually ran.
 
 [project.optional-dependencies]
 # Kept optional deliberately: the metrics module hand-rolls Wilson, BCa bootstrap, and
@@ -121,7 +123,7 @@ show_error_codes = true
 pretty = true
 
 [[tool.mypy.overrides]]
-module = ["docker.*", "rapidfuzz.*"]
+module = ["rapidfuzz.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
