@@ -248,6 +248,83 @@ class DockerBackend:
         argv.append(chosen)
         return argv + command
 
+    def start_persistent(
+        self,
+        prepared: PreparedSandbox,
+        *,
+        image: str | None = None,
+        network: str = "none",
+        sink_bind: tuple[Path, PurePosixPath] | None = None,
+    ) -> str:
+        """Start a long-lived container for an agent loop to exec into.
+
+        Same flags, same profile, same mounts as :meth:`run` — :meth:`build_argv` is
+        still the single place an argv is built — with the one-shot command replaced by
+        an init process that sleeps until :meth:`stop_persistent`. Tool calls then run
+        against it via :meth:`exec_in`, so a multi-call agent session shares one
+        filesystem, one process namespace, and one identity, the way a real session
+        does.
+        """
+        argv = self.build_argv(prepared, [], image=image, network=network, sink_bind=sink_bind)
+        # build_argv always renders [binary, "run", ...]; the detach flag goes right
+        # after. A numeric sleep rather than `infinity`, because busybox sleep — which
+        # the alpine CI image provides — does not accept the GNU spelling.
+        argv.insert(2, "-d")
+        argv += ["sleep", "2147483647"]
+
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
+        if result.returncode != 0:
+            raise BellwetherError(
+                f"could not start a persistent container: {result.stderr.strip() or result.returncode}"
+            )
+        return prepared.identifiers.container_name
+
+    def exec_in(
+        self,
+        prepared: PreparedSandbox,
+        argv: list[str],
+        *,
+        stdin: str | None = None,
+        timeout: float = 120.0,
+    ) -> ContainerResult:
+        """Run one command in the persistent container.
+
+        The working directory is the workspace root, matching :meth:`run`'s ``-w``.
+        A timeout kills the exec'd process, not the container — one hung tool call must
+        surface as a failed call the model can react to, not end the session.
+        """
+        command = [
+            self.binary,
+            "exec",
+            "--interactive",
+            "--workdir",
+            str(prepared.identifiers.workspace_root),
+            prepared.identifiers.container_name,
+            *argv,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                input=stdin,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as expired:
+            return ContainerResult(
+                exit_code=124,
+                stdout=_text(expired.stdout),
+                stderr=_text(expired.stderr),
+                timed_out=True,
+            )
+        return ContainerResult(
+            exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr
+        )
+
+    def stop_persistent(self, prepared: PreparedSandbox) -> None:
+        self._force_remove(prepared.identifiers.container_name)
+
     def changed_paths(self, prepared: PreparedSandbox) -> list[PathChange]:
         """The workspace changed-path set, read from the host-side upper directory."""
         return read_overlay_diff(prepared.upper_dir, prepared.workspace.root)

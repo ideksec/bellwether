@@ -1,13 +1,14 @@
-"""Building ARF records from capture-plane output (WP-5).
+"""Building ARF records from capture and harness output (WP-5, WP-6).
 
-This sits in :mod:`bellwether.trace` rather than :mod:`bellwether.capture` because the
-module layering runs ``capture -> trace``: capture produces plane-native events and must
-not know the wire format; this module knows both and does the translation.
+This sits in :mod:`bellwether.trace` rather than in the layers that produce the events,
+because the module layering runs ``harness -> capture -> trace``: producers emit
+plane-native events and must not know the wire format; this module knows both and does
+the translation.
 
-What lands here in WP-5 is the filesystem plane and the coverage block. Harness events
-(Plane A) are translated by the harness adapter that defines their schema (WP-6), and the
-capability/scope enrichment on every record belongs to the normalizer (WP-7) — a record
-built here carries what was *observed*, not what it *means*.
+WP-5 landed the filesystem plane and the coverage block; WP-6 adds the harness event
+stream (Plane A). The capability/scope enrichment on every record belongs to the
+normalizer (WP-7) — a record built here carries what was *observed*, not what it
+*means*.
 """
 
 from __future__ import annotations
@@ -16,9 +17,80 @@ import datetime as dt
 from typing import Any
 
 from bellwether.capture import FilesystemEvent, PlaneStatus
-from bellwether.trace.models import Action, Coverage, PlaneCoverage
+from bellwether.harness import RawHarnessEvent
+from bellwether.trace.models import Action, Actor, Coverage, ExitReason, PlaneCoverage, TokenTotals
 
-__all__ = ["assemble_coverage", "filesystem_actions"]
+__all__ = [
+    "assemble_coverage",
+    "exit_reason_from_events",
+    "filesystem_actions",
+    "harness_actions",
+    "token_totals_from_events",
+]
+
+
+def harness_actions(events: list[RawHarnessEvent], *, start_seq: int = 0) -> list[Action]:
+    """Turn the adapter's raw event stream into Plane A action records (§10.1, §11.2).
+
+    A mapping, not a guess: adapters speak in §11.3 kinds already. Two things happen on
+    the way through — ``None`` values are dropped from payloads (the writer omits
+    ``null`` fields for the same reason), and the originating ``tool_call_id`` is kept
+    on both the call and its result, because explicit correlation is the strong path
+    for cross-plane attribution (§11.5).
+
+    Plane A is the ordering spine: sequence numbers here follow event order, which is
+    the loop's genuine causal sequence. Order is a quality question — a skill that lies
+    about it degrades a quality metric; it cannot hide a capability, which is built
+    from the host-side planes (§10.1).
+    """
+    actions: list[Action] = []
+    for offset, event in enumerate(events):
+        payload: dict[str, Any] = {k: v for k, v in event.data.items() if v is not None}
+        if event.tool_call_id is not None:
+            payload["tool_call_id"] = event.tool_call_id
+        actions.append(
+            Action(
+                seq=start_seq + offset,
+                ts=event.ts,
+                plane="harness",
+                kind=event.kind,
+                actor=Actor(role="assistant", turn=event.turn) if event.turn else None,
+                action=payload,
+            )
+        )
+    return actions
+
+
+def token_totals_from_events(events: list[RawHarnessEvent]) -> TokenTotals:
+    """Sum token accounting across model turns, cache reads and writes separate (§9.3)."""
+    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    for event in events:
+        if event.kind != "model_turn":
+            continue
+        tokens = event.data.get("tokens") or {}
+        for key in totals:
+            totals[key] += int(tokens.get(key, 0))
+    return TokenTotals(**totals)
+
+
+def exit_reason_from_events(events: list[RawHarnessEvent]) -> ExitReason | None:
+    """How the run ended, as the event stream tells it.
+
+    ``None`` where the stream ended without either a final output or a limit event —
+    the run crashed mid-way, and the caller must not write a footer at all, because a
+    footer's absence is the incomplete-trace signal (§11.1).
+    """
+    for event in reversed(events):
+        if event.kind == "final_output":
+            return "completed"
+        if event.kind == "harness_error":
+            reason = event.data.get("exit_reason")
+            if reason == "timeout":
+                return "timeout"
+            if reason == "budget_exceeded":
+                return "budget_exceeded"
+            return "harness_error"
+    return None
 
 
 def filesystem_actions(
