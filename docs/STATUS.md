@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-11 work. **Update it at the end of a session, not the
+Last updated at the end of the WP-12 work. **Update it at the end of a session, not the
 start** — a status file that lags is worse than none, because it is trusted.
 
 ---
@@ -23,48 +23,55 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-9 — assertions, outcome composition, golden traces | **done** |
 | WP-10 — metrics | **done** |
 | WP-11 — verdict engine and precondition check | **done** |
-| WP-12 — reporting | **next** |
+| WP-12 — reporting (`summary.json` + Markdown) | **done** |
+| Orchestrator (`bellwether run`) + first-light checkpoint | **next** |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-459 tests: 424 offline, 35 under the `docker` mark. All green.
+475 tests: 440 offline, 35 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
 
-### What WP-11 built
+### What WP-12 built
 
-The verdict engine and the precondition check, in `bellwether.verdict` (imports
-`metrics` and the policy models; never computes metrics):
+The report layer, in `bellwether.report` (renders; never computes — everything here was
+decided upstream in `metrics` and `verdict`):
 
-- **`engine.py`**: `worst_status` / `build_gate` (a gate takes the **worst** of its
-  per-target results — §16.2 step 2, the point of the multi-model matrix), and
-  `compose_verdict` implementing steps 3/6/7: any block or required `not_evaluable` →
-  `not_ready`; else any warn or `descriptive_only` → `conditional`; else `ready`.
-  `descriptive_only` can never be `ready`.
-- **`models.py`**: `GateResult` / `TargetGateResult` / `VerdictResult`, each carrying
-  the observed value, threshold, the N-and-look behind it, and the evidence seqs — a
-  verdict with no traceable evidence is a bug. The three-word vocabulary only.
-- **`precondition.py`** (§16.4 — the done-when): refuses before any run, catching all
-  four unsatisfiable combinations (activation-blind harness under
-  `require_all_should_trigger`; a required capture plane the runner lacks;
-  `min_distinct_providers` unmet by the matrix; egress-blind harness under an egress
-  gate), each with a message naming the gate, the target, and the remedy. Reports every
-  failure in one pass.
-- **`validation.py`** (§16.1): a manifest-denied class cannot be weighted 0 (it would
-  erase a denied capability from the risk-weighted Jaccard — an error); BCI weights
-  summing far off, or a zero component weight, warn naming the key.
+- **`summary.py`**: the schema-versioned `summary.json` (§17.2) as `extra='forbid'`
+  pydantic models, `render_summary_json` routing through `determinism.canonical_json`
+  (sorted keys, floats rounded once), and `summary_json_schema()` — the JSON Schema is
+  *generated* from the models and shipped at `report/schemas/summary.schema.json`, with a
+  drift test asserting it matches. The done-when (byte-identical across two invocations)
+  falls out of the determinism layer.
+- **`figures.py`**: the three §13.8 figures as deterministic monospace text — the
+  per-scenario strip chart (five distinct glyphs; a timeout is not drawn like an
+  assertion failure; look boundaries marked; `n` and the look on every row), the
+  trajectory cluster list (largest first), and the **capability heatmap** (tier-3 grouped
+  under tier-1, high-risk flagged — the flagship). Row order is sorted, so shuffling the
+  input never changes the bytes.
+- **`markdown.py`**: the PR comment (§18.2), hand-rolled so the presentation rules with
+  teeth are unit-tested Python, not template branches — the BCI never rendered without
+  the pass rate beside it, the "consistently failing" annotation wherever `p̂ < 0.5`, and
+  the §2 limitations footer rendered whole from `constants.REPORT_LIMITATIONS`.
+
+WP-12 is `summary.json` + Markdown; the eleven-view HTML site (§17.4), the two findings
+containers (§17.3), and the artifact tree (§17.1) are a later package (see spec-notes
+§17.4). 16 report tests.
 
 ## What to do next
 
-**WP-12 — reporting (§17).** The Markdown PR comment and `summary.json`, rendered from
-the verdict and the metrics: the per-scenario pass/fail/timeout/not_evaluable strip
-chart with look boundaries marked, the trajectory cluster list, the **capability
-heatmap** (tier-3 grouped under tier-1, the report's flagship), the Declared vs Observed
-table, the sequential design taken, and the §2 limitations footer. The BCI is never
-rendered without the pass rate adjacent, and carries the consistently-failing annotation
-where `p̂ < 0.5`. `jinja2` is already a dependency. After WP-12, the analysis path
-(capture → metrics → verdict → report) is complete end to end; `bellwether run` itself
-is the orchestrator, which the remaining WPs assemble.
+**The orchestrator (`bellwether run`) and the first-light checkpoint.** Every stage of
+the analysis path now exists as a tested library — capture → trace → assertions →
+metrics → verdict → report — but nothing assembles them into a run yet. `bellwether run`
+is that assembler: materialise the sandbox, execute the matrix, capture and canonicalise,
+compute metrics, compose the verdict, render `summary.json` and the PR comment. The
+**first-light checkpoint** (BUILDPLAN, before Phase B) is the acceptance gate for it —
+`benign-stable` running end to end with the proxy and resolver bypassed and egress
+assertions reported as `not_evaluable` with a reason. The build plan gates the rest of
+v0.1 on this: if the skeleton does not walk, adding the network layer (WP-13+) will not
+help you find out why. Several already-built pieces are waiting on this orchestrator to be
+wired — the precondition check and weight validation into `doctor`/`run`, the §21
+enforced-settings refusal, the FIFO sink writer — see the table below.
 
 ## Outstanding actions
 
@@ -169,6 +176,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Twenty-eight entries. Read it before changing anything in the skill, sandbox, capture or
+  Thirty entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.

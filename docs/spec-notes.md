@@ -658,3 +658,42 @@ The precondition check reports *every* unsatisfiable combination it finds in one
 not just the first — a user fixing one wall only to hit the next on the re-run is the
 slow-feedback failure §16.4 exists to prevent. `bellwether doctor` surfaces the same
 check (§20), wired when the orchestrator lands (WP not yet built).
+
+---
+
+## §17.2 — The summary schema is pydantic; the JSON Schema is generated from it
+
+**Spec.** §17.1 requires every JSON artifact to be "schema-versioned and stable" and
+§17.2 gives the `summary.json` shape. It does not say *how* the schema is expressed.
+
+**Resolution.** The schema is a set of `extra='forbid'`, `frozen=True` pydantic models
+(`report/summary.py`) — the same mechanism the config layer already uses, so a producer
+that invents or mistypes a key gets a named validation error rather than a silently
+dropped field, which for a downstream-facing contract is the difference that matters. The
+JSON Schema shipped for consumers in other languages
+(`report/schemas/summary.schema.json`) is *generated* from those models, not hand-written,
+so it cannot drift from what is actually emitted; a test regenerates it and asserts
+byte-equality. `render_summary_json` routes through `determinism.canonical_json`, so keys
+are sorted and floats are rounded once at that boundary — the WP-12 done-when (byte-
+identical across two invocations) falls out of the existing determinism layer rather than
+needing report-specific care. The full declared shape is always emitted (nulls included,
+not dropped), so a consumer can rely on a stable key set.
+
+## §17.4 — WP-12 ships Markdown and `summary.json`; the HTML site is a later package
+
+**Spec.** §17.4 describes an eleven-view static HTML report (verdict header, gate table,
+capability heatmap, consistency panel, cross-model panel, findings, declared-vs-observed,
+trace explorer, coverage panel, diff view, limitations footer).
+
+**Resolution.** WP-12's scope in the build plan is "markdown + `summary.json`", and the
+first-light checkpoint needs the analysis path to render, not a full HTML site. So WP-12
+ships the schema-versioned `summary.json`, the three text figures (strip chart, trajectory
+cluster list, capability heatmap — §13.8), and the Markdown PR comment (§18.2) that
+assembles them. The figures render as monospace text so the eventual HTML report and the
+PR comment draw from one source. The HTML site, the two findings containers (§17.3), and
+the artifact tree (§17.1) follow in a later package. The Markdown is hand-rolled rather
+than templated: the presentation rules with teeth (BCI never rendered without the pass
+rate; the "consistently failing" annotation below p̂ 0.5; every figure carrying its
+`n_evaluable` and look; the §2 footer rendered whole) are conditional logic, and keeping
+them in unit-tested Python beats hiding them in template branches. `jinja2` stays a
+dependency for the HTML report to come.
