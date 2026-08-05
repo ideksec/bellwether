@@ -594,3 +594,44 @@ allowlist is a declaration), and under the current planes that assertion is
 `not_evaluable`, which blocks. That is §16.4's precondition philosophy operating as
 designed — a policy requiring evidence the capabilities cannot supply is surfaced
 before it is trusted — and it resolves when WP-13 lands, not by softening the rule.
+
+---
+
+## §13.5.1 — `egress_blocked` is weighted; unlisted classes take a floor of 1, never 0
+
+**Spec.** The §13.5.1 weight table lists ten tier-1 classes. It does not list
+`egress_blocked:<host>`, and it does not say what weight an unlisted class receives.
+
+**Resolution.** Two decisions, both aimed at "a class never silently vanishes from the
+risk sum". A tier-1 class absent from the table takes `DEFAULT_CAPABILITY_WEIGHT = 1` —
+the floor, never zero — so a class a future plane introduces still counts toward the
+weighted Jaccard rather than being invisible. And `egress_blocked` is weighted 10, like
+the reach it attempted: a blocked egress is evidence of intent (it also surfaces as its
+own finding), and treating it as weightless would let a skill that *tried* to reach
+`evil.com` score as clean as one that did nothing. The spec's constraint that a class on
+a manifest `deny` list must not be assignable weight 0 is validated at config load
+(§16.1, WP-11), not here; this module receives already-resolved weights.
+
+The weight table is keyed by *base* class, so a parameterised capability
+(`egress:evil.com`, `process:curl`, `tool:read`) looks its weight up under `egress` /
+`process` / `tool`. `weights_digest` records the resolved map, so a weight change
+invalidates only the capability component of a baseline (§17.5), by the same mechanism
+as `traj_planes`.
+
+---
+
+## §13.4 — Single-linkage clustering is connected components; determinism is in the output order
+
+**Spec.** "Single-linkage agglomerative is sufficient at N ≤ 20 and is deterministic
+given a fixed tie-break rule (break ties by lexicographic order of the canonical
+sequences)."
+
+**Resolution.** Single-linkage agglomerative clustering cut at a fixed distance
+threshold is *exactly* the connected components of the graph joining sequence pairs
+within the threshold — a result that does not depend on merge order at all, so the
+clustering itself needs no tie-break. What the tie-break governs is the **output**: which
+sequence represents a cluster (the lexicographically smallest member) and the order
+clusters are listed in (by representative). Those are what §24's byte-identical test
+constrains, and they are made deterministic by sorting on the token form of each
+sequence. Implementing the merge dendrogram with a tie-break would reach the same cut and
+cost more; connected components is the honest simplification.

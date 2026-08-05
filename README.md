@@ -164,7 +164,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Canonicalization and epoch anchoring: capability tiers, step signatures, cross-plane ordering | done (WP-7) |
 | Platform baseline: document, glob matcher, near-miss flagging, process attribution | done (WP-8) |
 | Assertions: deterministic catalogue, scope derivation, Declared vs Observed, run outcomes | done (WP-9) |
-| Metrics, verdict engine, reporting | WP-10 (next) – WP-12 |
+| Metrics: Wilson/Pocock sequential design, risk-weighted capability Jaccard, trajectory clustering, BCI | done (WP-10) |
+| Verdict engine, reporting | WP-11 (next) – WP-12 |
 | `claude-code` harness adapter | WP-17 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
 | Corpus and acceptance | WP-20 |
