@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-10 work. **Update it at the end of a session, not the
+Last updated at the end of the WP-11 work. **Update it at the end of a session, not the
 start** — a status file that lags is worse than none, because it is trusted.
 
 ---
@@ -22,53 +22,49 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-8 — platform baseline | **done** |
 | WP-9 — assertions, outcome composition, golden traces | **done** |
 | WP-10 — metrics | **done** |
-| WP-11 — verdict engine and precondition check | **next** |
-| WP-12 — reporting | not started |
+| WP-11 — verdict engine and precondition check | **done** |
+| WP-12 — reporting | **next** |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-441 tests: 406 offline (including the WP-10 property suite), 35 under the `docker` mark. All green.
+459 tests: 424 offline, 35 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
 
-### What WP-10 built
+### What WP-11 built
 
-The full §13 metrics, in `bellwether.metrics` (which imports `assertions` but never
-`verdict` — the boundary is lint-enforced):
+The verdict engine and the precondition check, in `bellwether.verdict` (imports
+`metrics` and the policy models; never computes metrics):
 
-- **`stats.py`**: Wilson score interval parameterised by z; the §13.1 achievable
-  lower-bound table reproduces to the published digits (test).
-- **`outcome.py`**: the §13.2 denominators (never collapsed), `p̂ = passes/n_evaluable`,
-  `outcome_consistency = 1 − 2·min(p̂,1−p̂)` (exact, rounding-independent), flake and
-  consistently-failing flags.
-- **`capability.py`**: core/peripheral sets, plain and risk-weighted tier-1 Jaccard with
-  `J(∅,∅)=1.0`, the §13.5.1 weight table (in constants), the rare-capability report and
-  the **frequency-independent** `max_rare_capability_risk` finding, directory
-  instability, the sensitive-directory hits. The §13.5.1.1 sensitivity table reproduces
-  exactly and the rare-capability gate fires identically at N=6/12/20 (the done-when).
-- **`trajectory.py`**: normalised edit distance (rapidfuzz), single-linkage clustering
-  (= connected components; deterministic output order), modal cluster share, mean
-  pairwise distance, informational `H_traj`, length dispersion, `at_noise_floor`.
-- **`trigger.py`**: normalised binary trigger entropy and its `1 − H` consistency.
-- **`sequential.py`**: the §13.1 look/decision table (6/12/20), the capability-agreement
-  continuation rule (`held_open_for_capability`), never-escalate-all-not_evaluable.
-- **`bci.py`**: the weighted composite with **mandatory renormalisation** over available
-  components, `components_used`/`components_excluded`, consistently-failing annotation.
-- **The mandatory property suite** (`tests/test_metrics.py`, hypothesis): bounds,
-  identity (`J_weighted == J_plain` at equal weights), monotonicity, the §11.4 edge
-  cases, renormalisation, rounding-independence, and the frequency properties.
+- **`engine.py`**: `worst_status` / `build_gate` (a gate takes the **worst** of its
+  per-target results — §16.2 step 2, the point of the multi-model matrix), and
+  `compose_verdict` implementing steps 3/6/7: any block or required `not_evaluable` →
+  `not_ready`; else any warn or `descriptive_only` → `conditional`; else `ready`.
+  `descriptive_only` can never be `ready`.
+- **`models.py`**: `GateResult` / `TargetGateResult` / `VerdictResult`, each carrying
+  the observed value, threshold, the N-and-look behind it, and the evidence seqs — a
+  verdict with no traceable evidence is a bug. The three-word vocabulary only.
+- **`precondition.py`** (§16.4 — the done-when): refuses before any run, catching all
+  four unsatisfiable combinations (activation-blind harness under
+  `require_all_should_trigger`; a required capture plane the runner lacks;
+  `min_distinct_providers` unmet by the matrix; egress-blind harness under an egress
+  gate), each with a message naming the gate, the target, and the remedy. Reports every
+  failure in one pass.
+- **`validation.py`** (§16.1): a manifest-denied class cannot be weighted 0 (it would
+  erase a denied capability from the risk-weighted Jaccard — an error); BCI weights
+  summing far off, or a zero component weight, warn naming the key.
 
 ## What to do next
 
-**WP-11 — the verdict engine and precondition check (§16).** Compose the §13 metrics and
-the §12 assertions/findings into a release verdict against `policy.yaml`: gate
-disposition (§16.2, `not_evaluable` blocks), the §16.4 precondition check that refuses a
-matrix whose policy needs evidence the declared capabilities cannot supply (this is where
-the `no_egress`-blocks-under-current-planes situation is caught *before* the matrix is
-paid for), config-load validation of the capability weights (no weight-0 on a `deny`
-class) and BCI weights, and the §21 enforced-settings refusal that currently lives only
-in `doctor`. `metrics` is the last layer below it; `verdict` may import both `metrics`
-and the policy models.
+**WP-12 — reporting (§17).** The Markdown PR comment and `summary.json`, rendered from
+the verdict and the metrics: the per-scenario pass/fail/timeout/not_evaluable strip
+chart with look boundaries marked, the trajectory cluster list, the **capability
+heatmap** (tier-3 grouped under tier-1, the report's flagship), the Declared vs Observed
+table, the sequential design taken, and the §2 limitations footer. The BCI is never
+rendered without the pass rate adjacent, and carries the consistently-failing annotation
+where `p̂ < 0.5`. `jinja2` is already a dependency. After WP-12, the analysis path
+(capture → metrics → verdict → report) is complete end to end; `bellwether run` itself
+is the orchestrator, which the remaining WPs assemble.
 
 ## Outstanding actions
 
@@ -78,10 +74,10 @@ and the policy models.
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
 | §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | Needs the orchestrator that does not exist yet. Wire it when `run` lands. |
+| Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when the orchestrator lands. |
 | Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
 | The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
 | Live model client | `harness/provider.py` | Deferred to WP-13 on purpose: no observed egress path exists yet for it (spec-notes §9.4). |
-| §16.4 precondition check not implemented | WP-11 | Must refuse before any run executes, so it lands with the verdict engine. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 
@@ -173,6 +169,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Twenty-seven entries. Read it before changing anything in the skill, sandbox, capture or
+  Twenty-eight entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.
