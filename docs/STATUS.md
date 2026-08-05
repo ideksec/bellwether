@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-8 work. **Update it at the end of a session, not the
+Last updated at the end of the WP-9 work. **Update it at the end of a session, not the
 start** — a status file that lags is worse than none, because it is trusted.
 
 ---
@@ -20,45 +20,46 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-6 — `api-loop` harness adapter | **done** |
 | WP-7 — canonicalization and epoch anchoring | **done** |
 | WP-8 — platform baseline | **done** |
-| WP-9 — assertions, outcome composition, golden traces | **next** |
-| WP-10 — metrics | not started |
+| WP-9 — assertions, outcome composition, golden traces | **done** |
+| WP-10 — metrics | **next** |
 | WP-11 — verdict engine and precondition check | not started |
 | WP-12 — reporting | not started |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-361 tests: 326 offline, 35 under the `docker` mark. All green.
+393 tests: 358 offline, 35 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
 
-### What WP-8 built
+### What WP-9 built
 
-- **The document** (`config/models/baseline.py`, loader in
-  `config/baseline_loader.py`): versioned, keyed to a sandbox image, with
-  `applicable_to` returning a *reason* — a baseline that is unkeyed or keyed to a
-  different image absorbs nothing, and the refusal must never read as "nothing
-  infrastructural happened". The shipped template now carries the real schema and the
-  §12.6 maintained defaults, with `applies_to_image: null` so it is inert until keyed.
-- **The matcher** (`assertions/baseline.py`): brace- and `**`-aware globs over
-  normalized paths; both done-when criteria hold — a benign run's infrastructure
-  produces zero spurious surviving entries, and `~/.cache/../.aws/credentials` raises
-  a `medium` near-miss instead of being absorbed. Traversal never resolves into a
-  match, in either direction (see spec-notes). Process attribution by tree:
-  `helpers_of` with wildcards, curl-under-git stays a violation, a helper's name
-  without a helper's parentage is a near-miss, and a mapping is inert when its root is
-  not itself permitted.
-- The absorbed set feeds `canonicalize(platform_baseline_t3=...)` — the seam WP-7
-  pinned — verified end-to-end by test.
+- **The deterministic catalogue** (`assertions/engine.py`) over an `EvidenceIndex`
+  extracted once per trace: activation, tool calls (bounds, `args_match`, sequences),
+  overlay-backed write assertions, output/duration/token/exit checks, workspace-backed
+  `content_match` and `artifact_valid`. Presence and absence claims are asymmetric —
+  presence can pass on Plane A evidence; absence needs the plane that could have seen
+  the thing, so the egress/DNS/credential/process assertions return `not_evaluable`
+  carrying the §10.7 reason until WP-13/15/16/18 land (spec-notes).
+- **Outcome composition** (`assertions/results.py`): §12.7's table exactly, including
+  the deliberate exit-reason split (timeout/oom/pids_limit fail; budget_exceeded/
+  cancelled are not_evaluable) and `excluded_quality` for egress-induced failures.
+- **Auto-derivation and Declared vs Observed** (`assertions/derive.py`): the
+  non-circular §12.5 derivation (deny lists and write/egress globs become catalogue
+  specs; allowlists are evaluated against the observation), and the scope table with
+  `supported` / `exceeded` / `unused` / `not_evaluable` at tier 3, post-baseline.
+  `unused` is an absence claim and gates on the plane accordingly.
+- The committed golden trace evaluates end-to-end offline — the WP-9 done-when — with
+  the honest outcome `not_evaluable` when a required claim has no plane.
 
 ## What to do next
 
-**WP-9 — assertions and outcome composition (§12).** The assertion catalogue of §12.2
-over canonical traces and capture output; declared-vs-observed scope evaluation against
-`observed − baseline` (WP-8's `BaselineApplication` provides the subtrahend and the
-near-miss findings); run-outcome composition per §12.7's exit-reason split; golden
-traces for the assertion engine. `constants.ASSERTION_CATALOGUE` already names the
-catalogue; the §24 corpus skills arrive with WP-20, so WP-9's tests are synthetic
-traces plus the committed golden trace.
+**WP-10 — metrics (§13).** The nondeterminism math: Wilson intervals with the Pocock
+boundary (`POCOCK_BOUNDARY_Z` is already in constants), plain and weighted capability
+Jaccard, trajectory clustering over WP-7's step sequences, directory instability, the
+sensitive-directory flag consuming `CanonicalTrace.sensitive_hits`, the BCI with
+renormalisation, and §11.4's specified edge cases (empty-set Jaccard = 1.0, entropy at
+N = 1 is `not_evaluable`, `0·log₂0 = 0`). §24 requires property-based tests for
+bounds, identity, monotonicity and renormalisation — budget for them.
 
 ## Outstanding actions
 
@@ -163,6 +164,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Twenty-four entries. Read it before changing anything in the skill, sandbox, capture or
+  Twenty-five entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.

@@ -26,14 +26,41 @@ from bellwether.assertions.baseline import (
     attribute_process,
     glob_to_regex,
 )
+from bellwether.assertions.derive import (
+    ScopeEntry,
+    ScopeTable,
+    derive_assertions,
+    evaluate_scope,
+)
+from bellwether.assertions.engine import evaluate, evaluate_all
+from bellwether.assertions.evidence import EvidenceIndex, ToolCallEvidence, WriteEvidence
+from bellwether.assertions.results import (
+    AssertionResult,
+    AssertionStatus,
+    RunOutcome,
+    run_outcome,
+)
 
 __all__ = [
+    "AssertionResult",
+    "AssertionStatus",
     "BaselineApplication",
+    "EvidenceIndex",
     "NearMiss",
     "ObservedPath",
     "ObservedProcess",
     "ProcessAttribution",
+    "RunOutcome",
+    "ScopeEntry",
+    "ScopeTable",
+    "ToolCallEvidence",
+    "WriteEvidence",
     "apply_path_baseline",
     "attribute_process",
+    "derive_assertions",
+    "evaluate",
+    "evaluate_all",
+    "evaluate_scope",
     "glob_to_regex",
+    "run_outcome",
 ]

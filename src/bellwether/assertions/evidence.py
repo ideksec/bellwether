@@ -1,0 +1,185 @@
+"""The evidence index: one trace, pre-sorted for assertion evaluation (§12.1).
+
+Assertions evaluate against the trace, the final workspace state, and the final output
+— never against the model's self-report of what it did. The index extracts each
+evidence category once, with normalized paths, so every assertion in the catalogue
+reads the same prepared facts rather than re-walking the action list with its own
+private interpretation.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from bellwether.trace import (
+    Action,
+    Coverage,
+    ExitReason,
+    NormalizationContext,
+    Trace,
+)
+
+__all__ = ["EvidenceIndex", "ToolCallEvidence", "WriteEvidence"]
+
+
+@dataclass(frozen=True)
+class ToolCallEvidence:
+    seq: int
+    name: str
+    input: dict[str, Any]
+    #: The input serialised once, for ``args_match`` regexes.
+    args_json: str
+
+
+@dataclass(frozen=True)
+class WriteEvidence:
+    """One persisted filesystem change, from Plane B."""
+
+    seq: int
+    zone: str
+    #: Normalized (``${WORKSPACE}/...``) absolute path.
+    path: str
+    deleted: bool
+
+
+@dataclass(frozen=True)
+class EvidenceIndex:
+    """Everything the deterministic catalogue consumes, extracted once."""
+
+    tool_calls: tuple[ToolCallEvidence, ...]
+    writes: tuple[WriteEvidence, ...]
+    #: Paths the harness reported reading (the ``read`` tool), normalized. Plane A
+    #: evidence: usable for presence claims, never for absence claims (§10.8).
+    reported_reads: tuple[tuple[int, str], ...]
+    activated_skills: tuple[tuple[int, str], ...]
+    final_output: str | None
+    final_output_seq: int | None
+    exit_reason: ExitReason | None
+    trace_complete: bool
+    wall_clock_ms: int | None
+    total_tokens: int | None
+    coverage: Coverage
+    #: The run's own skill, for the bare ``skill_activated`` assertion.
+    skill_name: str
+    #: The final workspace on disk, where the caller still has it. Content-inspecting
+    #: assertions (``content_match``, ``artifact_valid``) need real bytes; without this
+    #: they return ``not_evaluable`` rather than guessing from digests.
+    workspace: Path | None = None
+    egress_blocked_present: bool = False
+    context: NormalizationContext = field(
+        default_factory=lambda: NormalizationContext(workspace_root="/work")
+    )
+
+    @classmethod
+    def from_trace(
+        cls,
+        trace: Trace,
+        context: NormalizationContext,
+        *,
+        workspace: Path | None = None,
+    ) -> EvidenceIndex:
+        tool_calls: list[ToolCallEvidence] = []
+        writes: list[WriteEvidence] = []
+        reads: list[tuple[int, str]] = []
+        activated: list[tuple[int, str]] = []
+        final_output: str | None = None
+        final_output_seq: int | None = None
+        egress_blocked = False
+
+        for action in trace.actions:
+            if action.plane == "harness":
+                _index_harness_action(action, context, tool_calls, reads, activated)
+                if action.kind == "final_output":
+                    text = action.action.get("text")
+                    final_output = text if isinstance(text, str) else ""
+                    final_output_seq = action.seq
+            elif action.plane == "filesystem":
+                write = _index_filesystem_action(action, context)
+                if write is not None:
+                    writes.append(write)
+            elif action.kind == "egress_blocked":
+                egress_blocked = True
+
+        footer = trace.footer
+        return cls(
+            tool_calls=tuple(tool_calls),
+            writes=tuple(writes),
+            reported_reads=tuple(reads),
+            activated_skills=tuple(activated),
+            final_output=final_output,
+            final_output_seq=final_output_seq,
+            exit_reason=trace.exit_reason,
+            trace_complete=trace.is_complete,
+            wall_clock_ms=footer.wall_clock_ms if footer else None,
+            total_tokens=footer.tokens.total if footer else None,
+            coverage=trace.header.coverage,
+            skill_name=trace.header.skill.name,
+            workspace=workspace,
+            egress_blocked_present=egress_blocked,
+            context=context,
+        )
+
+    def workspace_writes(self) -> list[WriteEvidence]:
+        return [write for write in self.writes if write.zone == "workspace" and not write.deleted]
+
+    def plane_reason(self, plane: str) -> str | None:
+        """The §10.7 reason an assertion cannot run, or None where the plane is usable."""
+        unavailable = self.coverage.unavailable()
+        if plane in unavailable:
+            return unavailable[plane]
+        status = getattr(self.coverage, plane, None)
+        if status is None:
+            return f"the {plane} plane recorded no coverage for this run"
+        return None
+
+
+def _index_harness_action(
+    action: Action,
+    context: NormalizationContext,
+    tool_calls: list[ToolCallEvidence],
+    reads: list[tuple[int, str]],
+    activated: list[tuple[int, str]],
+) -> None:
+    if action.kind == "tool_call":
+        tool = action.action.get("tool")
+        tool_input = action.action.get("input")
+        if isinstance(tool, str):
+            payload = tool_input if isinstance(tool_input, dict) else {}
+            tool_calls.append(
+                ToolCallEvidence(
+                    seq=action.seq,
+                    name=tool,
+                    input=payload,
+                    args_json=json.dumps(payload, sort_keys=True),
+                )
+            )
+            path = payload.get("path")
+            if tool == "read" and isinstance(path, str):
+                reads.append((action.seq, _normalize_tool_path(path, context)))
+    elif action.kind == "skill_activated":
+        skill = action.action.get("skill")
+        if isinstance(skill, str):
+            activated.append((action.seq, skill))
+
+
+def _index_filesystem_action(action: Action, context: NormalizationContext) -> WriteEvidence | None:
+    if action.kind not in ("file_write", "file_delete"):
+        return None
+    path = action.action.get("path")
+    zone = action.action.get("zone")
+    if not isinstance(path, str) or not isinstance(zone, str):
+        return None
+    return WriteEvidence(
+        seq=action.seq,
+        zone=zone,
+        path=context.normalize_path(path),
+        deleted=action.kind == "file_delete",
+    )
+
+
+def _normalize_tool_path(path: str, context: NormalizationContext) -> str:
+    absolute = path if path.startswith("/") else f"{context.workspace_root.rstrip('/')}/{path}"
+    return context.normalize_path(absolute)

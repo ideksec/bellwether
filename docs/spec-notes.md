@@ -565,3 +565,32 @@ brace group — the initial implementation expanded `${HOME}` as a one-choice
 alternation, rewriting it to `$HOME`, at which point every placeholder entry matched
 nothing and the baseline failed silently in the direction that looks clean. The test
 that caught it is named for the failure mode.
+
+---
+
+## §12.1, §12.2 — Presence and absence claims are evaluated asymmetrically
+
+**Spec.** §12.1: an assertion whose supporting plane is degraded returns
+`not_evaluable` with the coverage reason attached, never `pass`. §12.2 lists both
+presence assertions (`file_read`) and absence assertions (`file_not_read`,
+`no_egress`) in the v0.1 catalogue, while the read-capture plane is v0.2 and the
+network planes are Phase B.
+
+**Resolution.** The engine treats the two claim shapes differently, and the difference
+is the point. A *presence* can be shown from Plane A: the harness reported the tool
+call, and on `api-loop` Bellwether implemented the tool that performed it — so
+`file_read` passes on reported evidence, and a reported read is likewise enough to
+*refute* `file_not_read`. An *absence* cannot be shown from Plane A at any fidelity — a
+bash subprocess reads without producing a tool event — so `file_not_read` with nothing
+reported returns `not_evaluable` carrying the §10.7 reason, as do `no_egress`,
+`no_dns_outside`, `no_credential_read` and `no_process_exec` until their planes arrive.
+The same rule shapes the Declared vs Observed table: `unused` is an absence claim, so a
+declared read glob nothing reported touching is `not_evaluable` under overlay-only
+capture, not `unused` — the skill may be reading it through a subprocess every run.
+
+One consequence is worth stating because it will be the first thing a user sees: a
+manifest with an empty `network.egress_allow` derives `no_egress` (§12.5 — an empty
+allowlist is a declaration), and under the current planes that assertion is
+`not_evaluable`, which blocks. That is §16.4's precondition philosophy operating as
+designed — a policy requiring evidence the capabilities cannot supply is surfaced
+before it is trusted — and it resolves when WP-13 lands, not by softening the rule.
