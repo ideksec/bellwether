@@ -298,10 +298,19 @@ def _filesystem_capability(
 
 def _first_segment(relative: str | None) -> str:
     """Tier 2 inside the workspace: the first path segment, with a trailing slash for
-    directories-of, or the bare filename for root-level files."""
-    if not relative:
+    directories-of, or the bare filename for root-level files.
+
+    The workspace root *itself* — a read or write of ``.``, or the absolute
+    ``/work/<slug>`` — normalises to a path with no segments (``PurePosixPath(".").parts``
+    is empty). That is a real thing a skill can do, benignly (``ls .``) or adversarially
+    (``read {path: "."}`` to crash the analyser), so it must classify, not raise. It maps
+    to the empty first segment: tier 2 ``workspace_read:``, the root of the workspace.
+    """
+    if not relative or relative == ".":
         return ""
     parts = PurePosixPath(relative).parts
+    if not parts:
+        return ""
     if len(parts) > 1:
         return parts[0] + "/"
     return parts[0]
