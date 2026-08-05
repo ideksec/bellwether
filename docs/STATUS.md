@@ -24,10 +24,11 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-10 — metrics | **done** |
 | WP-11 — verdict engine and precondition check | **done** |
 | WP-12 — reporting (`summary.json` + Markdown) | **done** |
-| Orchestrator (`bellwether run`) + first-light checkpoint | **next** |
+| Analysis orchestrator (trace → verdict → artifact tree) | **done** |
+| Sandbox execution driver (`RunExecutor`) + first-light checkpoint | **next** |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-475 tests: 440 offline, 35 under the `docker` mark. All green.
+484 tests: 449 offline, 35 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
@@ -58,20 +59,44 @@ WP-12 is `summary.json` + Markdown; the eleven-view HTML site (§17.4), the two 
 containers (§17.3), and the artifact tree (§17.1) are a later package (see spec-notes
 §17.4). 16 report tests.
 
+### What the analysis orchestrator built
+
+The analysis half of `bellwether run`, in `bellwether.cli.orchestrator` and
+`bellwether.cli.artifacts` — the thing that *assembles* every stage below it into a
+verdict, but does not execute runs itself:
+
+- **`analyse_run`**: one trace → its per-run reading (the §12.7 run outcome from the
+  assertion results, the §11.4 canonical capability sets, the trajectory step sequence).
+- **`aggregate`**: a repetition set → one `SetReading` through the §13 metrics — sequential
+  pass-rate design (§13.1), risk-weighted capability Jaccard (§13.5), trajectory clustering
+  (§13.4), the BCI (§13.7).
+- **`orchestrate`**: populates the §16.2 gates from the readings (worst target per gate),
+  composes the verdict, assembles the `Summary`, and writes the §17.1 artifact tree
+  (`summary.json`, `verdict.json`, `report/pr_comment.md`, per-run `traces/` and
+  `canonical/`).
+- **`RunExecutor`** is the seam for the execution half: given a `RunPlan` it returns an
+  `ExecutedRun` (trace + normalization context). The analysis path is exercised end to end
+  offline against a scripted `api-loop` run — no Docker, no key — in `test_orchestrator.py`
+  (9 tests).
+
+The first-light finding, proven by that test: a `benign-stable`-shaped skill (six identical
+passing runs) reaches **`conditional`**, not `ready` — every evaluable gate passes, but
+egress is `not_evaluable` until the recording proxy lands (WP-13), and §16.2 renders an
+advisory `not_evaluable` gate as `conditional` rather than passing it silently. `ready`
+arrives when egress becomes observable. This is the skeleton walking.
+
 ## What to do next
 
-**The orchestrator (`bellwether run`) and the first-light checkpoint.** Every stage of
-the analysis path now exists as a tested library — capture → trace → assertions →
-metrics → verdict → report — but nothing assembles them into a run yet. `bellwether run`
-is that assembler: materialise the sandbox, execute the matrix, capture and canonicalise,
-compute metrics, compose the verdict, render `summary.json` and the PR comment. The
-**first-light checkpoint** (BUILDPLAN, before Phase B) is the acceptance gate for it —
-`benign-stable` running end to end with the proxy and resolver bypassed and egress
-assertions reported as `not_evaluable` with a reason. The build plan gates the rest of
-v0.1 on this: if the skeleton does not walk, adding the network layer (WP-13+) will not
-help you find out why. Several already-built pieces are waiting on this orchestrator to be
-wired — the precondition check and weight validation into `doctor`/`run`, the §21
-enforced-settings refusal, the FIFO sink writer — see the table below.
+**The sandbox execution driver (`RunExecutor`) and the first-light checkpoint.** The
+analysis path is complete and tested; what remains to make `bellwether run` real is the
+executor that materialises the sandbox, runs the matrix through the `api-loop` adapter, and
+captures each repetition into an `ExecutedRun` — lifting the WP-6 container wiring
+(`test_harness_docker.py`) behind the `RunExecutor` protocol. With that in place,
+`benign-stable` runs end to end from the CLI (proxy and resolver bypassed, egress
+`not_evaluable` with a reason), which is the **first-light checkpoint** the build plan
+gates the rest of v0.1 on. Then wire the precondition check and weight validation into
+`doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer — see the
+table below.
 
 ## Outstanding actions
 
@@ -80,8 +105,8 @@ enforced-settings refusal, the FIFO sink writer — see the table below.
 | Item | Where | Why it is still open |
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
-| §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | Needs the orchestrator that does not exist yet. Wire it when `run` lands. |
-| Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when the orchestrator lands. |
+| §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | Needs `run` to be fully wired (the execution driver). Wire it then. |
+| Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when the execution driver lands. |
 | Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
 | The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
 | Live model client | `harness/provider.py` | Deferred to WP-13 on purpose: no observed egress path exists yet for it (spec-notes §9.4). |
@@ -176,6 +201,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Thirty entries. Read it before changing anything in the skill, sandbox, capture or
+  Thirty-one entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.
