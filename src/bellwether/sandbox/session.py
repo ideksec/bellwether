@@ -22,10 +22,34 @@ from bellwether.sandbox.fixtures import MaterializedFixture, materialize_fixture
 from bellwether.sandbox.identifiers import SandboxIdentifiers, derive_identifiers
 from bellwether.sandbox.isolation import IsolationProfile
 from bellwether.sandbox.staging import StagedPayload, stage_payload
-from bellwether.sandbox.zones import ZoneMap
+from bellwether.sandbox.zones import Zone, ZoneMap
 from bellwether.skill import SkillPackage
 
-__all__ = ["PreparedSandbox", "SandboxBackend", "prepare_sandbox"]
+__all__ = ["PreparedSandbox", "SandboxBackend", "ZoneOverlay", "prepare_sandbox"]
+
+
+@dataclass(frozen=True)
+class ZoneOverlay:
+    """Host-side overlay directories for one captured zone other than the workspace.
+
+    §10.2 records harness state and scratch *separately* from the workspace diff — which
+    requires actually capturing them. A tmpfs cannot be read after the container exits,
+    so a zone mounted as tmpfs is a zone whose writes are unobservable: every harness
+    state write and every scratch write would vanish with the container, and the
+    ``harness_state_write`` finding and the tier-2 scratch capabilities of §10.2 could
+    never be produced. Each captured zone therefore gets the same treatment as the
+    workspace: an overlayfs whose upper directory lives on the host.
+
+    The lower directory is empty — these zones start blank — so every observed change
+    reads as ``created``.
+    """
+
+    zone: Zone
+    container_path: PurePosixPath
+    lower: Path
+    upper: Path
+    work: Path
+    merged: Path
 
 
 @dataclass(frozen=True)
@@ -42,6 +66,10 @@ class PreparedSandbox:
     #: wall clock reasonable (§9.1 step 9).
     upper_dir: Path
     work_dir: Path
+    #: Overlay directories for the harness state and scratch zones (§10.2). Empty where a
+    #: caller opted out; a zone without one falls back to tmpfs and its writes are
+    #: unobservable, which the coverage block must then say.
+    captured_zones: tuple[ZoneOverlay, ...] = ()
 
     def mounts(self) -> list[tuple[Path, PurePosixPath, str]]:
         """``(host path, container path, mode)`` for each mount.
@@ -122,7 +150,47 @@ def prepare_sandbox(
         payload=payload,
         upper_dir=upper,
         work_dir=work,
+        captured_zones=_prepare_zone_overlays(root, zone_map, profile),
     )
+
+
+def _prepare_zone_overlays(
+    root: Path, zone_map: ZoneMap, profile: IsolationProfile
+) -> tuple[ZoneOverlay, ...]:
+    """Create the host-side overlay directories for the harness state and scratch zones.
+
+    Each zone's directory modes match what the container expects to find at that path:
+    scratch is ``1777`` because it is mounted at ``/tmp`` and anything inside assumes
+    world-writable-with-sticky semantics; harness state is ``0755`` owned by the agent
+    uid, because it is the agent's own state directory. The merged root shows the *upper*
+    directory's attributes, so both the lower and upper get the treatment.
+    """
+    overlays: list[ZoneOverlay] = []
+    specs: tuple[tuple[Zone, PurePosixPath, int, bool], ...] = (
+        ("harness_state", zone_map.harness_state, 0o755, True),
+        ("scratch", zone_map.scratch, 0o1777, False),
+    )
+    for zone, container_path, mode, chown in specs:
+        base = root / "zones" / zone
+        dirs = {name: base / name for name in ("lower", "upper", "work", "merged")}
+        for name, directory in dirs.items():
+            directory.mkdir(parents=True, exist_ok=True)
+            if name in ("lower", "upper"):
+                directory.chmod(mode)
+                if chown:
+                    with contextlib.suppress(PermissionError):
+                        os.chown(directory, *profile.owner)
+        overlays.append(
+            ZoneOverlay(
+                zone=zone,
+                container_path=container_path,
+                lower=dirs["lower"],
+                upper=dirs["upper"],
+                work=dirs["work"],
+                merged=dirs["merged"],
+            )
+        )
+    return tuple(overlays)
 
 
 @runtime_checkable

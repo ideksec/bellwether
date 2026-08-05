@@ -88,6 +88,17 @@ def test_serialisation_sorts_keys(trace_path: Path) -> None:
     assert keys == sorted(keys)
 
 
+def test_none_fields_are_omitted_not_written_as_null(trace_path: Path) -> None:
+    """Absence and ``null`` read identically — every optional field defaults to ``None`` —
+    so nulls are pure size, multiplied by the thousands of records Plane B produces."""
+    for line in trace_path.read_text(encoding="utf-8").splitlines():
+        assert ":null" not in line and ": null" not in line
+    # And the omission is lossless: the reader restores the omitted fields as None.
+    action = read_trace(trace_path).actions[0]
+    assert action.actor is None
+    assert action.correlation.anchor_seq is None
+
+
 # ---------------------------------------------------------------------------
 # Incomplete traces (§11.1)
 # ---------------------------------------------------------------------------

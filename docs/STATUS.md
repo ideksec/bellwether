@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-4 work. **Update it at the end of a session, not the
+Last updated at the end of the WP-5 work. **Update it at the end of a session, not the
 start** — a status file that lags is worse than none, because it is trusted.
 
 ---
@@ -16,8 +16,8 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-2 — skill parsing, three digests | **done** |
 | WP-3 — ARF schema, writer, reader | **done** |
 | WP-4 — sandbox lifecycle, host and container halves | **done** |
-| WP-5 — capture: Plane A and Plane B | **next** |
-| WP-6 — `api-loop` harness adapter | not started |
+| WP-5 — capture: Plane A and Plane B | **done** |
+| WP-6 — `api-loop` harness adapter | **next** |
 | WP-7 — canonicalization and epoch anchoring | not started |
 | WP-8 — platform baseline | not started (parallelisable, fully offline) |
 | WP-9 — assertions, outcome composition, golden traces | not started |
@@ -26,27 +26,43 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-12 — reporting | not started |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-248 tests: 230 offline, 18 requiring a Docker daemon. All green on `main`.
+285 tests: 255 offline, 30 under the `docker` mark (two of those need only root, not a
+daemon — they simulate a kernel that marks every upper-layer directory opaque). All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
 
+### What WP-5 built
+
+- **Plane A**: `bellwether.capture.HostEventSink` — a host-owned FIFO, write-only from
+  the container's side (the host opens its descriptor, then chmods the node to `0222`,
+  so the read end cannot be opened to steal events), bind-mounted as a single file so
+  in-container `unlink` fails with `EBUSY`. Deadline-driven at every point; malformed
+  lines are recorded, not dropped; byte caps degrade the plane to `partial` with the
+  reason stated rather than silently.
+- **Plane B**: all three §10.2 zones now have host-side overlay upper directories —
+  harness state and scratch were tmpfs, which dies with the container and made their
+  writes unobservable. `DockerBackend.zone_changes` reads each zone's diff;
+  `bellwether.capture.collect_filesystem_events` partitions with zone membership and
+  canary-path flags on every event.
+- **Trace side**: `bellwether.trace.filesystem_actions` turns capture events into ARF
+  action records (capture cannot import trace — the layering runs `capture -> trace`),
+  and `assemble_coverage` produces the §10.7 block with every plane stated, the unbuilt
+  ones as `unavailable` naming the work package that brings them.
+- The §24 capture-plane integration tests: `tests/test_capture_docker.py` runs known
+  workloads and asserts each plane records exactly the expected events; the offline half
+  is `tests/test_capture_planes.py`.
+- The ARF null-emission question is settled: `None` fields are omitted at serialisation
+  (lossless — absence and `null` read identically). See spec-notes.
+
 ## What to do next
 
-**WP-5 — the capture planes.** The build plan's own note on it is the important part:
-
-> These tests are the ones that would have caught the revision-1 capability contradiction;
-> they matter more than they look.
-
-Specifically:
-
-- a **host-owned** event sink for Plane A — a FIFO or unix socket. A writable file in a
-  mount is not acceptable, because the observed process could edit its own evidence;
-- overlay-diff filesystem capture partitioned by zone, content-only hashing with metadata
-  recorded separately. Most of the machinery exists in `bellwether.sandbox.overlay`;
-  WP-5 is about turning `PathChange` into ARF action records with zone membership;
-- the §24 capture-plane integration tests: small non-agentic container workloads with
-  known behaviour, asserting each plane records exactly the expected events.
+**WP-6 — the `api-loop` harness adapter.** A provider-thin agent loop that runs inside
+the sandbox, drives a model through tool calls, and writes hook events to the Plane A
+sink (the sink's wire format is JSONL objects; the adapter defines the event schema —
+that translation into Plane A `Action` records deliberately did not land in WP-5).
+`bellwether.harness` is empty; §9.4 defines the adapter contract, and golden traces for
+the offline analysis path are one of its outputs.
 
 **WP-8 (platform baseline) is a reasonable alternative** if you want something entirely
 offline. The build plan lists it as parallelisable with WP-5–7, and its done-criterion —
@@ -60,8 +76,9 @@ directly served by the traversal handling already in `bellwether.sandbox.zones`.
 | Item | Where | Why it is still open |
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
-| ARF lines emit nulls (~372 bytes for a trivial action, 4 of them `:null`) | `trace/writer.py` | Settle before WP-5 starts producing thousands of records per run. |
 | §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | Needs the orchestrator that does not exist yet. Wire it when `run` lands. |
+| Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-6 adapter should draw it per run, plausibly via `sandbox/identifiers.py`. |
+| Plane A events are captured but not yet translated to ARF actions | `capture/sink.py` | Deliberate: the WP-6 adapter defines the event schema, so the translation lands with it. |
 | §16.4 precondition check not implemented | WP-11 | Must refuse before any run executes, so it lands with the verdict engine. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
@@ -151,6 +168,7 @@ Two working rules follow:
 
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
-- `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning. Ten
-  entries. Read it before changing anything in the skill, sandbox or config layers.
+- `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
+  Eighteen entries. Read it before changing anything in the skill, sandbox, capture or
+  config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.

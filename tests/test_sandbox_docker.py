@@ -260,6 +260,45 @@ def test_a_run_that_writes_nothing_leaves_a_clean_workspace(
     assert workspace_is_clean(mounted)
 
 
+def test_an_opaque_marker_with_nothing_below_is_not_a_change(tmp_path: Path) -> None:
+    """Regression for a CI-only failure: some kernels mark *every* directory created in
+    an upper layer opaque, as a lookup optimisation — so opacity alone read "replaced" on
+    one machine and "mkdir happened" on another, and Docker's own mountpoint creation
+    showed up as phantom skill behaviour. Opacity with no lower counterpart conceals
+    nothing and must not be a change."""
+    if os.geteuid() != 0:
+        pytest.skip("setting a trusted.* xattr needs root")
+
+    from bellwether.sandbox import read_overlay_diff
+
+    upper, lower = tmp_path / "upper", tmp_path / "lower"
+    (upper / "newdir").mkdir(parents=True)
+    lower.mkdir()
+    os.setxattr(upper / "newdir", "trusted.overlay.opaque", b"y")
+
+    assert read_overlay_diff(upper, lower) == []
+
+
+def test_an_opaque_marker_replacing_a_lower_directory_is_reported(tmp_path: Path) -> None:
+    """The reading the opaque marker exists for: the lower directory's contents are
+    shadowed — "the skill deleted your source tree" must not read as "no changes"."""
+    if os.geteuid() != 0:
+        pytest.skip("setting a trusted.* xattr needs root")
+
+    from bellwether.sandbox import read_overlay_diff
+
+    upper, lower = tmp_path / "upper", tmp_path / "lower"
+    (upper / "replaced").mkdir(parents=True)
+    (lower / "replaced").mkdir(parents=True)
+    (lower / "replaced" / "was_here.txt").write_text("shadowed\n", encoding="utf-8")
+    os.setxattr(upper / "replaced", "trusted.overlay.opaque", b"y")
+
+    (change,) = read_overlay_diff(upper, lower)
+    assert change.path == "replaced"
+    assert change.kind == "modified"
+    assert change.is_directory
+
+
 def test_the_container_cannot_reach_the_upper_directory(
     backend: DockerBackend,
     mounted,  # type: ignore[no-untyped-def]
@@ -269,11 +308,12 @@ def test_the_container_cannot_reach_the_upper_directory(
     assert str(mounted.upper_dir) not in result.stdout or "No such file" in result.stdout
 
 
-def test_scratch_is_a_tmpfs_outside_the_workspace_diff(
+def test_scratch_stays_outside_the_workspace_diff(
     backend: DockerBackend,
     mounted,  # type: ignore[no-untyped-def]
 ) -> None:
-    """§10.2: scratch is recorded separately, never in the workspace diff."""
+    """§10.2: scratch is recorded separately — since WP-5 in its own zone overlay —
+    and never appears in the workspace diff."""
     result = backend.run(mounted, ["sh", "-c", "echo temp > /tmp/scratch.txt; echo ok"])
     assert result.exit_code == 0, result.stderr
     assert backend.changed_paths(mounted) == []

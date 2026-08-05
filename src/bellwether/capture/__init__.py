@@ -15,9 +15,27 @@ MUST NOT, more importantly
     inside the container it observes. Revision 1 violated this and the violation
     invalidated the ground-truth claim.
 
-Built by WP-5, WP-13, WP-15, WP-16, WP-18. ``mypy --strict`` from the first commit.
+WP-5 built Plane A's host-owned sink and Plane B's zone-partitioned overlay capture.
+WP-13, WP-15, WP-16 and WP-18 bring the proxy, DNS, canaries and process planes.
+``mypy --strict`` from the first commit.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from bellwether.capture.filesystem import (
+    FilesystemEvent,
+    PlaneStatus,
+    collect_filesystem_events,
+    filesystem_writes_status,
+)
+from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
+
+__all__ = [
+    "FilesystemEvent",
+    "HostEventSink",
+    "PlaneStatus",
+    "SinkEvent",
+    "SinkStats",
+    "collect_filesystem_events",
+    "filesystem_writes_status",
+]
