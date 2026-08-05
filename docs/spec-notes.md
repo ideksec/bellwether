@@ -439,3 +439,51 @@ tree" must not read as "no changes". An opaque directory with nothing below it c
 nothing and is not a change. The regression tests set the xattr by hand (root-only, so
 they live with the container suite) rather than depending on any particular kernel's
 marking behaviour.
+
+---
+
+## §9.4 — `api-loop` ships without a live HTTP client, deliberately
+
+**Spec.** `api-loop` is "a minimal agent loop against a provider's messages/tool-use
+API", the reference adapter and golden-trace generator, and the fallback for providers
+with no CLI.
+
+**Resolution.** WP-6 lands the whole adapter — loop, tools, event stream, capabilities,
+alias resolution — behind a `ModelClient` seam, with a deterministic `ScriptedClient`
+as the only shipped implementation. A live client is a WP-13 follow-on, for one
+architectural reason: the sandbox has no egress path until the recording proxy exists
+to carry and observe it. A client added now would run either unobserved or not at all,
+and an unobserved model channel is the exact condition §10.5.2 exists to prevent —
+"the requirement most likely to be optimised away for performance" should not be
+optimised away at birth. The capabilities declaration says so honestly:
+`egress_observable=False`, which keeps `no_egress` at `not_evaluable` rather than
+letting it pass vacuously.
+
+Nothing §24 needs is lost: golden traces require determinism, which a live model cannot
+provide, and the scripted client is what generates them. §9.4's protocol sketch
+(`prepare(session, skill, extra_skills)`) also names types that belong to the WP-11
+orchestrator; until that exists, preparation is the adapter's constructor and the
+protocol pins the two things consumers rely on today — the event stream and the
+capabilities declaration.
+
+---
+
+## §9.4 — The api-loop tools execute inside the container, not on the host
+
+**Spec.** "A fixed local tool set (read, write, bash, fetch) implemented by
+Bellwether." Where the implementation runs is unstated.
+
+**Problem.** A host-side implementation is the natural reading — the loop runs on the
+host — and it is one `ln -s` from a sandbox escape: a skill has the bash tool, so it
+can plant a symlink pointing anywhere, and a host-side read tool would resolve that
+link against the *host's* filesystem.
+
+**Resolution.** Every tool call becomes one `docker exec` against the run's persistent
+container, so path resolution happens in the container's mount namespace and cannot
+name anything the sandbox cannot. This also keeps the tools policy-free: reading
+`/etc/passwd` inside the container is permitted and recorded — whether it exceeded
+declared scope is the assertion engine's judgment, and a tool that silently refused
+would hide exactly the behaviour the capture planes exist to observe. `fetch` is the
+one refusal, because there is no observed egress path yet; the attempt itself still
+flows through the event stream as evidence. The symlink containment is asserted by an
+integration test that plants a link with the bash tool and reads through it.

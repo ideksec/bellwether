@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-5 work. **Update it at the end of a session, not the
+Last updated at the end of the WP-6 work. **Update it at the end of a session, not the
 start** — a status file that lags is worse than none, because it is trusted.
 
 ---
@@ -17,8 +17,8 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-3 — ARF schema, writer, reader | **done** |
 | WP-4 — sandbox lifecycle, host and container halves | **done** |
 | WP-5 — capture: Plane A and Plane B | **done** |
-| WP-6 — `api-loop` harness adapter | **next** |
-| WP-7 — canonicalization and epoch anchoring | not started |
+| WP-6 — `api-loop` harness adapter | **done** |
+| WP-7 — canonicalization and epoch anchoring | **next** |
 | WP-8 — platform baseline | not started (parallelisable, fully offline) |
 | WP-9 — assertions, outcome composition, golden traces | not started |
 | WP-10 — metrics | not started |
@@ -26,48 +26,54 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-12 — reporting | not started |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-285 tests: 255 offline, 30 under the `docker` mark (two of those need only root, not a
-daemon — they simulate a kernel that marks every upper-layer directory opaque). All green.
+314 tests: 279 offline, 35 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
 
-### What WP-5 built
+### What WP-6 built
 
-- **Plane A**: `bellwether.capture.HostEventSink` — a host-owned FIFO, write-only from
-  the container's side (the host opens its descriptor, then chmods the node to `0222`,
-  so the read end cannot be opened to steal events), bind-mounted as a single file so
-  in-container `unlink` fails with `EBUSY`. Deadline-driven at every point; malformed
-  lines are recorded, not dropped; byte caps degrade the plane to `partial` with the
-  reason stated rather than silently.
-- **Plane B**: all three §10.2 zones now have host-side overlay upper directories —
-  harness state and scratch were tmpfs, which dies with the container and made their
-  writes unobservable. `DockerBackend.zone_changes` reads each zone's diff;
-  `bellwether.capture.collect_filesystem_events` partitions with zone membership and
-  canary-path flags on every event.
-- **Trace side**: `bellwether.trace.filesystem_actions` turns capture events into ARF
-  action records (capture cannot import trace — the layering runs `capture -> trace`),
-  and `assemble_coverage` produces the §10.7 block with every plane stated, the unbuilt
-  ones as `unavailable` naming the work package that brings them.
-- The §24 capture-plane integration tests: `tests/test_capture_docker.py` runs known
-  workloads and asserts each plane records exactly the expected events; the offline half
-  is `tests/test_capture_planes.py`.
-- The ARF null-emission question is settled: `None` fields are omitted at serialisation
-  (lossless — absence and `null` read identically). See spec-notes.
+- **The adapter contract**: `bellwether.harness` now carries `HarnessAdapter`,
+  `RawHarnessEvent` (with the originating `tool_call_id` on every call/result pair —
+  the explicit-correlation path WP-10 consumes), `RunLimits`, and
+  `HarnessCapabilities`. The capabilities record includes
+  `controls_skill_presentation`, from which the `harness-specific: not portable` label
+  on trigger metrics derives — wired at the boundary, per the build plan's note.
+- **`api-loop`**: a deterministic agent loop behind a `ModelClient` seam. The only
+  shipped client is `ScriptedClient` — a live HTTP client is deliberately deferred to
+  WP-13, because until the recording proxy exists there is no *observed* egress path
+  for it (see spec-notes). Skill presentation is a fixed sorted template; the model
+  loads a skill through a `skill` tool, producing `skill_activated` /
+  `skill_body_loaded` events.
+- **The tool set** (read, write, bash, fetch): every call is one `docker exec` against
+  the run's persistent container, so path resolution stays inside the container's
+  namespace — symlink escapes are contained by construction, asserted by test. `fetch`
+  is refused-and-recorded until WP-13. Full output fidelity lives in digests;
+  truncation only affects what the model sees.
+- **Persistent containers**: `DockerBackend.start_persistent` / `exec_in` /
+  `stop_persistent`, same profile and argv discipline as one-shot `run`.
+- **Trace side**: `harness_actions`, `token_totals_from_events`,
+  `exit_reason_from_events`; `TargetRef.harness_capabilities` records the §9.4
+  declaration in every trace.
+- **The golden trace**: `tests/golden/api_loop_reference.jsonl`, generated by
+  `tests/golden_trace.py`, regenerated and byte-compared in CI (§24). The offline
+  analysis pipeline of WP-10..12 tests against this file.
+- The WP-6 done-when is asserted end-to-end in `tests/test_harness_docker.py`: a real
+  sandbox run producing a complete ARF trace with Plane A and Plane B populated.
 
 ## What to do next
 
-**WP-6 — the `api-loop` harness adapter.** A provider-thin agent loop that runs inside
-the sandbox, drives a model through tool calls, and writes hook events to the Plane A
-sink (the sink's wire format is JSONL objects; the adapter defines the event schema —
-that translation into Plane A `Action` records deliberately did not land in WP-5).
-`bellwether.harness` is empty; §9.4 defines the adapter contract, and golden traces for
-the offline analysis path are one of its outputs.
+**WP-7 — canonicalization and epoch anchoring (§11.4, §11.5).** The build plan calls
+this the package most likely to be got subtly wrong. Plane A is the ordering spine;
+epoch boundaries come from tool-call durations; where `anchor_seq` is set, epoch
+assignment ignores timestamps entirely. Within-epoch ordering is
+`(plane_priority, kind, normalized_target, stable_hash)` — never wall-clock. The §24
+noise-floor requirement (dispersion over Plane A alone must be exactly zero on
+identical runs) is the only test that proves it right, and the golden trace plus the
+capture planes now provide everything it consumes.
 
-**WP-8 (platform baseline) is a reasonable alternative** if you want something entirely
-offline. The build plan lists it as parallelisable with WP-5–7, and its done-criterion —
-`~/.cache/../.aws/credentials` raising a near-miss rather than being absorbed — is
-directly served by the traversal handling already in `bellwether.sandbox.zones`.
+**WP-8 (platform baseline) remains the fully-offline alternative**, parallelisable
+with WP-7.
 
 ## Outstanding actions
 
@@ -77,8 +83,9 @@ directly served by the traversal handling already in `bellwether.sandbox.zones`.
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
 | §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | Needs the orchestrator that does not exist yet. Wire it when `run` lands. |
-| Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-6 adapter should draw it per run, plausibly via `sandbox/identifiers.py`. |
-| Plane A events are captured but not yet translated to ARF actions | `capture/sink.py` | Deliberate: the WP-6 adapter defines the event schema, so the translation lands with it. |
+| Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
+| The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
+| Live model client | `harness/provider.py` | Deferred to WP-13 on purpose: no observed egress path exists yet for it (spec-notes §9.4). |
 | §16.4 precondition check not implemented | WP-11 | Must refuse before any run executes, so it lands with the verdict engine. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
@@ -111,11 +118,13 @@ GHCR and public ECR redirect blobs to — so a pull fails part-way through with 
 `BELLWETHER_TEST_IMAGE`. CI uses `alpine:3.20`, which is fine there because GitHub runners
 have open egress.
 
-### Commits pushed from an agent session do not trigger CI
+### Check a green check's SHA against the PR head
 
-This is the one that has already caused a real problem. GitHub does not create workflow
-runs for pushes authenticated with the session token; opening a PR through the API *does*.
-The consequence:
+Pushes authenticated with the session token do not create `push`-event workflow runs.
+Opening a PR does create a run — and, observed on #8, so does pushing to a branch with
+an **open** PR (the `pull_request` synchronize event fires). The gap is therefore
+branches with no open PR, and any state where a run failed to materialise. The
+consequence when it bites:
 
 > A pull request can display green checks that ran against an **older commit** than the
 > one that would merge.
@@ -169,6 +178,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Eighteen entries. Read it before changing anything in the skill, sandbox, capture or
+  Twenty-one entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.

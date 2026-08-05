@@ -17,4 +17,42 @@ afterwards. Never hard-code a model identifier: aliases resolve through config.
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from bellwether.harness.api_loop import ApiLoopAdapter, OfferedSkill
+from bellwether.harness.protocol import (
+    HarnessAdapter,
+    HarnessCapabilities,
+    RawHarnessEvent,
+    RunLimits,
+)
+from bellwether.harness.provider import (
+    ModelClient,
+    ModelRequest,
+    ModelTurn,
+    ScriptedClient,
+    ToolCallRequest,
+    ToolSpec,
+    TurnUsage,
+    resolve_model,
+)
+from bellwether.harness.tools import ExecResult, SandboxExec, SandboxToolset, ToolOutcome
+
+__all__ = [
+    "ApiLoopAdapter",
+    "ExecResult",
+    "HarnessAdapter",
+    "HarnessCapabilities",
+    "ModelClient",
+    "ModelRequest",
+    "ModelTurn",
+    "OfferedSkill",
+    "RawHarnessEvent",
+    "RunLimits",
+    "SandboxExec",
+    "SandboxToolset",
+    "ScriptedClient",
+    "ToolCallRequest",
+    "ToolOutcome",
+    "ToolSpec",
+    "TurnUsage",
+    "resolve_model",
+]

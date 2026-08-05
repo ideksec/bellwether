@@ -17,7 +17,13 @@ wrong, and WP-19's noise floor is the only test that proves it.
 
 from __future__ import annotations
 
-from bellwether.trace.build import assemble_coverage, filesystem_actions
+from bellwether.trace.build import (
+    assemble_coverage,
+    exit_reason_from_events,
+    filesystem_actions,
+    harness_actions,
+    token_totals_from_events,
+)
 from bellwether.trace.models import (
     ARF_VERSION,
     Action,
@@ -62,10 +68,13 @@ __all__ = [
     "Trace",
     "TraceWriter",
     "assemble_coverage",
+    "exit_reason_from_events",
     "filesystem_actions",
+    "harness_actions",
     "iter_actions",
     "parse_trace",
     "read_trace",
     "serialize_record",
+    "token_totals_from_events",
     "write_trace",
 ]

@@ -15,9 +15,9 @@ flock is about to move. It warns; it does not vouch.
 ## Status
 
 **Pre-v0.1. Under construction.** The scaffolding, configuration layer, skill parser,
-trace format, sandbox, and the first two capture planes (harness events, filesystem by
-zone) are built and tested. The harness adapters, the network planes, metrics and the
-verdict engine are not.
+trace format, sandbox, the first two capture planes (harness events, filesystem by
+zone), and the `api-loop` reference harness adapter are built and tested. The
+`claude-code` adapter, the network planes, metrics and the verdict engine are not.
 
 `bellwether run` is not usable yet and says so, naming the work package that brings it,
 rather than printing an empty result that would read as a clean run.
@@ -159,8 +159,9 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Sandbox host side: zones, fixture materialisation, payload staging, identifiers, isolation profile | done (WP-4) |
 | Sandbox container backend: overlay mount, whiteout-aware upper-dir diff, container lifecycle | done (WP-4) |
 | Capture: host-owned event sink (Plane A), per-zone overlay filesystem capture (Plane B), coverage block | done (WP-5) |
-| Harness adapters (`api-loop`, `claude-code`) | WP-6 (next), WP-17 |
-| Epoch anchoring, platform baseline, assertions | WP-7 – WP-9 |
+| `api-loop` harness adapter: agent loop, sandboxed tools, scripted provider, golden trace | done (WP-6) |
+| Epoch anchoring, platform baseline, assertions | WP-7 (next) – WP-9 |
+| `claude-code` harness adapter | WP-17 |
 | Metrics, verdict engine, reporting | WP-10 – WP-12 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
 | Corpus and acceptance | WP-20 |

@@ -148,6 +148,11 @@ class TargetRef(ArfModel):
     #: Set where sampling was pinned for a low-variance comparison. Results collected this
     #: way are marked distinctly in output because they are not the realistic condition.
     deterministic_sampling: bool = False
+    #: The adapter's §9.4 capabilities declaration, verbatim. Recorded so a missing
+    #: signal stays distinguishable from an absent behaviour — and so the
+    #: ``harness-specific: not portable`` label on trigger metrics is derivable from the
+    #: trace alone.
+    harness_capabilities: dict[str, Any] | None = None
 
 
 class SandboxRef(ArfModel):
