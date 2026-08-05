@@ -23,8 +23,16 @@ def serialize_record(record: ArfModel) -> str:
 
     Keys sorted and floats rounded at this boundary, so two runs that observed the same
     thing produce byte-identical lines (§24).
+
+    ``None`` fields are omitted rather than written as ``null``. Every optional ARF field
+    defaults to ``None`` on read, so absence and ``null`` are indistinguishable to a
+    reader and omitting them is lossless — while a trivial action carrying four ``:null``
+    keys is a third larger than it needs to be, multiplied by the thousands of filesystem
+    records a single run produces once Plane B is live. The one thing given up is
+    re-emitting an *explicit* ``null`` some other writer chose to put in an unknown
+    field, which carries no information a reader could act on.
     """
-    payload = record.model_dump(mode="json", by_alias=True, exclude_none=False)
+    payload = record.model_dump(mode="json", by_alias=True, exclude_none=True)
     line = canonical_json(payload)
     if "\n" in line:  # pragma: no cover — canonical_json never emits a newline
         raise TraceError("a serialised ARF record must occupy exactly one line")

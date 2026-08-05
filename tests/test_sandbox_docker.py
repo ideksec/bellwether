@@ -269,11 +269,12 @@ def test_the_container_cannot_reach_the_upper_directory(
     assert str(mounted.upper_dir) not in result.stdout or "No such file" in result.stdout
 
 
-def test_scratch_is_a_tmpfs_outside_the_workspace_diff(
+def test_scratch_stays_outside_the_workspace_diff(
     backend: DockerBackend,
     mounted,  # type: ignore[no-untyped-def]
 ) -> None:
-    """§10.2: scratch is recorded separately, never in the workspace diff."""
+    """§10.2: scratch is recorded separately — since WP-5 in its own zone overlay —
+    and never appears in the workspace diff."""
     result = backend.run(mounted, ["sh", "-c", "echo temp > /tmp/scratch.txt; echo ok"])
     assert result.exit_code == 0, result.stderr
     assert backend.changed_paths(mounted) == []

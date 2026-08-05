@@ -324,3 +324,95 @@ than the workspace, which has its own bind. The read-only payload bind is emitte
 them, so it sits on top of the writable parent rather than underneath it — verified by a
 container test asserting the harness state zone is writable while the installed payload
 still is not. The two `writable_paths` collections now agree, and both match §21.
+
+---
+
+## §11.1 — `None` fields are omitted from ARF lines, not serialised as `null`
+
+**Spec.** §11.2's example action record shows `"canary": null` inline, and §11.1 requires
+records to be diffable and streamable. It does not say whether an absent value is written.
+
+**Problem.** With `null` emission, a trivial action serialised to ~372 bytes, four of them
+`:null` keys. WP-5 turns every changed path into a filesystem action record, so a run over
+a repository fixture produces thousands of records and the nulls become a measurable
+fraction of every artifact uploaded to CI — for no information, since every optional ARF
+field defaults to `None` on read and a reader cannot distinguish absence from `null`.
+
+**Resolution.** `serialize_record` dumps with `exclude_none=True`. Round-tripping stays
+lossless — read-then-rewrite is still byte-identical, and the §24 determinism rule is
+unaffected because omission is applied at serialisation, uniformly. The one thing given
+up: an *explicit* `null` placed in an unknown field by a third-party writer is re-emitted
+as absence. A null-valued unknown field carries nothing a reader could act on, so this is
+the cheaper side of the trade.
+
+---
+
+## §10.1 — The event sink is a FIFO, made write-only after the host opens it
+
+**Spec.** "A unix domain socket or a FIFO bind-mounted into the container, consumed by a
+host process. Append-only from the container's perspective." Either mechanism is allowed.
+
+**Resolution.** A FIFO, for one deciding reason: any process in the container can write
+to it with a shell redirection, which is what a hook script has — a socket writer needs
+socket support, which a minimal sandbox image may not carry. The FIFO's one architectural
+leak is handled explicitly: a FIFO delivers each datum to whichever reader gets it first,
+so a container process that could open the read end could *steal* events out of the
+evidence stream — worse than truncating a log file, because theft leaves no trace. The
+host therefore creates the node owner-only, opens its own read-write descriptor, and then
+chmods the node to `0222`. An already-open descriptor is not re-checked against the mode,
+so the host keeps reading while every subsequent open for reading — any uid, since an
+unprivileged host can share the container's uid — is refused. Write-only is exactly the
+"append-only from the container's perspective" the spec asks for, arrived at with
+permissions rather than protocol.
+
+Two more properties fall out. The node is bind-mounted as a single file, so `unlink` from
+inside fails with `EBUSY` — the container cannot remove the channel, only decline to use
+it. And the reader is deadline-driven at every point (non-blocking open before the
+container starts, poll with a timeout, drain against a monotonic deadline), because the
+WP-4 review already found one collector hang caused by a FIFO — the observed process must
+never decide whether the observer finishes (§10.0). Lines that are not JSON objects are
+recorded as `malformed` rather than dropped; per-line and total byte caps bound host
+memory against a flood, and anything the caps decline to store is counted and degrades
+the plane to `partial` with the reason stated (§10.7).
+
+---
+
+## §10.2 — Harness state and scratch are captured by their own overlays, not tmpfs
+
+**Spec.** The three-zone table says harness state and scratch are "recorded separately"
+from the workspace diff, and scratch writes enter the capability set coarsened to tier 2.
+
+**Problem.** WP-4 mounted both zones as tmpfs. A tmpfs dies with the container: there was
+nothing to record separately, because writes to those zones were unobservable after the
+run. `harness_state_write` could never be produced, scratch capabilities could never
+enter the capability set, and — the quiet failure — an assertion like
+`no_harness_state_write` would have passed on every run because the plane it depends on
+saw nothing. That is the §10.7 shape again: a capture gap reading as a clean run.
+
+**Resolution.** Each captured zone gets the workspace treatment: an overlayfs over an
+empty lower directory with the upper directory on the host, bind-mounted at the zone's
+container path. After the run each zone's upper directory yields its own changed-path
+set, and every filesystem event carries its zone. The scratch directories are created
+mode `1777` because the merged root shows the upper directory's attributes and everything
+inside a container assumes `/tmp` is sticky-world-writable. A zone whose overlay is not
+mounted falls back to tmpfs — still writable, so nothing breaks — and the filesystem
+plane's coverage degrades to `partial` with the unobserved zone named, because absent
+and empty must not read the same. The backend distinguishes the two by tracking which
+upper directories were ever mounted, surviving unmount.
+
+---
+
+## §10.2 vs §11.2 — capture records the zone; the normalizer computes the tiers
+
+**Spec.** §10.2 says both filesystem mechanisms "MUST record … the tier-1 scope class,
+the tier-2 directory class"; §11.2 says "the `capability` block is computed by the
+normalizer, not by the capture plane".
+
+**Resolution.** Read §10.2 as a statement about the finished *record*, not about which
+component computes the field: the filesystem action records that reach a trace carry the
+tiers once WP-7's normalizer has enriched them. The capture layer records what only it
+knows — absolute path, zone, zone-relative path, change kind, content hash, mode, file
+type, and whether the path is a canary plant site — and interprets nothing, which is the
+capture module's stated boundary. The one §10.2 field this defers is the tier pair,
+which cannot be computed without the declared-scope and platform-baseline context that
+capture is forbidden to know.
