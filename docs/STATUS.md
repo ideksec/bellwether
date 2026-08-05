@@ -26,7 +26,8 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-12 — reporting | not started |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-283 tests: 255 offline, 28 requiring a Docker daemon. All green.
+285 tests: 255 offline, 30 under the `docker` mark (two of those need only root, not a
+daemon — they simulate a kernel that marks every upper-layer directory opaque). All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.

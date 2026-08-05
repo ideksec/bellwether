@@ -167,8 +167,13 @@ def read_overlay_diff(upper: Path, lower: Path | None = None) -> list[PathChange
         if stat.S_ISDIR(info.st_mode):
             # A directory in the upper layer is usually just the parent of a changed
             # file, copied up so the child can exist. Reporting every one would bury the
-            # actual changes; an opaque directory is different and is reported.
-            if _is_opaque(absolute):
+            # actual changes; an opaque directory *replacing a lower one* is different
+            # and is reported. The lower-counterpart check is load-bearing: some kernels
+            # mark every freshly created directory opaque as a lookup optimisation, so
+            # opacity alone means "replaced" on one machine and "mkdir happened" on
+            # another — and the second reading turned Docker's own mountpoint creation
+            # into phantom skill behaviour on CI while the local kernel showed nothing.
+            if _is_opaque(absolute) and _has_lower_directory(relative, lower):
                 changes.append(
                     PathChange(
                         path=relative,
@@ -262,10 +267,26 @@ def _is_whiteout(info: os.stat_result) -> bool:
 
 
 def _is_opaque(path: Path) -> bool:
-    """An opaque directory replaced, rather than merged with, the one below it."""
+    """The directory carries the overlay opaque marker.
+
+    On its own this does **not** mean a directory was replaced: kernels differ on when
+    they set it, and some mark every directory created in the upper layer. Interpretation
+    requires the lower counterpart check in :func:`_has_lower_directory`.
+    """
     try:
         return b"y" in os.getxattr(path, "trusted.overlay.opaque")
     except OSError:
         # Reading a trusted xattr needs CAP_SYS_ADMIN; absent it, treat the directory as
         # ordinary rather than guessing. The files inside it are still reported.
         return False
+
+
+def _has_lower_directory(relative: str, lower: Path | None) -> bool:
+    """Whether an opaque marker has anything below it to conceal.
+
+    An opaque directory shadows the lower directory's contents — which is only a change
+    worth reporting if a lower directory exists. Where it does not, the marker conceals
+    nothing and reporting it would attribute a bare ``mkdir`` (including Docker's own
+    mountpoint creation) to the skill, differently per kernel.
+    """
+    return lower is not None and (lower / relative).is_dir()

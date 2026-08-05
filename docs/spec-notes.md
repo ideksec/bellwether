@@ -416,3 +416,26 @@ type, and whether the path is a canary plant site — and interprets nothing, wh
 capture module's stated boundary. The one §10.2 field this defers is the tier pair,
 which cannot be computed without the declared-scope and platform-baseline context that
 capture is forbidden to know.
+
+---
+
+## §9.1 step 9 — An opaque marker is only a change where a lower directory exists
+
+**Spec.** Overlayfs "records a deletion as a character device… and an opaque directory
+with the `trusted.overlay.opaque` xattr". The diff reader reported every opaque directory
+as a modification.
+
+**Problem.** Kernels disagree about when the marker is set. The kernel the CI runner
+boots marks **every** directory created in an upper layer opaque, as a lookup
+optimisation; the development kernel marks only genuine replacements. On CI this turned
+every `mkdir` inside a captured zone — including Docker's own creation of the payload
+mountpoint chain — into a phantom `modified` entry attributed to the skill, while the
+same suite ran clean locally. A capture plane whose output depends on the host kernel's
+mood fails §24's determinism intent in the quietest possible way.
+
+**Resolution.** Opacity is reported only together with an existing lower counterpart —
+the case where the marker actually conceals something and "the skill deleted your source
+tree" must not read as "no changes". An opaque directory with nothing below it conceals
+nothing and is not a change. The regression tests set the xattr by hand (root-only, so
+they live with the container suite) rather than depending on any particular kernel's
+marking behaviour.
