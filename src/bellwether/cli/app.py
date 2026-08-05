@@ -247,10 +247,10 @@ def run(
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts."""
     _not_yet(
         "run",
-        "the sandbox execution driver (the RunExecutor half of the orchestrator)",
-        "the analysis path — trace to verdict to artifact tree — is built and tested "
-        "(bellwether.cli.orchestrator); what remains is the driver that materialises the "
-        "sandbox and executes the matrix to feed it",
+        "WP-13 (the live model client)",
+        "the whole pipeline — sandbox execution driver, capture, metrics, verdict, artifact "
+        "tree — is built and reaches first-light end to end in tests; a CLI run of an "
+        "arbitrary skill needs a live model client, which lands with the recording proxy",
     )
 
 

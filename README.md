@@ -19,13 +19,16 @@ the scaffolding, configuration layer, skill parser, trace format, sandbox, the f
 capture planes (harness events, filesystem by zone), the `api-loop` reference harness
 adapter, the canonicalization layer, the platform baseline, the assertion engine, the
 metrics, the verdict engine, the report layer (`summary.json` + the Markdown PR comment),
-and the analysis orchestrator that assembles them all into a verdict and an artifact tree.
-What does not yet exist is the sandbox execution driver that feeds the orchestrator real
-runs, the network planes (recording proxy, DNS resolver, canaries), and the `claude-code`
-adapter.
+the analysis orchestrator that assembles them all into a verdict and an artifact tree, and
+the sandbox execution driver that runs a skill through a real container to feed it. The
+**first-light checkpoint is reached**: `benign-stable` runs end to end in a real sandbox and
+produces a verdict and an artifact tree. What does not yet exist is the network layer
+(recording proxy, DNS resolver, canaries) and the live model client that together let
+`bellwether run` drive a real skill against a real model from the CLI.
 
-`bellwether run` is not usable yet and says so, naming the work package that brings it,
-rather than printing an empty result that would read as a clean run.
+`bellwether run` is not usable from the CLI yet and says so, naming the work package that
+brings it (WP-13, the live model client), rather than printing an empty result that would
+read as a clean run.
 
 **[docs/STATUS.md](docs/STATUS.md) is the current state of the build** — what is done,
 what is next, what is outstanding, and what a new contributor needs to know about the
@@ -172,7 +175,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Verdict engine: per-target gate composition, precondition check, weight validation | done (WP-11) |
 | Reporting: schema-versioned `summary.json`, the §13.8 figures, the Markdown PR comment | done (WP-12) |
 | Analysis orchestrator: trace → §13 metrics → §16.2 gates → verdict → §17.1 artifact tree | done |
-| Sandbox execution driver (`RunExecutor`) and the first-light checkpoint | next |
+| Sandbox execution driver (`RunExecutor`); first-light checkpoint reached | done |
+| Recording proxy, live model client, `bellwether run` from the CLI | WP-13 |
 | `claude-code` harness adapter | WP-17 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
 | Corpus and acceptance | WP-20 |

@@ -729,3 +729,32 @@ engine): a `benign-stable` skill with six identical passing runs is `conditional
 first-light *because* egress cannot be evaluated, and only reaches `ready` once the
 recording proxy (WP-13) makes it evaluable. The verdict never treats an unobserved channel
 as a clean one — which is the whole point of the tool, holding even for its own skeleton.
+
+---
+
+## §10, §25 — The execution driver is model-injected; first-light is scripted, not live
+
+**Spec.** §25's first-light checkpoint is "`benign-stable` end to end with the proxy and
+resolver bypassed and egress assertions disabled", confirming the skeleton walks. §9.4's
+execution model assumes a live model client.
+
+**Resolution.** `SandboxRunExecutor` (`bellwether.cli.execution`) takes a `ModelClient` per
+target through a `client_factory`, rather than constructing one. Two reasons. First, the
+live client is deferred to WP-13 on purpose (spec-notes §9.4: no observed egress path exists
+for it yet), so at first-light the corpus is driven by a `ScriptedClient` — which is exactly
+how the golden trace and every WP-6 container test already produce deterministic runs.
+Second, injection keeps the executor from importing a provider, so the `harness → sandbox`
+layering and the no-hard-coded-model rule both hold in the one module that ties everything
+together. The consequence for the CLI: `bellwether run` still names WP-13, because a CLI run
+of an arbitrary skill needs a *live* client, not a scripted transcript — the executor and
+orchestrator are complete, but the model side that makes them usable from the command line
+is not. The first-light checkpoint is therefore reached by an end-to-end **test**
+(`test_execution_docker.py`), which is what §25 asks for — a skeleton proven to walk — not a
+shipped CLI feature.
+
+The served model id is read back from the `model_turn` events' `model_id_reported`, not
+assumed equal to what was requested: a silent model-version swap between requested and
+served is exactly the regression a trace exists to catch (§9.4), so it is recorded even when
+the two agree. And each repetition gets a *fresh* sandbox (prepare → mount → run → unmount),
+never a reused one: a repetition set is a distribution over independent runs (§13.2), and
+sharing a filesystem between them would manufacture a consistency the skill has not earned.
