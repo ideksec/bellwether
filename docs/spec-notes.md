@@ -697,3 +697,35 @@ rate; the "consistently failing" annotation below p̂ 0.5; every figure carrying
 `n_evaluable` and look; the §2 footer rendered whole) are conditional logic, and keeping
 them in unit-tested Python beats hiding them in template branches. `jinja2` stays a
 dependency for the HTML report to come.
+
+---
+
+## §16–§17 — The orchestrator is split: analysis now, execution next
+
+**Spec.** §20's `bellwether run` is one command that "materialises the sandbox, executes
+the matrix, captures, computes metrics, composes the verdict, renders the artifacts". §25
+adds: "Do not build the proxy and the orchestrator simultaneously."
+
+**Resolution.** The orchestrator is built in two halves across two packages, and the same
+caution that separates the proxy from the orchestrator separates the orchestrator's own
+halves. The **analysis half** (`bellwether.cli.orchestrator`) is pure and deterministic:
+given the trace for each repetition it drives per-run reading → §13 aggregation → §16.2
+gate population → verdict → §17.1 artifact tree. It is exercised end to end offline against
+a scripted `api-loop` run, so the intricate aggregation-and-gate logic is validated with no
+Docker and no key. The **execution half** — the `RunExecutor` that materialises the sandbox
+and runs the matrix — is a thin adapter over the WP-6 container wiring and lands next; it
+is the one part that needs a daemon and root, so isolating it keeps the analysis path
+testable on a laptop. `RunExecutor` is a `Protocol`, so the analysis path never imports the
+sandbox and the boundary is structural, not conventional.
+
+Two consequences worth recording. First, the security-runtime gates whose capture plane
+does not exist yet (egress, DNS) resolve to `not_evaluable` with the coverage reason, and
+are marked *required* only where the policy disposition is `block`. Under a `block`
+disposition that is exactly the unsatisfiable combination §16.4's precondition check
+refuses before the run; under the first-light `warn` configuration it surfaces as an
+advisory `not_evaluable`. Second — and this is the first-light finding — an advisory
+`not_evaluable` gate makes the verdict `conditional`, not `ready` (§16.2, the WP-11
+engine): a `benign-stable` skill with six identical passing runs is `conditional` at
+first-light *because* egress cannot be evaluated, and only reaches `ready` once the
+recording proxy (WP-13) makes it evaluable. The verdict never treats an unobserved channel
+as a clean one — which is the whole point of the tool, holding even for its own skeleton.

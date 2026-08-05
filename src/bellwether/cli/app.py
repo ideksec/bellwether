@@ -247,8 +247,10 @@ def run(
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts."""
     _not_yet(
         "run",
-        "WP-4 through WP-12, gated on the first-light checkpoint",
-        "needs the sandbox, the capture planes, the harness adapters and the verdict engine",
+        "the sandbox execution driver (the RunExecutor half of the orchestrator)",
+        "the analysis path — trace to verdict to artifact tree — is built and tested "
+        "(bellwether.cli.orchestrator); what remains is the driver that materialises the "
+        "sandbox and executes the matrix to feed it",
     )
 
 
