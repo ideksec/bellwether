@@ -635,3 +635,26 @@ clusters are listed in (by representative). Those are what §24's byte-identical
 constrains, and they are made deterministic by sorting on the token form of each
 sequence. Implementing the merge dendrogram with a tie-break would reach the same cut and
 cost more; connected components is the honest simplification.
+
+---
+
+## §16.4 — Activation observability is read from `structured_tool_events`
+
+**Spec.** The first §16.4 combination is "`generic-subprocess` cannot observe skill
+activation → `skill_activated` is `not_evaluable` → `require_all_should_trigger`
+blocks". The `HarnessCapabilities` structure of §9.4 has no field literally named
+"observes activation".
+
+**Resolution.** The precondition check reads activation observability from
+`structured_tool_events`. A harness that emits a structured event stream is exactly one
+that can report *which* skill loaded and when; a harness reduced to scraping stdout
+(`generic-subprocess`, v0.3) declares `structured_tool_events: false` and cannot. So the
+existing capability is the right proxy, and no new field is needed. The check consumes
+the capability record as a plain mapping (`HarnessCapabilities.as_record()`), which
+keeps the `verdict` layer decoupled from `harness` and matches what a trace already
+stores in `target.harness_capabilities`.
+
+The precondition check reports *every* unsatisfiable combination it finds in one pass,
+not just the first — a user fixing one wall only to hit the next on the re-run is the
+slow-feedback failure §16.4 exists to prevent. `bellwether doctor` surfaces the same
+check (§20), wired when the orchestrator lands (WP not yet built).

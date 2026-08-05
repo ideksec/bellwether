@@ -165,7 +165,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Platform baseline: document, glob matcher, near-miss flagging, process attribution | done (WP-8) |
 | Assertions: deterministic catalogue, scope derivation, Declared vs Observed, run outcomes | done (WP-9) |
 | Metrics: Wilson/Pocock sequential design, risk-weighted capability Jaccard, trajectory clustering, BCI | done (WP-10) |
-| Verdict engine, reporting | WP-11 (next) – WP-12 |
+| Verdict engine: per-target gate composition, precondition check, weight validation | done (WP-11) |
+| Reporting | WP-12 (next) |
 | `claude-code` harness adapter | WP-17 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
 | Corpus and acceptance | WP-20 |
