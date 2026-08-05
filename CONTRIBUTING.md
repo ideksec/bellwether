@@ -10,7 +10,7 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --group dev
-uv run pytest
+uv run pytest -m "not docker"
 ```
 
 Every test runs offline, with no API key, except where a test is explicitly marked
@@ -37,10 +37,12 @@ the privilege the host has and the container does not, which is the whole captur
 architecture in one line (§10.0).
 
 ```bash
-sudo -E env "PATH=$PATH" uv run pytest -m docker
+sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker
 ```
 
-They skip with a stated reason where either is missing. CI runs them as a separate job
+They skip with a stated reason where either is missing. The interpreter is invoked
+directly rather than through `uv run`, because `uv` as root would want to resolve and
+possibly rewrite an environment that belongs to the normal user. CI runs them as a separate job
 rather than letting them skip inside the main one: a suite that goes green with these
 quietly absent is exactly the clean-looking failure this project exists to distrust, so
 the job also asserts they were collected.
@@ -139,6 +141,13 @@ every deliberately-malformed document has a test asserting its message is readab
   calibrate, not constants.
 - Harness CLI flags and hook APIs change. Read the current documentation for the harness
   you are adapting; do not trust the spec's description of another project's interface.
+
+## Before you start
+
+[docs/STATUS.md](docs/STATUS.md) is where the build is: what is done, what is next, what
+is outstanding, and the environment quirks that have already cost time — the Docker
+daemon that does not start itself, the registries that are unreachable, and the CI checks
+that can go stale against an older commit than the one that would merge.
 
 ## Pull requests
 
