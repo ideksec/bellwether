@@ -16,4 +16,24 @@ failures, while ``budget_exceeded`` / ``cancelled`` are ``not_evaluable``.
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from bellwether.assertions.baseline import (
+    BaselineApplication,
+    NearMiss,
+    ObservedPath,
+    ObservedProcess,
+    ProcessAttribution,
+    apply_path_baseline,
+    attribute_process,
+    glob_to_regex,
+)
+
+__all__ = [
+    "BaselineApplication",
+    "NearMiss",
+    "ObservedPath",
+    "ObservedProcess",
+    "ProcessAttribution",
+    "apply_path_baseline",
+    "attribute_process",
+    "glob_to_regex",
+]

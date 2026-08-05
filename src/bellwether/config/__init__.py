@@ -11,6 +11,10 @@ MUST NOT
 
 from __future__ import annotations
 
+from bellwether.config.baseline_loader import (
+    load_platform_baseline,
+    parse_platform_baseline,
+)
 from bellwether.config.config_loader import load_config, parse_config, resolve_model_id
 from bellwether.config.document import (
     CONFIG_DIR,
@@ -33,6 +37,7 @@ from bellwether.config.models import (
     DeclaredScope,
     EnforcedSetting,
     Gates,
+    PlatformBaseline,
     Policy,
     ProfileSpec,
     ProviderConfig,
@@ -57,6 +62,7 @@ __all__ = [
     "DeclaredScope",
     "EnforcedSetting",
     "Gates",
+    "PlatformBaseline",
     "Policy",
     "ProfileSpec",
     "ProviderConfig",
@@ -67,11 +73,13 @@ __all__ = [
     "Target",
     "load_config",
     "load_manifest",
+    "load_platform_baseline",
     "load_policy",
     "load_scenarios",
     "load_yaml_mapping",
     "parse_config",
     "parse_manifest",
+    "parse_platform_baseline",
     "parse_policy",
     "parse_scenarios",
     "resolve_model_id",

@@ -537,3 +537,31 @@ Related seam: `canonicalize` takes the platform baseline as a set of normalized 
 entries matched **literally**. The glob-aware matcher with near-miss flagging is WP-8's
 deliverable; it will feed this same parameter, so the subtraction semantics (§11.4:
 capability sets only, never the step sequence) are pinned now and tested now.
+
+---
+
+## §12.6 — Near-misses fire in both traversal directions, and `${...}` survives braces
+
+**Spec.** "Where a skill's activity differs from a baseline entry only by a suspicious
+margin — reading `~/.cache/../.aws/credentials` … — raise a `medium` finding rather
+than silently absorbing it. Baseline entries are matched literally after path
+normalisation; traversal sequences are never resolved *into* a baseline match."
+
+**Resolution.** The matcher receives each observed access in both forms — the path as
+*named* (placeholders substituted, traversal preserved) and as *reached* (lexically
+collapsed) — because the difference between them is the signal. A traversal path is
+never absorbed, full stop. It becomes a near-miss in either direction: traversal **out
+of** an entry (the named prefix sits under `${HOME}/.cache/**`, the resolution
+escapes), and traversal **into** an entry (`/etc/x/../passwd` resolves onto
+`/etc/passwd`) — naming an allowlisted path via `..` is itself the suspicious margin.
+A traversal path related to no entry at all is neither absorbed nor flagged here; it is
+an ordinary observation for the scope evaluation to judge.
+
+Two adjacent decisions. A `helpers_of` mapping is **inert when its root is not itself
+permitted** (declared or `always`): an undeclared standalone `git` is a plain scope
+violation, and calling its helpers "near-misses" would soften exactly the finding that
+matters. And the glob expander treats `${` as the start of a placeholder, never of a
+brace group — the initial implementation expanded `${HOME}` as a one-choice
+alternation, rewriting it to `$HOME`, at which point every placeholder entry matched
+nothing and the baseline failed silently in the direction that looks clean. The test
+that caught it is named for the failure mode.
