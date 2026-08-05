@@ -164,6 +164,44 @@ def test_the_payload_is_present_and_read_only(backend: DockerBackend, mounted) -
     assert rewrite.exit_code != 0, "a skill able to rewrite its own installed body"
 
 
+def test_the_harness_state_zone_is_writable(backend: DockerBackend, mounted) -> None:  # type: ignore[no-untyped-def]
+    """§10.2's harness state zone is where an adapter stores session state.
+
+    Under `--read-only`, a declared-writable path with no mount is read-only however
+    loudly the profile declares it. Every state write would fail with EROFS, and a run
+    where the agent could not write anything reads as a skill that did nothing.
+    """
+    result = backend.run(
+        mounted,
+        ["sh", "-c", "mkdir -p /home/agent/.claude/state && echo ok > /home/agent/.claude/s.json"],
+    )
+    assert result.exit_code == 0, result.stderr
+
+
+def test_the_payload_stays_read_only_under_a_writable_parent(
+    backend: DockerBackend,
+    mounted,  # type: ignore[no-untyped-def]
+) -> None:
+    """The payload is mounted under the now-writable harness state zone. Mount ordering
+    has to leave the read-only bind on top, or the skill can rewrite its own body."""
+    install = mounted.payload.install_path
+    result = backend.run(mounted, ["sh", "-c", f"echo hacked > {install}/SKILL.md"])
+    assert result.exit_code != 0
+    assert "read-only" in result.stderr.lower()
+
+
+def test_the_recorded_command_line_is_the_one_that_ran(backend: DockerBackend, mounted) -> None:  # type: ignore[no-untyped-def]
+    """A shortened rendering described as exact is a false fidelity claim the moment it
+    reaches a trace."""
+    command = ["sh", "-c", "echo hi"]
+    rendered = backend.command_line(mounted, command)
+
+    for required in ("--cap-drop", "--read-only", "--network", "--hostname", "-w"):
+        assert required in rendered
+    assert str(mounted.payload.install_path) in rendered
+    assert str(mounted.identifiers.workspace_root) in rendered
+
+
 # ---------------------------------------------------------------------------
 # The overlay diff (§9.1 step 9, §10.2)
 # ---------------------------------------------------------------------------

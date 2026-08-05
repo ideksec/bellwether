@@ -8,6 +8,7 @@ bypassed before it started.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
@@ -32,7 +33,32 @@ from bellwether.skill.frontmatter import ParsedSkillMarkdown, parse_skill_markdo
 from bellwether.skill.inventory import Executable, build_inventory, estimate_tokens
 from bellwether.skill.payload import PayloadAllowlist, PayloadSplit
 
-__all__ = ["SKILL_FILE", "ReviewState", "SkillPackage", "load_skill"]
+__all__ = ["SKILL_FILE", "ReviewState", "SkillPackage", "load_skill", "slugify_name"]
+
+#: Characters allowed in the identifier used to build paths. Everything else is replaced.
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+_LEADING_JUNK = re.compile(r"^[.\-]+")
+
+
+def slugify_name(name: str) -> str:
+    """Derive an identifier usable as a path segment and a command-line argument.
+
+    A skill's ``name`` is written by whoever wrote the skill, and in external mode that is
+    a third party. It reaches a container mount target, so it is attacker-controlled input
+    to the trusted docker command line: ``name: /etc`` relocates the payload mount, because
+    joining an absolute path *discards* the prefix it was joined to, and a name containing
+    ``:`` injects extra fields into a ``-v`` spec.
+
+    The declared name is still reported verbatim — it is what the skill claims to be. It is
+    simply never the thing that builds a path.
+    """
+    slug = _SAFE_NAME.sub("-", name).strip("-")
+    slug = _LEADING_JUNK.sub("", slug)[:64].rstrip(".-")
+    # `.` and `..` are legal under the character rule and catastrophic as path segments.
+    if slug in ("", ".", ".."):
+        return "unnamed-skill"
+    return slug
+
 
 SKILL_FILE = "SKILL.md"
 MANIFEST_PATH = "evals/manifest.yaml"
@@ -80,6 +106,14 @@ class SkillPackage:
     #: Non-fatal observations worth reporting: missing frontmatter, a pinned model, files
     #: the payload allowlist did not match.
     problems: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def slug(self) -> str:
+        """The identifier used to build paths and command-line arguments.
+
+        Never :attr:`name`: that is attacker-controlled in external mode.
+        """
+        return slugify_name(self.name)
 
     @property
     def description(self) -> str:
@@ -177,6 +211,11 @@ def load_skill(
         )
 
     name = (parsed.frontmatter.name if parsed.frontmatter else None) or root.name
+    if slugify_name(name) != name:
+        problems.append(
+            f"declared name {name!r} is not usable as a path or an argument; "
+            f"{slugify_name(name)!r} is used wherever one is needed"
+        )
     manifest = _load_manifest(root) if load_evals else None
 
     package = SkillPackage(

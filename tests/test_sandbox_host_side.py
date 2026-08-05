@@ -11,11 +11,12 @@ The container lifecycle — overlay mount, upper-directory diff, an actual run u
 from __future__ import annotations
 
 import os
+import socket
 from pathlib import Path, PurePosixPath
 
 import pytest
 
-from bellwether.determinism import SeededRng
+from bellwether.determinism import SeededRng, stable_hash_bytes
 from bellwether.errors import SkillError
 from bellwether.sandbox import (
     DIRECTORY_MODE,
@@ -29,6 +30,7 @@ from bellwether.sandbox import (
     materialize_fixture,
     normalize_container_path,
     prepare_sandbox,
+    read_overlay_diff,
     stage_payload,
 )
 from bellwether.skill import load_skill
@@ -283,6 +285,114 @@ def test_staging_refuses_a_dirty_destination(skill_dir: Path, tmp_path: Path) ->
     (destination / "leftover").write_text("x", encoding="utf-8")
     with pytest.raises(SkillError, match="not empty"):
         stage_payload(load_skill(skill_dir), destination)
+
+
+# ---------------------------------------------------------------------------
+# The overlay diff never opens what it cannot safely open
+# ---------------------------------------------------------------------------
+
+
+def test_a_fifo_in_the_workspace_does_not_hang_the_collector(tmp_path: Path) -> None:
+    """The observed process must not decide whether the observer finishes (§10.0).
+
+    Opening a FIFO blocks until a writer appears, and nothing is going to write. The read
+    happens on the host *after* the container has exited, so the container timeout does not
+    bound it — the collector would hang forever. `mkfifo` needs no capability, so
+    ``--cap-drop=ALL`` does not prevent a skill from doing this.
+    """
+    upper = tmp_path / "upper"
+    lower = tmp_path / "lower"
+    upper.mkdir()
+    lower.mkdir()
+    os.mkfifo(upper / "pipe")
+
+    changes = {change.path: change for change in read_overlay_diff(upper, lower)}
+
+    assert changes["pipe"].file_type == "fifo"
+    assert changes["pipe"].is_special
+    # Presence is recorded; content is not, because there is none to read.
+    assert changes["pipe"].sha256 is None
+    assert changes["pipe"].mode is not None
+
+
+def test_a_unix_socket_is_recorded_rather_than_opened(tmp_path: Path) -> None:
+    """Opening one raises ENXIO — a crash instead of a hang, equally the container's choice."""
+    upper = tmp_path / "upper"
+    lower = tmp_path / "lower"
+    upper.mkdir()
+    lower.mkdir()
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.bind(str(upper / "sock"))
+        changes = {change.path: change for change in read_overlay_diff(upper, lower)}
+
+    assert changes["sock"].file_type == "socket"
+    assert changes["sock"].sha256 is None
+
+
+def test_regular_files_beside_a_special_one_are_still_hashed(tmp_path: Path) -> None:
+    upper = tmp_path / "upper"
+    lower = tmp_path / "lower"
+    upper.mkdir()
+    lower.mkdir()
+    os.mkfifo(upper / "pipe")
+    (upper / "real.txt").write_text("content", encoding="utf-8")
+
+    changes = {change.path: change for change in read_overlay_diff(upper, lower)}
+    assert changes["real.txt"].sha256 == stable_hash_bytes(b"content")
+    assert changes["real.txt"].file_type == "regular"
+
+
+# ---------------------------------------------------------------------------
+# A declared skill name never builds a path (§3.5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        ("/etc", "etc"),
+        ("pwn:rw", "pwn-rw"),
+        ("../../../etc", "etc"),
+        ("..", "unnamed-skill"),
+        (".", "unnamed-skill"),
+        ("   ", "unnamed-skill"),
+        ("normal-skill", "normal-skill"),
+    ],
+)
+def test_a_declared_name_cannot_escape_the_install_directory(
+    declared: str, expected: str, tmp_path: Path
+) -> None:
+    """In external mode the name is written by a third party and reaches a mount target.
+
+    Joining an absolute path *discards* the prefix, so `name: /etc` would relocate the
+    read-only payload mount over an arbitrary container path; a `:` injects extra fields
+    into the `-v` spec.
+    """
+    root = tmp_path / "pkg"
+    root.mkdir()
+    (root / "SKILL.md").write_text(
+        f'---\nname: "{declared}"\ndescription: d\n---\nbody\n', encoding="utf-8"
+    )
+    package = load_skill(root, load_evals=False)
+    staged = stage_payload(package, tmp_path / "payload")
+
+    assert package.slug == expected
+    assert staged.install_path == PurePosixPath("/home/agent/.claude/skills") / expected
+    assert staged.install_path.is_relative_to(PurePosixPath("/home/agent/.claude/skills"))
+    assert ":" not in str(staged.install_path)
+
+
+def test_the_declared_name_is_still_reported_verbatim(tmp_path: Path) -> None:
+    """The slug is for building paths. What the skill claims to be is still the finding."""
+    root = tmp_path / "pkg"
+    root.mkdir()
+    (root / "SKILL.md").write_text(
+        '---\nname: "/etc"\ndescription: d\n---\nbody\n', encoding="utf-8"
+    )
+    package = load_skill(root, load_evals=False)
+
+    assert package.name == "/etc"
+    assert any("not usable as a path" in problem for problem in package.problems)
 
 
 # ---------------------------------------------------------------------------

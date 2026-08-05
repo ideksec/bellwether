@@ -16,9 +16,10 @@ achievable (§10.0).
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bellwether.errors import BellwetherError
 from bellwether.sandbox.overlay import OverlayMount, PathChange, mount_overlay, read_overlay_diff
@@ -117,27 +118,7 @@ class DockerBackend:
         two; until they exist, no network at all is the honest configuration, because a
         container with unmediated egress would produce traces that under-report it.
         """
-        overlay = self._mounts.get(str(prepared.upper_dir))
-        workspace_source = overlay.merged if overlay else prepared.workspace.root
-
-        argv = [self.binary, "run", "--rm", *prepared.isolation.docker_flags()]
-        argv += ["--network", network]
-        argv += ["--hostname", prepared.identifiers.hostname]
-        argv += ["--name", prepared.identifiers.container_name]
-        argv += ["--tmpfs", str(prepared.zones.scratch)]
-        argv += ["-v", f"{workspace_source}:{prepared.identifiers.workspace_root}:rw"]
-        argv += ["-v", f"{prepared.payload.root}:{prepared.payload.install_path}:ro"]
-        for key, value in sorted(prepared.environment().items()):
-            argv += ["-e", f"{key}={value}"]
-        argv += ["-w", str(prepared.identifiers.workspace_root)]
-        argv.append(image or self.image)
-        argv += command
-
-        if not (image or self.image):
-            raise BellwetherError(
-                "no sandbox image configured; set sandbox.image in .bellwether/config.yaml, "
-                "pinned by digest so two evaluations stay comparable"
-            )
+        argv = self.build_argv(prepared, command, image=image, network=network)
 
         try:
             result = subprocess.run(
@@ -160,21 +141,70 @@ class DockerBackend:
             exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr
         )
 
+    def build_argv(
+        self,
+        prepared: PreparedSandbox,
+        command: list[str],
+        *,
+        image: str | None = None,
+        network: str = "none",
+    ) -> list[str]:
+        """Render the full docker command line.
+
+        The single place an argv is built, so that what is recorded, what is shown to a
+        human, and what actually ran cannot drift apart.
+        """
+        chosen = image or self.image
+        if not chosen:
+            raise BellwetherError(
+                "no sandbox image configured; set sandbox.image in .bellwether/config.yaml, "
+                "pinned by digest so two evaluations stay comparable"
+            )
+
+        overlay = self._mounts.get(str(prepared.upper_dir))
+        workspace_source = overlay.merged if overlay else prepared.workspace.root
+        workspace_target = PurePosixPath(prepared.identifiers.workspace_root)
+
+        argv = [self.binary, "run", "--rm", *prepared.isolation.docker_flags()]
+        argv += ["--network", network]
+        argv += ["--hostname", prepared.identifiers.hostname]
+        argv += ["--name", prepared.identifiers.container_name]
+
+        # Every declared writable path gets a writable mount. Under `--read-only` a path
+        # with no mount is simply read-only, however loudly the profile declares it — so
+        # `/home/agent/.claude` was unwritable, and the harness state zone is exactly where
+        # a harness stores session state. Every write would have failed with EROFS, and a
+        # run where the agent could not write anything reads as a skill that did nothing:
+        # the same shape as the ownership bug, arrived at a different way.
+        for writable in prepared.isolation.writable_paths:
+            target = PurePosixPath(writable)
+            if target == workspace_target or workspace_target.is_relative_to(target):
+                continue  # the workspace has its own bind mount, below
+            argv += ["--tmpfs", str(target)]
+
+        argv += ["-v", f"{workspace_source}:{workspace_target}:rw"]
+        # After the writable mounts, so the read-only payload sits on top of, rather than
+        # underneath, a writable parent.
+        argv += ["-v", f"{prepared.payload.root}:{prepared.payload.install_path}:ro"]
+
+        for key, value in sorted(prepared.environment().items()):
+            argv += ["-e", f"{key}={value}"]
+        argv += ["-w", str(workspace_target)]
+        argv.append(chosen)
+        return argv + command
+
     def changed_paths(self, prepared: PreparedSandbox) -> list[PathChange]:
         """The changed-path set, read from the host-side upper directory."""
         return read_overlay_diff(prepared.upper_dir, prepared.workspace.root)
 
-    def command_line(self, prepared: PreparedSandbox, command: list[str]) -> str:
-        """The exact command, for the trace and for a human to re-run at a terminal."""
-        argv = [
-            self.binary,
-            "run",
-            "--rm",
-            *prepared.isolation.docker_flags(),
-            self.image,
-            *command,
-        ]
-        return " ".join(argv)
+    def command_line(self, prepared: PreparedSandbox, command: list[str], **kwargs: str) -> str:
+        """The exact command, for the trace and for a human to re-run at a terminal.
+
+        Built from :meth:`build_argv`, so the claim in that sentence is true. An earlier
+        version rendered a shortened form while describing itself as exact — harmless
+        while unused, and a false fidelity claim the moment it reached a trace.
+        """
+        return shlex.join(self.build_argv(prepared, command, **kwargs))
 
     def _force_remove(self, container_name: str) -> None:
         subprocess.run(
