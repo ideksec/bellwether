@@ -487,3 +487,53 @@ would hide exactly the behaviour the capture planes exist to observe. `fetch` is
 one refusal, because there is no observed egress path yet; the attempt itself still
 flows through the event stream as evidence. The symlink containment is asserted by an
 integration test that plants a link with the bash tool and reads through it.
+
+---
+
+## §11.5 — Where gap-epoch events are emitted, and how windows are computed
+
+**Spec.** Step 5 says "emit the sequence as T₁, epoch-1 events, T₂, epoch-2 events" —
+which places in-window events but leaves two things unstated: where events belonging to
+a *gap* between windows go, and where a tool call's window comes from when the call
+record itself carries no duration.
+
+**Resolution.** Three decisions, each aimed at causal truthfulness plus determinism:
+
+- **In-window events are emitted immediately after their tool call**, before the
+  call's own result record — they happened during the call's execution, and the result
+  is the end of that execution.
+- **Gap events are emitted immediately before the next tool call opens** (the spec's
+  "gap epoch following the last tool call that preceded it", read positionally), and
+  epoch 0 — everything before the first call — is the degenerate case of the same
+  rule. Gaps after the final window trail the whole sequence.
+- **A window is `[call.ts, call.ts + duration_ms]` with the duration taken from the
+  matching `tool_result` by `tool_call_id`** — §11.2 calls duration load-bearing for
+  exactly this. A call with no result (the run died mid-call) gets a zero-width
+  window: nothing was observed to complete, so nothing can be placed inside it, and
+  its events fall to the following gap.
+
+The within-epoch tie-break hash deliberately sits *last* in the sort key: the only
+ties it can break are between events identical in plane, kind and normalized target,
+where any stable rule serves and no reduced step sequence can change.
+
+---
+
+## §10.2, §4.1 — Harness-state writes become capabilities only via a tool call
+
+**Spec.** The §10.2 zone table says harness state is in the capability set "only if
+written by a tool call". The zone rules table in `sandbox/zones.py` records the zone as
+capability-eligible.
+
+**Resolution.** Both are honoured by gating at the normalizer: a Plane B event in the
+harness-state zone contributes a capability only where `correlation.anchor_seq` links
+it to a spine tool call. An uncorrelated write there is the harness's own state churn —
+still recorded, still surfaced through its own finding kind, never a capability. Until
+Plane B gains read capture and WP-10's correlation pass, that link is only ever present
+when a future component sets it explicitly; the conservative default is exclusion,
+because harness churn polluting the capability set is precisely the noise §10.2's zones
+exist to remove.
+
+Related seam: `canonicalize` takes the platform baseline as a set of normalized tier-3
+entries matched **literally**. The glob-aware matcher with near-miss flagging is WP-8's
+deliverable; it will feed this same parameter, so the subtraction semantics (§11.4:
+capability sets only, never the step sequence) are pinned now and tested now.

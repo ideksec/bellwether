@@ -24,6 +24,14 @@ from bellwether.trace.build import (
     harness_actions,
     token_totals_from_events,
 )
+from bellwether.trace.canonical import (
+    CanonicalTrace,
+    NormalizationContext,
+    StepSignature,
+    canonicalize,
+    capability_for,
+)
+from bellwether.trace.epochs import PLANE_PRIORITY, anchor_events
 from bellwether.trace.models import (
     ARF_VERSION,
     Action,
@@ -48,26 +56,33 @@ from bellwether.trace.writer import TraceWriter, serialize_record, write_trace
 
 __all__ = [
     "ARF_VERSION",
+    "PLANE_PRIORITY",
     "Action",
     "Actor",
     "CanonBlock",
+    "CanonicalTrace",
     "Capability",
     "Correlation",
     "Coverage",
     "Evaluability",
     "ExitReason",
     "IdentityBlock",
+    "NormalizationContext",
     "PlaneCoverage",
     "RunFooter",
     "RunHeader",
     "SandboxRef",
     "ScopeBlock",
     "SkillRef",
+    "StepSignature",
     "TargetRef",
     "TokenTotals",
     "Trace",
     "TraceWriter",
+    "anchor_events",
     "assemble_coverage",
+    "canonicalize",
+    "capability_for",
     "exit_reason_from_events",
     "filesystem_actions",
     "harness_actions",
