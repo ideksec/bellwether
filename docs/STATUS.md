@@ -25,10 +25,11 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-11 — verdict engine and precondition check | **done** |
 | WP-12 — reporting (`summary.json` + Markdown) | **done** |
 | Analysis orchestrator (trace → verdict → artifact tree) | **done** |
-| Sandbox execution driver (`RunExecutor`) + first-light checkpoint | **next** |
-| WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
+| Sandbox execution driver (`RunExecutor`) | **done** |
+| ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
+| WP-13 – WP-20 — Phase B | not started; the checkpoint that gated them is now met |
 
-484 tests: 449 offline, 35 under the `docker` mark. All green.
+485 tests: 449 offline, 36 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
@@ -74,29 +75,38 @@ verdict, but does not execute runs itself:
   composes the verdict, assembles the `Summary`, and writes the §17.1 artifact tree
   (`summary.json`, `verdict.json`, `report/pr_comment.md`, per-run `traces/` and
   `canonical/`).
-- **`RunExecutor`** is the seam for the execution half: given a `RunPlan` it returns an
-  `ExecutedRun` (trace + normalization context). The analysis path is exercised end to end
-  offline against a scripted `api-loop` run — no Docker, no key — in `test_orchestrator.py`
-  (9 tests).
+- **`RunExecutor`** is the seam for the execution half.
 
-The first-light finding, proven by that test: a `benign-stable`-shaped skill (six identical
-passing runs) reaches **`conditional`**, not `ready` — every evaluable gate passes, but
-egress is `not_evaluable` until the recording proxy lands (WP-13), and §16.2 renders an
-advisory `not_evaluable` gate as `conditional` rather than passing it silently. `ready`
-arrives when egress becomes observable. This is the skeleton walking.
+### What the execution driver built (first-light reached)
+
+`SandboxRunExecutor` in `bellwether.cli.execution` — the WP-6 container wiring lifted behind
+the `RunExecutor` seam. Given a `RunPlan` it prepares a fresh sandbox, runs one repetition
+through the `api-loop` adapter, captures both planes on the host, assembles the ARF trace,
+and returns an `ExecutedRun`. One repetition, one fresh sandbox (a repetition set is a
+distribution over *independent* runs — sharing state would fabricate consistency). The model
+side is injected as a `ModelClient` per target, so the `harness → sandbox` boundary and the
+no-hard-coded-model rule both hold; at first-light the client is scripted (the live client
+lands in WP-13).
+
+**The first-light checkpoint is reached** (`test_execution_docker.py`): `benign-stable` runs
+end to end in a *real* container six times — overlay mount, container exec, two-plane
+capture, proxy and resolver bypassed — the orchestrator turns those six real traces into a
+**`conditional`** verdict (every evaluable gate passes; egress `not_evaluable` with a reason
+until the proxy lands), and the artifact tree lands on disk. The skeleton walks. The
+`conditional`-not-`ready` result is the tool refusing to call an unobserved channel clean,
+holding even for its own first run.
 
 ## What to do next
 
-**The sandbox execution driver (`RunExecutor`) and the first-light checkpoint.** The
-analysis path is complete and tested; what remains to make `bellwether run` real is the
-executor that materialises the sandbox, runs the matrix through the `api-loop` adapter, and
-captures each repetition into an `ExecutedRun` — lifting the WP-6 container wiring
-(`test_harness_docker.py`) behind the `RunExecutor` protocol. With that in place,
-`benign-stable` runs end to end from the CLI (proxy and resolver bypassed, egress
-`not_evaluable` with a reason), which is the **first-light checkpoint** the build plan
-gates the rest of v0.1 on. Then wire the precondition check and weight validation into
-`doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer — see the
-table below.
+**Phase B — the trust boundary (WP-13 onward).** The first-light checkpoint that gated the
+rest of v0.1 is met, so the network layer can now land on a skeleton known to walk. WP-13 is
+the **recording proxy sidecar** (§10.5): default-deny egress allowlist, sandbox-scoped token
+with proxy-side real-credential injection, egress classification. It also brings the **live
+model client** (`harness/provider.py`), which is what lets `bellwether run` execute a real
+skill against a real model from the CLI — today the executor needs an injected client, so
+`run` still names WP-13. With egress observable, `benign-stable` reaches `ready`. Then wire
+the precondition check and weight validation into `doctor`/`run`, the §21 enforced-settings
+refusal, and the FIFO sink writer — see the table below.
 
 ## Outstanding actions
 
@@ -201,6 +211,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Thirty-one entries. Read it before changing anything in the skill, sandbox, capture or
+  Thirty-two entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.
