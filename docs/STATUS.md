@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-7 work. **Update it at the end of a session, not the
+Last updated at the end of the WP-8 work. **Update it at the end of a session, not the
 start** — a status file that lags is worse than none, because it is trusted.
 
 ---
@@ -19,48 +19,46 @@ start** — a status file that lags is worse than none, because it is trusted.
 | WP-5 — capture: Plane A and Plane B | **done** |
 | WP-6 — `api-loop` harness adapter | **done** |
 | WP-7 — canonicalization and epoch anchoring | **done** |
-| WP-8 — platform baseline | **next** (fully offline) |
-| WP-9 — assertions, outcome composition, golden traces | not started |
+| WP-8 — platform baseline | **done** |
+| WP-9 — assertions, outcome composition, golden traces | **next** |
 | WP-10 — metrics | not started |
 | WP-11 — verdict engine and precondition check | not started |
 | WP-12 — reporting | not started |
 | WP-13 – WP-20 — Phase B | not started, gated on the first-light checkpoint |
 
-341 tests: 306 offline, 35 under the `docker` mark. All green.
+361 tests: 326 offline, 35 under the `docker` mark. All green.
 
 `bellwether run` is not usable. It exits 3 and names the work package that brings it,
 rather than printing an empty result that would read as a clean run.
 
-### What WP-7 built
+### What WP-8 built
 
-- **Epoch anchoring** (`trace/epochs.py`, §11.5): the Plane A spine, tool-call windows
-  from result durations, `anchor_seq` override (explicit correlation ignores the
-  timestamp entirely), gap epochs, and within-epoch ordering by
-  `(plane_priority, kind, normalized_target, stable_hash)`. Never wall-clock across
-  planes. Both done-when criteria are asserted directly: 100 shuffled presentations
-  produce byte-identical serialised ordering, and ±2s jitter on non-spine timestamps
-  leaves the sequence unchanged.
-- **Canonicalization** (`trace/canonical.py`, §11.4, §4.1): `${WORKSPACE}`/`${TMP}`/
-  `${HOME}` normalization, the three capability tiers with scratch coarsened to tier 2
-  and harness-state gated on tool-call correlation, step signatures at tier 1, the
-  sensitive-directory hits (`SENSITIVE_DIRECTORIES` in constants), literal baseline
-  subtraction (the glob matcher is WP-8's; the seam and semantics are pinned now), and
-  `CanonicalTrace` carrying the recorded canon versioning.
-- The golden trace's canonical form is pinned by test, tying WP-6's reference artifact
-  to WP-7's rules: a change to either shows up as exactly one failing expectation.
+- **The document** (`config/models/baseline.py`, loader in
+  `config/baseline_loader.py`): versioned, keyed to a sandbox image, with
+  `applicable_to` returning a *reason* — a baseline that is unkeyed or keyed to a
+  different image absorbs nothing, and the refusal must never read as "nothing
+  infrastructural happened". The shipped template now carries the real schema and the
+  §12.6 maintained defaults, with `applies_to_image: null` so it is inert until keyed.
+- **The matcher** (`assertions/baseline.py`): brace- and `**`-aware globs over
+  normalized paths; both done-when criteria hold — a benign run's infrastructure
+  produces zero spurious surviving entries, and `~/.cache/../.aws/credentials` raises
+  a `medium` near-miss instead of being absorbed. Traversal never resolves into a
+  match, in either direction (see spec-notes). Process attribution by tree:
+  `helpers_of` with wildcards, curl-under-git stays a violation, a helper's name
+  without a helper's parentage is a near-miss, and a mapping is inert when its root is
+  not itself permitted.
+- The absorbed set feeds `canonicalize(platform_baseline_t3=...)` — the seam WP-7
+  pinned — verified end-to-end by test.
 
 ## What to do next
 
-**WP-8 — the platform baseline (§12.6).** Fully offline. The `PlatformBaseline`
-document (paths/processes/tools allowlists), the glob-aware matcher that feeds
-`canonicalize(platform_baseline_t3=...)`, and — the done-criterion — near-miss
-flagging: `~/.cache/../.aws/credentials` raises a `medium` finding rather than being
-absorbed, because baseline entries are matched literally after normalization and
-traversal is never resolved *into* a match. The traversal handling in
-`bellwether.sandbox.zones` already does the hard part.
-
-**Then WP-9 — assertions and outcome composition**, which consumes WP-7's canonical
-structures and WP-8's baseline.
+**WP-9 — assertions and outcome composition (§12).** The assertion catalogue of §12.2
+over canonical traces and capture output; declared-vs-observed scope evaluation against
+`observed − baseline` (WP-8's `BaselineApplication` provides the subtrahend and the
+near-miss findings); run-outcome composition per §12.7's exit-reason split; golden
+traces for the assertion engine. `constants.ASSERTION_CATALOGUE` already names the
+catalogue; the §24 corpus skills arrive with WP-20, so WP-9's tests are synthetic
+traces plus the committed golden trace.
 
 ## Outstanding actions
 
@@ -165,6 +163,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Twenty-three entries. Read it before changing anything in the skill, sandbox, capture or
+  Twenty-four entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.

@@ -8,6 +8,11 @@
 
 from __future__ import annotations
 
+from bellwether.config.models.baseline import (
+    BaselinePaths,
+    BaselineProcesses,
+    PlatformBaseline,
+)
 from bellwether.config.models.common import API_VERSION, Criticality, Document, Severity, Target
 from bellwether.config.models.config import Config, EnforcedSetting
 from bellwether.config.models.manifest import DeclaredScope, SkillManifest
@@ -18,12 +23,15 @@ from bellwether.config.models.scenarios import AssertionSpec, Scenario, Scenario
 __all__ = [
     "API_VERSION",
     "AssertionSpec",
+    "BaselinePaths",
+    "BaselineProcesses",
     "Config",
     "Criticality",
     "DeclaredScope",
     "Document",
     "EnforcedSetting",
     "Gates",
+    "PlatformBaseline",
     "Policy",
     "ProfileSpec",
     "ProviderConfig",

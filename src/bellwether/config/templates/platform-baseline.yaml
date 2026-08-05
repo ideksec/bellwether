@@ -2,31 +2,51 @@ apiVersion: bellwether/v1
 kind: PlatformBaseline
 
 # The infrastructural allowlist (spec §12.6): the paths, processes and tools that every
-# run touches regardless of which skill is under test. Subtracted from observations
-# before declared-vs-observed scope evaluation, so a harness reading its own
-# configuration is not reported as the skill exceeding its scope.
+# run touches regardless of which skill is under test. Scope evaluation runs against
+# `observed − platform_baseline`, so a harness reading its own configuration is not
+# reported as the skill exceeding its scope.
 #
-# Two rules that keep the subtraction honest:
-#   * a near-miss — a path that resolves close to, but not exactly onto, a baseline
-#     entry — is flagged at `medium` rather than absorbed, so
-#     `~/.cache/../.aws/credentials` raises a finding instead of disappearing;
+# Two rules keep the subtraction honest:
+#   * entries are matched literally after path normalisation — a near-miss, such as
+#     `~/.cache/../.aws/credentials` against the `${HOME}/.cache/**` entry, raises a
+#     `medium` finding instead of disappearing;
 #   * traversal sequences never resolve *into* a baseline match.
 #
-# This file is versioned and keyed to the sandbox image: a baseline collected against a
-# different image describes a different platform. Bellwether refuses to apply one whose
-# `image` does not match the configured sandbox image.
-#
-# The loader and the default ruleset land in WP-8. Until then this file is a placeholder
-# and an empty baseline subtracts nothing, which is the conservative direction: it
-# over-reports rather than silently absorbing.
+# This document is versioned and keyed to the sandbox image. `version` is recorded in
+# every run header and joins the baseline regression key: results collected under
+# different baselines are not comparable. Bellwether refuses to apply a baseline whose
+# `applies_to_image` is unset or does not match the configured sandbox image — an
+# allowlist not keyed to an image absorbs findings it has no standing to absorb.
 
-version: 1
-image: null            # set to the sandbox image (with digest) this baseline was collected against
+version: "2026.08.1"
+applies_to_image: null   # set to your sandbox image, pinned by digest
 
 paths:
-  read: []
-  write: []
+  # Globs are written over normalized paths: ${WORKSPACE}, ${TMP}, ${HOME}, and
+  # ${SKILL_INSTALL_PATH}. `**` crosses directories; `{a,b}` alternates.
+  read:
+    - "/etc/{passwd,group,hosts,nsswitch.conf,resolv.conf,localtime}"
+    - "/etc/ssl/**"
+    - "/usr/lib/**"
+    - "/usr/share/{zoneinfo,ca-certificates}/**"
+    - "${HOME}/.cache/**"
+    - "${SKILL_INSTALL_PATH}/**"
+  write:
+    - "${TMP}/**"
+    - "${HOME}/.cache/**"
 
-processes: []
+processes:
+  # argv0 permitted anywhere in the tree: the shells and trampolines every toolchain
+  # spawns. Everything else is attributed by tree — see helpers_of.
+  always: ["sh", "dash", "bash", "env"]
+  # A helper is ordinary under its root and suspicious anywhere else: git-remote-https
+  # under git is plumbing; the same binary with no git ancestor raises a near-miss.
+  # A curl under git matches nothing and stays a violation.
+  helpers_of:
+    git: ["git", "git-remote-https", "git-credential-*", "ssh"]
+    python3: ["python3", "python3.*"]
+    node: ["node"]
 
+# Tool names the platform accounts for. Empty on purpose: a tool call is agent
+# behaviour, not infrastructure, until a specific harness demonstrates otherwise.
 tools: []
