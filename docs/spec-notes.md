@@ -793,3 +793,34 @@ artifact. **(3)** `RecordingProxy`'s base methods raise `NotImplementedError` ra
 being a bare `Protocol`: a partial implementation that silently observed nothing would
 produce a zero-egress trace that reads as a clean skill — the exact silent-interception
 failure §10.5 and WP-14's doctor check exist to prevent — so the seam fails loud.
+
+---
+
+## §3.3, §10.5.1 — Credential isolation is a pure host-side core, tested without a container
+
+**Spec.** §3.3 invariant 1: the model API key must not be readable inside the sandbox; the
+harness reaches the model through the recording proxy, which injects the real credential
+(§10.5.1). The done-when (WP-13) asserts the real key is absent from the container's
+environment, filesystem, and every artifact.
+
+**Resolution.** The credential exchange is factored into a pure, host-side module
+(`bellwether.capture.credential`) so its guarantee is unit-testable without standing up a
+container: `mint_sandbox_token` (per-run, reproducible, opaque), `strip_and_inject` (the
+transform the proxy addon applies), and `CredentialBroker` (the host-side scoped-token↔real-key
+ledger, the container-env builder, and the leak guard). The real key is read from the host
+environment and leaves only through `inject`; `sandbox_env` — what the container receives —
+carries the scoped token under the provider's own key var and never the real key. The
+container-**filesystem** third of the done-when genuinely needs a container and lands with the
+sidecar (increment 2b); the **environment** and **artifact** thirds are asserted here, offline,
+including the end-to-end join with §10.5 redaction: an injected request really carries the real
+key on the wire, but the flow record redacts the auth header, so the key reaches the provider
+and nothing else.
+
+Two decisions worth recording. **(1)** Injection is scoped to the token the broker minted:
+`strip_and_inject` swaps only a header whose value contains that exact token, so a skill that
+ships its own key does not get it silently upgraded to Bellwether's real credential — the proxy
+is not a general key-granting oracle. **(2)** The scoped token is reproducible from the run's
+seed yet worthless outside the proxy. Reproducibility serves replay; the security does not rest
+on the token's secrecy but on the fact that *this* string, not the real key, is the only
+credential the container ever holds, and the proxy is the only thing that can turn it into the
+real one. High entropy (`SeededRng.token(40)`) is defence in depth, not the control.

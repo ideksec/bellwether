@@ -177,7 +177,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Analysis orchestrator: trace → §13 metrics → §16.2 gates → verdict → §17.1 artifact tree | done |
 | Sandbox execution driver (`RunExecutor`); first-light checkpoint reached | done |
 | Egress semantics: classification, default-deny allowlist, per-run caps, redaction | done (WP-13 pt 1) |
-| Recording-proxy sidecar + credential injection, live model client, CLI `run` | WP-13 pt 2 |
+| Credential isolation: sandbox-scoped token, proxy-side injection, leak guard | done (WP-13 pt 2a) |
+| Recording-proxy sidecar container, live model client, CLI `run` | WP-13 pt 2b |
 | `claude-code` harness adapter | WP-17 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
 | Corpus and acceptance | WP-20 |
