@@ -951,3 +951,34 @@ that reads as a clean skill is precisely the failure this plane exists to distru
 *written-but-empty* log is a legitimate observed-zero-egress run. The regression that shaped the
 serialisation: a blocked flow has no response, so its optional response fields are `None` and must
 round-trip as `None`, never collapse to `0`.
+
+---
+
+## §10.5.1 — The sidecar rebuilds the broker; the real key travels apart from the token map
+
+**Spec.** §10.5.1: the proxy strips the sandbox-scoped token and injects the real credential, in
+its own sidecar container, and MUST NOT record the real credential in any artifact.
+
+**Resolution.** The sidecar runs `mitmdump` against `bellwether.capture.sidecar_entry`, which at
+load rebuilds the run's `ProxyAddon` from a config file the host wrote to the shared volume plus
+the sidecar's own environment. The broker is handed over in two deliberately-separated parts:
+`CredentialBroker.sidecar_export` carries the *non-secret* map (per provider, its `api_key_env`
+name and scoped token) in the config file, and `sidecar_real_key_env` carries the real keys as
+environment variables into the sidecar container only. `for_sidecar` reassembles them. The token
+is safe to put in the config because it is already what the observed container holds; the real key
+never touches the config, the container, or a flow record — it exists in the sidecar's env, is
+swapped onto the wire by `inject`, and is gone.
+
+Two decisions worth recording. **(1)** The load-bearing test is *reconstruction fidelity*, not a
+structural round trip: the broker rebuilt inside the sidecar is asserted to inject the real key for
+the exact scoped token the host minted. If the token↔key mapping did not survive the config round
+trip, `decide_request` would still classify and forward the model call, but bearing a worthless
+token — injection would silently fail and the provider would reject every request, a failure that
+looks like a broken skill rather than a broken proxy. **(2)** `for_sidecar` *skips* a provider whose
+real key is absent from the sidecar env, mirroring `for_run` on the host, rather than
+reconstructing it with an empty key. The subtle reason: `strip_and_inject` replaces the token with
+the real key by string substitution, so an empty real key would strip `Bearer <token>` to a bare
+`Bearer ` and forward that — worse than not injecting. Skipping keeps `ready_providers` honest and
+the two constructors' semantics identical. The `mitmdump` entry also writes an empty flow log at
+construction, so "the proxy ran" is true from t=0 and a *missing* log unambiguously means the
+sidecar never started (§14) — the same missing-vs-empty distinction the flow-record reader enforces.

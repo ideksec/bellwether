@@ -87,6 +87,11 @@ from bellwether.capture.proxy_addon import (
     write_flow_records,
 )
 from bellwether.capture.proxy_core import ProxyDecision, decide_request
+from bellwether.capture.sidecar_entry import (
+    SidecarConfig,
+    block_response_args,
+    build_addon,
+)
 from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
 
 __all__ = [
@@ -112,8 +117,11 @@ __all__ = [
     "ProxyDecision",
     "RecordingProxy",
     "RequestLike",
+    "SidecarConfig",
     "SinkEvent",
     "SinkStats",
+    "block_response_args",
+    "build_addon",
     "ca_trust_environment",
     "canary_markers",
     "classify_canary_hit",
