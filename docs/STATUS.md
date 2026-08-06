@@ -28,12 +28,12 @@ because it is trusted.
 | Analysis orchestrator (trace → verdict → artifact tree) | **done** |
 | Sandbox execution driver (`RunExecutor`) | **done** |
 | ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
-| WP-13 — recording proxy: egress semantics, credential isolation, decision core, addon glue, sidecar entry, internal-bridge isolation | **all host/sidecar logic complete + bridge isolation proven on CI** — only the host launcher + image + live docker test remain |
+| WP-13 — recording proxy: egress semantics, credential isolation, decision core, addon glue, sidecar entry, host launcher, internal-bridge isolation | **all host+sidecar logic complete + bridge isolation proven on CI** — only the image `Dockerfile` + live docker standup test remain |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
 | WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
 | WP-15, WP-17 – WP-20 — Phase B | not started |
 
-585 tests: 545 offline, 40 under the `docker` mark. All green.
+594 tests: 554 offline, 40 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -159,6 +159,27 @@ the recorded flow never holds the real key *or* the scoped token even after inje
 is the whole "what the sidecar decides" — the container that runs it is all that's left of
 WP-13.
 
+### What the sidecar host launcher built (§10.5)
+
+The **lifecycle around the `mitmdump` container**, in `bellwether.capture.sidecar`, offline and
+fully tested via a `runner`/`sleep` seam (9 tests):
+
+- **`MitmproxySidecar(RecordingProxy)`** — the proxy the analysis path talks to. `start` writes the
+  non-secret config to the shared volume, launches the sidecar on the run's internal bridge, and
+  waits for ready; `flows` reads the flow log back; `stop` force-removes the container. It exposes
+  `proxy_url` — the sidecar reachable by container name on the bridge — for the sandbox's
+  `HTTPS_PROXY`.
+- **The real key never reaches the command line.** The sidecar needs the real credential, but a
+  `-e KEY=value` flag would put it in the process table and any recorded command. The launcher
+  passes `-e KEY` (name only) and runs `docker` with the key in its *own* environment, so docker
+  forwards the value and it appears in no argv, no config, no artifact (§3.3). The load-bearing
+  test asserts the key's *value* is in no argv token.
+- **Readiness is the flow log appearing, not a guess.** The entry writes an empty flow log the
+  instant it loads, so the log's appearance proves mitmdump came up and registered the addon; a
+  timeout with no log is a loud failure, never a clean-looking zero-egress run. A stale log from a
+  crashed prior run is cleared before start, so readiness can't be trivially true and this run
+  can't inherit another's flows.
+
 ### What the sidecar entry built (§10.5)
 
 The **inside-the-sidecar half** — how the proxy container rebuilds the run's `ProxyAddon` from a
@@ -254,21 +275,22 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
 **The one remaining container slice: the live mitmproxy standup + doctor's live probe (WP-13 pt
 2b-ii, WP-14 done-when).** Every piece of *logic* is now built and tested — the proxy decision
 (`decide_request`), the credential broker, the canary engine, the CA mechanism table, and now
-the addon glue (`ProxyAddon`), the sidecar↔host flow-record contract, and now the whole
-inside-the-sidecar half: the `mitmdump` entry (`sidecar_entry` — `SidecarConfig`, `build_addon`,
-`load_addon_from_env`) and the broker's sidecar reconstruction (`sidecar_export` /
-`sidecar_real_key_env` / `for_sidecar`). What remains is only the host launcher and the image: a
-`MitmproxySidecar(RecordingProxy)` that writes the config, starts the sidecar container on the
-internal bridge (built and proven on CI via `create_network`) with the real key in its env, waits
-for ready, and reads the flow log; a `mitmproxy` sidecar `Dockerfile` (base pinned by digest,
-mitmproxy pinned by version, bellwether installed, the entry copied to a fixed path); the CA
-installed via `system_store_install_commands` + `ca_trust_environment`; and doctor issuing a real
-request and asserting `interception_confirmed`. That closes both the WP-13 done-when (real key
+the addon glue (`ProxyAddon`), the sidecar↔host flow-record contract, the whole inside-the-sidecar
+half (`sidecar_entry` — `SidecarConfig`, `build_addon`, `load_addon_from_env` — and the broker's
+`sidecar_export` / `sidecar_real_key_env` / `for_sidecar`), and now the **host launcher**
+(`MitmproxySidecar`). What remains is only the image and the live test: a `mitmproxy` sidecar
+`Dockerfile` under `sidecar/proxy` (base pinned by digest, mitmproxy pinned by version, bellwether
+installed, the mitmdump loader at the fixed `SIDECAR_ENTRY_PATH`), a docker-marked test that builds
+it, stands the sidecar up on the internal bridge, routes a client container's request through it,
+and asserts a permitted call is recorded, a denied one blocked, and no real key appears anywhere;
+the CA installed via `system_store_install_commands` + `ca_trust_environment`; and doctor issuing a
+real request and asserting `interception_confirmed`. That closes both the WP-13 done-when (real key
 absent from the container's env/filesystem/artifacts; `no_egress` passing for a telemetry-emitting
-harness) and WP-14's (doctor verifies interception by a real request). **This is the one slice
-that cannot be verified in this build environment** — it needs `mitmproxy` from Docker Hub
-(blocked by the egress policy here) and working container networking (iptables is disabled here) —
-so it must be validated on GitHub CI's `container` job. It also brings the **live model client** — the last thing between the built pipeline and
+harness) and WP-14's (doctor verifies interception by a real request). **This is the one slice that
+cannot be verified in this build environment** — it needs `mitmproxy` from Docker Hub (blocked by
+the egress policy here) and working container networking (iptables is disabled here) — so it must be
+validated on GitHub CI's `container` job, where it will be the first artifact iterated against live
+rather than proven offline first. `pin_lint` will grow a Dockerfile `FROM`-digest check alongside it. It also brings the **live model client** — the last thing between the built pipeline and
 a CLI `bellwether run`, after which `benign-stable` reaches `ready`. Then wire the
 precondition check and weight validation into `doctor`/`run`, the §21 enforced-settings
 refusal, and the FIFO sink writer — see the table below. (WP-15's controlled DNS resolver, its

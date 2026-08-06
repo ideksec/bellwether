@@ -181,6 +181,7 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Proxy decision core: allowlist → caps → inject → record, in fixed order | done (WP-13 pt 2b-i) |
 | Proxy addon glue: mutate request or block, plus the sidecar↔host flow-record contract | done (WP-13 pt 2b-ii core) |
 | Sidecar entry: config, broker reconstruction, mitmdump addon (credential mapping survives the round trip) | done (WP-13 pt 2b-ii core) |
+| Sidecar host launcher: start/flows/stop, real key forwarded by name (never on the command line) | done (WP-13 pt 2b-ii core) |
 | Sandbox network isolation: internal bridge, no route out except the proxy peer (§3.3 inv. 3) | done (WP-13) |
 | Canaries: mint, decode-then-match, destination classification, redaction | done (WP-16) |
 | CA trust chain: §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core) |

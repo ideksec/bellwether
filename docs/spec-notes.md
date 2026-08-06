@@ -982,3 +982,29 @@ the real key by string substitution, so an empty real key would strip `Bearer <t
 the two constructors' semantics identical. The `mitmdump` entry also writes an empty flow log at
 construction, so "the proxy ran" is true from t=0 and a *missing* log unambiguously means the
 sidecar never started (§14) — the same missing-vs-empty distinction the flow-record reader enforces.
+
+---
+
+## §10.5, §3.3 — The sidecar launcher forwards the real key by name, and readiness is the flow log
+
+**Spec.** §10.5: the recording proxy runs as a sidecar container writing flow records to a shared
+host volume; §3.3: the real model-API key must not appear in any artifact.
+
+**Resolution.** `MitmproxySidecar` (`bellwether.capture.sidecar`) is the `RecordingProxy` the
+analysis path talks to; it writes the non-secret config to the shared volume, starts the `mitmdump`
+container on the run's internal bridge, waits for ready, reads the flow log, and tears down. The
+lifecycle is tested offline through a `runner`/`sleep` seam, exactly as `DockerBackend.build_argv`
+is; the live standup against a real `mitmproxy` image is the docker-marked test on CI.
+
+Two host-side decisions worth recording. **(1)** The real key is forwarded to the sidecar by
+*name*, never valued on the command line. A `-e KEY=value` flag would place the credential in the
+host process table and in any command the trace records; instead the launcher emits `-e KEY` (name
+only) and runs `docker` with the key in its own environment, so docker forwards the value and it
+appears in no argv, no config file, no flow record. The load-bearing test asserts the key's value
+is absent from every argv token. **(2)** Readiness is the flow log *appearing*, not a timer or a
+log-scrape. The mitmdump entry writes an empty flow log the instant it loads (§10.5), so the log's
+appearance is positive proof the proxy came up and registered the addon, and a timeout with no log
+is a hard failure rather than a silent zero-egress run. A stale log from a crashed prior run is
+deleted before start, so readiness cannot be trivially true and one run cannot inherit another's
+recorded flows — the same missing-vs-empty discipline the flow-record reader enforces, applied to
+the lifecycle.
