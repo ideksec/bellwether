@@ -46,7 +46,10 @@ from bellwether.trace import (
 
 pytestmark = pytest.mark.docker
 
-TEST_IMAGE = os.environ.get("BELLWETHER_TEST_IMAGE", "mcr.microsoft.com/cbl-mariner/base/core:2.0")
+TEST_IMAGE = os.environ.get(
+    "BELLWETHER_TEST_IMAGE",
+    "mcr.microsoft.com/cbl-mariner/base/core:2.0@sha256:c833841d2dcfd3081d2ee807050d19368854f70d9b6faef027463e2c6f45ee41",
+)
 
 
 @pytest.fixture(scope="session")

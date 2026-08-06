@@ -158,7 +158,7 @@ enforced-settings refusal, and the FIFO sink writer — see the table below.
 |---|---|
 | Branch protection on `main` requiring `check` and `container` | **reported done; not verifiable from here** — the branches API still shows `main` as `protected: false`. That is consistent with a *ruleset* rather than classic branch protection, which the flag does not reflect. Worth confirming, because it is the control that closes the stale-check hazard below. |
 | Private vulnerability reporting enabled | open — `SECURITY.md` already points people at it |
-| Dependabot | open |
+| Dependabot | **config committed** (`.github/dependabot.yml`, github-actions + uv, weekly) — enable it in repo settings if it is not on by default |
 | CodeQL | open — thin to be missing on a repo about supply chain |
 
 Two stray remote branches remain, both safe to delete (a session cannot delete branches
@@ -247,4 +247,4 @@ Two working rules follow:
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
   Thirty-three entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
-- `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.
+- `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.

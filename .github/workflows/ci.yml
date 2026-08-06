@@ -24,18 +24,24 @@ env:
   LANG: C.UTF-8
   # Any small image works. This one serves blobs from the registry host rather than a
   # CDN, so it also pulls under restrictive egress policies — including the environment
-  # these tests were first written in.
-  BELLWETHER_TEST_IMAGE: alpine:3.20
+  # these tests were first written in. Pinned by digest, not just tag: a supply-chain
+  # tool that pulls a mutable tag in its own CI would be undermining its own thesis.
+  # To update: docker buildx imagetools inspect alpine:3.20 (or query the registry) and
+  # replace the digest below with the manifest-list digest for the new tag.
+  BELLWETHER_TEST_IMAGE: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
+          # Pin the uv version too, so a compromised uv release cannot enter via the
+          # action resolving "latest". Bump deliberately alongside the lockfile.
+          version: "0.8.17"
           enable-cache: true
 
       - name: Set up Python
@@ -61,6 +67,11 @@ jobs:
       - name: Language discipline
         run: uv run python tools/language_lint.py
 
+      # Supply-chain hygiene: every third-party action pinned to a commit SHA, every image
+      # pinned by digest. A tool about supply chain must not pull mutable tags in its own CI.
+      - name: Pinning discipline
+        run: uv run python tools/pin_lint.py
+
       # The offline suite: no API key, no daemon. The container tests are a separate
       # job so that their absence here is a deselection rather than a silent skip.
       - name: Tests
@@ -73,11 +84,14 @@ jobs:
   container:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
+          # Pin the uv version too, so a compromised uv release cannot enter via the
+          # action resolving "latest". Bump deliberately alongside the lockfile.
+          version: "0.8.17"
           enable-cache: true
 
       - name: Set up Python

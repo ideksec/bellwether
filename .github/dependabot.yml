@@ -1,0 +1,27 @@
+# Keep the pins fresh without un-pinning them. Every action in CI is pinned to a commit
+# SHA (tools/pin_lint.py enforces it); Dependabot reads the trailing `# vN` comment,
+# proposes the new SHA for the same major line as a PR, and CI's pin-lint keeps the result
+# honest. A pinned dependency that never updates is its own risk — this closes that gap.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Python dependencies are hash-pinned in uv.lock (uv sync --frozen verifies every hash).
+  # Dependabot's uv support proposes lockfile bumps as PRs, which CI then re-verifies.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+    groups:
+      python:
+        patterns: ["*"]
