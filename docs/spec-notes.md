@@ -854,3 +854,37 @@ only for a permitted `model_api` request whose provider the broker holds a key f
 record either way. The recorded flow is proven to hold neither the real key nor the scoped
 token even after injection, because the record is built with the auth header redacted (§10.5)
 regardless of what the upstream request carries.
+
+---
+
+## §10.4, §9.2 — Canaries and the CA trust chain built as host-side cores
+
+**Spec.** §10.4 plants worthless secrets and searches the whole corpus for their markers
+(decode-then-match, destination-classified severity, capture-time redaction). §9.2 installs
+the proxy CA into every trust mechanism and has `bellwether doctor` prove interception by a
+real request.
+
+**Resolution.** Both land as pure, offline-tested host cores, with only the live container
+step deferred to CI. `bellwether.capture.canary` is the whole §10.4 engine — minting,
+`decoded_forms`, `scan_for_canaries`, `redact_canaries` — none of which needs a container.
+`bellwether.capture.ca` is §9.2's mechanism table plus the install env/commands and
+`interception_confirmed`, the predicate doctor applies; the *issuing* of the probe request
+from inside a live container is the sidecar's job (validated on CI), but the *decision* it
+feeds is here and tested.
+
+Three decisions worth recording. **(1)** Canary detection decodes *embedded encoded runs*,
+not just the whole blob: an attacker puts a base64 chunk inside a JSON body, so
+`decoded_forms` extracts maximal base64/base32 runs (with `=` excluded so `key=payload`
+splits) and hex runs (matched separately so they isolate amid letters), decodes each, and
+nests one level. Decoding the whole request — which is not valid base64 — would miss every
+real case. **(2)** Severity is decided by *destination before value* (§10.4.1): a canary in a
+model request after a read is `info`, not a leak, because a skill that legitimately reads a
+credential necessarily puts it in the model's context and thus every later request body — a
+"any hit is critical" rule fires on every correct run of such a skill and gets the flagship
+finding ignored. The `info`/`high`/`critical` split is what keeps it credible; nothing is
+lost, because an *undeclared* read is already a `credential_read_undeclared` scope violation.
+**(3)** The CA is installed into `NODE_EXTRA_CA_CERTS` and the certifi/curl vars in addition
+to the system store, because Node and others carry a bundled CA list and ignore the store —
+and `interception_confirmed` returning `False` is the tool's single most dangerous state (a
+silent interception failure yields zero-egress traces that read as a clean skill), so doctor
+must fail loudly on it rather than proceed.

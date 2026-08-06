@@ -20,13 +20,24 @@ WP-13 built Plane D's host-side logic: increment 1 the egress semantics (``egres
 classification, the default-deny allowlist, per-run caps, redaction), 2a the credential
 isolation core (``credential`` — the sandbox-scoped token, proxy-side injection, leak guard),
 and 2b-i the per-request decision (``proxy_core.decide_request`` — the fixed
-allowlist→caps→inject→record order the addon runs). Its mitmproxy sidecar (2b-ii) and
-WP-15/16/18 bring the rest of the proxy, DNS, canaries and process planes.
+allowlist→caps→inject→record order the addon runs). WP-16 built Plane C (``canary`` — mint,
+decode-then-match, destination classification, capture-time redaction) and WP-14 the CA
+trust chain (``ca`` — the §9.2 mechanism table, install env/commands, and the
+interception-confirmation predicate). The mitmproxy sidecar (WP-13 pt 2b-ii), DNS (WP-15) and
+process (WP-18) planes are what remain — the container halves, validated on CI.
 ``mypy --strict`` from the first commit.
 """
 
 from __future__ import annotations
 
+from bellwether.capture.ca import (
+    CA_MECHANISMS,
+    DEFAULT_CA_CONTAINER_PATH,
+    CaMechanism,
+    ca_trust_environment,
+    interception_confirmed,
+    system_store_install_commands,
+)
 from bellwether.capture.canary import (
     DEFAULT_CANARY_POOL,
     Canary,
@@ -70,9 +81,12 @@ from bellwether.capture.proxy_core import ProxyDecision, decide_request
 from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
 
 __all__ = [
+    "CA_MECHANISMS",
     "DEFAULT_CANARY_POOL",
+    "DEFAULT_CA_CONTAINER_PATH",
     "DEFAULT_HEADER_ALLOWLIST",
     "SANDBOX_TOKEN_PREFIX",
+    "CaMechanism",
     "Canary",
     "CanaryFinding",
     "CanaryPlacement",
@@ -88,6 +102,7 @@ __all__ = [
     "RecordingProxy",
     "SinkEvent",
     "SinkStats",
+    "ca_trust_environment",
     "canary_markers",
     "classify_canary_hit",
     "classify_egress",
@@ -96,6 +111,7 @@ __all__ = [
     "decide_request",
     "decoded_forms",
     "filesystem_writes_status",
+    "interception_confirmed",
     "make_flow",
     "mint_canaries",
     "mint_sandbox_token",
@@ -106,4 +122,5 @@ __all__ = [
     "scan_for_canaries",
     "strip_and_inject",
     "strip_dns_labels",
+    "system_store_install_commands",
 ]

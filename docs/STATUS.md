@@ -3,9 +3,9 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of WP-13 increment 2b-i — the proxy decision core. **Update it at
-the end of a session, not the start** — a status file that lags is worse than none, because
-it is trusted.
+Last updated at the end of the WP-16 (canaries) + WP-14 (CA trust-chain core) work. **Update
+it at the end of a session, not the start** — a status file that lags is worse than none,
+because it is trusted.
 
 ---
 
@@ -29,9 +29,11 @@ it is trusted.
 | Sandbox execution driver (`RunExecutor`) | **done** |
 | ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
 | WP-13 — recording proxy: egress semantics, credential isolation, decision core | **logic complete** — only the mitmproxy sidecar container remains |
-| WP-14 – WP-20 — Phase B | not started |
+| WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
+| WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
+| WP-15, WP-17 – WP-20 — Phase B | not started |
 
-534 tests: 498 offline, 36 under the `docker` mark. All green.
+557 tests: 521 offline, 36 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -157,25 +159,47 @@ the recorded flow never holds the real key *or* the scoped token even after inje
 is the whole "what the sidecar decides" — the container that runs it is all that's left of
 WP-13.
 
+### What WP-16 (canaries) and WP-14 (CA core) built
+
+- **WP-16 canaries**, `bellwether.capture.canary`, offline and fully tested (16 tests):
+  `mint_canaries` (per-evaluation markers from `canary_seed`, high-entropy, no fixed prefix,
+  reproducible so the fixture cache still hits); `classify_canary_hit` (the §10.4.1
+  destination→severity rule — info for a canary in a model request after a read, high with no
+  read, critical anywhere else — which keeps the flagship finding from a guaranteed false
+  positive on the legit-reader shape); `scan_for_canaries`/`decoded_forms` (decode-then-match
+  over base64/base64url/base32/hex/URL/HTML/reversal, decoding *embedded* encoded runs with
+  one nesting level, plus ≥12-char windowed matching and DNS label-stripping); and
+  `redact_canaries` (capture-time fingerprint `<canary:c1@offset=,len=>` so an ARF artifact
+  uploaded to CI never holds the secret). The independently-encoded-chunking gap stays a
+  documented §2 limit.
+- **WP-14 CA trust-chain core**, `bellwether.capture.ca`, offline and fully tested (7 tests):
+  the complete §9.2 mechanism table (system store + `NODE_EXTRA_CA_CERTS` /
+  `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`, because Node and others ignore the
+  system store), `ca_trust_environment` and `system_store_install_commands` that install it,
+  and `interception_confirmed` — the predicate doctor applies to the proxy's recorded flows. A
+  `False` there means TLS interception silently failed (zero-egress traces read as a clean
+  skill), so doctor must fail loudly on it.
+
 ## What to do next
 
-**WP-13 increment 2b-ii — the mitmproxy sidecar container (§10.5, §22).** Every decision is
-now built and tested (`decide_request` composes classify/allowlist/caps/inject/record); what
-remains is the container that runs it: `mitmproxy` in a sidecar (pinned by digest) behind
-`RecordingProxy`, with a thin addon that hands each request's fields to `decide_request` and
-applies the `ProxyDecision`; the internal bridge with no route out except the proxy (TCP) and
-resolver (DNS); and the run wiring that hands the container `CredentialBroker.sandbox_env` +
-`proxy_environment`. That closes the WP-13 done-when — an integration test asserting the real
-key is absent from the container's environment, filesystem, and every artifact, and
-`no_egress` passing for a telemetry-emitting harness. **This is the one slice that cannot be
-verified in this build environment**: it needs `mitmproxy` from Docker Hub (blocked by the
-egress policy here) and working container networking (iptables is disabled here), so it must
-be validated on GitHub CI's `container` job. It pairs naturally with WP-14 (the CA trust
-chain), since credential injection into HTTPS needs the proxy's cert trusted inside the
-container. It also brings the **live model client** — the last thing between the built
-pipeline and a CLI `bellwether run`, after which `benign-stable` reaches `ready`. Then wire
-the precondition check and weight validation into `doctor`/`run`, the §21 enforced-settings
-refusal, and the FIFO sink writer — see the table below.
+**The one remaining container slice: the mitmproxy sidecar + doctor's live probe (WP-13 pt
+2b-ii, WP-14 done-when).** Every piece of *logic* is now built and tested — the proxy
+decision (`decide_request`), the credential broker, the canary engine, the CA mechanism
+table. What remains is the container that runs them: `mitmproxy` in a sidecar (pinned by
+digest) behind `RecordingProxy`, with a thin addon that hands each request to `decide_request`
+and applies the `ProxyDecision`; the internal bridge with no route out except the proxy (TCP)
+and resolver (DNS); the CA installed via `system_store_install_commands` + `ca_trust_environment`;
+and doctor issuing a real request and asserting `interception_confirmed`. That closes both the
+WP-13 done-when (real key absent from the container's env/filesystem/artifacts; `no_egress`
+passing for a telemetry-emitting harness) and WP-14's (doctor verifies interception by a real
+request). **This is the one slice that cannot be verified in this build environment** — it
+needs `mitmproxy` from Docker Hub (blocked by the egress policy here) and working container
+networking (iptables is disabled here) — so it must be validated on GitHub CI's `container`
+job. It also brings the **live model client** — the last thing between the built pipeline and
+a CLI `bellwether run`, after which `benign-stable` reaches `ready`. Then wire the
+precondition check and weight validation into `doctor`/`run`, the §21 enforced-settings
+refusal, and the FIFO sink writer — see the table below. (WP-15's controlled DNS resolver, its
+own container slice, remains too.)
 
 ## Outstanding actions
 
@@ -285,6 +309,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Thirty-five entries. Read it before changing anything in the skill, sandbox, capture or
+  Thirty-six entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.
