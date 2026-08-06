@@ -824,3 +824,33 @@ seed yet worthless outside the proxy. Reproducibility serves replay; the securit
 on the token's secrecy but on the fact that *this* string, not the real key, is the only
 credential the container ever holds, and the proxy is the only thing that can turn it into the
 real one. High entropy (`SeededRng.token(40)`) is defence in depth, not the control.
+
+---
+
+## §10.5 — The proxy's decision is a pure core; the addon is thin glue over it
+
+**Spec.** §10.5 describes the recording proxy as a mitmproxy sidecar with a custom addon
+that classifies, enforces the default-deny allowlist, injects the real credential, enforces
+per-run caps, and records every flow.
+
+**Resolution.** The *decision* — what to block, what to inject, what to record, when a cap
+trips — is a pure function, `decide_request` in `bellwether.capture.proxy_core`, and the
+mitmproxy addon (the container half, 2b-ii) is thin glue that hands it each request's fields
+and applies the returned `ProxyDecision`. Two reasons. First, the addon runs inside a
+sidecar built from a pinned mitmproxy image; keeping the security logic out of it means the
+logic is unit-tested on the host without standing up mitmproxy or a container — which this
+build environment cannot do anyway (Docker Hub egress is blocked and iptables is disabled,
+so neither pulling mitmproxy nor exercising container network isolation works here; 2b-ii's
+live test must run on GitHub CI). Second, an addon that embeds the logic could drift from
+what the tests check; an addon that only calls `decide_request` cannot.
+
+The *order* of operations is itself a security property and is fixed in `decide_request`,
+not left to the addon: (1) allowlist-check — a denied host is blocked *and recorded*, and a
+blocked request never advances to later steps; (2) cap-check *before* forwarding — the
+residual-channel bound (§10.5.1) only holds if a request that would cross a cap is refused
+before it leaves, and a blocked request never consumes the cap, so a skill cannot exhaust
+the budget with denied attempts to starve the run of real calls; (3) credential injection
+only for a permitted `model_api` request whose provider the broker holds a key for; (4)
+record either way. The recorded flow is proven to hold neither the real key nor the scoped
+token even after injection, because the record is built with the auth header redacted (§10.5)
+regardless of what the upstream request carries.

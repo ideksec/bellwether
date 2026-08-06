@@ -16,11 +16,12 @@ MUST NOT, more importantly
     invalidated the ground-truth claim.
 
 WP-5 built Plane A's host-owned sink and Plane B's zone-partitioned overlay capture.
-WP-13 increment 1 added Plane D's host-side semantics (``egress`` — classification, the
-default-deny allowlist, per-run caps, redaction); increment 2a added the credential-isolation
-core (``credential`` — the sandbox-scoped token, proxy-side injection, leak guard). Its
-mitmproxy sidecar and WP-15/16/18 bring the rest of the proxy, DNS, canaries and process
-planes.
+WP-13 built Plane D's host-side logic: increment 1 the egress semantics (``egress`` —
+classification, the default-deny allowlist, per-run caps, redaction), 2a the credential
+isolation core (``credential`` — the sandbox-scoped token, proxy-side injection, leak guard),
+and 2b-i the per-request decision (``proxy_core.decide_request`` — the fixed
+allowlist→caps→inject→record order the addon runs). Its mitmproxy sidecar (2b-ii) and
+WP-15/16/18 bring the rest of the proxy, DNS, canaries and process planes.
 ``mypy --strict`` from the first commit.
 """
 
@@ -52,6 +53,7 @@ from bellwether.capture.filesystem import (
     collect_filesystem_events,
     filesystem_writes_status,
 )
+from bellwether.capture.proxy_core import ProxyDecision, decide_request
 from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
 
 __all__ = [
@@ -65,12 +67,14 @@ __all__ = [
     "FilesystemEvent",
     "HostEventSink",
     "PlaneStatus",
+    "ProxyDecision",
     "RecordingProxy",
     "SinkEvent",
     "SinkStats",
     "classify_egress",
     "collect_filesystem_events",
     "correlate_egress_induced_failure",
+    "decide_request",
     "filesystem_writes_status",
     "make_flow",
     "mint_sandbox_token",
