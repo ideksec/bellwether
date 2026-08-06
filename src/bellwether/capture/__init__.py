@@ -87,6 +87,7 @@ from bellwether.capture.proxy_addon import (
     write_flow_records,
 )
 from bellwether.capture.proxy_core import ProxyDecision, decide_request
+from bellwether.capture.sidecar import MitmproxySidecar, SidecarHandle
 from bellwether.capture.sidecar_entry import (
     SidecarConfig,
     block_response_args,
@@ -112,12 +113,14 @@ __all__ = [
     "EgressFlow",
     "FilesystemEvent",
     "HostEventSink",
+    "MitmproxySidecar",
     "PlaneStatus",
     "ProxyAddon",
     "ProxyDecision",
     "RecordingProxy",
     "RequestLike",
     "SidecarConfig",
+    "SidecarHandle",
     "SinkEvent",
     "SinkStats",
     "block_response_args",
