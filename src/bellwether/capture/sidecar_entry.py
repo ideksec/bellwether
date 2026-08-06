@@ -195,8 +195,7 @@ def load_addon_from_env(environ: Mapping[str, str] | None = None) -> _RecordingA
     return _RecordingAddon(build_addon(config, env, clock=_wall_clock), config.flow_log_path)
 
 
-# mitmdump discovers a module-level ``addons`` list. Built lazily at load so importing this module
-# for its testable helpers never requires a config file or mitmproxy; only running it under
-# mitmdump — where ``CONFIG_ENV_VAR`` is set — constructs the live addon.
-if os.environ.get(CONFIG_ENV_VAR):
-    addons = [load_addon_from_env()]
+# The mitmdump entry point (``mitmdump -s``) is the loader at ``sidecar/proxy/proxy_entry.py`` in
+# the sidecar image; it calls :func:`load_addon_from_env` and assigns the ``addons`` list mitmproxy
+# discovers. This module deliberately does *not* build an addon at import, so importing it for its
+# testable helpers never touches a config file or mitmproxy.
