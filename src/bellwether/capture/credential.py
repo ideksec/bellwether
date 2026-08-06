@@ -178,3 +178,54 @@ class CredentialBroker:
         An empty real key never counts as a leak.
         """
         return any(cred.real_key and cred.real_key in text for cred in self._by_provider.values())
+
+    # -- The sidecar half (§10.5.1) -----------------------------------------------------
+    #
+    # The recording proxy runs in its own container and needs the *same* token↔key mapping
+    # this host broker minted, so that a request carrying the container's scoped token is
+    # recognised and swapped for the matching real key. The mapping is handed over in two
+    # parts, kept apart on purpose: the non-secret half (which env var, which scoped token)
+    # travels in the sidecar's config file, and the real keys travel only as environment
+    # variables into the sidecar container — host-controlled infrastructure, never the
+    # observed sandbox. :meth:`for_sidecar` rebuilds the broker from those two parts.
+
+    def sidecar_export(self) -> dict[str, dict[str, str]]:
+        """The non-secret half the sidecar needs to rebuild this broker: per provider, its
+        ``api_key_env`` name and scoped token. **No real key is here** — the scoped token is
+        already what the container holds, so exporting it leaks nothing, and the real key is
+        supplied separately via :meth:`sidecar_real_key_env`."""
+        return {
+            provider: {"api_key_env": cred.api_key_env, "sandbox_token": cred.sandbox_token}
+            for provider, cred in sorted(self._by_provider.items())
+        }
+
+    def sidecar_real_key_env(self) -> dict[str, str]:
+        """The environment the launcher injects into the *sidecar* container: each provider's
+        real key under its ``api_key_env`` name. This is the one place a real key leaves the
+        host, and it goes to the proxy — host-controlled — never to the sandbox, whose env is
+        built by :meth:`sandbox_env` and carries the scoped token instead."""
+        return {cred.api_key_env: cred.real_key for cred in self._by_provider.values()}
+
+    @classmethod
+    def for_sidecar(
+        cls, export: Mapping[str, Mapping[str, str]], environ: Mapping[str, str]
+    ) -> CredentialBroker:
+        """Rebuild the broker inside the sidecar from the non-secret export plus the real keys
+        in the sidecar's environment.
+
+        A provider whose real key is absent from ``environ`` is skipped, exactly as
+        :meth:`for_run` skips a keyless provider on the host — it is not ``ready`` and must not
+        appear injectable. Reconstructing it with an empty key would be worse than dropping it:
+        injecting an empty string would *strip* the container's scoped token to a bare scheme and
+        forward that, so the semantics are kept identical to the host's instead.
+        """
+        credentials = {
+            provider: _ProviderCredential(
+                sandbox_token=entry["sandbox_token"],
+                real_key=environ[entry["api_key_env"]],
+                api_key_env=entry["api_key_env"],
+            )
+            for provider, entry in export.items()
+            if environ.get(entry["api_key_env"])
+        }
+        return cls(credentials)
