@@ -758,3 +758,38 @@ served is exactly the regression a trace exists to catch (§9.4), so it is recor
 the two agree. And each repetition gets a *fresh* sandbox (prepare → mount → run → unmount),
 never a reused one: a repetition set is a distribution over independent runs (§13.2), and
 sharing a filesystem between them would manufacture a consistency the skill has not earned.
+
+---
+
+## §10.5 — The recording proxy is split: host-side semantics now, sidecar next
+
+**Spec.** §10.5 is a single plane: all container TCP through a mitmproxy sidecar with
+classification, a default-deny allowlist, per-run caps, and proxy-side credential injection.
+§22 adds "wrap it behind a `RecordingProxy` interface so it can be swapped without touching
+capture code — the same treatment `Sandbox` gets."
+
+**Resolution.** WP-13 lands in two increments, along the same seam every prior container WP
+used (pure logic first, container backend second). Increment 1 (this change) is the
+**host-side semantics**: `capture.egress` — `classify_egress`, `EgressAllowlist`,
+`CapLedger`, `redact_headers`, `make_flow`, `correlate_egress_induced_failure` — and
+`trace.egress_actions`, all deterministic and offline-tested. Increment 2 is the **sidecar**:
+mitmproxy pinned by digest behind `RecordingProxy`, the bridge, and credential injection,
+whose done-when (the real key absent from the container and every artifact) needs a real
+container and is where that assertion belongs. Splitting this way keeps the intricate
+classification/allowlist/caps logic testable on a laptop and isolates the one part that needs
+networking and a daemon.
+
+Three decisions worth recording. **(1)** Classification is model-API-first and matches on a
+label boundary (`host == endpoint or host.endswith("." + endpoint)`), so `api.anthropic.com`
+matches `eu.api.anthropic.com` but never `api.anthropic.com.evil.com` — a lookalike domain
+cannot smuggle itself in as infrastructure, and an unknown host defaults to
+`skill_attributed` (attributed to the skill until proven infrastructure), never the reverse.
+**(2)** Header redaction is an **allowlist** (record these names verbatim, redact every other
+value), not a denylist: the failure to avoid is a *new* auth header — `x-goog-api-key`,
+`anthropic-key` — leaking a real credential, and a denylist is one forgotten name from a
+leak. The request body never reaches a record at all; `make_flow` reduces it to a digest and
+a length, because a body may hold a credential or a canary and the record ends up in an
+artifact. **(3)** `RecordingProxy`'s base methods raise `NotImplementedError` rather than
+being a bare `Protocol`: a partial implementation that silently observed nothing would
+produce a zero-egress trace that reads as a clean skill — the exact silent-interception
+failure §10.5 and WP-14's doctor check exist to prevent — so the seam fails loud.

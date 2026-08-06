@@ -3,8 +3,8 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the execution-driver work — the first-light checkpoint. **Update
-it at the end of a session, not the start** — a status file that lags is worse than none,
+Last updated at the end of WP-13 increment 1 — the host-side egress semantics. **Update it
+at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
 ---
@@ -28,9 +28,10 @@ because it is trusted.
 | Analysis orchestrator (trace → verdict → artifact tree) | **done** |
 | Sandbox execution driver (`RunExecutor`) | **done** |
 | ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
-| WP-13 – WP-20 — Phase B | not started; the checkpoint that gated them is now met |
+| WP-13 — recording proxy: egress semantics (classification, allowlist, caps) | **half done** — the sidecar + credential injection is next |
+| WP-14 – WP-20 — Phase B | not started |
 
-485 tests: 449 offline, 36 under the `docker` mark. All green.
+510 tests: 474 offline, 36 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -99,17 +100,42 @@ until the proxy lands), and the artifact tree lands on disk. The skeleton walks.
 `conditional`-not-`ready` result is the tool refusing to call an unobserved channel clean,
 holding even for its own first run.
 
+### What WP-13 increment 1 built
+
+The **host-side egress semantics** — the deterministic core of Plane D, in
+`bellwether.capture.egress` and `trace.egress_actions`, offline and fully tested (25 tests):
+
+- **`classify_egress`** (§10.5.0): `model_api` / `harness_infrastructure` /
+  `skill_attributed`, model API checked first, label-boundary suffix matching so a lookalike
+  domain cannot pose as the provider. Only `skill_attributed` counts toward `no_egress` —
+  without this, telemetry from any real agent CLI makes `no_egress` never pass.
+- **`EgressAllowlist`** (default-deny): providers + declared infrastructure + explicit extras
+  permitted; everything else blocked, with a reason. A blocked attempt is evidence, not an
+  error.
+- **`CapLedger`** (§10.5.1): per-run request and byte caps on the sandbox-scoped token, the
+  bound on residual-channel exfiltration; a crossed cap is `budget_exceeded`.
+- **`redact_headers`**: an allowlist (keep these), not a denylist, so a *new* auth header
+  can't leak a credential into an artifact. **`make_flow`** reduces the request body to a
+  digest + length — no body value ever reaches a record.
+- **`correlate_egress_induced_failure`** (§10.5.0): a run with both assertion failures and
+  blocked egress is flagged, to be excluded from quality metrics and kept for security.
+- **`RecordingProxy`** is the seam for the sidecar; its base raises rather than silently
+  observing nothing (a zero-egress trace reads as a clean skill).
+
 ## What to do next
 
-**Phase B — the trust boundary (WP-13 onward).** The first-light checkpoint that gated the
-rest of v0.1 is met, so the network layer can now land on a skeleton known to walk. WP-13 is
-the **recording proxy sidecar** (§10.5): default-deny egress allowlist, sandbox-scoped token
-with proxy-side real-credential injection, egress classification. It also brings the **live
-model client** (`harness/provider.py`), which is what lets `bellwether run` execute a real
-skill against a real model from the CLI — today the executor needs an injected client, so
-`run` still names WP-13. With egress observable, `benign-stable` reaches `ready`. Then wire
-the precondition check and weight validation into `doctor`/`run`, the §21 enforced-settings
-refusal, and the FIFO sink writer — see the table below.
+**WP-13 increment 2 — the recording-proxy sidecar and credential injection (§10.5, §3.3).**
+The semantics are built; what remains is the container half: `mitmproxy` in a sidecar
+(pinned by digest) behind `RecordingProxy`, the internal bridge with no route out except the
+proxy (TCP) and resolver (DNS), and — the security core — **credential injection**: the proxy
+strips the sandbox-scoped token and adds the real key, which must never be readable inside
+the container nor enter any artifact. This is the WP-13 done-when: an integration test
+asserts the real key is absent from the container's environment, filesystem, and every
+artifact, and `no_egress` passes for a skill on a telemetry-emitting harness. It also brings
+the **live model client** (`harness/provider.py`) — the last thing between the built pipeline
+and a CLI `bellwether run` — after which `benign-stable` reaches `ready` (egress observable).
+Then wire the precondition check and weight validation into `doctor`/`run`, the §21
+enforced-settings refusal, and the FIFO sink writer — see the table below.
 
 ## Outstanding actions
 
@@ -219,6 +245,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Thirty-two entries. Read it before changing anything in the skill, sandbox, capture or
+  Thirty-three entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the five mechanically-enforced rules and how to run everything.
