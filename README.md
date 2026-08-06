@@ -176,7 +176,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Reporting: schema-versioned `summary.json`, the §13.8 figures, the Markdown PR comment | done (WP-12) |
 | Analysis orchestrator: trace → §13 metrics → §16.2 gates → verdict → §17.1 artifact tree | done |
 | Sandbox execution driver (`RunExecutor`); first-light checkpoint reached | done |
-| Recording proxy, live model client, `bellwether run` from the CLI | WP-13 |
+| Egress semantics: classification, default-deny allowlist, per-run caps, redaction | done (WP-13 pt 1) |
+| Recording-proxy sidecar + credential injection, live model client, CLI `run` | WP-13 pt 2 |
 | `claude-code` harness adapter | WP-17 |
 | Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
 | Corpus and acceptance | WP-20 |

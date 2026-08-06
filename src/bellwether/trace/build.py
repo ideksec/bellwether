@@ -17,11 +17,13 @@ import datetime as dt
 from typing import Any
 
 from bellwether.capture import FilesystemEvent, PlaneStatus
+from bellwether.capture.egress import EgressFlow
 from bellwether.harness import RawHarnessEvent
 from bellwether.trace.models import Action, Actor, Coverage, ExitReason, PlaneCoverage, TokenTotals
 
 __all__ = [
     "assemble_coverage",
+    "egress_actions",
     "exit_reason_from_events",
     "filesystem_actions",
     "harness_actions",
@@ -144,6 +146,55 @@ def filesystem_actions(
                 ts=observed_at,
                 plane="filesystem",
                 kind=event.kind,
+                action=payload,
+            )
+        )
+    return actions
+
+
+def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Action]:
+    """Turn classified proxy flows into Plane D action records (§10.5, §11.2).
+
+    A permitted request is ``kind: "egress"``; a default-deny block is ``kind:
+    "egress_blocked"`` — the two are drawn apart deliberately, because a blocked attempt is
+    evidence of intent (§10.5.0) and must never read like an ordinary request. Every record
+    carries its ``egress_class`` so the ``no_egress`` assertion can count only
+    skill-attributed traffic without re-deriving the classification. The request body is
+    never here — only its digest and length (§10.5): the record ends up in an artifact, and
+    a body may hold a credential or a canary.
+
+    ``seq`` values follow the flows' given order from ``start_seq``; the caller owns the
+    sequence space and WP-7's cross-plane merge places these relative to the other planes.
+    """
+    actions: list[Action] = []
+    for offset, flow in enumerate(flows):
+        payload: dict[str, Any] = {
+            "method": flow.method,
+            "scheme": flow.scheme,
+            "host": flow.host,
+            "port": flow.port,
+            "path": flow.path,
+            "egress_class": flow.egress_class,
+            "headers": dict(flow.request_headers),
+            "request_body_bytes": flow.request_body_bytes,
+        }
+        if flow.request_body_sha256:
+            payload["request_body_sha256"] = flow.request_body_sha256
+        if flow.response_status is not None:
+            payload["response_status"] = flow.response_status
+        if flow.response_size is not None:
+            payload["response_size"] = flow.response_size
+        if flow.sni:
+            payload["sni"] = flow.sni
+        if flow.blocked:
+            payload["block_reason"] = flow.block_reason
+
+        actions.append(
+            Action(
+                seq=start_seq + offset,
+                ts=dt.datetime.fromisoformat(flow.ts),
+                plane="egress",
+                kind="egress_blocked" if flow.blocked else "egress",
                 action=payload,
             )
         )

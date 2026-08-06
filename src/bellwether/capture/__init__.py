@@ -16,12 +16,27 @@ MUST NOT, more importantly
     invalidated the ground-truth claim.
 
 WP-5 built Plane A's host-owned sink and Plane B's zone-partitioned overlay capture.
-WP-13, WP-15, WP-16 and WP-18 bring the proxy, DNS, canaries and process planes.
+WP-13 increment 1 added Plane D's host-side semantics (``egress`` — classification, the
+default-deny allowlist, per-run caps, redaction); its mitmproxy sidecar and WP-15/16/18
+bring the rest of the proxy, DNS, canaries and process planes.
 ``mypy --strict`` from the first commit.
 """
 
 from __future__ import annotations
 
+from bellwether.capture.egress import (
+    DEFAULT_HEADER_ALLOWLIST,
+    CapLedger,
+    EgressAllowlist,
+    EgressClass,
+    EgressFlow,
+    RecordingProxy,
+    classify_egress,
+    correlate_egress_induced_failure,
+    make_flow,
+    provider_hosts,
+    redact_headers,
+)
 from bellwether.capture.filesystem import (
     FilesystemEvent,
     PlaneStatus,
@@ -31,11 +46,22 @@ from bellwether.capture.filesystem import (
 from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
 
 __all__ = [
+    "DEFAULT_HEADER_ALLOWLIST",
+    "CapLedger",
+    "EgressAllowlist",
+    "EgressClass",
+    "EgressFlow",
     "FilesystemEvent",
     "HostEventSink",
     "PlaneStatus",
+    "RecordingProxy",
     "SinkEvent",
     "SinkStats",
+    "classify_egress",
     "collect_filesystem_events",
+    "correlate_egress_induced_failure",
     "filesystem_writes_status",
+    "make_flow",
+    "provider_hosts",
+    "redact_headers",
 ]
