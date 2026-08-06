@@ -197,6 +197,7 @@ uv run ruff format .                    # format
 uv run mypy                             # types, strict
 uv run lint-imports                     # module boundaries
 uv run python tools/language_lint.py    # verdict vocabulary
+uv run python tools/pin_lint.py         # supply-chain pinning
 uv run pytest -m "not docker"           # runs offline, with no API key
 
 # The container integration tests need a Docker daemon and root, because mounting the
@@ -205,7 +206,7 @@ uv run pytest -m "not docker"           # runs offline, with no API key
 sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker
 ```
 
-Five rules are enforced by CI rather than by convention, because each is a rewrite if
+Six rules are enforced by CI rather than by convention, because each is a rewrite if
 retrofitted:
 
 - **Module boundaries.** The dependency graph flows
@@ -217,6 +218,11 @@ retrofitted:
   `config.yaml` is a bug.
 - **Language discipline.** The verdict vocabulary must not imply proof;
   `tools/language_lint.py` fails the build on the words that would.
+- **Supply-chain pinning.** Every third-party GitHub Action is pinned to a full commit
+  SHA and every container image to a `@sha256:` digest; `tools/pin_lint.py` fails the
+  build on a mutable tag. A tool about supply chain must not pull mutable tags in its own
+  CI. Python dependencies are hash-pinned in `uv.lock` (`uv sync --frozen` verifies every
+  hash), and the production sandbox image is refused unless pinned by digest.
 - **Types.** `mypy --strict` over the whole package.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the detail, [docs/STATUS.md](docs/STATUS.md)

@@ -39,6 +39,26 @@ chunked exfiltration — are not vulnerabilities; they are named limitations in
 deliberately-failing test so it stays visible. A report showing the gap is *wider* than
 documented is very welcome.
 
+## Our own supply chain
+
+A tool whose subject is supply-chain risk must not be a soft target itself. What we pin,
+and where it is enforced:
+
+- **GitHub Actions** are pinned to full commit SHAs, never tags. A tag is mutable, and a
+  compromised action tag is the classic CI supply-chain attack. `tools/pin_lint.py` fails
+  the build on any unpinned `uses:`.
+- **Container images** — in CI, in the test defaults, and (enforced by config validation)
+  for the production sandbox image — are pinned by `@sha256:` digest.
+- **Python dependencies** are hash-pinned in `uv.lock`; `uv sync --frozen` verifies every
+  recorded hash on install, so a tampered wheel on the index fails the build rather than
+  entering it. `uv` and the Python version are pinned in CI too.
+- **`.github/dependabot.yml`** keeps these pins current, because a pin that never updates
+  is its own risk; each bump is a reviewed PR that CI re-verifies.
+
+The CI runner itself remains trusted by design (see below): pinning raises the cost of a
+supply-chain attack and makes the inputs auditable, but it does not defend a runner that is
+already compromised.
+
 ## Out of scope
 
 - Compromise of the CI runner. The runner is trusted by design; its compromise defeats

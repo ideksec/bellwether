@@ -30,7 +30,10 @@ from bellwether.trace import assemble_coverage, filesystem_actions
 
 pytestmark = pytest.mark.docker
 
-TEST_IMAGE = os.environ.get("BELLWETHER_TEST_IMAGE", "mcr.microsoft.com/cbl-mariner/base/core:2.0")
+TEST_IMAGE = os.environ.get(
+    "BELLWETHER_TEST_IMAGE",
+    "mcr.microsoft.com/cbl-mariner/base/core:2.0@sha256:c833841d2dcfd3081d2ee807050d19368854f70d9b6faef027463e2c6f45ee41",
+)
 
 #: Where the sink is bound inside the container. `/dev` because it is a tmpfs in every
 #: Docker container, so the mountpoint needs no writable rootfs. A production adapter

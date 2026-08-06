@@ -52,7 +52,7 @@ start. Note that not every container registry is reachable under a restrictive e
 policy — registries that redirect blobs to a CDN often are not — so
 `BELLWETHER_TEST_IMAGE` selects the image and defaults to one that serves its own blobs.
 
-## Five rules that are enforced mechanically
+## Six rules that are enforced mechanically
 
 Each of these is cheap to hold from the first commit and a rewrite to retrofit. That is
 why they are in CI rather than in a style guide.
@@ -114,7 +114,27 @@ the limitations in §2, for instance — mark the line with a reason:
 
 A marker without a reason is itself an error. The point is that someone had to think.
 
-### 5. Types
+### 5. Supply-chain pinning
+
+Bellwether's thesis is that a supply-chain artifact is trustworthy only when what you
+review is what runs. That has to hold for the project's own plumbing, or the tool is
+arguing against itself. So every supply-chain input is pinned to an immutable digest:
+
+- every third-party GitHub Action is pinned to a full 40-hex commit SHA, not a tag
+  (`actions/checkout@fbc6f39… # v5`); the trailing `# vN` comment is what Dependabot reads
+  to bump the pin;
+- every container image is pinned by `@sha256:` digest — in CI, in the test defaults, and
+  (enforced by config validation) for the production sandbox image;
+- Python dependencies are hash-pinned in `uv.lock`, and `uv sync --frozen` verifies every
+  recorded hash on install;
+- `uv` itself and the Python version are pinned in CI.
+
+`tools/pin_lint.py` enforces the first two over the workflow files and fails the build on a
+mutable tag. `.github/dependabot.yml` keeps the pins from going stale — a pin that never
+updates is its own risk. When you add an action or an image, pin it; the lint will remind
+you if you forget.
+
+### 6. Types
 
 `mypy --strict` runs over the whole package. The specification requires it on `metrics`,
 `trace`, `verdict` and `capture` "at minimum"; holding the line everywhere from the start
