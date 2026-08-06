@@ -888,3 +888,32 @@ to the system store, because Node and others carry a bundled CA list and ignore 
 and `interception_confirmed` returning `False` is the tool's single most dangerous state (a
 silent interception failure yields zero-egress traces that read as a clean skill), so doctor
 must fail loudly on it rather than proceed.
+
+---
+
+## §3.3 invariant 3 — The "no route out" is a routing fact enforced at the Docker bridge
+
+**Spec.** §3.3 invariant 3: there must be no unmediated route out of the sandbox on any
+protocol; the only egress is the recording proxy (TCP) and the controlled resolver (DNS).
+
+**Resolution.** The isolation is enforced at the Docker network layer with an `--internal`
+bridge (`DockerBackend.create_network`), not by hoping the skill honours `--network none` or
+by a userspace firewall the container could race. An `--internal` bridge is created without a
+gateway, so a container on it has a subnet route to its peers but *no default route*: the
+kernel refuses a socket to any public address with "network is unreachable" before any egress
+code runs. The recording proxy and resolver are placed on that bridge as peers, so they are
+the only reachable destinations — the mediation is a consequence of routing, not a policy
+decision made per request.
+
+Two decisions worth recording. **(1)** The docker test asserts invariant 3 by reading
+`/proc/net/route` inside a real container — a subnet route present, a default route absent —
+rather than shelling out to `nc`/`curl`/bash `/dev/tcp`. The routing table *is* the invariant;
+a plain file read proves it identically on the alpine CI image and the mariner default, needs
+no networking tool that one image has and the other lacks, and does not depend on host
+iptables (so it validates in the restricted build environment as well as on CI, where the
+live proxy-reachability half runs). It also contrasts against `--network none` (no routes at
+all) so the block is provably the bridge's missing gateway, not the mere absence of a network.
+**(2)** `create_network` is deliberately *not* idempotent: a name collision means a leaked
+network from a crashed run whose peers Bellwether did not place, and silently reusing it would
+attach this run's sandbox to a bridge of unknown membership. The caller removes and retries;
+`remove_network` is the best-effort, always-safe teardown.
