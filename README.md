@@ -182,6 +182,7 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Proxy addon glue: mutate request or block, plus the sidecar↔host flow-record contract | done (WP-13 pt 2b-ii core) |
 | Sidecar entry: config, broker reconstruction, mitmdump addon (credential mapping survives the round trip) | done (WP-13 pt 2b-ii core) |
 | Sidecar host launcher: start/flows/stop, real key forwarded by name (never on the command line) | done (WP-13 pt 2b-ii core) |
+| Sidecar image: digest-pinned `mitmproxy` Dockerfile; build + addon-load proven on CI | done (WP-13 pt 2b-ii) |
 | Sandbox network isolation: internal bridge, no route out except the proxy peer (§3.3 inv. 3) | done (WP-13) |
 | Canaries: mint, decode-then-match, destination classification, redaction | done (WP-16) |
 | CA trust chain: §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core) |
@@ -227,10 +228,11 @@ retrofitted:
 - **Language discipline.** The verdict vocabulary must not imply proof;
   `tools/language_lint.py` fails the build on the words that would.
 - **Supply-chain pinning.** Every third-party GitHub Action is pinned to a full commit
-  SHA and every container image to a `@sha256:` digest; `tools/pin_lint.py` fails the
-  build on a mutable tag. A tool about supply chain must not pull mutable tags in its own
-  CI. Python dependencies are hash-pinned in `uv.lock` (`uv sync --frozen` verifies every
-  hash), and the production sandbox image is refused unless pinned by digest.
+  SHA, every container image (in workflows *and* Dockerfile `FROM` lines) to a `@sha256:`
+  digest; `tools/pin_lint.py` fails the build on a mutable tag. A tool about supply chain
+  must not pull mutable tags in its own CI. Python dependencies are hash-pinned in
+  `uv.lock` (`uv sync --frozen` verifies every hash), and the production sandbox image is
+  refused unless pinned by digest.
 - **Types.** `mypy --strict` over the whole package.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the detail, [docs/STATUS.md](docs/STATUS.md)

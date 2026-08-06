@@ -15,6 +15,8 @@ graph are enforced — by failing the build, not by convention:
    bump the pin) and ignored here.
 2. **Every container image named in a workflow is pinned by digest** (``@sha256:…``). This
    covers the ``*_IMAGE`` env vars and ``docker pull`` lines the CI uses.
+3. **Every Dockerfile ``FROM`` is pinned by digest.** The sidecar image builds from a base; a
+   floating base tag is the same mutable-input hole as a floating action, one layer down.
 
 Run: ``uv run python tools/pin_lint.py`` (CI runs it on every push).
 """
@@ -32,6 +34,11 @@ _USES = re.compile(r"""^\s*-?\s*uses:\s*["']?(?P<ref>[^"'\s]+)["']?""")
 #: when it carries a tag but no ``@sha256:`` digest.
 _IMAGE_ENV = re.compile(r"""(?P<key>[A-Z0-9_]*IMAGE)\s*:\s*["']?(?P<val>\S+?)["']?\s*$""")
 _DOCKER_PULL = re.compile(r"""docker\s+pull\s+(?:-q\s+)?["']?(?P<val>[^"'\s]+)""")
+#: A Dockerfile ``FROM`` line: ``FROM image[:tag][@sha256:...] [AS stage]``. A ``FROM`` of a
+#: previous build stage (``FROM builder``) carries no registry ref and is exempt.
+_FROM = re.compile(r"""^\s*FROM\s+(?P<val>\S+)""", re.IGNORECASE)
+#: Directories whose contents are not this project's own supply-chain inputs.
+_IGNORED_DIRS = frozenset({".venv", ".git", "node_modules", ".mypy_cache", ".ruff_cache"})
 
 
 def _uses_is_pinned(ref: str) -> bool:
@@ -76,16 +83,54 @@ def check_workflow(path: Path) -> list[str]:
     return problems
 
 
+def check_dockerfile(path: Path) -> list[str]:
+    """A Dockerfile is clean when every ``FROM`` that names a registry image carries a digest.
+
+    A ``FROM <earlier-stage>`` in a multi-stage build names no registry image (it has no ``/``,
+    ``:`` or ``.``) and is exempt — it inherits the pin of the stage it refers to.
+    """
+    problems: list[str] = []
+    stages: set[str] = set()
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        match = _FROM.match(line)
+        if not match:
+            continue
+        ref = match.group("val")
+        tokens = line.split()
+        # `FROM x AS y` — record the stage name so a later `FROM y` is recognised as internal.
+        if len(tokens) >= 4 and tokens[2].upper() == "AS":
+            stages.add(tokens[3])
+        if ref in stages or ref == "scratch":
+            continue
+        if "@sha256:" not in ref:
+            problems.append(
+                f"{path}:{number}: base image {ref!r} is not pinned by digest; append "
+                f"'@sha256:...' (a base tag is mutable — pin it, keep the version in a comment)"
+            )
+    return problems
+
+
 def main(argv: list[str]) -> int:
-    root = Path(argv[1]) if len(argv) > 1 else Path(".github/workflows")
-    files = sorted(root.rglob("*.yml")) + sorted(root.rglob("*.yaml"))
-    if not files:
-        print(f"pin-lint: no workflow files under {root}", file=sys.stderr)
+    root = Path(argv[1]) if len(argv) > 1 else Path()
+    workflow_root = root / ".github" / "workflows" if root == Path() else root
+    workflows = sorted(workflow_root.rglob("*.yml")) + sorted(workflow_root.rglob("*.yaml"))
+    dockerfiles = [
+        path
+        for pattern in ("Dockerfile", "*.Dockerfile")
+        for path in sorted(root.rglob(pattern))
+        # Skip vendored / build trees: a Dockerfile inside an installed dependency or the git
+        # object store is not this project's supply-chain input.
+        if not any(part in _IGNORED_DIRS for part in path.parts)
+    ]
+    if not workflows and not dockerfiles:
+        print(f"pin-lint: no workflow or Dockerfile inputs under {root}", file=sys.stderr)
         return 0
 
     problems: list[str] = []
-    for path in files:
+    for path in workflows:
         problems.extend(check_workflow(path))
+    for path in dockerfiles:
+        problems.extend(check_dockerfile(path))
 
     if problems:
         print("\n".join(problems), file=sys.stderr)
@@ -96,7 +141,10 @@ def main(argv: list[str]) -> int:
         )
         return 1
 
-    print(f"pin-lint: {len(files)} workflow file(s) — every action and image is pinned.")
+    print(
+        f"pin-lint: {len(workflows)} workflow + {len(dockerfiles)} Dockerfile input(s) — "
+        f"every action and image is pinned."
+    )
     return 0
 
 

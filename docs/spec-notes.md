@@ -1008,3 +1008,31 @@ is a hard failure rather than a silent zero-egress run. A stale log from a crash
 deleted before start, so readiness cannot be trivially true and one run cannot inherit another's
 recorded flows — the same missing-vs-empty discipline the flow-record reader enforces, applied to
 the lifecycle.
+
+---
+
+## §10.5, §22 — The sidecar image, and de-risking the one slice that can't be tested offline
+
+**Spec.** §10.5/§22: the recording proxy is `mitmproxy` in a sidecar container, pinned by digest and
+wrapped behind an interface, its dependency tree kept apart from Bellwether's.
+
+**Resolution.** `sidecar/proxy/Dockerfile` builds the image: a digest-pinned `python:3.12-slim` base,
+`mitmproxy==12.2.3` (exact — the addon API is unstable across majors), Bellwether installed from
+`pyproject.toml` + `src`, and the `mitmdump` loader `proxy_entry.py` at the fixed `SIDECAR_ENTRY_PATH`
+the launcher references. The dependency trees stay apart because it is a *separate image*: installing
+Bellwether alongside mitmproxy there does not pull mitmproxy's tree into the host environment, which
+is the coupling §10.5 forbids.
+
+Because none of this can run in the build environment (no public-registry egress, no container
+networking), the slice was shaped to *de-risk* the parts that can only be checked live rather than to
+do everything at once. The docker test builds the image and asserts the empty flow log appears — which
+proves, in one cheap check, the four things most likely to be wrong and impossible to verify offline:
+the Dockerfile builds from its pinned base, Bellwether imports inside the mitmproxy runtime, `mitmdump`
+loads our addon, and the readiness contract holds in a real container. The full interception path
+(client → proxy → forward-with-injection / block, plus CA trust) is the follow-up, now standing on a
+proven image instead of debugging image, addon-load, networking and TLS simultaneously on a remote
+runner. Three supporting decisions: the test is gated on `CI` so it skips locally with a stated reason
+(honest, like the `docker`-mark skips) and runs where the registries are reachable; it dumps the
+sidecar's container logs into the assertion on a readiness timeout, so a first-run remote failure is
+diagnosable from the job output; and `pin_lint` grew a Dockerfile `FROM`-digest rule, because a
+floating base image is the same mutable-input hole as a floating action, one layer down.
