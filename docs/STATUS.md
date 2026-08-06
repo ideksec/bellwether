@@ -3,8 +3,9 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-12 work. **Update it at the end of a session, not the
-start** — a status file that lags is worse than none, because it is trusted.
+Last updated at the end of the execution-driver work — the first-light checkpoint. **Update
+it at the end of a session, not the start** — a status file that lags is worse than none,
+because it is trusted.
 
 ---
 
@@ -31,8 +32,10 @@ start** — a status file that lags is worse than none, because it is trusted.
 
 485 tests: 449 offline, 36 under the `docker` mark. All green.
 
-`bellwether run` is not usable. It exits 3 and names the work package that brings it,
-rather than printing an empty result that would read as a clean run.
+`bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
+tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
+model client, so `run` exits 3 and names that package rather than printing an empty result
+that would read as a clean run.
 
 ### What WP-12 built
 
@@ -115,8 +118,8 @@ refusal, and the FIFO sink writer — see the table below.
 | Item | Where | Why it is still open |
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
-| §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | Needs `run` to be fully wired (the execution driver). Wire it then. |
-| Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when the execution driver lands. |
+| §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | The execution driver and orchestrator have landed; `run` is not yet CLI-drivable (needs the WP-13 live client). Wire the refusal into `run` then. |
+| Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when `run` is CLI-drivable (WP-13). |
 | Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
 | The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
 | Live model client | `harness/provider.py` | Deferred to WP-13 on purpose: no observed egress path exists yet for it (spec-notes §9.4). |
@@ -132,8 +135,13 @@ refusal, and the FIFO sink writer — see the table below.
 | Dependabot | open |
 | CodeQL | open — thin to be missing on a repo about supply chain |
 
-There is also a stray branch, `claude/bellwether-code-review-t8xuzw`, left by the review
-session. Nothing depends on it; delete it when convenient.
+Two stray remote branches remain, both safe to delete (a session cannot delete branches
+other than its own designated one, so this is left for a human):
+- `claude/project-repo-setup-aspyig` — **fully merged into `main`**; its content is
+  redundant.
+- `claude/bellwether-code-review-t8xuzw` — the review session's branch; one unmerged commit,
+  but its one useful fix (the canonicalize crash) was already extracted into the merged
+  PR #13, so nothing depends on it.
 
 ## Things a new session must know
 
