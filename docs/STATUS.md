@@ -28,12 +28,12 @@ because it is trusted.
 | Analysis orchestrator (trace → verdict → artifact tree) | **done** |
 | Sandbox execution driver (`RunExecutor`) | **done** |
 | ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
-| WP-13 — recording proxy: egress semantics, credential isolation, decision core | **logic complete** — only the mitmproxy sidecar container remains |
+| WP-13 — recording proxy: egress semantics, credential isolation, decision core, internal-bridge isolation | **logic complete + bridge isolation proven on CI** — only the mitmproxy sidecar container remains |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
 | WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
 | WP-15, WP-17 – WP-20 — Phase B | not started |
 
-557 tests: 521 offline, 36 under the `docker` mark. All green.
+561 tests: 521 offline, 40 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -159,6 +159,28 @@ the recorded flow never holds the real key *or* the scoped token even after inje
 is the whole "what the sidecar decides" — the container that runs it is all that's left of
 WP-13.
 
+### What the internal-bridge isolation built (§3.3 invariant 3)
+
+The **routing half of "no unmediated route out"**, in `bellwether.sandbox.docker` —
+`create_network`/`remove_network` and a `network` argument already threaded through `run`
+and `build_argv` (4 docker tests, `test_network_docker.py`):
+
+- **`create_network(name, internal=True)`** builds a Docker `--internal` bridge: a container
+  on it reaches only its peers, so the sole routes out are the recording proxy and resolver,
+  which are those peers. A socket to a public address is refused by the kernel with "network
+  is unreachable" *before* any userspace egress code runs — the isolation is a routing fact,
+  not a policy the container could talk past. Creation is deliberately non-idempotent: a name
+  collision means a leaked network whose peers we did not place, so the caller removes and
+  retries rather than silently reusing it.
+- The docker test proves invariant 3 by reading `/proc/net/route` inside a real container on
+  the bridge — a subnet route exists (attached to a real bridge) but **no default route**
+  (no way out) — and contrasts it against `--network none` (no routes at all), so the block
+  is provably the bridge's missing gateway, not the absence of a network. The check is a
+  plain file read: no `nc`/`curl`/bash `/dev/tcp`, so it behaves identically on the alpine CI
+  image and the mariner default, and does not depend on host iptables (which is why it
+  validates here as well as on CI). The proxy peer *being reachable and recording* is the
+  sidecar's live half, still CI-only.
+
 ### What WP-16 (canaries) and WP-14 (CA core) built
 
 - **WP-16 canaries**, `bellwether.capture.canary`, offline and fully tested (16 tests):
@@ -187,8 +209,9 @@ WP-13.
 decision (`decide_request`), the credential broker, the canary engine, the CA mechanism
 table. What remains is the container that runs them: `mitmproxy` in a sidecar (pinned by
 digest) behind `RecordingProxy`, with a thin addon that hands each request to `decide_request`
-and applies the `ProxyDecision`; the internal bridge with no route out except the proxy (TCP)
-and resolver (DNS); the CA installed via `system_store_install_commands` + `ca_trust_environment`;
+and applies the `ProxyDecision`; the internal bridge is built and its isolation proven on CI
+(`create_network`), so the sidecar attaches to it as a peer; the CA installed via
+`system_store_install_commands` + `ca_trust_environment`;
 and doctor issuing a real request and asserting `interception_confirmed`. That closes both the
 WP-13 done-when (real key absent from the container's env/filesystem/artifacts; `no_egress`
 passing for a telemetry-emitting harness) and WP-14's (doctor verifies interception by a real

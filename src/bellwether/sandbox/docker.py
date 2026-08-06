@@ -92,6 +92,44 @@ class DockerBackend:
             return False, detail[-1] if detail else "the Docker daemon is not reachable"
         return True, f"docker {result.stdout.strip()}"
 
+    def create_network(self, name: str, *, internal: bool = True) -> str:
+        """Create the bridge the sandbox attaches to, isolated from the host by default.
+
+        §3.3 invariant 3 — *no unmediated route out on any protocol* — is enforced here,
+        at the Docker network layer, not by hoping the skill respects ``--network none``.
+        ``--internal`` builds a bridge with no gateway to the outside: a container on it
+        can reach only its peers, so the sole routes out are the recording proxy and the
+        controlled resolver, which are those peers. A container that tries to open a socket
+        to a public address gets "network is unreachable" from the kernel, before any
+        userspace egress code runs — the isolation is a routing fact, not a policy the
+        container could talk its way past.
+
+        Idempotent creation is deliberately *not* offered: a name collision means a leaked
+        network from a previous run, and silently reusing it would attach this run's
+        sandbox to a bridge whose peers we did not place. The caller removes and retries.
+        """
+        argv = [self.binary, "network", "create", "--driver", "bridge"]
+        if internal:
+            argv.append("--internal")
+        argv.append(name)
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+        if result.returncode != 0:
+            raise BellwetherError(
+                f"could not create sandbox network {name!r}: "
+                f"{result.stderr.strip() or result.returncode}"
+            )
+        return name
+
+    def remove_network(self, name: str) -> None:
+        """Tear the bridge down. Best-effort, like container removal: a network that never
+        existed and one already gone are the same clean end state."""
+        subprocess.run(
+            [self.binary, "network", "rm", name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def mount(self, prepared: PreparedSandbox) -> OverlayMount:
         """Mount the overlays: the workspace, then each captured zone (§10.2).
 
