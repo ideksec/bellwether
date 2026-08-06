@@ -77,6 +77,15 @@ from bellwether.capture.filesystem import (
     collect_filesystem_events,
     filesystem_writes_status,
 )
+from bellwether.capture.proxy_addon import (
+    BlockResponse,
+    ProxyAddon,
+    RequestLike,
+    flow_record_line,
+    parse_flow_record,
+    read_flow_records,
+    write_flow_records,
+)
 from bellwether.capture.proxy_core import ProxyDecision, decide_request
 from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
 
@@ -86,6 +95,7 @@ __all__ = [
     "DEFAULT_CA_CONTAINER_PATH",
     "DEFAULT_HEADER_ALLOWLIST",
     "SANDBOX_TOKEN_PREFIX",
+    "BlockResponse",
     "CaMechanism",
     "Canary",
     "CanaryFinding",
@@ -98,8 +108,10 @@ __all__ = [
     "FilesystemEvent",
     "HostEventSink",
     "PlaneStatus",
+    "ProxyAddon",
     "ProxyDecision",
     "RecordingProxy",
+    "RequestLike",
     "SinkEvent",
     "SinkStats",
     "ca_trust_environment",
@@ -111,16 +123,20 @@ __all__ = [
     "decide_request",
     "decoded_forms",
     "filesystem_writes_status",
+    "flow_record_line",
     "interception_confirmed",
     "make_flow",
     "mint_canaries",
     "mint_sandbox_token",
+    "parse_flow_record",
     "provider_hosts",
     "proxy_environment",
+    "read_flow_records",
     "redact_canaries",
     "redact_headers",
     "scan_for_canaries",
     "strip_and_inject",
     "strip_dns_labels",
     "system_store_install_commands",
+    "write_flow_records",
 ]

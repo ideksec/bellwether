@@ -917,3 +917,37 @@ all) so the block is provably the bridge's missing gateway, not the mere absence
 network from a crashed run whose peers Bellwether did not place, and silently reusing it would
 attach this run's sandbox to a bridge of unknown membership. The caller removes and retries;
 `remove_network` is the best-effort, always-safe teardown.
+
+---
+
+## §10.5 — The proxy addon is glue over the decision core; the flow log is the sidecar contract
+
+**Spec.** §10.5: all container TCP routes through a mitmproxy sidecar that classifies, enforces
+the default-deny allowlist and per-run caps, injects the real credential for model-API calls, and
+records every flow (redacted) to a shared host volume.
+
+**Resolution.** The sidecar splits into two halves along the line the rest of the plane already
+follows: the *decision* (`decide_request`, already built) and the *glue* that runs it against
+mitmproxy. `bellwether.capture.proxy_addon` is the glue, built and offline-tested now; only the
+container that hosts it is deferred to CI. `ProxyAddon.on_request` translates a mitmproxy request
+into `decide_request` kwargs, records the returned flow, and then does the one thing the pure
+decision cannot: it *mutates the live request object* — writing the injected headers (real key) back
+onto `request.headers` — or returns a `BlockResponse` the entry script renders as a synthetic 403
+or 429. It adds no security logic; the order and the decisions stay in `decide_request`.
+
+Three decisions worth recording. **(1)** `RequestLike` is a `Protocol` capturing the exact subset
+of `mitmproxy.http.Request` the addon reads and writes, so the glue is unit-tested with a plain
+fake — no mitmproxy import, mypy-clean — and the `mitmdump` entry script in the image stays too
+thin to hide a bug. The single most important assertion is behavioural, not structural: a forwarded
+model call's `Authorization` header is observed to *become* the real key on the request object,
+while the recorded flow for the same call is observed to hold neither the real key nor the scoped
+token. **(2)** A denial is a 403 and a cap refusal is a 429 — kept distinct because a forbidden host
+and an exhausted budget are different conditions, and a skill reacting to egress failure should be
+able to tell them apart; the 429 also carries the `cap_exceeded` name the run surfaces as
+`budget_exceeded`. **(3)** The flow log is the sidecar↔host contract, one canonical JSON line per
+flow. `read_flow_records` treats a *missing* file as an error (raises), not an empty run, because
+the sidecar always writes the log — its absence means the proxy never ran, and a zero-egress trace
+that reads as a clean skill is precisely the failure this plane exists to distrust (§14); a
+*written-but-empty* log is a legitimate observed-zero-egress run. The regression that shaped the
+serialisation: a blocked flow has no response, so its optional response fields are `None` and must
+round-trip as `None`, never collapse to `0`.
