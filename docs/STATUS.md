@@ -3,7 +3,7 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of WP-13 increment 1 — the host-side egress semantics. **Update it
+Last updated at the end of WP-13 increment 2a — the credential-isolation core. **Update it
 at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
@@ -28,10 +28,10 @@ because it is trusted.
 | Analysis orchestrator (trace → verdict → artifact tree) | **done** |
 | Sandbox execution driver (`RunExecutor`) | **done** |
 | ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
-| WP-13 — recording proxy: egress semantics (classification, allowlist, caps) | **half done** — the sidecar + credential injection is next |
+| WP-13 — recording proxy: egress semantics + credential isolation core | **two-thirds done** — the mitmproxy sidecar container is next |
 | WP-14 – WP-20 — Phase B | not started |
 
-510 tests: 474 offline, 36 under the `docker` mark. All green.
+524 tests: 488 offline, 36 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -122,20 +122,45 @@ The **host-side egress semantics** — the deterministic core of Plane D, in
 - **`RecordingProxy`** is the seam for the sidecar; its base raises rather than silently
   observing nothing (a zero-egress trace reads as a clean skill).
 
+### What WP-13 increment 2a built
+
+The **credential-isolation core** (§3.3 invariant 1 — the most important security property
+of the tool), in `bellwether.capture.credential`, offline and fully tested (14 tests):
+
+- **`mint_sandbox_token`**: a per-run, reproducible, opaque sandbox-scoped token — worthless
+  outside the proxy; its only power is that the proxy recognises it and swaps in the real key.
+- **`strip_and_inject`** (§10.5.1): the proxy-side transform that replaces the scoped token
+  with the real key in an auth header, preserving the scheme, and injects *only* for the
+  token it minted (a skill's own key is never swapped for Bellwether's).
+- **`CredentialBroker`**: the host-side ledger. `sandbox_env(provider)` is what the container
+  receives — the scoped token under the provider's own key var, **never the real key**;
+  `inject` performs the swap; `leaks_a_real_key(text)` is the guard teardown and the done-when
+  use to assert no artifact holds a credential. The real key is read from the host
+  environment and leaves only through `inject`.
+- **`proxy_environment`**: the routing env (HTTPS_PROXY etc., no bypass), plus the CA-bundle
+  vars for WP-14.
+
+The end-to-end invariant is tested by joining this to increment 1: an injected request really
+carries the real key on the wire, but the flow record redacts the auth header, so the key
+reaches the provider and nothing else.
+
 ## What to do next
 
-**WP-13 increment 2 — the recording-proxy sidecar and credential injection (§10.5, §3.3).**
-The semantics are built; what remains is the container half: `mitmproxy` in a sidecar
-(pinned by digest) behind `RecordingProxy`, the internal bridge with no route out except the
-proxy (TCP) and resolver (DNS), and — the security core — **credential injection**: the proxy
-strips the sandbox-scoped token and adds the real key, which must never be readable inside
-the container nor enter any artifact. This is the WP-13 done-when: an integration test
-asserts the real key is absent from the container's environment, filesystem, and every
-artifact, and `no_egress` passes for a skill on a telemetry-emitting harness. It also brings
-the **live model client** (`harness/provider.py`) — the last thing between the built pipeline
-and a CLI `bellwether run` — after which `benign-stable` reaches `ready` (egress observable).
-Then wire the precondition check and weight validation into `doctor`/`run`, the §21
-enforced-settings refusal, and the FIFO sink writer — see the table below.
+**WP-13 increment 2b — the mitmproxy sidecar container (§10.5, §22).** Both the egress
+semantics (2a's classify/allowlist/caps) and the credential core (2a's broker/injection) are
+built and tested; what remains is the container that runs them: `mitmproxy` in a sidecar
+(pinned by digest) behind `RecordingProxy`, with a custom addon that calls `make_flow`,
+`EgressAllowlist` and `CredentialBroker.inject`; the internal bridge with no route out except
+the proxy (TCP) and resolver (DNS); and the run wiring that hands the container
+`CredentialBroker.sandbox_env` + `proxy_environment`. That closes the WP-13 done-when — an
+integration test asserting the real key is absent from the container's environment,
+filesystem, and every artifact, and `no_egress` passing for a telemetry-emitting harness.
+(The sidecar needs `mitmproxy` from Docker Hub, which this build environment's egress policy
+blocks; expect that test to run on CI/GitHub rather than in the sandbox.) It also brings the
+**live model client** — the last thing between the built pipeline and a CLI `bellwether run`,
+after which `benign-stable` reaches `ready`. Then wire the precondition check and weight
+validation into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer —
+see the table below.
 
 ## Outstanding actions
 
@@ -245,6 +270,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Thirty-three entries. Read it before changing anything in the skill, sandbox, capture or
+  Thirty-four entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.

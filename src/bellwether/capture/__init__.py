@@ -17,13 +17,22 @@ MUST NOT, more importantly
 
 WP-5 built Plane A's host-owned sink and Plane B's zone-partitioned overlay capture.
 WP-13 increment 1 added Plane D's host-side semantics (``egress`` — classification, the
-default-deny allowlist, per-run caps, redaction); its mitmproxy sidecar and WP-15/16/18
-bring the rest of the proxy, DNS, canaries and process planes.
+default-deny allowlist, per-run caps, redaction); increment 2a added the credential-isolation
+core (``credential`` — the sandbox-scoped token, proxy-side injection, leak guard). Its
+mitmproxy sidecar and WP-15/16/18 bring the rest of the proxy, DNS, canaries and process
+planes.
 ``mypy --strict`` from the first commit.
 """
 
 from __future__ import annotations
 
+from bellwether.capture.credential import (
+    SANDBOX_TOKEN_PREFIX,
+    CredentialBroker,
+    mint_sandbox_token,
+    proxy_environment,
+    strip_and_inject,
+)
 from bellwether.capture.egress import (
     DEFAULT_HEADER_ALLOWLIST,
     CapLedger,
@@ -47,7 +56,9 @@ from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
 
 __all__ = [
     "DEFAULT_HEADER_ALLOWLIST",
+    "SANDBOX_TOKEN_PREFIX",
     "CapLedger",
+    "CredentialBroker",
     "EgressAllowlist",
     "EgressClass",
     "EgressFlow",
@@ -62,6 +73,9 @@ __all__ = [
     "correlate_egress_induced_failure",
     "filesystem_writes_status",
     "make_flow",
+    "mint_sandbox_token",
     "provider_hosts",
+    "proxy_environment",
     "redact_headers",
+    "strip_and_inject",
 ]
