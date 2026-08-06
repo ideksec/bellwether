@@ -27,6 +27,19 @@ WP-15/16/18 bring the rest of the proxy, DNS, canaries and process planes.
 
 from __future__ import annotations
 
+from bellwether.capture.canary import (
+    DEFAULT_CANARY_POOL,
+    Canary,
+    CanaryFinding,
+    CanaryPlacement,
+    canary_markers,
+    classify_canary_hit,
+    decoded_forms,
+    mint_canaries,
+    redact_canaries,
+    scan_for_canaries,
+    strip_dns_labels,
+)
 from bellwether.capture.credential import (
     SANDBOX_TOKEN_PREFIX,
     CredentialBroker,
@@ -57,8 +70,12 @@ from bellwether.capture.proxy_core import ProxyDecision, decide_request
 from bellwether.capture.sink import HostEventSink, SinkEvent, SinkStats
 
 __all__ = [
+    "DEFAULT_CANARY_POOL",
     "DEFAULT_HEADER_ALLOWLIST",
     "SANDBOX_TOKEN_PREFIX",
+    "Canary",
+    "CanaryFinding",
+    "CanaryPlacement",
     "CapLedger",
     "CredentialBroker",
     "EgressAllowlist",
@@ -71,15 +88,22 @@ __all__ = [
     "RecordingProxy",
     "SinkEvent",
     "SinkStats",
+    "canary_markers",
+    "classify_canary_hit",
     "classify_egress",
     "collect_filesystem_events",
     "correlate_egress_induced_failure",
     "decide_request",
+    "decoded_forms",
     "filesystem_writes_status",
     "make_flow",
+    "mint_canaries",
     "mint_sandbox_token",
     "provider_hosts",
     "proxy_environment",
+    "redact_canaries",
     "redact_headers",
+    "scan_for_canaries",
     "strip_and_inject",
+    "strip_dns_labels",
 ]
