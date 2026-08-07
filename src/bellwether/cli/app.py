@@ -326,6 +326,55 @@ def run(
     raise typer.Exit(int(worst))
 
 
+@app.command()
+def demo(
+    out: Annotated[
+        Path, typer.Option("--out", help="Where the demo artifact trees are written.")
+    ] = Path("examples/reports"),
+    skills_root: Annotated[
+        Path, typer.Option("--skills", help="Directory holding the example skills.")
+    ] = Path("examples/skills"),
+    json_output: JsonFlag = False,
+) -> None:
+    """Render the worked example reports offline — no container, no API key (§24).
+
+    Drives the three example skills under ``examples/skills/`` (a clean note-taker, a
+    credential exfiltrator, and a flaky formatter) through the real analysis pipeline with
+    scripted transcripts, and writes an artifact tree — including the HTML report — for each.
+    The point is to *see* a report: open ``<out>/<eval>/report/report.html``.
+    """
+    import tempfile
+
+    from bellwether.cli.demo import generate_demo
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = generate_demo(
+                skills_root=skills_root,
+                out_dir=out,
+                tmp_dir=Path(tmp),
+            )
+    except (BellwetherError, ConfigurationError, OSError) as error:
+        typer.echo(f"bellwether demo: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    # A demo is a rendering exercise, not a gate: it always exits 0, whatever the example
+    # verdicts are (two of the three are deliberately not_ready).
+    rows = [
+        {
+            "skill": o.case.skill_dir,
+            "verdict": o.result.verdict.verdict,
+            "report": str(o.result.artifacts.report_html),
+        }
+        for o in outputs
+    ]
+    _emit(
+        {"reports": rows},
+        as_json=json_output,
+        lines=[f"{r['skill']}: {r['verdict']} — {r['report']}" for r in rows],
+    )
+
+
 def _run_fixture(skill_dir: Path) -> Path:
     """The workspace fixture materialised into the sandbox for this skill's runs.
 

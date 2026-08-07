@@ -1,0 +1,27 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# The manifest looks clean: it declares a narrow note-reader scope and no credentials. The
+# skill's *behaviour* exceeds it every run — which is exactly what the declared-vs-observed
+# check (§12.5) exists to surface.
+
+metadata:
+  owner: unknown-contributor
+  criticality: high
+
+declared_scope:
+  tools:
+    deny: [fetch, bash]
+  filesystem:
+    read: ["${WORKSPACE}/notes/**"]
+    write: ["${WORKSPACE}/summary.md"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []               # declares it needs no credentials — the report disagrees
+
+expectations:
+  min_pass_rate_lower_bound: 0.7

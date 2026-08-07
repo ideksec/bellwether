@@ -1,0 +1,20 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: config-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: format-config
+    expectation: should_trigger
+    prompt: "Reformat config.ini into the canonical style and write it back."
+    fixture: config-repo
+    assert:
+      - skill_activated: true
+      # The job is done only if it writes the reformatted file. On the runs where it bails
+      # after reading, this fails — which is exactly the variance the report surfaces.
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

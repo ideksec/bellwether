@@ -60,12 +60,14 @@ from bellwether.report import (
     GateSummary,
     MatrixSummary,
     PolicyRef,
+    ScopeRow,
     SecuritySummary,
     SkillRef,
     StripCell,
     Summary,
     VerdictSummary,
     default_limitations,
+    render_html_report,
     render_pr_comment,
     render_summary_json,
 )
@@ -93,6 +95,7 @@ __all__ = [
     "TargetInfo",
     "aggregate",
     "analyse_run",
+    "build_figures",
     "drive_evaluation",
     "orchestrate",
     "plan_matrix",
@@ -681,6 +684,7 @@ def orchestrate(
 
     verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only)
 
+    figures = build_figures(readings)
     summary = _build_summary(
         skill_name=skill_name,
         package_digest=package_digest,
@@ -702,7 +706,8 @@ def orchestrate(
         eval_id,
         summary_json=render_summary_json(summary),
         verdict_json=_verdict_json(verdict),
-        pr_comment=render_pr_comment(summary, _figures(readings)),
+        pr_comment=render_pr_comment(summary, figures),
+        report_html=render_html_report(summary, figures),
         traces={run.key: run.trace_jsonl for r in readings for run in r.runs},
         canonicals={run.key: run.canonical_json for r in readings for run in r.runs},
     )
@@ -817,8 +822,16 @@ def _build_summary(
     )
 
 
-def _figures(readings: Sequence[SetReading]) -> Figures:
-    """Assemble the PR-comment figures from the readings (§13.8)."""
+def build_figures(readings: Sequence[SetReading]) -> Figures:
+    """Assemble the report figures from the readings (§13.8), for both renderers.
+
+    Public because the HTML report and the PR comment render from the same figure inputs;
+    computing them once here keeps the two surfaces in lockstep. The Declared-vs-Observed
+    rows carry the capabilities each set observed *outside* its declared scope — the
+    ``exceeded`` half of §12.6, which is what turns a scope violation into a visible row
+    rather than a bare gate status. (Supported/unused rows need the declared scope itself
+    and land when the scope plane is fully wired into the executor.)
+    """
     from bellwether.report import CapabilityRow, StripRow, TrajectoryCluster
 
     strip: list[StripRow] = []
@@ -849,11 +862,18 @@ def _figures(readings: Sequence[SetReading]) -> Figures:
     for (tier1, cap), hits in caps_seen.items():
         heatmap.append(CapabilityRow(tier1_class=tier1, capability=cap, exercised=tuple(hits)))
 
+    exceeded = sorted({cap for reading in readings for cap in reading.scope_exceeded})
+    declared_vs_observed = tuple(
+        ScopeRow(capability=cap, declared=False, observed=True, disposition="exceeded")
+        for cap in exceeded
+    )
+
     return Figures(
         strip=tuple(strip),
         clusters=tuple(clusters),
         heatmap=tuple(heatmap),
         run_labels=run_labels,
+        declared_vs_observed=declared_vs_observed,
     )
 
 

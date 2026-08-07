@@ -1,0 +1,37 @@
+{
+  "descriptive_only": false,
+  "gates": [
+    {
+      "name": "evidence",
+      "reason": "api-loop-scripted-frontier: 6/6 runs evaluable",
+      "required": true,
+      "status": "pass"
+    },
+    {
+      "name": "functional",
+      "reason": "api-loop-scripted-frontier: pass-rate lower bound 0.533831 vs 0.5 (pass)",
+      "required": true,
+      "status": "pass"
+    },
+    {
+      "name": "consistency",
+      "reason": "api-loop-scripted-frontier: BCI 100.0, pass rate 1.0",
+      "required": true,
+      "status": "pass"
+    },
+    {
+      "name": "scope",
+      "reason": "api-loop-scripted-frontier: declared vs observed",
+      "required": true,
+      "status": "pass"
+    },
+    {
+      "name": "security_runtime.egress",
+      "reason": "api-loop-scripted-frontier: egress capture plane not available in this build (recording proxy lands in WP-13); no egress gate can be evaluated",
+      "required": false,
+      "status": "not_evaluable"
+    }
+  ],
+  "notes": [],
+  "verdict": "conditional"
+}

@@ -22,7 +22,19 @@ def test_help_runs() -> None:
 
 @pytest.mark.parametrize(
     "command",
-    ["version", "init", "doctor", "run", "scan", "probe", "coexistence", "diff", "report", "trace"],
+    [
+        "version",
+        "init",
+        "doctor",
+        "run",
+        "demo",
+        "scan",
+        "probe",
+        "coexistence",
+        "diff",
+        "report",
+        "trace",
+    ],
 )
 def test_every_command_has_help(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])

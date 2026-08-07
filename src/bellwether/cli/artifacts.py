@@ -57,6 +57,9 @@ class ArtifactTree:
     pr_comment: Path
     traces: tuple[Path, ...]
     canonicals: tuple[Path, ...]
+    #: The rendered HTML report (``report/report.html``), when one was produced. Optional
+    #: because a caller may want only the machine-readable artifacts.
+    report_html: Path | None = None
 
 
 def _write_text(path: Path, text: str) -> Path:
@@ -75,11 +78,13 @@ def write_artifact_tree(
     pr_comment: str,
     traces: Mapping[RunKey, str],
     canonicals: Mapping[RunKey, str],
+    report_html: str | None = None,
 ) -> ArtifactTree:
     """Write ``<out_dir>/<eval_id>/`` per §17.1 and return the paths.
 
     ``traces`` and ``canonicals`` map each run to its already-serialised JSONL / JSON text;
     this function only places them. Keys are written in sorted order so the walk is stable.
+    ``report_html``, when given, is placed at ``report/report.html`` beside the PR comment.
     """
     root = out_dir / eval_id
     root.mkdir(parents=True, exist_ok=True)
@@ -87,6 +92,11 @@ def write_artifact_tree(
     summary_path = _write_text(root / "summary.json", summary_json)
     verdict_path = _write_text(root / "verdict.json", verdict_json)
     pr_comment_path = _write_text(root / "report" / "pr_comment.md", pr_comment)
+    report_html_path = (
+        _write_text(root / "report" / "report.html", report_html)
+        if report_html is not None
+        else None
+    )
 
     trace_paths: list[Path] = []
     for key in sorted(traces, key=lambda k: (k.scenario_id, k.target, k.repetition)):
@@ -105,4 +115,5 @@ def write_artifact_tree(
         pr_comment=pr_comment_path,
         traces=tuple(trace_paths),
         canonicals=tuple(canon_paths),
+        report_html=report_html_path,
     )

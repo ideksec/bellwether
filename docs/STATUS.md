@@ -3,9 +3,9 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-15 (controlled DNS resolver — host-side core) work.
-**Update it at the end of a session, not the start** — a status file that lags is worse than
-none, because it is trusted.
+Last updated at the end of the worked-demo work (the HTML report + `bellwether demo` + three
+example skills). **Update it at the end of a session, not the start** — a status file that
+lags is worse than none, because it is trusted.
 
 ---
 
@@ -34,9 +34,19 @@ none, because it is trusted.
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | Evaluation driver + run resolution + **`bellwether run` wiring** (`cli/{orchestrator,run_plan,run}`, `cli/app`) | **done** — assembly tested offline; a live-container CLI run is not yet CI-exercised |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **host core done** — the resolver sidecar + UDP/53 lockdown are CI-only |
+| HTML report (`report/html.py`) — a self-contained page written for every eval, a first slice of §17.4 | **done** |
+| Worked demo (`bellwether demo`) — three example skills → three reports through the real pipeline, offline | **done** |
 | WP-17 – WP-20 — Phase B | not started |
 
-649 tests: 607 offline, 42 under the `docker` mark. All green.
+666 tests: 624 offline, 42 under the `docker` mark. All green.
+
+**There is now something to look at.** `bellwether demo` renders three example skills
+(`examples/skills/`) to three reports (`examples/reports/`) — including an HTML report —
+entirely offline, through the same analysis pipeline a live run uses. The three reach three
+different verdicts on purpose: a clean note-taker (`conditional`), a credential exfiltrator
+that passes its task but reads `~/.aws/credentials` (`not_ready`, scope gate), and a flaky
+formatter whose pass rate falls below the gate (`not_ready`, functional gate). Open
+`examples/reports/demo-sneaky-exfiltrator/report/report.html` to see the flagship.
 
 **`bellwether run` is now wired from the CLI.** `cli/run.run_evaluation` assembles the whole
 pipeline — resolve the run, build the per-target live model client, plan the matrix, drive it
@@ -362,6 +372,33 @@ invariant-3 UDP/53 lockdown that makes the resolver unavoidable rather than mere
 and the `dns_query`/`dns_blocked` trace actions) is the container half, CI-only — the same
 split the proxy used.
 
+### What the HTML report and the worked demo built (§17.4, §24)
+
+The first surface a human *looks at*, and three example skills to point it at:
+
+- **`report/html.py`** (`render_html_report`) renders the report as one self-contained,
+  theme-aware HTML page — verdict banner, headline stats, gate table, the strip chart and
+  capability heatmap as real grids, the Declared-vs-Observed table, and the §2 limitations
+  footer. It renders from the same `Summary` + `Figures` as the PR comment (*renders, never
+  computes*), so the two can never disagree; `orchestrate` now writes it at
+  `report/report.html` for **every** evaluation. It is a deliberately scoped-down first slice
+  of the §17.4 site — one page, not eleven views. `build_figures` is now public on the
+  orchestrator so both renderers share one figure assembly.
+- **`cli/demo.py`** (`bellwether demo`) drives three example skills under `examples/skills/`
+  through the *real* pipeline offline — scripted transcripts + an in-memory filesystem, the
+  same stand-in the golden trace uses — to three committed reports under `examples/reports/`.
+  The three reach three different verdicts by construction: `conditional` (a clean note-taker,
+  held only by the unobservable egress plane), `not_ready` on the **scope** gate (a credential
+  exfiltrator that passes its task but reads `~/.aws/credentials`), and `not_ready` on the
+  **functional** gate (a flaky formatter, 6/20 pass). The security catch is a
+  declared-vs-observed finding, not a functional failure — a skill that works and still
+  exfiltrates is exactly the case a single successful try can never catch.
+- The reports are byte-stable (fixed clock, transcripts, identifiers, and a constant demo
+  version) and guarded by a **regenerate-and-diff test**, the same reflex as the summary
+  JSON-Schema drift test, so the committed demo cannot rot. The bulky per-run traces are
+  git-ignored; only the rendered outputs are committed. The example skills also seed the
+  eventual WP-20 corpus. 40 new tests.
+
 ## What to do next
 
 **`bellwether run` is now wired end to end** and tested offline (resolution → matrix → drive →
@@ -498,6 +535,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Forty-five entries. Read it before changing anything in the skill, sandbox, capture or
+  Forty-six entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.
