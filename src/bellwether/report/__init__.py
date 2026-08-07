@@ -31,6 +31,7 @@ from bellwether.report.figures import (
     render_strip_chart,
     render_trajectory_clusters,
 )
+from bellwether.report.html import render_html_report
 from bellwether.report.markdown import Figures, ScopeRow, render_pr_comment
 from bellwether.report.summary import (
     SCHEMA_VERSION,
@@ -80,6 +81,7 @@ __all__ = [
     "VerdictSummary",
     "default_limitations",
     "render_capability_heatmap",
+    "render_html_report",
     "render_pr_comment",
     "render_strip_chart",
     "render_summary_json",

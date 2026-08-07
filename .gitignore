@@ -1,6 +1,12 @@
 # Bellwether evaluation artifacts (§17.1, §23)
 .bellwether-out/
 
+# The committed demo reports (examples/reports/) keep only the rendered outputs —
+# summary.json, verdict.json, and report/. The per-run traces and canonical readings are
+# bulky and fully regenerable by `bellwether demo`, so they are not committed.
+examples/reports/**/traces/
+examples/reports/**/canonical/
+
 # Python
 __pycache__/
 *.py[cod]

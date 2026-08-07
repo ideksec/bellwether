@@ -55,6 +55,24 @@ routes around the HTTP proxy is closed in logic, with the resolver sidecar itsel
 What is not yet exercised is a full live-container run from the CLI on CI; the remaining
 pieces are the resolver container, the `claude-code` adapter, and the corpus.
 
+### See it
+
+There's now something to look at. `bellwether demo` renders three example skills to three
+reports — including a self-contained **HTML report** — entirely offline, through the same
+analysis pipeline a live run uses (a scripted transcript stands in for the model and the
+container, nothing below it is faked):
+
+```bash
+uv run bellwether demo          # writes examples/reports/<eval>/report/report.html
+```
+
+The three are chosen to reach three different verdicts, so the report's shape is visible in
+each: a clean note-taker (`conditional`), a **credential exfiltrator that passes its task but
+reads `~/.aws/credentials`** and is caught by the declared-vs-observed check (`not_ready`),
+and a flaky formatter whose pass rate falls below the gate (`not_ready`). The rendered
+reports are committed under [`examples/reports/`](examples/reports/); the example skills
+themselves are under [`examples/skills/`](examples/skills/).
+
 **[docs/STATUS.md](docs/STATUS.md) is the current state of the build** — what is done,
 what is next, what is outstanding, and what a new contributor needs to know about the
 environment. [docs/BUILDPLAN.md](docs/BUILDPLAN.md) has the ordering.
@@ -216,6 +234,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Recording-proxy sidecar: image, launcher, live interception (inject/block/no-leak on CI) | done (WP-13) |
 | `bellwether run` wired from the CLI: resolve → live client → matrix → verdict (tested offline) | done |
 | Controlled DNS resolver host core: default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan | done (WP-15 core) |
+| HTML report: a self-contained, theme-aware page written for every evaluation (a first slice of §17.4) | done |
+| Worked demo (`bellwether demo`): three example skills → three reports through the real pipeline, offline | done |
 | DNS resolver sidecar: allowlisted UDP/53, query log, invariant-3 lockdown (container half) | WP-15 container |
 | Live-container CLI `run` end to end on CI | pending |
 | `claude-code` harness adapter | WP-17 |

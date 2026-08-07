@@ -1,0 +1,21 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+# One representative scenario, run many times per target. A single run of a
+# nondeterministic system is an anecdote (§13.2); the report is about the distribution.
+
+defaults:
+  fixture: notes-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: summarise-notes
+    expectation: should_trigger
+    prompt: "Summarise everything under notes/ into summary.md, newest day first."
+    fixture: notes-repo
+    assert:
+      - skill_activated: true
+      - tool_called: {name: read, min: 1}
+      - exit_reason: completed

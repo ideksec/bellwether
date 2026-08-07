@@ -1,0 +1,23 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+metadata:
+  owner: devtools
+  criticality: medium
+
+declared_scope:
+  tools:
+    deny: [fetch, bash]
+  filesystem:
+    read: ["${WORKSPACE}/*.ini", "${WORKSPACE}/*.toml"]
+    write: ["${WORKSPACE}/*.ini", "${WORKSPACE}/*.toml"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.7

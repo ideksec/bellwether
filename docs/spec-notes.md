@@ -1153,3 +1153,52 @@ query is a leak on the same footing as one in a request body, no special-casing.
 independently-encoded-per-label chunking gap (each label separately base32'd, so stripping dots does
 not reassemble a decodable run) is the same documented §2 limit the proxy's canary scan carries, not a
 new one.
+
+## §17.4, §24 — The HTML report and the worked demo, rendered from the real pipeline offline
+
+**Spec.** §17.4 describes an HTML report; §24 requires the analysis pipeline to be exercisable by
+contributors without API keys, via scripted `api-loop` runs and a committed golden trace.
+
+**Resolution.** Two things landed together, because one is what makes the other visible. The
+**HTML report** (`report/html.py`, `render_html_report`) is a first-class artifact `orchestrate`
+now writes at `report/report.html` for *every* evaluation, beside the PR comment. It renders from the
+same `Summary` + `Figures` the Markdown does — *renders, never computes* — so the two surfaces can
+never disagree about a number; it is a deliberately scoped-down first slice of the §17.4 site (one
+self-contained page, no eleven views yet). It is one file with inline CSS and no script or external
+asset, because an artifact copied out of `.bellwether-out/`, attached to a CI job, or published as-is
+cannot depend on a stylesheet host; it is theme-aware through `prefers-color-scheme` only; and every
+visual state pairs a colour with a glyph or label, so meaning survives greyscale and colour blindness
+(the same §17.4 accessibility rule the figures already follow). `build_figures` was made public on the
+orchestrator so both renderers draw from one figure assembly, and it now carries the `exceeded`
+capabilities as Declared-vs-Observed rows.
+
+The **worked demo** (`cli/demo.py`, `bellwether demo`) drives three example skills under
+`examples/skills/` — a clean note-taker, a credential exfiltrator, and a flaky formatter — to three
+reports through the *real* pipeline, with a scripted transcript and an in-memory filesystem standing in
+for a container-and-model exactly as the golden trace and the first-light checkpoint do. Nothing below
+the transcript is mocked: the capabilities, outcomes, sequential design, BCI, and gates are all
+computed for real. Three decisions worth recording.
+
+**(1)** The three cases are chosen to reach three *different* shapes of result offline: `conditional`
+(clean, held only by the unobservable egress plane), `not_ready` on the **scope** gate (the exfiltrator
+completes its task — functional passes — but reads `~/.aws/credentials`, which no scope entry covers),
+and `not_ready` on the **functional** gate (the flaky skill's pass-rate upper bound falls below the
+threshold at the final look). The security story is deliberately *not* a functional failure: a skill
+that works and still exfiltrates is the case a one-shot "it worked for me" can never catch, and it is
+the declared-vs-observed check, not the task assertions, that catches it.
+
+**(2)** The scope violation is evaluated *off* the run outcome. `file_not_read` is an absence claim,
+which Plane A (reported reads) cannot support (§10.8), so it is `not_evaluable` offline; and applying
+the declared scope through `analyse_run` folds in the scope's egress/write derivations, which this
+offline path also cannot observe, dragging an otherwise-passing run to `not_evaluable` (the §25 reason
+`run` passes `scope=None`). So the demo scores the outcome against the scenario assertions only and
+computes the §12.5 Declared-vs-Observed table separately, folding just its `exceeded` capabilities into
+the reading — the scope gate blocks on the undeclared read without the run going dark.
+
+**(3)** The reports are committed under `examples/reports/` and guarded by a regenerate-and-diff test,
+the same reflex as the summary JSON-Schema drift test — so they cannot silently rot as the pipeline
+changes. That requires byte-stable output: the clock, the transcripts, and the identifiers are fixed,
+and the stamped version is a constant (`0.1.0-demo`) rather than the live `__version__`, so a version
+bump does not churn the committed bytes. Only the rendered outputs (`summary.json`, `verdict.json`,
+`report/`) are committed; the bulky, fully-regenerable per-run traces and canonical readings are
+git-ignored.
