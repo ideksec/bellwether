@@ -128,7 +128,12 @@ class SandboxRunExecutor:
     limits: RunLimits = field(default_factory=RunLimits)
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
-        run_dir = self.run_root / plan.scenario.id / plan.target.slug / str(plan.repetition)
+        # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
+        # relative path there is read by the daemon as a (invalid) named volume, not a host
+        # directory — so a run launched from a relative --out would fail at container start.
+        run_dir = (
+            self.run_root / plan.scenario.id / plan.target.slug / str(plan.repetition)
+        ).resolve()
         rng = SeededRng(self.rng_seed, f"{plan.scenario.id}/{plan.target.slug}/{plan.repetition}")
         prepared = prepare_sandbox(self.package, self.fixture, run_dir, rng=rng)
 

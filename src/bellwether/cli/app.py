@@ -309,7 +309,9 @@ def run(
                     eval_id,
                     limits=RunLimits(max_total_tokens=max_tokens),
                 ),
-                out_dir=out / eval_id,
+                # The artifact writer appends <eval_id> itself, so the parent is `out`;
+                # passing `out / eval_id` here doubled it and hid the report from pr-comment.
+                out_dir=out,
                 eval_id=eval_id,
                 created_at=dt.datetime.now(dt.UTC).isoformat(),
                 bellwether_version=__version__,
