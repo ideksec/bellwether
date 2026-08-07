@@ -16,6 +16,7 @@ printing an empty result that reads like a clean run.
 from __future__ import annotations
 
 import enum
+import os
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -239,19 +240,105 @@ _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
 
 @app.command()
 def run(
-    skills: Annotated[list[str] | None, typer.Argument(help="Skills to evaluate.")] = None,
-    profile: Annotated[str | None, typer.Option("--profile", help="Policy profile.")] = None,
-    n_max: Annotated[int | None, typer.Option("--n-max", help="Sequential ceiling.")] = None,
+    skills: Annotated[
+        list[str] | None, typer.Argument(help="Skill directories to evaluate.")
+    ] = None,
+    config: Annotated[Path, typer.Option("--config", help="Path to config.yaml.")] = CONFIG_FILE,
+    policy_path: Annotated[
+        Path, typer.Option("--policy", help="Path to policy.yaml.")
+    ] = POLICY_FILE,
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Override the policy profile.")
+    ] = None,
+    out: Annotated[Path, typer.Option("--out", help="Where artifact trees are written.")] = Path(
+        "bellwether-runs"
+    ),
     json_output: JsonFlag = False,
 ) -> None:
-    """Run a full evaluation: matrix, capture, metrics, verdict, artifacts."""
-    _not_yet(
-        "run",
-        "WP-13 (the live model client)",
-        "the whole pipeline — sandbox execution driver, capture, metrics, verdict, artifact "
-        "tree — is built and reaches first-light end to end in tests; a CLI run of an "
-        "arbitrary skill needs a live model client, which lands with the recording proxy",
+    """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
+
+    Each skill argument is the directory of a skill to evaluate (the one containing ``SKILL.md``).
+    The verdict's exit code is the worst across the skills run: 0 for ``ready``/``conditional``, 2
+    if any target failed a blocking gate; a configuration or environment problem is exit 3.
+    """
+    import datetime as dt
+
+    from bellwether.cli.run import run_evaluation, sandbox_executor_factory
+    from bellwether.skill import load_skill
+
+    if not skills:
+        typer.echo("bellwether run: name at least one skill directory to evaluate.", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    try:
+        loaded_config = load_config(config)
+        loaded_policy = load_policy(policy_path)
+    except (BellwetherError, ConfigurationError, OSError) as error:
+        typer.echo(f"bellwether run: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    daemon_ok, daemon_reason = DockerBackend(image=loaded_config.sandbox.image).available()
+    if not daemon_ok:
+        typer.echo(f"bellwether run: the sandbox is unavailable — {daemon_reason}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    worst = ExitCode.OK
+    results: list[dict[str, Any]] = []
+    for skill_arg in skills:
+        try:
+            package = load_skill(Path(skill_arg))
+            eval_id = f"{package.name}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}"
+            fixture = _run_fixture(Path(skill_arg))
+            result = run_evaluation(
+                config=loaded_config,
+                policy=loaded_policy,
+                package=package,
+                fixture=fixture,
+                environ=os.environ,
+                make_executor=sandbox_executor_factory(
+                    loaded_config.sandbox.image, out / eval_id / "runs", eval_id
+                ),
+                out_dir=out / eval_id,
+                eval_id=eval_id,
+                created_at=dt.datetime.now(dt.UTC).isoformat(),
+                bellwether_version=__version__,
+                profile_override=profile,
+            )
+        except (BellwetherError, ConfigurationError) as error:
+            typer.echo(f"bellwether run [{skill_arg}]: {error}", err=True)
+            raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+        if result.exit_code == 2:
+            worst = ExitCode.NOT_READY
+        results.append(
+            {
+                "skill": package.name,
+                "verdict": result.verdict.verdict,
+                "artifacts": str(result.artifacts.root),
+            }
+        )
+
+    _emit(
+        {"results": results},
+        as_json=json_output,
+        lines=[f"{r['skill']}: {r['verdict']} — {r['artifacts']}" for r in results],
     )
+    raise typer.Exit(int(worst))
+
+
+def _run_fixture(skill_dir: Path) -> Path:
+    """The workspace fixture materialised into the sandbox for this skill's runs.
+
+    First cut: the skill's ``evals/fixtures/`` directory when it exists, else an empty workspace.
+    Per-scenario fixtures (``scenario.fixture``) are a refinement — the executor takes one fixture
+    per run today, so a skill whose scenarios need different starting trees is not yet expressible.
+    """
+    fixtures = skill_dir / "evals" / "fixtures"
+    if fixtures.is_dir():
+        return fixtures
+    empty = skill_dir / "evals" / ".empty-workspace"
+    empty.mkdir(parents=True, exist_ok=True)
+    return empty
 
 
 @app.command()
