@@ -28,6 +28,7 @@ def test_help_runs() -> None:
         "doctor",
         "run",
         "demo",
+        "pr-comment",
         "scan",
         "probe",
         "coexistence",
@@ -194,6 +195,28 @@ def test_run_with_a_missing_config_refuses(tmp_path: Path) -> None:
         "---\nname: a-skill\ndescription: d\n---\nb\n", encoding="utf-8"
     )
     result = runner.invoke(app, ["run", str(skill), "--config", str(tmp_path / "nope.yaml")])
+    assert result.exit_code == ExitCode.INFRASTRUCTURE
+
+
+def test_pr_comment_dry_run_prints_without_a_token(tmp_path: Path) -> None:
+    """`pr-comment --dry-run` needs no token or network: it prints the marked comment. This is
+    how a contributor previews what would land on the PR."""
+    comment = tmp_path / "pr_comment.md"
+    comment.write_text("## Bellwether — `conditional`\n", encoding="utf-8")
+    result = runner.invoke(app, ["pr-comment", str(comment), "--dry-run"])
+    assert result.exit_code == ExitCode.OK
+    assert "conditional" in result.output
+    assert "bellwether-report" in result.output  # the idempotence marker
+
+
+def test_pr_comment_without_a_token_refuses(tmp_path: Path) -> None:
+    """A real post with no token in the environment fails loudly, not silently."""
+    comment = tmp_path / "pr_comment.md"
+    comment.write_text("## report\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        ["pr-comment", str(comment), "--repo", "octo/skills", "--pr", "3", "--token-env", "NOPE"],
+    )
     assert result.exit_code == ExitCode.INFRASTRUCTURE
 
 

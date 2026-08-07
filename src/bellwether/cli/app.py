@@ -375,6 +375,79 @@ def demo(
     )
 
 
+@app.command(name="pr-comment")
+def pr_comment(
+    report: Annotated[
+        Path,
+        typer.Argument(
+            help="The rendered comment (report/pr_comment.md) or the eval directory holding it."
+        ),
+    ],
+    repo: Annotated[
+        str | None, typer.Option("--repo", help="owner/repo (default: $GITHUB_REPOSITORY).")
+    ] = None,
+    pr: Annotated[
+        int | None, typer.Option("--pr", help="Pull request number (default: from the CI env).")
+    ] = None,
+    token_env: Annotated[
+        str, typer.Option("--token-env", help="Env var holding the GitHub token.")
+    ] = "GITHUB_TOKEN",
+    api_root: Annotated[
+        str, typer.Option("--api-root", help="GitHub API root (for Enterprise).")
+    ] = "https://api.github.com",
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the comment instead of posting it.")
+    ] = False,
+    json_output: JsonFlag = False,
+) -> None:
+    """Post (or update in place) a Bellwether report comment on a pull request (§18.2).
+
+    Reads the comment `bellwether run` already rendered and upserts it: a re-run edits the
+    same comment rather than stacking a new one. Repo and PR default to the GitHub Actions
+    environment; the token is read from ``--token-env`` and used only in the auth header.
+    """
+    from bellwether.cli.pr import (
+        PrContext,
+        github_transport,
+        marked_body,
+        resolve_pr_context,
+        upsert_pr_comment,
+    )
+
+    source = report / "report" / "pr_comment.md" if report.is_dir() else report
+    try:
+        body = source.read_text(encoding="utf-8")
+    except OSError as error:
+        typer.echo(f"bellwether pr-comment: cannot read {source}: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    if dry_run:
+        typer.echo(marked_body(body))
+        return
+
+    try:
+        if repo is not None and pr is not None:
+            owner, repo_name = repo.split("/", 1) if "/" in repo else ("", repo)
+            context = PrContext(owner=owner, repo=repo_name, number=pr)
+        else:
+            context = resolve_pr_context(os.environ)
+        token = os.environ.get(token_env, "")
+        if not token:
+            raise BellwetherError(f"no GitHub token in ${token_env}; cannot post the comment")
+        action = upsert_pr_comment(
+            github_transport(), context, body, token=token, api_root=api_root
+        )
+    except (BellwetherError, ValueError) as error:
+        typer.echo(f"bellwether pr-comment: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    _emit(
+        {"action": action, "repo": context.slug, "pr": context.number},
+        as_json=json_output,
+        lines=[f"{action} comment on {context.slug}#{context.number}"],
+    )
+
+
 def _run_fixture(skill_dir: Path) -> Path:
     """The workspace fixture materialised into the sandbox for this skill's runs.
 

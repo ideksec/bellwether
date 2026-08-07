@@ -1202,3 +1202,26 @@ and the stamped version is a constant (`0.1.0-demo`) rather than the live `__ver
 bump does not churn the committed bytes. Only the rendered outputs (`summary.json`, `verdict.json`,
 `report/`) are committed; the bulky, fully-regenerable per-run traces and canonical readings are
 git-ignored.
+
+## §18.2 — Posting the PR comment is an idempotent upsert in the `cli` layer, seamed like the client
+
+**Spec.** §18.2: Bellwether posts its report as a comment on the pull request.
+
+**Resolution.** The rendering was already done (`render_pr_comment`); this is the piece that puts it
+on the PR, and three decisions shape it. **(1)** It lives in `cli`, not `report`. The report layer
+*renders, never computes* and does no IO; talking to a remote service is orchestration, which is the
+`cli` layer's job. `cli/pr.py` reuses `render_pr_comment` unchanged. **(2)** The post is an
+**idempotent upsert**: every comment carries a hidden `COMMENT_MARKER` (an HTML comment, invisible in
+the rendered PR), so a re-run lists the PR's comments, finds the one it left last time, and edits it
+in place instead of stacking a new verdict under every push — a wall of stale reports is worse than one
+that keeps up. The marker is fixed forever; changing it would orphan every comment already posted.
+**(3)** The HTTP call is a `transport` argument, exactly as the live model client's is, so the
+find-then-create-or-edit logic is unit-tested with a fake transport — no network, no token — and the
+real transport is a small urllib wrapper that *returns* a 4xx status rather than raising, so the upsert
+maps it to a `BellwetherError` with the body excerpt and a CI step fails loudly instead of reporting a
+phantom success. The token is read at the call site, placed in the one `Authorization` header, and
+never logged, never put in a URL, never returned — a §3.3 reflex, and a test asserts it appears in no
+URL and no request body. The end-to-end CI wiring (run on a `pull_request`, post, gate the merge on
+the verdict, key held by the runner and never in the sandbox) is documented as a template in
+`docs/ci-integration.md` rather than shipped as an active workflow, so it neither runs against this
+repository's own PRs nor trips the `pin_lint` action-pinning check.

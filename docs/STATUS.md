@@ -3,9 +3,10 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the worked-demo work (the HTML report + `bellwether demo` + three
-example skills). **Update it at the end of a session, not the start** — a status file that
-lags is worse than none, because it is trusted.
+Last updated at the end of the PR-comment posting work (`bellwether pr-comment` + the CI
+integration doc), on top of the worked demo (HTML report + `bellwether demo`). **Update it at
+the end of a session, not the start** — a status file that lags is worse than none, because
+it is trusted.
 
 ---
 
@@ -36,9 +37,10 @@ lags is worse than none, because it is trusted.
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **host core done** — the resolver sidecar + UDP/53 lockdown are CI-only |
 | HTML report (`report/html.py`) — a self-contained page written for every eval, a first slice of §17.4 | **done** |
 | Worked demo (`bellwether demo`) — three example skills → three reports through the real pipeline, offline | **done** |
+| PR-comment posting (`bellwether pr-comment`) — idempotent upsert of the report onto a PR, behind a transport seam | **done** — offline-tested; the CI wiring is documented in `docs/ci-integration.md` |
 | WP-17 – WP-20 — Phase B | not started |
 
-666 tests: 624 offline, 42 under the `docker` mark. All green.
+680 tests: 638 offline, 42 under the `docker` mark. All green.
 
 **There is now something to look at.** `bellwether demo` renders three example skills
 (`examples/skills/`) to three reports (`examples/reports/`) — including an HTML report —
@@ -399,21 +401,46 @@ The first surface a human *looks at*, and three example skills to point it at:
   git-ignored; only the rendered outputs are committed. The example skills also seed the
   eventual WP-20 corpus. 40 new tests.
 
+### What the PR-comment posting built (§18.2)
+
+The glue that puts a report on a pull request — `cli/pr.py` and the `bellwether pr-comment`
+command, offline and fully tested through an injected transport (15 tests):
+
+- **`upsert_pr_comment`** finds the comment a prior run left (via a hidden `COMMENT_MARKER`
+  in the body) and edits it in place, or creates one — so a re-run on the same PR keeps one
+  live verdict rather than stacking a wall of stale ones. The HTTP call is a `transport`
+  seam, the same discipline as the live model client, so the upsert is unit-tested with a
+  fake; the real transport is a small urllib wrapper that returns the status instead of
+  raising on 4xx.
+- **The token travels only in the `Authorization` header** — read at the call site, put in
+  one header, never logged, never in a URL, never returned; a test asserts it appears in no
+  URL and no request body. The module lives in `cli`, not `report`, because rendering
+  belongs to `report` (it reuses `render_pr_comment` unchanged) but doing IO with a remote
+  service is orchestration.
+- **`resolve_pr_context`** derives the repo and PR number from the GitHub Actions
+  environment (`GITHUB_REPOSITORY`, `GITHUB_REF`), with an explicit `--repo`/`--pr` override;
+  a non-PR context is a clear refusal, not a guess. `--dry-run` prints the comment with no
+  token and no network. The end-to-end CI shape — run on a `pull_request`, post the comment,
+  gate the merge on the verdict, key never in the sandbox — is written up in
+  `docs/ci-integration.md`.
+
 ## What to do next
 
 **`bellwether run` is now wired end to end** and tested offline (resolution → matrix → drive →
 orchestrate → verdict → artifact tree). The remaining work is to make it real on a container and to
 close the smaller gaps:
 
-1. **A live-container CLI run, on CI.** The command builds the proven `SandboxRunExecutor` for the
-   happy path, but a real `bellwether run` against a live model (a container plus a real key) has not
-   been exercised end to end on CI. It also needs: the **declared scope applied** once the executor
-   captures egress (its auto-derived egress assertions are `not_evaluable` without the proxy, which is
-   why the driver passes `scope=None` today); `RunLimits` derived from the profile rather than the
-   defaults; and **per-scenario fixtures** (the executor takes one fixture per run, so a skill whose
-   scenarios need different starting trees is not yet expressible). Wire the precondition check and
-   weight validation into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer
-   at the same time — see the table below.
+1. **A live-container CLI run, on CI — now the one gating item for real PR integration.** The
+   report renders, the demo proves the pipeline, and `bellwether pr-comment` posts the result
+   (`docs/ci-integration.md` has the wiring); the one thing not yet exercised end to end on CI is a
+   real `bellwether run` against a live model — a container plus a real key, with the recording proxy
+   in the executor. It also needs: the **declared scope applied** once the executor captures egress
+   (its auto-derived egress assertions are `not_evaluable` without the proxy, which is why the driver
+   passes `scope=None` today); `RunLimits` derived from the profile rather than the defaults; and
+   **per-scenario fixtures** (the executor takes one fixture per run, so a skill whose scenarios need
+   different starting trees is not yet expressible). Wire the precondition check and weight validation
+   into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer at the same time —
+   see the table below.
 2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
    decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
@@ -535,6 +562,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Forty-six entries. Read it before changing anything in the skill, sandbox, capture or
+  Forty-seven entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.
