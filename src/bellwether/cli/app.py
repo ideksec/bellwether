@@ -375,6 +375,34 @@ def demo(
     )
 
 
+@app.command(name="changed-skills")
+def changed_skills_command(
+    paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="Changed file paths; if omitted, read newline-separated from stdin."),
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Repository root the SKILL.md presence is checked in.")
+    ] = Path(),
+    json_output: JsonFlag = False,
+) -> None:
+    """Print the skill directories a set of changed files touches (§18).
+
+    Feed it a diff — ``git diff --name-only origin/main...HEAD | bellwether changed-skills`` —
+    and it prints one skill directory per line (a skill is a directory with a ``SKILL.md``;
+    a changed file is attributed to its nearest such ancestor). Empty output means the change
+    touched no skill, so nothing needs evaluating. Always exits 0: "no skills changed" is a
+    normal result, not an error.
+    """
+    import sys
+
+    from bellwether.cli.changed import changed_skills
+
+    candidates = paths or [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    skills = [str(skill) for skill in changed_skills(candidates, root=root)]
+    _emit({"changed_skills": skills}, as_json=json_output, lines=skills)
+
+
 @app.command(name="pr-comment")
 def pr_comment(
     report: Annotated[

@@ -3,10 +3,10 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the PR-comment posting work (`bellwether pr-comment` + the CI
-integration doc), on top of the worked demo (HTML report + `bellwether demo`). **Update it at
-the end of a session, not the start** — a status file that lags is worse than none, because
-it is trusted.
+Last updated at the end of the CI-integration work — the shipped GitHub Actions workflow,
+`bellwether changed-skills`, and `bellwether pr-comment` — on top of the worked demo (HTML
+report + `bellwether demo`). **Update it at the end of a session, not the start** — a status
+file that lags is worse than none, because it is trusted.
 
 ---
 
@@ -37,10 +37,11 @@ it is trusted.
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **host core done** — the resolver sidecar + UDP/53 lockdown are CI-only |
 | HTML report (`report/html.py`) — a self-contained page written for every eval, a first slice of §17.4 | **done** |
 | Worked demo (`bellwether demo`) — three example skills → three reports through the real pipeline, offline | **done** |
-| PR-comment posting (`bellwether pr-comment`) — idempotent upsert of the report onto a PR, behind a transport seam | **done** — offline-tested; the CI wiring is documented in `docs/ci-integration.md` |
+| PR-comment posting (`bellwether pr-comment`) — idempotent upsert of the report onto a PR, behind a transport seam | **done** |
+| Changed-skills detection (`bellwether changed-skills`) + the shipped GitHub Actions workflow | **done** — evaluates only skills a PR touched; live branch gated on the key secret |
 | WP-17 – WP-20 — Phase B | not started |
 
-680 tests: 638 offline, 42 under the `docker` mark. All green.
+689 tests: 647 offline, 42 under the `docker` mark. All green.
 
 **There is now something to look at.** `bellwether demo` renders three example skills
 (`examples/skills/`) to three reports (`examples/reports/`) — including an HTML report —
@@ -420,9 +421,28 @@ command, offline and fully tested through an injected transport (15 tests):
 - **`resolve_pr_context`** derives the repo and PR number from the GitHub Actions
   environment (`GITHUB_REPOSITORY`, `GITHUB_REF`), with an explicit `--repo`/`--pr` override;
   a non-PR context is a clear refusal, not a guess. `--dry-run` prints the comment with no
-  token and no network. The end-to-end CI shape — run on a `pull_request`, post the comment,
-  gate the merge on the verdict, key never in the sandbox — is written up in
-  `docs/ci-integration.md`.
+  token and no network.
+
+### What the CI integration built (§18, §19.3)
+
+The workflow that runs Bellwether on a pull request, and the changed-skills gating that keeps
+it cheap — `cli/changed.py`, `bellwether changed-skills`, and
+`.github/workflows/bellwether.yml` (8 tests):
+
+- **`changed_skills`** maps a list of changed file paths (what `git diff --name-only` prints)
+  to the skill directories affected: a skill is a directory with a `SKILL.md`, and a changed
+  file is attributed to its nearest such ancestor — so a change to `foo/evals/manifest.yaml`
+  is a change to the skill at `foo/`, and a change to the harness or a doc touches no skill.
+  A deleted skill (no `SKILL.md` left) is never returned; two changes in one skill collapse to
+  one entry. This is what makes CI evaluate **only what a PR touched**, not every skill already
+  analysed — re-running the whole repo would burn the model budget and attach fresh verdicts to
+  untouched skills.
+- **The shipped workflow** runs on every `pull_request`, computes the changed skills, and — for
+  each one — runs `bellwether run` and posts the verdict with `pr-comment`. The live branch is
+  **gated on the `ANTHROPIC_API_KEY` secret**: with no key, it reports which skills it *would*
+  evaluate and exits 0, so forks and un-provisioned repos stay green; the changed-skills
+  detection still runs. Every action is SHA-pinned (the same discipline `pin_lint` enforces on
+  the CI workflow), and `docs/ci-integration.md` documents adapting it for a skill repository.
 
 ## What to do next
 
@@ -562,6 +582,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Forty-seven entries. Read it before changing anything in the skill, sandbox, capture or
+  Forty-eight entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.

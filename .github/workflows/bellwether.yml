@@ -1,0 +1,84 @@
+name: Bellwether
+
+# Evaluate skills that a pull request changes, and post the verdict back on the PR.
+#
+# It runs on every PR but does real work only when the PR touches a skill: `changed-skills`
+# maps the diff to the skill directories affected (a skill is a directory with a SKILL.md), so
+# skills nobody touched are never re-evaluated. The live evaluation needs a model key, supplied
+# as a repository secret; without it the job reports what it *would* evaluate and passes, so
+# forks and un-provisioned repositories stay green. The key is held by the runner and never
+# enters the sandbox (§3.3) — see docs/ci-integration.md.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # so the report comment can be posted
+
+concurrency:
+  group: bellwether-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0   # the base commit must be present to diff against
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Detect changed skills
+        id: detect
+        run: |
+          git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+            | uv run bellwether changed-skills > changed-skills.txt || true
+          echo "Changed skills:"; cat changed-skills.txt
+          {
+            echo "skills<<EOF"
+            cat changed-skills.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate and comment
+        if: steps.detect.outputs.skills != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "Skills changed, but ANTHROPIC_API_KEY is not set — skipping the live evaluation."
+            echo "Would evaluate:"; cat changed-skills.txt
+            exit 0
+          fi
+          status=0
+          while IFS= read -r skill; do
+            [ -z "${skill}" ] && continue
+            echo "::group::Evaluating ${skill}"
+            out=".bellwether-out/$(echo "${skill}" | tr '/' '-')"
+            if uv run bellwether run "${skill}" --out "${out}"; then
+              verdict_status=0
+            else
+              verdict_status=$?
+            fi
+            eval_dir=$(dirname "$(find "${out}" -name pr_comment.md | head -n1)")/..
+            uv run bellwether pr-comment "${eval_dir}" || true
+            # Exit code 2 is a real not_ready verdict; 3 is an infrastructure failure. Either
+            # keeps the check red, but a not_ready is the skill's result, not a broken job.
+            [ "${verdict_status}" -ne 0 ] && status="${verdict_status}"
+            echo "::endgroup::"
+          done < changed-skills.txt
+          exit "${status}"
+
+      - name: No skills changed
+        if: steps.detect.outputs.skills == ''
+        run: echo "No skills changed in this pull request; nothing to evaluate."

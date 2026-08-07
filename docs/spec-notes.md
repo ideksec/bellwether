@@ -1225,3 +1225,30 @@ URL and no request body. The end-to-end CI wiring (run on a `pull_request`, post
 the verdict, key held by the runner and never in the sandbox) is documented as a template in
 `docs/ci-integration.md` rather than shipped as an active workflow, so it neither runs against this
 repository's own PRs nor trips the `pin_lint` action-pinning check.
+
+## §18, §19.3 — CI evaluates only the skills a PR changed, and the workflow ships gated on the key
+
+**Spec.** §18 has Bellwether run on a pull request; §19.3 scopes coexistence re-runs to what
+actually changed. The same economy applies to the whole evaluation: a live run is N model calls per
+scenario, so re-running every skill in the repository on every push would burn the budget and — worse
+— attach a fresh verdict to skills nobody touched.
+
+**Resolution.** `cli/changed.py` maps a diff to the skills it touches. A *skill* is a directory
+holding a `SKILL.md`; a changed path is attributed to its **nearest ancestor** that is one, so a
+change to `foo/evals/manifest.yaml` or `foo/reference.md` counts as a change to `foo/` (a skill's
+declared scope and progressive-disclosure files live beside its `SKILL.md`, and either can change its
+behaviour). A path under no skill maps to nothing; a skill whose `SKILL.md` was **deleted** is not
+returned, because there is nothing left to evaluate; duplicates within one skill collapse. The check
+is pure and filesystem-only, so it is exhaustively unit-tested without git or a network, and the
+command reads the diff from stdin (`git diff --name-only ... | bellwether changed-skills`) so git
+stays in the workflow, not in the tool.
+
+Two workflow decisions worth recording. **(1)** It **ships active** in this repository rather than as
+a template, so it is real and dogfooded — but its live-evaluation branch is **gated on the
+`ANTHROPIC_API_KEY` secret**: with no key, it prints the skills it would evaluate and exits 0. So a
+fork or an un-provisioned repository stays green and the changed-skills detection still runs, while a
+provisioned repository gets the full run — one file, honest in both states, without a `bellwether run`
+that cannot work here silently failing the build. **(2)** Every action is pinned to a commit SHA,
+reusing the exact `checkout`/`setup-uv` pins the CI workflow already vets, because `pin_lint` holds
+Bellwether's own workflows to the supply-chain rule Bellwether exists to check — a tool about
+mutable-input hygiene must not pull a floating action tag in its own CI.

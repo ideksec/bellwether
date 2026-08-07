@@ -29,6 +29,7 @@ def test_help_runs() -> None:
         "run",
         "demo",
         "pr-comment",
+        "changed-skills",
         "scan",
         "probe",
         "coexistence",
