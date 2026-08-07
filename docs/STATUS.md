@@ -31,9 +31,10 @@ because it is trusted.
 | WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, **live interception** | **done** — the full done-when (inject-on-forward, block-on-deny, no credential in the artifact) runs in a real container topology on CI |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
 | WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
+| Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | WP-15, WP-17 – WP-20 — Phase B | not started |
 
-596 tests: 554 offline, 42 under the `docker` mark. All green.
+608 tests: 566 offline, 42 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -158,6 +159,24 @@ request never consumes the cap (a skill can't exhaust the budget with denied att
 the recorded flow never holds the real key *or* the scoped token even after injection. This
 is the whole "what the sidecar decides" — the container that runs it is all that's left of
 WP-13.
+
+### What the live model client built (§9.5, §9.3)
+
+`bellwether.harness.live_client` — the real HTTP client behind the `ModelClient` seam, the last
+piece of logic before `bellwether run` can drive a real skill (10 tests):
+
+- **`AnthropicClient`** implements `complete(ModelRequest) -> ModelTurn` against the Messages API.
+  The `api-loop` loop runs host-side (its tools exec into the sandbox), so this client runs with the
+  real key directly — the proxy observes the *sandbox's* egress, not the harness's own model calls;
+  the in-container `claude-code` agent (WP-17) is the one whose calls route through the proxy.
+- The wire work is **pure and seamed**: `anthropic_request_body` and `parse_anthropic_response` are
+  functions, and the HTTP call is a `transport` seam, so the request shape, response parsing, auth
+  headers (`x-api-key`, `anthropic-version`), and error mapping are all tested without a network or a
+  key. Two edges with teeth: an unknown `stop_reason` maps to `other`, never silently to `end_turn`;
+  and `model_id_reported` is recorded as what the provider *said it served*, so a silent model swap
+  is visible (§9.3). `build_model_client` dispatches on provider type — `openai_compatible` raises a
+  clear "not yet" because its Chat Completions shape needs a message translation the loop's
+  Anthropic-shaped messages don't carry.
 
 ### What the live interception test proved (§10.5, §3.3 — the WP-13 done-when)
 
@@ -309,20 +328,22 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
 
 ## What to do next
 
-**WP-13 is complete** — the recording proxy is built end to end and its done-when runs live on CI:
-egress semantics, credential isolation, the decision core, the addon, the sidecar entry/image/launcher,
-internal-bridge isolation, and the interception test that proves inject-on-forward / block-on-deny /
-no-credential-in-the-artifact in a real three-container topology. Two threads remain to reach a
-CLI-drivable `bellwether run`:
+**WP-13 and the live model client are complete.** The recording proxy runs its done-when live on CI,
+and `harness/live_client` calls a real Anthropic Messages API behind the `ModelClient` seam. The
+pipeline can now both *run* a skill (execution driver) and *call a real model* — the remaining gap is
+the CLI wiring that connects them:
 
-1. **The live model client** (`harness/provider.py`) — the last thing between the built pipeline and a
-   CLI `bellwether run`. Deferred until now on purpose (spec-notes §9.4): an observed egress path had
-   to exist first, and now it does (the proxy). With it wired, `benign-stable` runs from the CLI and
-   reaches `ready`. Then wire the precondition check and weight validation into `doctor`/`run`, the
-   §21 enforced-settings refusal, and the FIFO sink writer — see the table below.
+1. **Wire `bellwether run`** (`cli/app.py`) — resolve the provider and key (from `api_key_env` + the
+   host env) → `build_model_client` → hand it to `SandboxRunExecutor` as the `client_factory` →
+   orchestrate → write the artifact tree. `run` currently exits 3 and names WP-13; with this it drives
+   `benign-stable` from the CLI and reaches `ready`. Wire the precondition check and weight validation
+   into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer at the same time —
+   see the table below.
 2. **WP-15's controlled DNS resolver** — its own sidecar (a second peer on the internal bridge),
    allowlist + NXDOMAIN + full query log (§10.6), so DNS stops being a covert channel around the proxy.
    The same host-core-then-CI-container split the proxy used applies.
+3. **The `openai_compatible` live client** — the Chat Completions message-shape translation the
+   Anthropic client did not need.
 
 **WP-14's live half** (doctor issuing a real request and asserting `interception_confirmed`) is still
 open — the CA-in-the-loop probe. The interception test above deliberately used plain HTTP to prove
@@ -339,7 +360,8 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when `run` is CLI-drivable (WP-13). |
 | Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
 | The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
-| Live model client | `harness/provider.py` | Deferred to WP-13 on purpose: no observed egress path exists yet for it (spec-notes §9.4). |
+| Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
+| `bellwether run` not yet CLI-drivable | `cli/app.py` | The live client exists now; wiring `run` (resolve provider + key → `build_model_client` → `SandboxRunExecutor`) is the next brick, after which `benign-stable` reaches `ready`. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 

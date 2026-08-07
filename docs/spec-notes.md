@@ -1066,3 +1066,32 @@ The credential never touches the sidecar's command line: the launcher forwards i
 (`-e KEY`), and the test sets it in the pytest process's environment so docker forwards the value —
 the same mechanism a real run uses, exercised end to end. On any failure the sidecar, peer, and client
 outputs are dumped into the assertion, because a remote container failure is otherwise a black box.
+
+---
+
+## §9.5, §9.3 — The live model client is host-side for api-loop, and pure-then-seamed
+
+**Spec.** §9.5: the agent loop speaks to a `ModelClient`, never a vendor SDK; aliases resolve through
+config. §9.3: what the provider *served* is recorded next to what was *requested*, so a silent model
+update is visible.
+
+**Resolution.** `bellwether.harness.live_client` is the real implementation behind the seam
+`ScriptedClient` stands in for. A design point worth recording: for the `api-loop` adapter the client
+runs **host-side, with the real key directly** — not through the recording proxy. The loop is driven
+by the host harness (its tools exec into the sandbox), so the harness's own model calls never
+originate inside the container; the proxy exists to observe and mediate the *sandbox's* egress, which
+is a different channel. The in-container agent of the `claude-code` adapter (WP-17) is the one whose
+model calls route through the proxy with the scoped token — that is where credential isolation on the
+model channel actually bites. Building the api-loop client to route through the proxy would have added
+a host↔sidecar coupling for no security gain on that adapter.
+
+Two smaller decisions. **(1)** The wire work is pure functions (`anthropic_request_body`,
+`parse_anthropic_response`) with the HTTP call behind a `transport` seam, so request shape, response
+parsing, auth headers and error mapping are all tested with a fake transport — no network, no key, and
+the credential is passed in rather than read from the environment, keeping the credential path
+explicit. **(2)** Two parsing edges have teeth: an unrecognised `stop_reason` maps to `other`, never
+silently to `end_turn` (a new provider stop reason must not read as a clean finish), and
+`model_id_reported` comes from the response's `model` field, so §9.3's requested-vs-served divergence
+is recorded. `openai_compatible` is refused with a clear message rather than half-built: its Chat
+Completions shape needs a message translation the loop's Anthropic-shaped messages don't carry, so it
+is a distinct client, not a config toggle.

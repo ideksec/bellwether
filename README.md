@@ -184,6 +184,7 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Sidecar host launcher: start/flows/stop, real key forwarded by name (never on the command line) | done (WP-13 pt 2b-ii core) |
 | Sidecar image: digest-pinned `mitmproxy` Dockerfile; build + addon-load proven on CI | done (WP-13 pt 2b-ii) |
 | Live interception: inject-on-forward, block-on-deny, no credential in the artifact, in a real container topology | done (WP-13 done-when) |
+| Live model client: Anthropic Messages API behind the `ModelClient` seam (translation + transport, tested offline) | done |
 | Sandbox network isolation: internal bridge, no route out except the proxy peer (§3.3 inv. 3) | done (WP-13) |
 | Canaries: mint, decode-then-match, destination classification, redaction | done (WP-16) |
 | CA trust chain: §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core) |

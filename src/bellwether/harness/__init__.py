@@ -18,6 +18,14 @@ afterwards. Never hard-code a model identifier: aliases resolve through config.
 from __future__ import annotations
 
 from bellwether.harness.api_loop import ApiLoopAdapter, OfferedSkill
+from bellwether.harness.live_client import (
+    AnthropicClient,
+    HttpResponse,
+    HttpTransport,
+    anthropic_request_body,
+    build_model_client,
+    parse_anthropic_response,
+)
 from bellwether.harness.protocol import (
     HarnessAdapter,
     HarnessCapabilities,
@@ -37,10 +45,13 @@ from bellwether.harness.provider import (
 from bellwether.harness.tools import ExecResult, SandboxExec, SandboxToolset, ToolOutcome
 
 __all__ = [
+    "AnthropicClient",
     "ApiLoopAdapter",
     "ExecResult",
     "HarnessAdapter",
     "HarnessCapabilities",
+    "HttpResponse",
+    "HttpTransport",
     "ModelClient",
     "ModelRequest",
     "ModelTurn",
@@ -54,5 +65,8 @@ __all__ = [
     "ToolOutcome",
     "ToolSpec",
     "TurnUsage",
+    "anthropic_request_body",
+    "build_model_client",
+    "parse_anthropic_response",
     "resolve_model",
 ]

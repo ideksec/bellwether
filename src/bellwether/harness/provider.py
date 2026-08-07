@@ -8,11 +8,10 @@ literal anywhere in this package is a bug. Second, offline testability: the
 api-loop adapter the golden-trace generator §24 requires — the whole analysis pipeline
 must be testable by contributors without API keys.
 
-A live HTTP client deliberately does not ship yet. The sandbox has no egress path until
-the recording proxy (WP-13) exists to carry and observe it: a client added now would
-either run unobserved or not at all, and an unobserved model channel is the exact
-condition §10.5.2 exists to prevent. The seam is this module; the client is a WP-13
-follow-on.
+The live HTTP client is :mod:`bellwether.harness.live_client` (WP-13, once the recording
+proxy existed to carry and observe egress — a client added before that would have run
+unobserved, the exact condition §10.5.2 exists to prevent). This module is the seam and the
+scripted client; that one is the real implementation.
 """
 
 from __future__ import annotations
