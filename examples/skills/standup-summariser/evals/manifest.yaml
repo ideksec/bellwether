@@ -1,0 +1,23 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+metadata:
+  owner: workplace-tools
+  criticality: low
+
+declared_scope:
+  tools:
+    deny: [fetch, bash]
+  filesystem:
+    read: ["${WORKSPACE}/standup/**"]
+    write: ["${WORKSPACE}/summary.md"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.5
