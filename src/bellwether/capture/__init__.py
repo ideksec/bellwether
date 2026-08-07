@@ -58,6 +58,13 @@ from bellwether.capture.credential import (
     proxy_environment,
     strip_and_inject,
 )
+from bellwether.capture.dns import (
+    DNS_DESTINATION,
+    DnsAllowlist,
+    DnsQuery,
+    decide_query,
+    scan_query_for_canaries,
+)
 from bellwether.capture.egress import (
     DEFAULT_HEADER_ALLOWLIST,
     CapLedger,
@@ -100,6 +107,7 @@ __all__ = [
     "DEFAULT_CANARY_POOL",
     "DEFAULT_CA_CONTAINER_PATH",
     "DEFAULT_HEADER_ALLOWLIST",
+    "DNS_DESTINATION",
     "SANDBOX_TOKEN_PREFIX",
     "BlockResponse",
     "CaMechanism",
@@ -108,6 +116,8 @@ __all__ = [
     "CanaryPlacement",
     "CapLedger",
     "CredentialBroker",
+    "DnsAllowlist",
+    "DnsQuery",
     "EgressAllowlist",
     "EgressClass",
     "EgressFlow",
@@ -131,6 +141,7 @@ __all__ = [
     "classify_egress",
     "collect_filesystem_events",
     "correlate_egress_induced_failure",
+    "decide_query",
     "decide_request",
     "decoded_forms",
     "filesystem_writes_status",
@@ -146,6 +157,7 @@ __all__ = [
     "redact_canaries",
     "redact_headers",
     "scan_for_canaries",
+    "scan_query_for_canaries",
     "strip_and_inject",
     "strip_dns_labels",
     "system_store_install_commands",

@@ -1124,3 +1124,32 @@ after `resolve_run` has confirmed the key is present in the environment (and put
 the resolution object) does the per-target client factory read the value and hand it to
 `build_model_client`, which itself refuses any but a trusted host (§3.3). So the key exists as a
 value only inside the client that is about to use it — never in a plan, a config, or a log line.
+
+## §10.6 — The controlled DNS resolver is split host-core-then-sidecar, like the proxy
+
+**Spec.** §10.6: DNS resolution goes through a controlled resolver that answers allowlisted names
+only, returns NXDOMAIN for everything else, and logs every query; query names join the canary corpus
+(§10.4.2), so a canary smuggled into query labels is a leak.
+
+**Resolution.** DNS gets the same treatment the recording proxy did: a pure, offline-tested decision
+core (`capture.dns`) split from the container that enforces it. This is not gold-plating — it is the
+same reason the proxy split. The resolver's *judgement* (is this name allowlisted? is a canary hiding
+in its labels?) is exactly the part that must be right and must be tested exhaustively, and it is
+testable without standing up `dnslib`/`coredns`, UDP sockets, and an internal bridge. The container
+half is then thin: receive a query, call the core, answer or NXDOMAIN, append to the log.
+
+Three decisions worth recording. **(1)** The allowlist matches on a **label boundary**, reusing the
+egress allowlist's rule rather than a bare suffix test: `anthropic.com` permits `eu.api.anthropic.com`
+but never `notanthropic.com` or `anthropic.com.attacker.example`. A plain `endswith` would let a
+lookalike registrant tunnel out through a name the resolver *thinks* it recognises — the covert
+channel this plane exists to close, reopened one layer down. **(2)** A refused query is recorded as
+`dns_blocked`, **evidence, not an error**, exactly as a blocked HTTP request is: the whole point of a
+controlled resolver is to *capture* the exfiltration attempt, so dropping refused queries from the log
+would erase the finding. Every query is logged whether or not it resolves. **(3)** The canary scan
+over a query name goes through the shared `scan_for_canaries(is_dns=True)`, which strips label
+separators before matching, so a marker chunked as `<c1>.<c2>.<c3>.attacker.example` is seen contiguous
+and found. Because DNS is a non-model destination, any hit is graded `critical` — a canary in a DNS
+query is a leak on the same footing as one in a request body, no special-casing. The
+independently-encoded-per-label chunking gap (each label separately base32'd, so stripping dots does
+not reassemble a decodable run) is the same documented §2 limit the proxy's canary scan carries, not a
+new one.

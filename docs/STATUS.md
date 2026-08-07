@@ -3,9 +3,9 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the WP-16 (canaries) + WP-14 (CA trust-chain core) work. **Update
-it at the end of a session, not the start** — a status file that lags is worse than none,
-because it is trusted.
+Last updated at the end of the WP-15 (controlled DNS resolver — host-side core) work.
+**Update it at the end of a session, not the start** — a status file that lags is worse than
+none, because it is trusted.
 
 ---
 
@@ -33,9 +33,10 @@ because it is trusted.
 | WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | Evaluation driver + run resolution + **`bellwether run` wiring** (`cli/{orchestrator,run_plan,run}`, `cli/app`) | **done** — assembly tested offline; a live-container CLI run is not yet CI-exercised |
-| WP-15, WP-17 – WP-20 — Phase B | not started |
+| WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **host core done** — the resolver sidecar + UDP/53 lockdown are CI-only |
+| WP-17 – WP-20 — Phase B | not started |
 
-638 tests: 596 offline, 42 under the `docker` mark. All green.
+649 tests: 607 offline, 42 under the `docker` mark. All green.
 
 **`bellwether run` is now wired from the CLI.** `cli/run.run_evaluation` assembles the whole
 pipeline — resolve the run, build the per-target live model client, plan the matrix, drive it
@@ -333,6 +334,34 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
   `False` there means TLS interception silently failed (zero-egress traces read as a clean
   skill), so doctor must fail loudly on it.
 
+### What WP-15 (controlled DNS resolver — host core) built
+
+The **host-side core of Plane E**, `bellwether.capture.dns`, offline and fully tested (13
+tests). An HTTP proxy never sees UDP/53, so without a controlled resolver DNS is a covert
+channel that routes entirely around Plane D — a skill encodes a secret into query *labels*
+and exfiltrates it while the recording proxy records nothing. This is the pure decision half,
+split from the resolver container exactly as the proxy's `decide_request` was split from its
+sidecar:
+
+- **`DnsAllowlist`** (default-deny, §10.6): `permits` matches on a *label boundary* — the same
+  rule the egress allowlist uses — so `anthropic.com` permits `eu.api.anthropic.com` but never
+  `notanthropic.com` or `anthropic.com.attacker.example`. An empty allowlist permits nothing.
+  `nxdomain_reason` names the name, the plane and the mechanism, never a bare enum (§10.7).
+- **`decide_query`** normalises the name (lowercase, trailing-dot-stripped), decides it against
+  the allowlist, and returns a **`DnsQuery`** record. Every query is logged whether or not it
+  resolves — a refused query is `dns_blocked`, evidence exactly like a blocked HTTP request, not
+  an error; the log is the plane's ground truth, so a resolver that dropped refusals would erase
+  the exfiltration attempt it exists to capture.
+- **`scan_query_for_canaries`** wraps `scan_for_canaries(destination="dns", is_dns=True)`, so a
+  marker chunked across labels (`<c1>.<c2>.<c3>.attacker.example`) is found once the dots are
+  stripped and — DNS being a non-model destination — graded a **critical** `canary_leak`, on the
+  same footing as any other leak.
+
+The resolver *sidecar* (`dnslib`/`coredns` in a second peer on the internal bridge, the §3.3
+invariant-3 UDP/53 lockdown that makes the resolver unavoidable rather than merely available,
+and the `dns_query`/`dns_blocked` trace actions) is the container half, CI-only — the same
+split the proxy used.
+
 ## What to do next
 
 **`bellwether run` is now wired end to end** and tested offline (resolution → matrix → drive →
@@ -348,9 +377,11 @@ close the smaller gaps:
    scenarios need different starting trees is not yet expressible). Wire the precondition check and
    weight validation into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer
    at the same time — see the table below.
-2. **WP-15's controlled DNS resolver** — its own sidecar (a second peer on the internal bridge),
-   allowlist + NXDOMAIN + full query log (§10.6), so DNS stops being a covert channel around the proxy.
-   The same host-core-then-CI-container split the proxy used applies.
+2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
+   decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
+   sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
+   lockdown that forces every lookup through it, and the `dns_query`/`dns_blocked` trace actions —
+   the CI-only container slice, mirroring the proxy sidecar.
 3. **The `openai_compatible` live client** — the Chat Completions message-shape translation the
    Anthropic client did not need.
 
@@ -467,6 +498,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Thirty-six entries. Read it before changing anything in the skill, sandbox, capture or
+  Forty-five entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.

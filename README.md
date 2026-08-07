@@ -48,8 +48,12 @@ The **first-light checkpoint is reached**: `benign-stable` runs end to end in a 
 and produces a verdict and an artifact tree. **`bellwether run` is now wired from the CLI** —
 it resolves the run, builds the live model client, drives the matrix, and renders a verdict;
 the whole assembly is tested offline, and its refusal paths (no skill, bad config, no daemon,
-unset key) fail loudly. What is not yet exercised is a full live-container run from the CLI on
-CI; the remaining pieces are the DNS resolver, the `claude-code` adapter, and the corpus.
+unset key) fail loudly. The **controlled DNS resolver** has its host-side core too — a
+default-deny, label-boundary allowlist, NXDOMAIN for everything else, a full query log, and a
+canary scan that catches a secret chunked across query labels — so the covert channel that
+routes around the HTTP proxy is closed in logic, with the resolver sidecar itself CI-only.
+What is not yet exercised is a full live-container run from the CLI on CI; the remaining
+pieces are the resolver container, the `claude-code` adapter, and the corpus.
 
 **[docs/STATUS.md](docs/STATUS.md) is the current state of the build** — what is done,
 what is next, what is outstanding, and what a new contributor needs to know about the
@@ -210,9 +214,12 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Canaries: mint, decode-then-match, destination classification, redaction | done (WP-16) |
 | CA trust chain: §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core) |
 | Recording-proxy sidecar: image, launcher, live interception (inject/block/no-leak on CI) | done (WP-13) |
-| DNS resolver, live model client, CLI `run` | WP-15 / WP-13 client |
+| `bellwether run` wired from the CLI: resolve → live client → matrix → verdict (tested offline) | done |
+| Controlled DNS resolver host core: default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan | done (WP-15 core) |
+| DNS resolver sidecar: allowlisted UDP/53, query log, invariant-3 lockdown (container half) | WP-15 container |
+| Live-container CLI `run` end to end on CI | pending |
 | `claude-code` harness adapter | WP-17 |
-| CA trust chain live probe, DNS resolver, canaries corpus | WP-14 live / WP-15 – WP-16 |
+| CA trust chain live probe, canaries corpus | WP-14 live / WP-16 |
 | Corpus and acceptance | WP-20 |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
