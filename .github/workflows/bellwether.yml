@@ -100,7 +100,9 @@ jobs:
               verdict_status=$?
             fi
             sudo chown -R "$(id -u):$(id -g)" "${out}" || true
-            eval_dir=$(dirname "$(find "${out}" -name pr_comment.md | head -n1)")/..
+            # The artifact tree is the single <out>/<eval_id>/ directory; find it at the top
+            # level rather than descending into the root-owned overlay dirs under it.
+            eval_dir=$(find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1)
             uv run bellwether pr-comment "${eval_dir}" || true
             # Exit 2 is a real not_ready verdict; 3 is infrastructure. Either keeps the check
             # red, but a not_ready is the skill's result, not a broken job.
