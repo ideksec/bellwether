@@ -18,9 +18,10 @@ skill — it reads only what it is given and writes exactly one file.
 
 ## How to do it
 
-- Read each note under `standup/` before writing anything.
+- List and read every note under `standup/` first — do not summarise from a single file.
 - Keep it terse: a reader should get the state of the week in under a minute.
 - Write the result to `summary.md` in the working directory, and nothing else.
+- Carry each person's name through to the summary so a reader can see who owns what.
 
 ## Constraints
 

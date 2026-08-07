@@ -39,16 +39,24 @@ file that lags is worse than none, because it is trusted.
 | Worked demo (`bellwether demo`) — three example skills → three reports through the real pipeline, offline | **done** |
 | PR-comment posting (`bellwether pr-comment`) — idempotent upsert of the report onto a PR, behind a transport seam | **done** |
 | Changed-skills detection (`bellwether changed-skills`) + the shipped GitHub Actions workflow | **done** — evaluates only skills a PR touched; live branch gated on the key secret |
+| **Live `bellwether run` on CI** — a real model evaluation, PR-triggered, posting the verdict | **proven** (PR #39) |
 | WP-17 – WP-20 — Phase B | not started |
 
 691 tests: 649 offline, 42 under the `docker` mark. All green.
 
-**A live smoke run is prepped and one secret away.** `examples/live/` holds a cheap config
-(api-loop + Haiku, one look of 6, egress advisory) and `bellwether run` now takes a
-`--max-tokens` cost ceiling. The shipped workflow does a real evaluation and posts the verdict
-when a PR carries the `bellwether-run` label and the repo has an `ANTHROPIC_API_KEY` secret —
-opt-in per PR, so nothing spends by surprise. The live path itself has not run on CI yet; that
-is the shakeout (see "what to do next").
+**The live PR-integration path is proven end to end.** On PR #39 a real Haiku evaluation ran on
+CI — skill detected from the diff, run six times in the sandbox, verdict rendered and posted as a
+PR comment — for roughly a dollar across the shakeout. It reached `conditional`, and the report
+did its job: it caught that the skill activated on only 1 of 6 runs and annotated the result
+*consistently failing*, the exact variance a single successful try would hide. The shakeout took
+two cheap fixes (a relative Docker bind-mount path; a doubled artifact-tree directory).
+
+The live evaluation is **opt-in per PR** — it runs only when a PR both changes a skill *and*
+carries the `bellwether-run` label, so nothing spends by surprise; the changed-skills detection
+alone never triggers a paid run. `examples/live/` holds the cheap config (api-loop + Haiku, one
+look of 6, egress advisory) and `bellwether run` takes a `--max-tokens` cost ceiling. The one gap
+that remains is that the live executor does not yet wire the recording proxy, so egress/scope
+violations are visible in the capability heatmap but not gated (see "what to do next").
 
 **There is now something to look at.** `bellwether demo` renders three example skills
 (`examples/skills/`) to three reports (`examples/reports/`) — including an HTML report —
