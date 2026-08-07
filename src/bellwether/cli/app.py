@@ -253,6 +253,13 @@ def run(
     out: Annotated[Path, typer.Option("--out", help="Where artifact trees are written.")] = Path(
         "bellwether-runs"
     ),
+    max_tokens: Annotated[
+        int,
+        typer.Option(
+            "--max-tokens",
+            help="Hard per-repetition token ceiling — the cost guard for a live run.",
+        ),
+    ] = 1_000_000,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -264,6 +271,7 @@ def run(
     import datetime as dt
 
     from bellwether.cli.run import run_evaluation, sandbox_executor_factory
+    from bellwether.harness import RunLimits
     from bellwether.skill import load_skill
 
     if not skills:
@@ -296,7 +304,10 @@ def run(
                 fixture=fixture,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
-                    loaded_config.sandbox.image, out / eval_id / "runs", eval_id
+                    loaded_config.sandbox.image,
+                    out / eval_id / "runs",
+                    eval_id,
+                    limits=RunLimits(max_total_tokens=max_tokens),
                 ),
                 out_dir=out / eval_id,
                 eval_id=eval_id,

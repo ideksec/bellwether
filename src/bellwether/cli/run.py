@@ -33,7 +33,7 @@ from bellwether.config.models.config import Config
 from bellwether.config.models.policy import Policy
 from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
-from bellwether.harness import ModelClient, build_model_client
+from bellwether.harness import ModelClient, RunLimits, build_model_client
 from bellwether.skill import SkillPackage
 
 __all__ = ["ExecutorFactory", "policy_digest", "run_evaluation"]
@@ -132,12 +132,17 @@ def sandbox_executor_factory(
     backend_image: str,
     run_root: Path,
     eval_id: str,
+    limits: RunLimits | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
     Kept here so the CLI command stays a few lines and the wiring is in one place. The backend is
     imported lazily inside so importing this module for :func:`run_evaluation` needs no daemon.
+    ``limits`` bounds each repetition — most importantly ``max_total_tokens``, the hard ceiling on
+    what one run can spend against a live provider; omitted, it takes the :class:`RunLimits`
+    defaults.
     """
+    run_limits = limits if limits is not None else RunLimits()
 
     def make(
         package: SkillPackage,
@@ -153,6 +158,7 @@ def sandbox_executor_factory(
             client_factory=client_factory,
             eval_id=eval_id,
             run_root=run_root,
+            limits=run_limits,
         )
 
     return make

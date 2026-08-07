@@ -1,0 +1,47 @@
+apiVersion: bellwether/v1
+kind: Config
+
+# A minimal, cheap config for a *live* smoke run — the one that proves `bellwether run`
+# works against a real model end to end. It uses the api-loop harness (the model runs on the
+# host; only the tools exec into the sandbox, so it is the cheapest form of a real run) and
+# the smallest model, with a hard per-run token cap passed on the command line.
+#
+# The key is read from ANTHROPIC_API_KEY by the host and never enters the sandbox — the
+# recording proxy injects it (§3.3). For a real skill repository, keep your own config under
+# .bellwether/; this one lives under examples/ because it is the project's own smoke setup.
+
+providers:
+  anthropic:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    models:
+      # The cheapest model, to prove the pipeline. Bump deliberately once it is green.
+      haiku: "claude-haiku-4-5-20251001"
+
+harnesses:
+  api-loop:
+    type: api-loop
+    tools: [read, write, bash, fetch]
+
+sandbox:
+  backend: docker
+  # A small, digest-pinned image with the busybox tools the api-loop uses (cat, sh, mkdir,
+  # dirname). The same image the container tests pull, so it is reachable under restrictive
+  # egress and already vetted.
+  image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+  memory: 2g
+  cpus: 2
+  pids_limit: 512
+  timeout_seconds: 300
+  writable_paths: ["/work", "/tmp", "/home/agent/.claude"]
+  randomize_identifiers: true
+
+capture:
+  filesystem_writes: overlay
+  filesystem_reads: fanotify
+  process: ebpf
+  harness_hooks: true
+  harness_event_sink: fifo
+  zones:
+    workspace: /work
+    harness_state: /home/agent/.claude

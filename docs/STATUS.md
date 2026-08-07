@@ -41,7 +41,14 @@ file that lags is worse than none, because it is trusted.
 | Changed-skills detection (`bellwether changed-skills`) + the shipped GitHub Actions workflow | **done** — evaluates only skills a PR touched; live branch gated on the key secret |
 | WP-17 – WP-20 — Phase B | not started |
 
-689 tests: 647 offline, 42 under the `docker` mark. All green.
+691 tests: 649 offline, 42 under the `docker` mark. All green.
+
+**A live smoke run is prepped and one secret away.** `examples/live/` holds a cheap config
+(api-loop + Haiku, one look of 6, egress advisory) and `bellwether run` now takes a
+`--max-tokens` cost ceiling. The shipped workflow does a real evaluation and posts the verdict
+when a PR carries the `bellwether-run` label and the repo has an `ANTHROPIC_API_KEY` secret —
+opt-in per PR, so nothing spends by surprise. The live path itself has not run on CI yet; that
+is the shakeout (see "what to do next").
 
 **There is now something to look at.** `bellwether demo` renders three example skills
 (`examples/skills/`) to three reports (`examples/reports/`) — including an HTML report —

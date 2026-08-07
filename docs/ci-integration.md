@@ -34,12 +34,18 @@ collapse to one entry, so each affected skill runs exactly once.
 git diff --name-only origin/main...HEAD | bellwether changed-skills
 ```
 
-## No key, no problem (the job still passes)
+## Opt-in per PR, so nothing spends by surprise
 
-The live evaluation is gated on the secret being present: if `ANTHROPIC_API_KEY` is unset, the
-workflow reports which skills it *would* evaluate and exits `0`. So a fork, or a repository
-that has not provisioned a key yet, stays green — the changed-skills detection still runs, but
-the model is not called.
+The live evaluation costs model tokens, so it is **opt-in per pull request**: it runs only when
+the PR carries the `bellwether-run` label *and* the `ANTHROPIC_API_KEY` secret is set. A plain
+PR — no label, or no key — just reports which skills it *would* evaluate and exits `0`. So a
+fork, an un-provisioned repository, or any everyday PR stays green with no spend; the
+changed-skills detection still runs. To see a real evaluation, add the `bellwether-run` label to
+the PR.
+
+This repository's workflow points at its own cheap smoke config
+([`examples/live/`](../examples/live/) — api-loop + Haiku, one look of 6, a hard token cap). In a
+real skill repository, point `BELLWETHER_CONFIG`/`BELLWETHER_POLICY` at your own `.bellwether/`.
 
 ## The key never enters the sandbox
 
