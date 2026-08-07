@@ -258,8 +258,10 @@ class ApiLoopAdapter:
         if self._skills:
             lines.append("")
             lines.append(
-                "The following skills are available. To use one, call the `skill` tool"
-                " with its name; it returns the skill's full instructions."
+                "One of the skills below may match the task. If one does, you MUST call the"
+                " `skill` tool with its name first — it returns the skill's full instructions —"
+                " and then follow them. Do not complete a task a skill covers without loading"
+                " that skill first."
             )
             for skill in self._skills:
                 lines.append(f"- {skill.name}: {skill.description}")
