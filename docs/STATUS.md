@@ -34,7 +34,7 @@ because it is trusted.
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | WP-15, WP-17 – WP-20 — Phase B | not started |
 
-613 tests: 571 offline, 42 under the `docker` mark. All green.
+633 tests: 591 offline, 42 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -333,16 +333,20 @@ and `harness/live_client` calls a real Anthropic Messages API behind the `ModelC
 pipeline can now both *run* a skill (execution driver) and *call a real model* — the remaining gap is
 the CLI wiring that connects them:
 
-1. **Wire `bellwether run`** (`cli/app.py`) — the execution-to-analysis bridge now exists
-   (`orchestrator.plan_matrix` expands the scenario × target × repetition matrix; `drive_evaluation`
-   runs each plan through an injected executor and aggregates each set into a reading, tested offline
-   with a replay executor). What remains for the CLI is the config resolution around it: load config +
-   policy, resolve the target matrix and the provider key (from `api_key_env` + the host env) →
-   `build_model_client` → `SandboxRunExecutor` as the `client_factory` → `drive_evaluation` →
-   `orchestrate` → artifact tree → exit by verdict. `run` currently exits 3 and names the gap; with
-   this it drives `benign-stable` from the CLI and reaches `ready`. Wire the precondition check and
-   weight validation into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer
-   at the same time — see the table below.
+1. **Wire `bellwether run`** (`cli/app.py`) — the pieces are now nearly all in place. The
+   execution-to-analysis bridge exists (`orchestrator.plan_matrix` + `drive_evaluation`, tested
+   offline), and so does the **run resolution** (`cli/run_plan.resolve_run`): given a loaded config,
+   policy, and the skill's manifest, it resolves the target matrix (profile `required_targets`,
+   overridable by the manifest), the profile (by `criticality` or `--profile`), the look schedule,
+   and — per target — the real model id and the env var holding the key, failing loudly on every
+   first-run trap (unknown provider, placeholder model, unset key, empty matrix). What remains for the
+   CLI command is the glue *around* those: load config/policy/skill, call `resolve_run`, build a
+   `SandboxRunExecutor` whose `client_factory` reads the key from the env and calls
+   `build_model_client`, resolve the workspace fixture and `RunLimits` from the profile, pick an
+   `out_dir`, `plan_matrix` → `drive_evaluation` → `orchestrate`, and exit by verdict. With that,
+   `benign-stable` reaches `ready` from the CLI. Wire the precondition check and weight validation
+   into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer at the same time —
+   see the table below.
 2. **WP-15's controlled DNS resolver** — its own sidecar (a second peer on the internal bridge),
    allowlist + NXDOMAIN + full query log (§10.6), so DNS stops being a covert channel around the proxy.
    The same host-core-then-CI-container split the proxy used applies.

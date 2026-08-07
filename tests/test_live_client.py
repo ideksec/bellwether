@@ -163,14 +163,14 @@ def test_a_non_json_body_is_a_clear_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_build_model_client_makes_an_anthropic_client_using_the_configured_base_url() -> None:
+def test_build_model_client_accepts_the_trusted_anthropic_host() -> None:
     transport = _RecordingTransport(_ok({"content": []}))
     provider = ProviderConfig(
-        type="anthropic", base_url="https://proxy.test", models={"frontier": "m"}
+        type="anthropic", base_url="https://api.anthropic.com", models={"frontier": "m"}
     )
     client = build_model_client(provider, api_key="k", transport=transport)
     client.complete(_REQUEST)
-    assert transport.url == "https://proxy.test/v1/messages"
+    assert transport.url == "https://api.anthropic.com/v1/messages"
 
 
 def test_build_model_client_defaults_the_anthropic_host_when_unset() -> None:
@@ -180,9 +180,63 @@ def test_build_model_client_defaults_the_anthropic_host_when_unset() -> None:
     assert client.base_url.endswith("anthropic.com")
 
 
+def test_build_model_client_refuses_an_untrusted_base_url() -> None:
+    """§3.3: the host-side client sends the *real* key, so an attacker-controlled base_url in a
+    checked-in config would exfiltrate it. The endpoint is pinned, not trusted from config."""
+    provider = ProviderConfig(
+        type="anthropic", base_url="https://evil.example.com", models={"frontier": "m"}
+    )
+    with pytest.raises(BellwetherError, match="real API key"):
+        build_model_client(provider, api_key="k")
+
+
+def test_build_model_client_refuses_a_lookalike_host() -> None:
+    provider = ProviderConfig(
+        type="anthropic", base_url="https://api.anthropic.com.evil.test", models={"frontier": "m"}
+    )
+    with pytest.raises(BellwetherError, match="real API key"):
+        build_model_client(provider, api_key="k")
+
+
+def test_build_model_client_refuses_a_cleartext_endpoint() -> None:
+    """Even the trusted host over http would leak the key on the wire."""
+    provider = ProviderConfig(
+        type="anthropic", base_url="http://api.anthropic.com", models={"frontier": "m"}
+    )
+    with pytest.raises(BellwetherError, match="real API key"):
+        build_model_client(provider, api_key="k")
+
+
 def test_openai_compatible_has_no_live_client_yet_and_says_so() -> None:
     provider = ProviderConfig(
         type="openai_compatible", base_url="https://x.test", models={"frontier": "m"}
     )
     with pytest.raises(BellwetherError, match="openai_compatible"):
         build_model_client(provider, api_key="k")
+
+
+# ---------------------------------------------------------------------------
+# response validation — malformed bodies become controlled errors
+# ---------------------------------------------------------------------------
+
+
+def test_content_that_is_not_a_list_is_a_controlled_error() -> None:
+    with pytest.raises(BellwetherError, match="content"):
+        parse_anthropic_response({"content": "surprise"})
+
+
+def test_a_non_object_content_block_is_a_controlled_error() -> None:
+    with pytest.raises(BellwetherError, match="not an object"):
+        parse_anthropic_response({"content": ["just a string"]})
+
+
+def test_a_non_numeric_token_count_is_a_controlled_error() -> None:
+    with pytest.raises(BellwetherError, match="not a number"):
+        parse_anthropic_response({"content": [], "usage": {"input_tokens": "lots"}})
+
+
+def test_a_non_object_tool_input_is_a_controlled_error() -> None:
+    with pytest.raises(BellwetherError, match="input"):
+        parse_anthropic_response(
+            {"content": [{"type": "tool_use", "id": "t", "name": "read", "input": "not-an-object"}]}
+        )

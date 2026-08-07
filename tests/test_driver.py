@@ -80,9 +80,9 @@ def _fixed_clock():  # type: ignore[no-untyped-def]
     return read
 
 
-def _executed_run(tmp_path: Path) -> ExecutedRun:
-    """One deterministic scripted run assembled into an `ExecutedRun` — a single trace can back
-    every plan, because `analyse_run` keys each run by its plan, not by the trace header."""
+def _executed_run(plan: RunPlan, tmp_path: Path, index: int) -> ExecutedRun:
+    """A scripted run whose trace header is stamped from the plan — as the real executor builds it,
+    so `analyse_run`'s trace-to-plan binding is satisfied. Each plan gets its own trace file."""
     adapter = ApiLoopAdapter(
         ScriptedClient(_TRANSCRIPT, model_id_reported="model-as-served"),
         SandboxToolset(_InProcessExec()),
@@ -92,10 +92,10 @@ def _executed_run(tmp_path: Path) -> ExecutedRun:
     events = list(adapter.run("Review.", model_id="frontier-configured", limits=RunLimits()))
     exit_reason = exit_reason_from_events(events)
     header = RunHeader(
-        run_id="r",
+        run_id=f"{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}",
         eval_id="e",
-        scenario_id="s",
-        repetition=1,
+        scenario_id=plan.scenario.id,
+        repetition=plan.repetition,
         skill=SkillRef(
             name="security-review",
             package_digest="sha256:" + "a" * 64,
@@ -103,10 +103,10 @@ def _executed_run(tmp_path: Path) -> ExecutedRun:
             source="t",
         ),
         target=TargetRef(
-            harness=adapter.name,
+            harness=plan.target.harness,
             harness_version=adapter.version(),
-            provider="scripted",
-            model_alias="frontier",
+            provider=plan.target.provider,
+            model_alias=plan.target.model_alias,
             model_id_requested="frontier-configured",
             model_id_reported="model-as-served",
             harness_capabilities=adapter.capabilities().as_record(),
@@ -124,7 +124,7 @@ def _executed_run(tmp_path: Path) -> ExecutedRun:
         exit_reason=exit_reason,
         tokens=token_totals_from_events(events),
     )
-    path = write_trace(tmp_path / "run.jsonl", header, harness_actions(events), footer)
+    path = write_trace(tmp_path / f"run-{index}.jsonl", header, harness_actions(events), footer)
     return ExecutedRun(
         trace=read_trace(path),
         context=NormalizationContext(workspace_root=_WORKSPACE),
@@ -154,15 +154,17 @@ def _scenario(scenario_id: str) -> Scenario:
 
 
 class _ReplayExecutor:
-    """Returns one canned `ExecutedRun` for every plan, counting the calls."""
+    """Builds a per-plan trace whose header matches the plan (as the real executor does), counting
+    the calls. ``stamp`` lets a test deliberately return a *mismatched* trace to exercise the bind."""
 
-    def __init__(self, executed: ExecutedRun) -> None:
-        self.executed = executed
+    def __init__(self, tmp_path: Path, *, stamp: RunPlan | None = None) -> None:
+        self.tmp_path = tmp_path
+        self.stamp = stamp
         self.plans: list[RunPlan] = []
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         self.plans.append(plan)
-        return self.executed
+        return _executed_run(self.stamp or plan, self.tmp_path, len(self.plans))
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +191,13 @@ def test_plan_matrix_expands_scenarios_targets_and_repetitions_in_order() -> Non
     ]
 
 
-def test_plan_matrix_refuses_a_zero_length_set() -> None:
-    with pytest.raises(BellwetherError, match="at least one run"):
-        plan_matrix([_scenario("a")], [TargetInfo("api-loop", "p", "frontier")], repetitions=0)
+def test_plan_matrix_refuses_a_single_run_set() -> None:
+    """Repetition is mandatory — one run is an anecdote (§13.2), zero is not a set at all."""
+    for repetitions in (0, 1):
+        with pytest.raises(BellwetherError, match="at least two runs"):
+            plan_matrix(
+                [_scenario("a")], [TargetInfo("api-loop", "p", "frontier")], repetitions=repetitions
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -200,23 +206,23 @@ def test_plan_matrix_refuses_a_zero_length_set() -> None:
 
 
 def test_drive_evaluation_groups_runs_into_one_reading_per_set(tmp_path: Path) -> None:
-    executor = _ReplayExecutor(_executed_run(tmp_path))
+    executor = _ReplayExecutor(tmp_path)
     scenarios = [_scenario("alpha"), _scenario("beta")]
     targets = [TargetInfo("api-loop", "p", "frontier"), TargetInfo("api-loop", "p", "small")]
-    plans = plan_matrix(scenarios, targets, repetitions=4)
+    plans = plan_matrix(scenarios, targets, repetitions=6)
 
     readings = drive_evaluation(plans, executor, profile=_firstlight_profile())
 
-    # One reading per (scenario, target) set — 2 × 2 — each aggregating its 4 runs.
+    # One reading per (scenario, target) set — 2 × 2 — each aggregating its 6 runs.
     assert len(readings) == 4
-    assert len(executor.plans) == 16  # every plan executed exactly once
-    assert all(len(reading.runs) == 4 for reading in readings)
+    assert len(executor.plans) == 24  # every plan executed exactly once
+    assert all(len(reading.runs) == 6 for reading in readings)
 
 
 def test_drive_evaluation_preserves_first_seen_set_order(tmp_path: Path) -> None:
     """Readings must come back in plan_matrix order, so the verdict and artifact tree are
     deterministic regardless of how plans interleave."""
-    executor = _ReplayExecutor(_executed_run(tmp_path))
+    executor = _ReplayExecutor(tmp_path)
     scenarios = [_scenario("alpha"), _scenario("beta")]
     targets = [TargetInfo("api-loop", "p", "frontier")]
     plans = plan_matrix(scenarios, targets, repetitions=6)
@@ -229,7 +235,7 @@ def test_drive_evaluation_preserves_first_seen_set_order(tmp_path: Path) -> None
 def test_a_driven_set_carries_the_passing_outcome_through(tmp_path: Path) -> None:
     """The scripted run activates the skill and completes, so the aggregated set is consistent —
     the driver faithfully carries per-run analysis into the reading, not just the count."""
-    executor = _ReplayExecutor(_executed_run(tmp_path))
+    executor = _ReplayExecutor(tmp_path)
     plans = plan_matrix(
         [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=6
     )
@@ -237,3 +243,26 @@ def test_a_driven_set_carries_the_passing_outcome_through(tmp_path: Path) -> Non
     (reading,) = drive_evaluation(plans, executor, profile=_firstlight_profile())
 
     assert reading.pass_rate == 1.0
+
+
+def test_drive_evaluation_refuses_a_set_below_the_first_look(tmp_path: Path) -> None:
+    """A set with fewer runs than the profile's first look (6) has no boundary to stop at and must
+    not be aggregated into a figure the design does not license (§13.1). plan_matrix requires ≥2,
+    so a 5-run set is what slips past it — the driver is the second gate."""
+    plans = plan_matrix(
+        [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=5
+    )
+    with pytest.raises(BellwetherError, match="first look"):
+        drive_evaluation(plans, _ReplayExecutor(tmp_path), profile=_firstlight_profile())
+
+
+def test_a_misrouted_trace_is_rejected(tmp_path: Path) -> None:
+    """§ trace-to-plan binding: if the executor returns a trace whose header names a different
+    target, it must not be scored under this one — a stale or misrouted trace is refused."""
+    wrong = RunPlan(_scenario("other"), TargetInfo("api-loop", "elsewhere", "small"), 1)
+    executor = _ReplayExecutor(tmp_path, stamp=wrong)
+    plans = plan_matrix(
+        [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=6
+    )
+    with pytest.raises(BellwetherError, match="does not match the run plan"):
+        drive_evaluation(plans, executor, profile=_firstlight_profile())
