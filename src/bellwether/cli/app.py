@@ -253,6 +253,13 @@ def run(
     out: Annotated[Path, typer.Option("--out", help="Where artifact trees are written.")] = Path(
         "bellwether-runs"
     ),
+    max_tokens: Annotated[
+        int,
+        typer.Option(
+            "--max-tokens",
+            help="Hard per-repetition token ceiling — the cost guard for a live run.",
+        ),
+    ] = 1_000_000,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -264,6 +271,7 @@ def run(
     import datetime as dt
 
     from bellwether.cli.run import run_evaluation, sandbox_executor_factory
+    from bellwether.harness import RunLimits
     from bellwether.skill import load_skill
 
     if not skills:
@@ -296,7 +304,10 @@ def run(
                 fixture=fixture,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
-                    loaded_config.sandbox.image, out / eval_id / "runs", eval_id
+                    loaded_config.sandbox.image,
+                    out / eval_id / "runs",
+                    eval_id,
+                    limits=RunLimits(max_total_tokens=max_tokens),
                 ),
                 out_dir=out / eval_id,
                 eval_id=eval_id,
@@ -372,6 +383,107 @@ def demo(
         {"reports": rows},
         as_json=json_output,
         lines=[f"{r['skill']}: {r['verdict']} — {r['report']}" for r in rows],
+    )
+
+
+@app.command(name="changed-skills")
+def changed_skills_command(
+    paths: Annotated[
+        list[str] | None,
+        typer.Argument(help="Changed file paths; if omitted, read newline-separated from stdin."),
+    ] = None,
+    root: Annotated[
+        Path, typer.Option("--root", help="Repository root the SKILL.md presence is checked in.")
+    ] = Path(),
+    json_output: JsonFlag = False,
+) -> None:
+    """Print the skill directories a set of changed files touches (§18).
+
+    Feed it a diff — ``git diff --name-only origin/main...HEAD | bellwether changed-skills`` —
+    and it prints one skill directory per line (a skill is a directory with a ``SKILL.md``;
+    a changed file is attributed to its nearest such ancestor). Empty output means the change
+    touched no skill, so nothing needs evaluating. Always exits 0: "no skills changed" is a
+    normal result, not an error.
+    """
+    import sys
+
+    from bellwether.cli.changed import changed_skills
+
+    candidates = paths or [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    skills = [str(skill) for skill in changed_skills(candidates, root=root)]
+    _emit({"changed_skills": skills}, as_json=json_output, lines=skills)
+
+
+@app.command(name="pr-comment")
+def pr_comment(
+    report: Annotated[
+        Path,
+        typer.Argument(
+            help="The rendered comment (report/pr_comment.md) or the eval directory holding it."
+        ),
+    ],
+    repo: Annotated[
+        str | None, typer.Option("--repo", help="owner/repo (default: $GITHUB_REPOSITORY).")
+    ] = None,
+    pr: Annotated[
+        int | None, typer.Option("--pr", help="Pull request number (default: from the CI env).")
+    ] = None,
+    token_env: Annotated[
+        str, typer.Option("--token-env", help="Env var holding the GitHub token.")
+    ] = "GITHUB_TOKEN",
+    api_root: Annotated[
+        str, typer.Option("--api-root", help="GitHub API root (for Enterprise).")
+    ] = "https://api.github.com",
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the comment instead of posting it.")
+    ] = False,
+    json_output: JsonFlag = False,
+) -> None:
+    """Post (or update in place) a Bellwether report comment on a pull request (§18.2).
+
+    Reads the comment `bellwether run` already rendered and upserts it: a re-run edits the
+    same comment rather than stacking a new one. Repo and PR default to the GitHub Actions
+    environment; the token is read from ``--token-env`` and used only in the auth header.
+    """
+    from bellwether.cli.pr import (
+        PrContext,
+        github_transport,
+        marked_body,
+        resolve_pr_context,
+        upsert_pr_comment,
+    )
+
+    source = report / "report" / "pr_comment.md" if report.is_dir() else report
+    try:
+        body = source.read_text(encoding="utf-8")
+    except OSError as error:
+        typer.echo(f"bellwether pr-comment: cannot read {source}: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    if dry_run:
+        typer.echo(marked_body(body))
+        return
+
+    try:
+        if repo is not None and pr is not None:
+            owner, repo_name = repo.split("/", 1) if "/" in repo else ("", repo)
+            context = PrContext(owner=owner, repo=repo_name, number=pr)
+        else:
+            context = resolve_pr_context(os.environ)
+        token = os.environ.get(token_env, "")
+        if not token:
+            raise BellwetherError(f"no GitHub token in ${token_env}; cannot post the comment")
+        action = upsert_pr_comment(
+            github_transport(), context, body, token=token, api_root=api_root
+        )
+    except (BellwetherError, ValueError) as error:
+        typer.echo(f"bellwether pr-comment: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    _emit(
+        {"action": action, "repo": context.slug, "pr": context.number},
+        as_json=json_output,
+        lines=[f"{action} comment on {context.slug}#{context.number}"],
     )
 
 

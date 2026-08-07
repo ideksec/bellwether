@@ -236,6 +236,8 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Controlled DNS resolver host core: default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan | done (WP-15 core) |
 | HTML report: a self-contained, theme-aware page written for every evaluation (a first slice of §17.4) | done |
 | Worked demo (`bellwether demo`): three example skills → three reports through the real pipeline, offline | done |
+| PR-comment posting (`bellwether pr-comment`): idempotent upsert of the report onto a pull request | done |
+| CI integration: a shipped GitHub Action that evaluates only the skills a PR changed (`bellwether changed-skills`) | done |
 | DNS resolver sidecar: allowlisted UDP/53, query log, invariant-3 lockdown (container half) | WP-15 container |
 | Live-container CLI `run` end to end on CI | pending |
 | `claude-code` harness adapter | WP-17 |

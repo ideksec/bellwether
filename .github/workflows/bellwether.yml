@@ -1,0 +1,110 @@
+name: Bellwether
+
+# Evaluate skills that a pull request changes, and post the verdict back on the PR.
+#
+# Every PR: `changed-skills` maps the diff to the skill directories affected (a skill is a
+# directory with a SKILL.md), so skills nobody touched are never re-evaluated.
+#
+# The live evaluation costs real model tokens, so it is opt-in per PR: it runs only when the
+# PR carries the `bellwether-run` label AND the ANTHROPIC_API_KEY secret is set. Without the
+# label (or the key) the job just reports which skills it would evaluate and passes — so no PR
+# ever spends by surprise, and forks stay green. The key is held by the runner and never enters
+# the sandbox (§3.3); see docs/ci-integration.md.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write   # so the report comment can be posted
+
+concurrency:
+  group: bellwether-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # For a real skill repository, point these at your own .bellwether/ config. This repo uses
+  # its own cheap smoke config (api-loop + Haiku, one look of 6, a hard token cap).
+  BELLWETHER_CONFIG: examples/live/config.yaml
+  BELLWETHER_POLICY: examples/live/policy.yaml
+  BELLWETHER_MAX_TOKENS: "60000"
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0   # the base commit must be present to diff against
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Detect changed skills
+        id: detect
+        run: |
+          git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+            | uv run bellwether changed-skills > changed-skills.txt || true
+          echo "Changed skills:"; cat changed-skills.txt
+          {
+            echo "skills<<EOF"
+            cat changed-skills.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: No skills changed
+        if: steps.detect.outputs.skills == ''
+        run: echo "No skills changed in this pull request; nothing to evaluate."
+
+      - name: Not labelled for evaluation
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          !contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        run: |
+          echo "These skills changed:"; cat changed-skills.txt
+          echo "Add the 'bellwether-run' label to this PR to evaluate them (costs model tokens)."
+
+      - name: Evaluate and comment
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "Labelled for evaluation, but ANTHROPIC_API_KEY is not set — skipping."
+            echo "Would evaluate:"; cat changed-skills.txt
+            exit 0
+          fi
+          bw="$(pwd)/.venv/bin/bellwether"
+          status=0
+          while IFS= read -r skill; do
+            [ -z "${skill}" ] && continue
+            echo "::group::Evaluating ${skill}"
+            out=".bellwether-out/$(echo "${skill}" | tr '/' '-')"
+            # The host-side overlay capture (§10.0) mounts overlayfs, which needs root, so the
+            # run goes under sudo with the key preserved. The key never reaches the sandbox.
+            if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" run "${skill}" \
+                 --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
+                 --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}"; then
+              verdict_status=0
+            else
+              verdict_status=$?
+            fi
+            sudo chown -R "$(id -u):$(id -g)" "${out}" || true
+            eval_dir=$(dirname "$(find "${out}" -name pr_comment.md | head -n1)")/..
+            uv run bellwether pr-comment "${eval_dir}" || true
+            # Exit 2 is a real not_ready verdict; 3 is infrastructure. Either keeps the check
+            # red, but a not_ready is the skill's result, not a broken job.
+            [ "${verdict_status}" -ne 0 ] && status="${verdict_status}"
+            echo "::endgroup::"
+          done < changed-skills.txt
+          exit "${status}"
