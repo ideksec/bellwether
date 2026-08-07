@@ -172,13 +172,16 @@ def plan_matrix(
     """Expand the (scenario × target × repetition) matrix into ordered run plans (§4).
 
     The order is fixed — scenario, then target, then repetition index — so the plan list, and
-    the artifact tree it produces, never depend on dict iteration or scheduling. A repetition
-    set with fewer than one run is refused: a single-run "set" is an anecdote, and zero is not
-    a set at all (§13.2).
+    the artifact tree it produces, never depend on dict iteration or scheduling. Fewer than two
+    runs is refused outright: repetition is mandatory, and a single-run "set" is an anecdote, not a
+    distribution (§13.2). A real evaluation runs the profile's ``n_max`` and its sequential design
+    decides where to stop; :func:`drive_evaluation` enforces the design's own floor (the first
+    look) against the runs it actually aggregates.
     """
-    if repetitions < 1:
+    if repetitions < 2:
         raise BellwetherError(
-            f"a repetition set needs at least one run, got repetitions={repetitions}"
+            f"a repetition set needs at least two runs (repetition is mandatory; a single run is an "
+            f"anecdote, §13.2), got repetitions={repetitions}"
         )
     return [
         RunPlan(scenario=scenario, target=target, repetition=rep)
@@ -207,7 +210,13 @@ def drive_evaluation(
 
     Readings come back in first-seen ``(scenario, target)`` order, matching :func:`plan_matrix`, so
     the verdict and the artifact tree are deterministic regardless of how the plans interleave.
+
+    Each set must reach the profile's **first look** before it is aggregated. A set with fewer runs
+    than the earliest pre-registered decision point (§13.1) has no boundary to stop at and would
+    yield a figure the sequential design does not license — so it is refused rather than quietly
+    reported, the same reflex as the rest of the pipeline.
     """
+    first_look = profile.matrix.looks[0] if profile.matrix.looks else 1
     analysed_by_set: dict[tuple[str, str], list[AnalysedRun]] = {}
     order: list[tuple[str, str, TargetInfo]] = []
     for plan in plans:
@@ -219,6 +228,14 @@ def drive_evaluation(
         analysed_by_set[set_key].append(
             analyse_run(plan, executed, scope=scope, platform_baseline_t3=platform_baseline_t3)
         )
+    for scenario_id, slug, _target in order:
+        count = len(analysed_by_set[(scenario_id, slug)])
+        if count < first_look:
+            raise BellwetherError(
+                f"repetition set {scenario_id!r} on {slug!r} has {count} run(s), below the profile's "
+                f"first look of {first_look} (§13.1); a set that never reaches its earliest decision "
+                "point cannot be aggregated into a licensed figure"
+            )
     return [
         aggregate(
             scenario_id,
@@ -231,6 +248,38 @@ def drive_evaluation(
     ]
 
 
+def _verify_trace_matches_plan(trace: Trace, plan: RunPlan) -> None:
+    """Reject a trace whose recorded identity does not match the plan it is being analysed under.
+
+    The executor builds the trace header from the plan, so in a correct run these agree by
+    construction. But a cached, stale, or misrouted trace would otherwise be labelled — and its
+    capabilities and outcome scored — under the wrong scenario or target, quietly corrupting that
+    target's verdict. This is cheap and the failure is a controlled one; the header carries exactly
+    the fields the plan does.
+    """
+    header = trace.header
+    mismatches: list[str] = []
+    if header.scenario_id != plan.scenario.id:
+        mismatches.append(f"scenario {header.scenario_id!r} != planned {plan.scenario.id!r}")
+    if header.repetition != plan.repetition:
+        mismatches.append(f"repetition {header.repetition} != planned {plan.repetition}")
+    if header.target.harness != plan.target.harness:
+        mismatches.append(f"harness {header.target.harness!r} != planned {plan.target.harness!r}")
+    if header.target.provider != plan.target.provider:
+        mismatches.append(
+            f"provider {header.target.provider!r} != planned {plan.target.provider!r}"
+        )
+    if header.target.model_alias != plan.target.model_alias:
+        mismatches.append(
+            f"model {header.target.model_alias!r} != planned {plan.target.model_alias!r}"
+        )
+    if mismatches:
+        raise BellwetherError(
+            "trace does not match the run plan it was returned for, so it cannot be attributed "
+            "to this target (a stale or misrouted trace): " + "; ".join(mismatches)
+        )
+
+
 def analyse_run(
     plan: RunPlan,
     executed: ExecutedRun,
@@ -239,6 +288,7 @@ def analyse_run(
     platform_baseline_t3: frozenset[str] = frozenset(),
 ) -> AnalysedRun:
     """Turn one executed run into its per-run reading (§12.7 outcome + §11.4 canonical)."""
+    _verify_trace_matches_plan(executed.trace, plan)
     trace = executed.trace
     context = executed.context
     index = EvidenceIndex.from_trace(trace, context, workspace=Path(context.workspace_root))

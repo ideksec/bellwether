@@ -34,7 +34,7 @@ because it is trusted.
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | WP-15, WP-17 – WP-20 — Phase B | not started |
 
-622 tests: 580 offline, 42 under the `docker` mark. All green.
+633 tests: 591 offline, 42 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live

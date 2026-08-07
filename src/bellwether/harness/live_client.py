@@ -21,6 +21,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
 
 from bellwether.config.models.provider import ProviderConfig
 from bellwether.errors import BellwetherError
@@ -36,6 +37,7 @@ __all__ = [
     "DEFAULT_ANTHROPIC_BASE_URL",
     "DEFAULT_ANTHROPIC_VERSION",
     "DEFAULT_MAX_TOKENS",
+    "TRUSTED_ANTHROPIC_HOSTS",
     "AnthropicClient",
     "HttpResponse",
     "HttpTransport",
@@ -48,6 +50,13 @@ __all__ = [
 #: an *endpoint*, not a model identifier — the no-hard-coded-model rule (§9.5) is about model version
 #: strings that go stale, which a stable API host is not.
 DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+#: The only hosts the host-side Anthropic client will send the **real** API key to. The client for
+#: the ``api-loop`` adapter runs on the host with the real credential (not the scoped token), so an
+#: attacker-controlled ``base_url`` in a checked-in ``config.yaml`` would exfiltrate the key with the
+#: first request. ``config.yaml`` lives in the evaluated checkout — the very thing a malicious PR can
+#: edit — so the destination is pinned here, not trusted from config. A genuinely different endpoint
+#: (a corporate gateway) belongs in trusted configuration outside the checkout, not in this list.
+TRUSTED_ANTHROPIC_HOSTS: frozenset[str] = frozenset({"api.anthropic.com"})
 #: The Anthropic API version header. Pinned, not floating: a silent version bump is exactly the kind
 #: of environmental change §9.3 wants recorded rather than absorbed.
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
@@ -101,39 +110,79 @@ def anthropic_request_body(request: ModelRequest, *, max_tokens: int) -> dict[st
     return body
 
 
+def _int_field(usage: Mapping[str, Any], name: str) -> int:
+    """A token counter, coerced to ``int`` or refused. A non-numeric count is a changed or
+    corrupt response, not a zero — silently defaulting it would understate a run's cost."""
+    value = usage.get(name, 0)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise BellwetherError(
+            f"model API response usage.{name} was {value!r}, which is not a number"
+        )
+    return int(value)
+
+
 def parse_anthropic_response(payload: Mapping[str, Any]) -> ModelTurn:
-    """Turn a Messages API response into a :class:`ModelTurn`.
+    """Turn a Messages API response into a :class:`ModelTurn`, or raise :class:`BellwetherError`.
 
     Text blocks are concatenated; ``tool_use`` blocks become :class:`ToolCallRequest`s carrying the
     provider-assigned id (the strong cross-plane correlation key, §11.5). ``usage`` keeps cache reads
     and writes separate (§9.3), and ``model`` is recorded as what the provider *said it served*, so a
     silent model swap is visible rather than assumed equal to what was requested.
+
+    A malformed or changed response — ``content`` not a list, a non-object block, a non-numeric token
+    count — is turned into a controlled Bellwether error rather than escaping as an ``AttributeError``
+    or ``TypeError`` from deep in the pipeline. The parser validates rather than trusts the shape,
+    because the provider's wire format is exactly the kind of thing that shifts underneath a tool.
     """
+    if not isinstance(payload, Mapping):
+        raise BellwetherError("model API response was not a JSON object")
+
+    content = payload.get("content", [])
+    if not isinstance(content, list):
+        raise BellwetherError(
+            f"model API response 'content' was {type(content).__name__}, expected a list of blocks"
+        )
+
     text_parts: list[str] = []
     tool_calls: list[ToolCallRequest] = []
-    for block in payload.get("content", []):
+    for block in content:
+        if not isinstance(block, Mapping):
+            raise BellwetherError(
+                "model API response contained a content block that is not an object"
+            )
         kind = block.get("type")
         if kind == "text":
-            text_parts.append(block.get("text", ""))
+            text_parts.append(str(block.get("text", "")))
         elif kind == "tool_use":
+            tool_input = block.get("input", {})
+            if not isinstance(tool_input, Mapping):
+                raise BellwetherError(
+                    "model API tool_use block carried a non-object 'input'; a tool call's arguments "
+                    "must be a JSON object"
+                )
             tool_calls.append(
                 ToolCallRequest(
                     id=str(block.get("id", "")),
                     name=str(block.get("name", "")),
-                    input=dict(block.get("input", {})),
+                    input=dict(tool_input),
                 )
             )
+
     usage = payload.get("usage", {})
+    if not isinstance(usage, Mapping):
+        raise BellwetherError(
+            f"model API response 'usage' was {type(usage).__name__}, expected an object"
+        )
     stop = payload.get("stop_reason")
     return ModelTurn(
         text="".join(text_parts),
         tool_calls=tuple(tool_calls),
         stop_reason=_STOP_REASONS.get(stop or "", "other"),  # type: ignore[arg-type]
         usage=TurnUsage(
-            input=int(usage.get("input_tokens", 0)),
-            output=int(usage.get("output_tokens", 0)),
-            cache_read=int(usage.get("cache_read_input_tokens", 0)),
-            cache_write=int(usage.get("cache_creation_input_tokens", 0)),
+            input=_int_field(usage, "input_tokens"),
+            output=_int_field(usage, "output_tokens"),
+            cache_read=_int_field(usage, "cache_read_input_tokens"),
+            cache_write=_int_field(usage, "cache_creation_input_tokens"),
         ),
         model_id_reported=payload.get("model"),
     )
@@ -194,17 +243,41 @@ class AnthropicClient:
         return parse_anthropic_response(payload)
 
 
+def _require_trusted_anthropic_endpoint(base_url: str) -> None:
+    """Refuse to build a real-key client for any endpoint not on :data:`TRUSTED_ANTHROPIC_HOSTS`.
+
+    This is the guard on the §3.3 critical invariant for the *host-side* channel: the sandbox never
+    holds the real key, but the api-loop harness — which runs on the host — does, and it must not be
+    talked into sending it somewhere a checked-in config chose. HTTPS is required for the same
+    reason: a cleartext endpoint would leak the key on the wire even to a trusted host.
+    """
+    parts = urlsplit(base_url)
+    host = (parts.hostname or "").lower()
+    trusted = any(host == h or host.endswith("." + h) for h in TRUSTED_ANTHROPIC_HOSTS)
+    if parts.scheme != "https" or not trusted:
+        allowed = ", ".join(sorted(TRUSTED_ANTHROPIC_HOSTS))
+        raise BellwetherError(
+            f"refusing to send the real API key to base_url {base_url!r}: the host-side model client "
+            f"uses the real credential, so it is pinned to HTTPS on a trusted endpoint (allowed: "
+            f"{allowed}). config.yaml is part of the evaluated checkout and a tampered base_url would "
+            "exfiltrate the key; route a non-standard endpoint through trusted config outside the "
+            "checkout instead."
+        )
+
+
 def build_model_client(
     provider: ProviderConfig, *, api_key: str, transport: HttpTransport | None = None
 ) -> ModelClient:
-    """Construct the live client for a configured provider (§9.5).
+    """Construct the live client for a configured provider (§9.5, §3.3).
 
-    ``anthropic`` is built; ``openai_compatible`` raises with a clear reason, because its Chat
-    Completions shape needs a message-shape translation the loop's Anthropic-shaped messages do not
-    carry — that client is a distinct follow-on, not a config toggle.
+    ``anthropic`` is built after its endpoint is checked against the trusted-host allowlist — the
+    real key travels on this path, so an attacker-controlled ``base_url`` is refused. ``openai_compatible``
+    raises with a clear reason, because its Chat Completions shape needs a message-shape translation
+    the loop's Anthropic-shaped messages do not carry — that client is a distinct follow-on.
     """
     if provider.type == "anthropic":
         base_url = provider.base_url or DEFAULT_ANTHROPIC_BASE_URL
+        _require_trusted_anthropic_endpoint(base_url)
         client = AnthropicClient(api_key=api_key, base_url=base_url)
         if transport is not None:
             client.transport = transport
