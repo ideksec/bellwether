@@ -44,6 +44,7 @@ from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
 from bellwether.determinism import canonical_json, round6
+from bellwether.errors import BellwetherError
 from bellwether.metrics import (
     compute_bci,
     decide_at_look,
@@ -92,7 +93,9 @@ __all__ = [
     "TargetInfo",
     "aggregate",
     "analyse_run",
+    "drive_evaluation",
     "orchestrate",
+    "plan_matrix",
 ]
 
 
@@ -158,6 +161,74 @@ class AnalysedRun:
     scope_exceeded: tuple[str, ...]
     trace_jsonl: str
     canonical_json: str
+
+
+def plan_matrix(
+    scenarios: Sequence[Scenario],
+    targets: Sequence[TargetInfo],
+    *,
+    repetitions: int,
+) -> list[RunPlan]:
+    """Expand the (scenario × target × repetition) matrix into ordered run plans (§4).
+
+    The order is fixed — scenario, then target, then repetition index — so the plan list, and
+    the artifact tree it produces, never depend on dict iteration or scheduling. A repetition
+    set with fewer than one run is refused: a single-run "set" is an anecdote, and zero is not
+    a set at all (§13.2).
+    """
+    if repetitions < 1:
+        raise BellwetherError(
+            f"a repetition set needs at least one run, got repetitions={repetitions}"
+        )
+    return [
+        RunPlan(scenario=scenario, target=target, repetition=rep)
+        for scenario in scenarios
+        for target in targets
+        for rep in range(1, repetitions + 1)
+    ]
+
+
+def drive_evaluation(
+    plans: Sequence[RunPlan],
+    executor: RunExecutor,
+    *,
+    profile: ProfileSpec,
+    scope: DeclaredScope | None = None,
+    platform_baseline_t3: frozenset[str] = frozenset(),
+    weights: Mapping[str, int] | None = None,
+) -> list[SetReading]:
+    """Run every plan through the executor and roll each repetition set into a reading.
+
+    The execution-to-analysis bridge the CLI ``run`` sits on: execute each plan, analyse it,
+    group by ``(scenario, target)``, and aggregate each group through the §13 metrics into one
+    :class:`SetReading`. The executor is injected — the container-backed
+    :class:`~bellwether.cli.execution.SandboxRunExecutor` in a real run, a replay executor in a
+    test — so the whole driver is exercised offline, the same seam the analysis path already uses.
+
+    Readings come back in first-seen ``(scenario, target)`` order, matching :func:`plan_matrix`, so
+    the verdict and the artifact tree are deterministic regardless of how the plans interleave.
+    """
+    analysed_by_set: dict[tuple[str, str], list[AnalysedRun]] = {}
+    order: list[tuple[str, str, TargetInfo]] = []
+    for plan in plans:
+        set_key = (plan.scenario.id, plan.target.slug)
+        if set_key not in analysed_by_set:
+            analysed_by_set[set_key] = []
+            order.append((plan.scenario.id, plan.target.slug, plan.target))
+        executed = executor.execute(plan)
+        analysed_by_set[set_key].append(
+            analyse_run(plan, executed, scope=scope, platform_baseline_t3=platform_baseline_t3)
+        )
+    return [
+        aggregate(
+            scenario_id,
+            target,
+            analysed_by_set[(scenario_id, slug)],
+            profile=profile,
+            weights=weights,
+        )
+        for scenario_id, slug, target in order
+    ]
 
 
 def analyse_run(

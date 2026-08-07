@@ -1,6 +1,7 @@
 # Bellwether
 
-A CI/CD harness for AI agent skills.
+A CI/CD harness for AI agent skills — run them, watch what they actually do, and decide
+whether to ship them.
 
 Bellwether executes a candidate skill many times, across multiple models and vendors,
 inside an instrumented sandbox; captures a deterministic record of everything the agent
@@ -10,25 +11,44 @@ release verdict against a policy the repository owner controls.
 **The name is the thesis.** A bellwether is the lead sheep whose bell signals that the
 flock is about to move. It warns; it does not vouch.
 
----
+## Where this came from
+
+This started as an argument at Black Hat. A few of us were kicking around the idea of
+shared, installable agent skills — a plugin repository, basically — and the obvious tension
+that comes with it: the same thing that makes a skill marketplace useful (grab someone
+else's skill, drop it in, done) is exactly what makes it dangerous (you just handed an
+untrusted set of instructions to a model with tools). Reviewing the prose of a `SKILL.md`
+tells you what it *asks* for, not what the agent *does* once a real model reads it. The
+debate was less "is this a problem" and more "could you actually build a gate that catches
+it before it ships." Bellwether is the attempt to find out.
+
+So treat this as **an experiment, not a product.** It's early, opinionated, and moving fast;
+interfaces will change and things will break. It's also worth saying plainly: **most of this
+codebase was written with heavy agentic assistance** (Claude Code doing the building, with a
+human driving direction, review, and the hard calls). That's part of the experiment too —
+both the tool and how it got made. The design decisions, the threat model, and the "don't
+oversell it" discipline are deliberate; see [docs/spec-notes.md](docs/spec-notes.md) for the
+reasoning behind the divergences.
 
 ## Status
 
 **Pre-v0.1. Under construction.** The whole offline analysis path is built and tested:
-the scaffolding, configuration layer, skill parser, trace format, sandbox, the first two
-capture planes (harness events, filesystem by zone), the `api-loop` reference harness
-adapter, the canonicalization layer, the platform baseline, the assertion engine, the
-metrics, the verdict engine, the report layer (`summary.json` + the Markdown PR comment),
-the analysis orchestrator that assembles them all into a verdict and an artifact tree, and
-the sandbox execution driver that runs a skill through a real container to feed it. The
-**first-light checkpoint is reached**: `benign-stable` runs end to end in a real sandbox and
-produces a verdict and an artifact tree. What does not yet exist is the network layer
-(recording proxy, DNS resolver, canaries) and the live model client that together let
-`bellwether run` drive a real skill against a real model from the CLI.
+scaffolding, config, the skill parser, the trace format, the sandbox, the first two capture
+planes (harness events, filesystem by zone), the `api-loop` reference harness adapter,
+canonicalization, the platform baseline, the assertion engine, the metrics, the verdict
+engine, the report layer (`summary.json` + the Markdown PR comment), the analysis
+orchestrator that assembles them into a verdict and an artifact tree, and the sandbox
+execution driver that runs a skill through a real container. The **recording proxy is done**:
+credential isolation, a default-deny egress allowlist, canaries, and an internal-bridge
+sandbox with no route out except the proxy — all proven live on CI, including the key
+property that the real API key reaches the provider but never the container. The **live
+model client** landed too, so every piece needed to drive a real run now exists.
 
-`bellwether run` is not usable from the CLI yet and says so, naming the work package that
-brings it (WP-13, the live model client), rather than printing an empty result that would
-read as a clean run.
+The **first-light checkpoint is reached**: `benign-stable` runs end to end in a real sandbox
+and produces a verdict and an artifact tree. The main gap left is the CLI wiring for
+`bellwether run` (and the DNS resolver, the `claude-code` adapter, and the corpus) — until
+that lands, `run` refuses from the CLI and says so, rather than printing an empty result that
+would read like a clean run.
 
 **[docs/STATUS.md](docs/STATUS.md) is the current state of the build** — what is done,
 what is next, what is outstanding, and what a new contributor needs to know about the
