@@ -183,12 +183,14 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | Sidecar entry: config, broker reconstruction, mitmdump addon (credential mapping survives the round trip) | done (WP-13 pt 2b-ii core) |
 | Sidecar host launcher: start/flows/stop, real key forwarded by name (never on the command line) | done (WP-13 pt 2b-ii core) |
 | Sidecar image: digest-pinned `mitmproxy` Dockerfile; build + addon-load proven on CI | done (WP-13 pt 2b-ii) |
+| Live interception: inject-on-forward, block-on-deny, no credential in the artifact, in a real container topology | done (WP-13 done-when) |
 | Sandbox network isolation: internal bridge, no route out except the proxy peer (§3.3 inv. 3) | done (WP-13) |
 | Canaries: mint, decode-then-match, destination classification, redaction | done (WP-16) |
 | CA trust chain: §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core) |
-| Recording-proxy sidecar container, DNS resolver, live model client, CLI `run` | WP-13 pt 2b-ii / WP-15 |
+| Recording-proxy sidecar: image, launcher, live interception (inject/block/no-leak on CI) | done (WP-13) |
+| DNS resolver, live model client, CLI `run` | WP-15 / WP-13 client |
 | `claude-code` harness adapter | WP-17 |
-| Recording proxy, CA trust chain, DNS resolver, canaries | WP-13 – WP-16 |
+| CA trust chain live probe, DNS resolver, canaries corpus | WP-14 live / WP-15 – WP-16 |
 | Corpus and acceptance | WP-20 |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification

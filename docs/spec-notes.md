@@ -1036,3 +1036,33 @@ runner. Three supporting decisions: the test is gated on `CI` so it skips locall
 sidecar's container logs into the assertion on a readiness timeout, so a first-run remote failure is
 diagnosable from the job output; and `pin_lint` grew a Dockerfile `FROM`-digest rule, because a
 floating base image is the same mutable-input hole as a floating action, one layer down.
+
+---
+
+## §10.5, §3.3 — The done-when proven live with a container named as the provider
+
+**Spec.** §10.5/§3.3: all container egress routes through the recording proxy; the real key is
+injected there and never held by the sandbox; a denied host is blocked and recorded. The done-when is
+that this holds *in a real run*, not just in unit tests.
+
+**Resolution.** `tests/test_sidecar_docker.py` stands up three containers on a user-defined
+`--internal` bridge — a client, the mitmproxy sidecar, and a peer — and drives the full path on CI.
+The trick that makes injection-on-forward testable without real DNS or internet: **the "provider" is a
+peer container named as the provider endpoint** (`provider-peer`). Docker's embedded DNS resolves the
+name, so mitmproxy forwards to it, and egress classification is plain string matching against the
+configured endpoint — no need to impersonate `api.anthropic.com` or reach the real internet. The
+client sends the *scoped* token; the peer echoes back the headers it received, which lets the test
+assert the **real key arrived upstream** (injection happened on the wire) while the scoped token did
+not survive. The denied host (`evil.example.com`) is blocked in the addon's request hook *before* any
+forward, so it needs no resolution either, and the client sees a real 403.
+
+Three decisions worth recording. **(1)** The test uses plain **HTTP**, not HTTPS, on purpose: it
+proves routing, classification, injection, blocking and recording — the WP-13 done-when — without
+dragging in TLS interception, which is WP-14's separate live probe (a CA-in-the-loop test with its own
+failure modes). Bundling them would have made a first-run remote failure ambiguous. **(2)** All three
+containers sit on an `--internal` bridge, so §3.3 invariant 3 (no route out except the peers) holds
+*during* the injection test — the two properties are proven together rather than in isolation. **(3)**
+The credential never touches the sidecar's command line: the launcher forwards it by env-var *name*
+(`-e KEY`), and the test sets it in the pytest process's environment so docker forwards the value —
+the same mechanism a real run uses, exercised end to end. On any failure the sidecar, peer, and client
+outputs are dumped into the assertion, because a remote container failure is otherwise a black box.
