@@ -28,12 +28,12 @@ because it is trusted.
 | Analysis orchestrator (trace → verdict → artifact tree) | **done** |
 | Sandbox execution driver (`RunExecutor`) | **done** |
 | ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
-| WP-13 — recording proxy: egress semantics, credential isolation, decision core, addon glue, sidecar entry, host launcher, sidecar image, internal-bridge isolation | **all logic + the image build/load proven on CI** — only the live interception test (forward+inject+block through a client) remains for the done-when |
+| WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, **live interception** | **done** — the full done-when (inject-on-forward, block-on-deny, no credential in the artifact) runs in a real container topology on CI |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
 | WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
 | WP-15, WP-17 – WP-20 — Phase B | not started |
 
-595 tests: 554 offline, 41 under the `docker` mark. All green.
+596 tests: 554 offline, 42 under the `docker` mark. All green.
 
 `bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
 tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
@@ -158,6 +158,20 @@ request never consumes the cap (a skill can't exhaust the budget with denied att
 the recorded flow never holds the real key *or* the scoped token even after injection. This
 is the whole "what the sidecar decides" — the container that runs it is all that's left of
 WP-13.
+
+### What the live interception test proved (§10.5, §3.3 — the WP-13 done-when)
+
+`tests/test_sidecar_docker.py` now stands the whole plane up in a real container topology on CI and
+asserts the done-when end to end: a **client** container sends the *scoped* token through the proxy;
+a permitted model-API call (a **peer** container named as the provider endpoint, so docker's embedded
+DNS resolves it and classification is plain string matching) is forwarded with the **real key
+injected on the wire** — the peer echoes it back — while the scoped token does not survive the swap;
+a denied host (`evil.example.com`) is **blocked with a 403** the client sees, short-circuited before
+any forward or DNS; and the flow log records both flows while holding **neither the real key nor the
+scoped token**. All three containers sit on a user-defined `--internal` bridge, so §3.3 invariant 3
+holds at the same time. On any failure the sidecar, peer, and client outputs are dumped into the
+assertion, so a remote failure is diagnosable from the job output. The credential-isolation invariant
+(§3.3 #1 — the most important property in the tool) is now proven live, not just in unit tests.
 
 ### What the sidecar image built (§10.5)
 
@@ -295,27 +309,24 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
 
 ## What to do next
 
-**The one remaining container slice: the live mitmproxy standup + doctor's live probe (WP-13 pt
-2b-ii, WP-14 done-when).** Every piece of *logic* is now built and tested — the proxy decision
-(`decide_request`), the credential broker, the canary engine, the CA mechanism table, and now
-the addon glue (`ProxyAddon`), the sidecar↔host flow-record contract, the whole inside-the-sidecar
-half (`sidecar_entry`), the **host launcher** (`MitmproxySidecar`), and now the **sidecar image**
-(`sidecar/proxy/Dockerfile` + loader), whose build and addon-load are proven on CI. What remains is
-the **live interception test** that closes the done-when: a client container on the internal bridge,
-routed through the proxy, with a permitted model call recorded and the real key injected on the
-wire, a denied host blocked, and no real key anywhere in the artifacts — plus the CA installed via
-`system_store_install_commands` + `ca_trust_environment` and doctor issuing a real request and
-asserting `interception_confirmed` (WP-14's done-when). That closes the WP-13 done-when (`no_egress`
-passing for a telemetry-emitting harness; real key absent from the container). **This still cannot be
-verified in this build environment** — it needs the public registries (blocked here) and container
-networking (iptables disabled here) — so it is validated on GitHub CI's `container` job. The image
-slice de-risked it: the Dockerfile, the mitmproxy addon load, and the readiness contract are now
-known-good, so the interception test builds on a proven foundation rather than debugging everything
-at once. It also brings the **live model client** — the last thing between the built pipeline and
-a CLI `bellwether run`, after which `benign-stable` reaches `ready`. Then wire the
-precondition check and weight validation into `doctor`/`run`, the §21 enforced-settings
-refusal, and the FIFO sink writer — see the table below. (WP-15's controlled DNS resolver, its
-own container slice, remains too.)
+**WP-13 is complete** — the recording proxy is built end to end and its done-when runs live on CI:
+egress semantics, credential isolation, the decision core, the addon, the sidecar entry/image/launcher,
+internal-bridge isolation, and the interception test that proves inject-on-forward / block-on-deny /
+no-credential-in-the-artifact in a real three-container topology. Two threads remain to reach a
+CLI-drivable `bellwether run`:
+
+1. **The live model client** (`harness/provider.py`) — the last thing between the built pipeline and a
+   CLI `bellwether run`. Deferred until now on purpose (spec-notes §9.4): an observed egress path had
+   to exist first, and now it does (the proxy). With it wired, `benign-stable` runs from the CLI and
+   reaches `ready`. Then wire the precondition check and weight validation into `doctor`/`run`, the
+   §21 enforced-settings refusal, and the FIFO sink writer — see the table below.
+2. **WP-15's controlled DNS resolver** — its own sidecar (a second peer on the internal bridge),
+   allowlist + NXDOMAIN + full query log (§10.6), so DNS stops being a covert channel around the proxy.
+   The same host-core-then-CI-container split the proxy used applies.
+
+**WP-14's live half** (doctor issuing a real request and asserting `interception_confirmed`) is still
+open — the CA-in-the-loop probe. The interception test above deliberately used plain HTTP to prove
+injection/blocking without TLS; the CA trust chain gets its own live proof when doctor's probe lands.
 
 ## Outstanding actions
 
