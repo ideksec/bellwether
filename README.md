@@ -45,10 +45,11 @@ property that the real API key reaches the provider but never the container. The
 model client** landed too, so every piece needed to drive a real run now exists.
 
 The **first-light checkpoint is reached**: `benign-stable` runs end to end in a real sandbox
-and produces a verdict and an artifact tree. The main gap left is the CLI wiring for
-`bellwether run` (and the DNS resolver, the `claude-code` adapter, and the corpus) — until
-that lands, `run` refuses from the CLI and says so, rather than printing an empty result that
-would read like a clean run.
+and produces a verdict and an artifact tree. **`bellwether run` is now wired from the CLI** —
+it resolves the run, builds the live model client, drives the matrix, and renders a verdict;
+the whole assembly is tested offline, and its refusal paths (no skill, bad config, no daemon,
+unset key) fail loudly. What is not yet exercised is a full live-container run from the CLI on
+CI; the remaining pieces are the DNS resolver, the `claude-code` adapter, and the corpus.
 
 **[docs/STATUS.md](docs/STATUS.md) is the current state of the build** — what is done,
 what is next, what is outstanding, and what a new contributor needs to know about the

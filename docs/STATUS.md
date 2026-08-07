@@ -32,14 +32,21 @@ because it is trusted.
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
 | WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
+| Evaluation driver + run resolution + **`bellwether run` wiring** (`cli/{orchestrator,run_plan,run}`, `cli/app`) | **done** — assembly tested offline; a live-container CLI run is not yet CI-exercised |
 | WP-15, WP-17 – WP-20 — Phase B | not started |
 
-633 tests: 591 offline, 42 under the `docker` mark. All green.
+638 tests: 596 offline, 42 under the `docker` mark. All green.
 
-`bellwether run` is not usable **from the CLI** yet: the whole pipeline runs end to end in
-tests (first-light is reached), but a CLI run of an arbitrary skill needs the WP-13 live
-model client, so `run` exits 3 and names that package rather than printing an empty result
-that would read as a clean run.
+**`bellwether run` is now wired from the CLI.** `cli/run.run_evaluation` assembles the whole
+pipeline — resolve the run, build the per-target live model client, plan the matrix, drive it
+through the sandbox executor, orchestrate the verdict, write the artifact tree, exit by verdict —
+and the `run` command loads config/policy/skill and calls it. The assembly is tested offline end to
+end with an injected scripted executor (`benign-stable` → `conditional`, the first-light shape),
+and the command's refusal paths (no skill, missing config, no daemon, unset key, placeholder model)
+exit 3 with a clear reason. What is *not* yet exercised is a real container run from the CLI against
+a live model — that reuses the proven `SandboxRunExecutor` but has not been run on CI end to end,
+and the declared scope is intentionally not applied until the executor captures egress (its
+auto-derived egress assertions are `not_evaluable` without the proxy).
 
 ### What WP-12 built
 
@@ -328,25 +335,19 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
 
 ## What to do next
 
-**WP-13 and the live model client are complete.** The recording proxy runs its done-when live on CI,
-and `harness/live_client` calls a real Anthropic Messages API behind the `ModelClient` seam. The
-pipeline can now both *run* a skill (execution driver) and *call a real model* — the remaining gap is
-the CLI wiring that connects them:
+**`bellwether run` is now wired end to end** and tested offline (resolution → matrix → drive →
+orchestrate → verdict → artifact tree). The remaining work is to make it real on a container and to
+close the smaller gaps:
 
-1. **Wire `bellwether run`** (`cli/app.py`) — the pieces are now nearly all in place. The
-   execution-to-analysis bridge exists (`orchestrator.plan_matrix` + `drive_evaluation`, tested
-   offline), and so does the **run resolution** (`cli/run_plan.resolve_run`): given a loaded config,
-   policy, and the skill's manifest, it resolves the target matrix (profile `required_targets`,
-   overridable by the manifest), the profile (by `criticality` or `--profile`), the look schedule,
-   and — per target — the real model id and the env var holding the key, failing loudly on every
-   first-run trap (unknown provider, placeholder model, unset key, empty matrix). What remains for the
-   CLI command is the glue *around* those: load config/policy/skill, call `resolve_run`, build a
-   `SandboxRunExecutor` whose `client_factory` reads the key from the env and calls
-   `build_model_client`, resolve the workspace fixture and `RunLimits` from the profile, pick an
-   `out_dir`, `plan_matrix` → `drive_evaluation` → `orchestrate`, and exit by verdict. With that,
-   `benign-stable` reaches `ready` from the CLI. Wire the precondition check and weight validation
-   into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer at the same time —
-   see the table below.
+1. **A live-container CLI run, on CI.** The command builds the proven `SandboxRunExecutor` for the
+   happy path, but a real `bellwether run` against a live model (a container plus a real key) has not
+   been exercised end to end on CI. It also needs: the **declared scope applied** once the executor
+   captures egress (its auto-derived egress assertions are `not_evaluable` without the proxy, which is
+   why the driver passes `scope=None` today); `RunLimits` derived from the profile rather than the
+   defaults; and **per-scenario fixtures** (the executor takes one fixture per run, so a skill whose
+   scenarios need different starting trees is not yet expressible). Wire the precondition check and
+   weight validation into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer
+   at the same time — see the table below.
 2. **WP-15's controlled DNS resolver** — its own sidecar (a second peer on the internal bridge),
    allowlist + NXDOMAIN + full query log (§10.6), so DNS stops being a covert channel around the proxy.
    The same host-core-then-CI-container split the proxy used applies.

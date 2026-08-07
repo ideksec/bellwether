@@ -149,7 +149,6 @@ def test_doctor_reports_a_bad_config_as_an_infrastructure_error(tmp_path: Path) 
 @pytest.mark.parametrize(
     ("command", "args"),
     [
-        ("run", []),
         ("scan", []),
         ("probe", ["./somewhere"]),
         ("coexistence", []),
@@ -166,6 +165,24 @@ def test_unimplemented_commands_exit_three_and_name_their_work_package(
     result = runner.invoke(app, [command, *args])
     assert result.exit_code == ExitCode.INFRASTRUCTURE
     assert "not implemented" in result.output
+
+
+def test_run_without_a_skill_refuses(tmp_path: Path) -> None:
+    """`run` with no skill argument is an infrastructure refusal, not an empty clean run."""
+    result = runner.invoke(app, ["run"])
+    assert result.exit_code == ExitCode.INFRASTRUCTURE
+    assert "at least one skill" in result.output
+
+
+def test_run_with_a_missing_config_refuses(tmp_path: Path) -> None:
+    """A run whose config.yaml is absent fails loudly before any container starts."""
+    skill = tmp_path / "a-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: a-skill\ndescription: d\n---\nb\n", encoding="utf-8"
+    )
+    result = runner.invoke(app, ["run", str(skill), "--config", str(tmp_path / "nope.yaml")])
+    assert result.exit_code == ExitCode.INFRASTRUCTURE
 
 
 def test_exit_codes_follow_the_spec() -> None:

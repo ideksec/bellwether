@@ -1095,3 +1095,32 @@ silently to `end_turn` (a new provider stop reason must not read as a clean fini
 is recorded. `openai_compatible` is refused with a clear message rather than half-built: its Chat
 Completions shape needs a message translation the loop's Anthropic-shaped messages don't carry, so it
 is a distinct client, not a config toggle.
+
+---
+
+## §20 — `bellwether run` is a thin command over a testable `run_evaluation`
+
+**Spec.** §20: `bellwether run` executes the matrix, captures, computes metrics, renders a verdict,
+and writes the artifact tree, with exit code 0 for ready/conditional, 2 for not_ready, 3 for an
+infrastructure problem.
+
+**Resolution.** The command is deliberately a few lines; the work is `cli.run.run_evaluation`, and it
+is a separate function because that is what makes it testable. `run_evaluation` takes the loaded
+config, policy, and skill, an **injected executor factory**, and the environment, and runs the whole
+assembly — `resolve_run` → build per-target live clients → `plan_matrix` → `drive_evaluation` →
+`orchestrate`. With the factory injected, a scripted `api-loop` executor stands in for the sandbox and
+the entire path is exercised offline: `benign-stable` reaches a `conditional` verdict and an artifact
+tree from the top-level entry point, the first-light shape, without a container. The CLI command
+builds the real `SandboxRunExecutor(DockerBackend)` factory and maps `EvalResult.exit_code`.
+
+Two decisions worth recording. **(1)** The driver passes `scope=None`, not the manifest's declared
+scope, in this first-light era. The declared scope's auto-derived assertions include egress checks
+("no undeclared network"), which are `not_evaluable` until the recording proxy is wired into the
+executor — and a `not_evaluable` derived assertion currently marks the whole run `not_evaluable`,
+which would block the evidence gate for a perfectly benign skill. Scoring against the scenario
+assertions only is exactly what the proven first-light checkpoint does; the declared scope comes
+online with the egress plane in the executor. **(2)** The credential is read at the last moment: only
+after `resolve_run` has confirmed the key is present in the environment (and put only its *name* in
+the resolution object) does the per-target client factory read the value and hand it to
+`build_model_client`, which itself refuses any but a trusted host (§3.3). So the key exists as a
+value only inside the client that is about to use it — never in a plan, a config, or a log line.
