@@ -14,16 +14,31 @@ normalizer (WP-7) — a record built here carries what was *observed*, not what 
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from bellwether.capture import FilesystemEvent, PlaneStatus
-from bellwether.capture.dns import DnsQuery
+from bellwether.capture.canary import (
+    Canary,
+    CanaryFinding,
+    scan_for_canaries,
+)
+from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
 from bellwether.capture.egress import EgressFlow
 from bellwether.harness import RawHarnessEvent
-from bellwether.trace.models import Action, Actor, Coverage, ExitReason, PlaneCoverage, TokenTotals
+from bellwether.trace.models import (
+    Action,
+    Actor,
+    Correlation,
+    Coverage,
+    ExitReason,
+    PlaneCoverage,
+    TokenTotals,
+)
 
 __all__ = [
     "assemble_coverage",
+    "canary_actions",
     "dns_actions",
     "egress_actions",
     "exit_reason_from_events",
@@ -238,12 +253,74 @@ def dns_actions(queries: list[DnsQuery], *, start_seq: int = 0) -> list[Action]:
     return actions
 
 
+def _scan_source_action(action: Action, canaries: Sequence[Canary]) -> list[CanaryFinding]:
+    """Scan one already-built plane action for canary markers, by kind (§10.4.1).
+
+    A DNS query name and the model's final output are both non-model destinations, so a marker in
+    either is a ``canary_leak`` at critical. (Egress path/header scanning and the model-endpoint
+    read-state grading — ``canary_in_context`` vs ``canary_without_read`` — are a follow-on: they
+    need the per-request read state, and egress *bodies* are scanned sidecar-side since the body
+    never leaves the proxy.)
+    """
+    if action.kind in ("dns_query", "dns_blocked"):
+        name = action.action.get("name")
+        if isinstance(name, str):
+            return scan_query_for_canaries(name, canaries)
+    elif action.kind == "final_output":
+        text = action.action.get("text")
+        if isinstance(text, str):
+            return scan_for_canaries(text, canaries, destination="final_output")
+    return []
+
+
+def canary_actions(
+    source_actions: Iterable[Action], canaries: Sequence[Canary], *, start_seq: int = 0
+) -> list[Action]:
+    """Derive Plane C canary findings by scanning the observed plane actions (§10.4).
+
+    Canaries are not a plane the sandbox emits; they are *found* in what the other planes recorded —
+    a marker in a DNS query name, in the final output. So this scans the already-built source actions
+    and emits one Plane C action per hit, its ``kind`` the finding class (``canary_leak`` /
+    ``canary_without_read`` / ``canary_in_context``, §10.4.1) and its ``correlation.anchor_seq``
+    pointing at the source action the marker appeared in — so a reviewer can follow the leak to the
+    exact query or output that carried it. **No marker value is in the record**, only the canary id
+    and where it went (§10.4.3).
+
+    Deterministic: source actions are consumed in order and each source's findings come back sorted,
+    so the same evidence yields byte-identical Plane C actions (§24).
+    """
+    actions: list[Action] = []
+    seq = start_seq
+    for source in source_actions:
+        for finding in _scan_source_action(source, canaries):
+            actions.append(
+                Action(
+                    seq=seq,
+                    ts=source.ts,
+                    plane="credentials",
+                    kind=finding.finding,
+                    action={
+                        "canary_id": finding.canary_id,
+                        "destination": finding.destination,
+                        "severity": finding.severity,
+                        "offset": finding.offset,
+                        "length": finding.length,
+                        "via": finding.via,
+                    },
+                    correlation=Correlation(anchor_seq=source.seq),
+                )
+            )
+            seq += 1
+    return actions
+
+
 def assemble_coverage(
     *,
     harness_events: PlaneStatus | None = None,
     filesystem_writes: PlaneStatus | None = None,
     egress: PlaneStatus | None = None,
     dns: PlaneStatus | None = None,
+    credentials: PlaneStatus | None = None,
 ) -> Coverage:
     """Build the §10.7 coverage block from what WP-5 can actually capture.
 
@@ -270,7 +347,7 @@ def assemble_coverage(
             fidelity="unavailable",
             reason="read capture is the v0.2 fanotify mechanism; overlay diff records writes only",
         ),
-        credentials=PlaneCoverage(fidelity="unavailable", reason="canary planting lands in WP-16"),
+        credentials=_from_status(credentials, absent="no canaries were planted for this run"),
         egress=_from_status(egress, absent="the recording proxy was not wired into this run"),
         dns=_from_status(dns, absent="the controlled resolver was not wired into this run"),
         process=PlaneCoverage(fidelity="unavailable", reason="process capture lands in WP-18"),

@@ -46,7 +46,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, live interception | **done** — the full done-when runs on CI |
 | **Recording proxy wired into the executor** — dual-homed sidecar per run, CA mounted, egress → Plane D of the trace | **done** (PR #42–#43); the config switch is `egress.image` |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
-| WP-16 — canaries: mint, decode-then-match, classify, redact | **logic done** — not yet planted/scanned in a live run |
+| WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, host-side Plane C scan | **logic + planting planner + `canary_actions` (Plane C) done** — not yet planted/scanned in a live run |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
@@ -94,12 +94,17 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    Depends on 1 (DNS observed) — now unblocked.
    - **Landed:** the **planting planner** (`capture/planting.py:plan_canary_planting`) — turns a
      run's minted canaries into the env vars + files that carry the markers plus the marker-free
-     `PlantedSlot`s the trace records (§10.4.3: the value reaches the container, never an artifact).
-     Pure, offline-tested.
+     `PlantedSlot`s the trace records (§10.4.3: the value reaches the container, never an artifact);
+     and the **host-side Plane C scan** (`trace/build.py:canary_actions`) — scans the already-built
+     source actions (DNS query names + the model's final output) for markers and emits one Plane C
+     finding per hit, its `kind` the finding class and its `correlation.anchor_seq` pointing at the
+     source action that carried it, holding only the canary id / offset / length — never the value.
+     `assemble_coverage` now flips `credentials` from unavailable to observed the moment a canary
+     status is supplied. Both pure and offline-tested.
    - **Remaining:** stage the planting into the sandbox (env via `_extra_env`, files via writable
-     mounts) and record `PlantedCanary` refs in the trace; scan observed evidence against the run's
-     canaries (DNS query names + model output host-side; egress bodies sidecar-side at capture) into
-     Plane C `canary_read`/`canary_leak` findings; flip `credentials` coverage to observed; verify
+     mounts) and record `PlantedCanary` refs in the trace; wire `canary_actions` into the executor
+     so the run's minted canaries are scanned against observed evidence and `credentials` coverage
+     is supplied (egress bodies still scanned sidecar-side at capture, where the body lives); verify
      no raw marker in any artifact; then the corpus skills (`canary-thief`, `dns-thief`,
      `legit-credential-reader`, `encoded-chunked-thief` xfail) for the §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
@@ -477,7 +482,13 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
   one nesting level, plus ≥12-char windowed matching and DNS label-stripping); and
   `redact_canaries` (capture-time fingerprint `<canary:c1@offset=,len=>` so an ARF artifact
   uploaded to CI never holds the secret). The independently-encoded-chunking gap stays a
-  documented §2 limit.
+  documented §2 limit. Two bricks now sit on top of that engine, both pure and offline-tested:
+  the **planting planner** (`capture/planting.py:plan_canary_planting`, `tests/test_planting.py`)
+  turns a run's minted canaries into env vars + files carrying the markers plus marker-free
+  `PlantedSlot`s for the trace (§10.4.3); and the **host-side Plane C scan**
+  (`trace/build.py:canary_actions`, in `tests/test_canary.py`) scans the built source actions
+  (DNS query names + final output) and emits a Plane C finding per hit, correlated by
+  `anchor_seq` to its source and carrying only the canary id / offset / length — never the value.
 - **WP-14 CA trust-chain core**, `bellwether.capture.ca`, offline and fully tested (7 tests):
   the complete §9.2 mechanism table (system store + `NODE_EXTRA_CA_CERTS` /
   `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`, because Node and others ignore the

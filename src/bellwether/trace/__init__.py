@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from bellwether.trace.build import (
     assemble_coverage,
+    canary_actions,
     dns_actions,
     egress_actions,
     exit_reason_from_events,
@@ -83,6 +84,7 @@ __all__ = [
     "TraceWriter",
     "anchor_events",
     "assemble_coverage",
+    "canary_actions",
     "canonicalize",
     "capability_for",
     "dns_actions",
