@@ -15,13 +15,21 @@ label-separator-aware so a payload chunked across labels is still found.
 from __future__ import annotations
 
 import base64
+from pathlib import Path
+
+import pytest
 
 from bellwether.capture import (
+    ControlledResolver,
     DnsAllowlist,
     DnsQuery,
     decide_query,
     mint_canaries,
+    parse_query_record,
+    query_record_line,
+    read_query_records,
     scan_query_for_canaries,
+    write_query_records,
 )
 from bellwether.capture.dns import DNS_DESTINATION
 from bellwether.determinism import canonical_json
@@ -240,3 +248,63 @@ def test_decide_query_output_flows_through_dns_actions() -> None:
     actions = dns_actions(decided)
     assert [a.kind for a in actions] == ["dns_query", "dns_blocked"]
     assert actions[1].action["reason"]  # the NXDOMAIN reason is carried
+
+
+# ---------------------------------------------------------------------------
+# The resolver ↔ host query-record contract (§10.6) — mirror of the flow log
+# ---------------------------------------------------------------------------
+
+
+def test_a_query_record_round_trips() -> None:
+    for query in (
+        _query("api.anthropic.com", resolved=True),
+        _query("evil.example", resolved=False, reason="NXDOMAIN (default-deny)"),
+    ):
+        assert parse_query_record(query_record_line(query)) == query
+
+
+def test_the_query_record_line_is_canonical() -> None:
+    query = _query("evil.example", resolved=False, reason="r")
+    # Sorted keys, byte-stable — two writes of the same query produce identical bytes so the
+    # shared log does not churn (§24), mirroring the flow record.
+    assert query_record_line(query) == canonical_json(
+        {"name": "evil.example", "reason": "r", "resolved": False, "ts": _TS}
+    )
+    assert query_record_line(query) == query_record_line(query)
+
+
+def test_the_query_log_round_trips_through_a_file(tmp_path: Path) -> None:
+    queries = [
+        _query("api.anthropic.com", resolved=True),
+        _query("a.b.c.attacker.example", resolved=False, reason="NXDOMAIN"),
+    ]
+    log = tmp_path / "queries.jsonl"
+    write_query_records(log, queries)
+    assert read_query_records(log) == queries
+
+
+def test_an_empty_log_is_a_valid_observed_zero_query_run(tmp_path: Path) -> None:
+    """The resolver writes an empty log at t=0: 'the resolver ran' is true from the start, so
+    an empty log is an observed-clean run, not a missing plane."""
+    log = tmp_path / "queries.jsonl"
+    write_query_records(log, [])
+    assert read_query_records(log) == []
+
+
+def test_a_missing_query_log_raises_rather_than_reading_clean(tmp_path: Path) -> None:
+    """A missing log means the resolver never ran; absence must not read as zero queries — the
+    same fail-loud contract as the proxy's flow log (§10.6)."""
+    with pytest.raises(OSError):
+        read_query_records(tmp_path / "never-written.jsonl")
+
+
+def test_the_controlled_resolver_base_refuses_a_partial_implementation() -> None:
+    """A bare seam must fail loudly, not silently resolve nothing (a zero-query trace reads as
+    a clean skill — the covert channel §10.6 exists to police would go unrecorded)."""
+    resolver = ControlledResolver()
+    with pytest.raises(NotImplementedError):
+        resolver.start("run", allowlist=DnsAllowlist(frozenset()))
+    with pytest.raises(NotImplementedError):
+        resolver.queries()
+    with pytest.raises(NotImplementedError):
+        resolver.stop()

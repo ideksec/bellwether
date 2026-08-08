@@ -55,7 +55,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-15 executor wiring · WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-789 tests: 743 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
+795 tests: 749 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -75,11 +75,16 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      `dns_query`/`dns_blocked` → capability mapping in `trace/canonical.py` — an outside-allowlist
      query (`dns_blocked`) is the weight-10 `dns_query:<name>` covert-channel class, an in-allowlist
      resolution (`dns_query`) is the floor-weighted `dns:<name>` class (grounded in §13.5, see
-     spec-notes; §11.4 didn't enumerate a DNS tier-1 class). Both offline-tested.
-   - **Remaining, in order:** (b) the resolver
-     **producer core** — query-log serializers + a `ControlledResolver` base + a dnslib-agnostic
-     recorder + the in-container entry, mirroring `capture/sidecar_entry.py` and `proxy_addon`'s
-     serializers; (c) the **host lifecycle + provider** (`DnsResolverSidecar`, `RunResolver`,
+     spec-notes; §11.4 didn't enumerate a DNS tier-1 class); (3) the **resolver↔host query-record
+     contract** — `query_record_line`/`parse_query_record`/`read_query_records`/`write_query_records`
+     in `capture/dns.py` (the mirror of `proxy_addon`'s flow serializers: canonical JSONL, a missing
+     log raises rather than reading clean) and the `ControlledResolver` base seam (the DNS analog of
+     `RecordingProxy`, `NotImplementedError` bodies so a partial impl fails loudly). All offline-tested.
+   - **Remaining, in order:** (b) the resolver's in-container **recorder + entry** — a `ResolverConfig`
+     + a dnslib-agnostic recording core + `resolver_entry.py`, mirroring `capture/sidecar_entry.py`
+     (the query-record contract and the base seam are done; this is the recorder that uses them and
+     the dnslib UDP binding, plus the resolver's answer-vs-NXDOMAIN response, which the sidecar image
+     provides); (c) the **host lifecycle + provider** (`DnsResolverSidecar`, `RunResolver`,
      `DnsResolverProvider`) — resolver-only, *not* dual-homed, exposing `sandbox_dns()` (an IP)
      rather than proxy env/CA; (d) `dns.image` config + `build_resolver_provider` landing together
      with the executor that consumes them (no orphan switch); (e) `--dns <resolver-ip>` +

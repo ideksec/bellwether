@@ -60,10 +60,15 @@ from bellwether.capture.credential import (
 )
 from bellwether.capture.dns import (
     DNS_DESTINATION,
+    ControlledResolver,
     DnsAllowlist,
     DnsQuery,
     decide_query,
+    parse_query_record,
+    query_record_line,
+    read_query_records,
     scan_query_for_canaries,
+    write_query_records,
 )
 from bellwether.capture.egress import (
     DEFAULT_HEADER_ALLOWLIST,
@@ -115,6 +120,7 @@ __all__ = [
     "CanaryFinding",
     "CanaryPlacement",
     "CapLedger",
+    "ControlledResolver",
     "CredentialBroker",
     "DnsAllowlist",
     "DnsQuery",
@@ -151,9 +157,12 @@ __all__ = [
     "mint_canaries",
     "mint_sandbox_token",
     "parse_flow_record",
+    "parse_query_record",
     "provider_hosts",
     "proxy_environment",
+    "query_record_line",
     "read_flow_records",
+    "read_query_records",
     "redact_canaries",
     "redact_headers",
     "scan_for_canaries",
@@ -162,4 +171,5 @@ __all__ = [
     "strip_dns_labels",
     "system_store_install_commands",
     "write_flow_records",
+    "write_query_records",
 ]
