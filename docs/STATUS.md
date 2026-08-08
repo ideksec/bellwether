@@ -42,15 +42,25 @@ file that lags is worse than none, because it is trusted.
 | **Live `bellwether run` on CI** — a real model evaluation, PR-triggered, posting the verdict | **proven** (PR #39) |
 | WP-17 – WP-20 — Phase B | not started |
 
-712 tests: 668 offline, 44 under the `docker` mark. All green.
+713 tests: 668 offline, 45 under the `docker` mark. All green.
+
+**The producer path has an executor-level done-when on CI.** `test_execution_proxy_docker` stands
+a real mitmproxy sidecar up around a real sandbox run *through `SandboxRunExecutor`* — the two
+bridges, the dual-home attach, the CA written to the shared volume and mounted into the sandbox, the
+run routed through the proxy — and asserts egress reads **observed** (not unavailable), the benign
+skill's trace is observed-*clean*, and no bridge leaks on teardown. It exercises the load-bearing
+unknown: if mitmproxy does not write its CA where the executor expects, `ca_cert_path()` raises and
+the run fails loudly rather than producing a zero-egress trace (§9.2). This is the same observed-clean
+state that lets a benign live run reach `ready`; the remaining step is proving it against a live model
+on a labeled PR.
 
 **`bellwether run` can now turn the proxy on from config.** `build_proxy_provider` reads
 `egress.image` (a new digest-pinned field): empty — the shipped default — leaves the sandbox
 networkless exactly as first-light; set to the sidecar image, it assembles the dual-homed provider
 (default-deny allowlist from the configured providers plus `egress.allowlist`, an empty broker
 because the `api-loop` model runs host-side) and the `run` command hands it to the executor. So a
-live config now produces observed egress end to end from the CLI; only the CI workflow's image build
-and a labeled live PR remain to prove a benign run reaches `ready`.
+live config now produces observed egress end to end from the CLI; only a labeled live PR remains to
+prove a benign run reaches `ready`.
 
 **The recording proxy is now wired into the live executor** (§10.5, §3.3). Both halves of the
 egress plane exist. The consumer half (PR #41) taught the gate to read observed egress:
