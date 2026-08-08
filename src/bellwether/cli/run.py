@@ -18,8 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bellwether.cli.execution import SandboxRunExecutor
+
+if TYPE_CHECKING:
+    from bellwether.sandbox import IsolationProfile, ZoneMap
 from bellwether.cli.orchestrator import (
     EvalResult,
     RunExecutor,
@@ -154,6 +158,10 @@ def sandbox_executor_factory(
     eval_id: str,
     limits: RunLimits | None = None,
     proxy: SidecarProxyProvider | None = None,
+    *,
+    isolation: IsolationProfile | None = None,
+    zones: ZoneMap | None = None,
+    randomize_identifiers: bool = True,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -162,6 +170,11 @@ def sandbox_executor_factory(
     ``limits`` bounds each repetition — most importantly ``max_total_tokens``, the hard ceiling on
     what one run can spend against a live provider; omitted, it takes the :class:`RunLimits`
     defaults.
+
+    ``isolation`` / ``zones`` / ``randomize_identifiers`` carry the config-derived sandbox profile
+    into the executor (``isolation_from_config`` / ``zone_map_from_config``); omitted, the executor's
+    hardened defaults apply. Threading these is what makes ``sandbox.memory`` / ``pids_limit`` /
+    ``timeout_seconds`` and the §3.5 identifier randomisation actually reach the container.
 
     ``proxy``, when supplied, stands a dual-homed recording-proxy sidecar up around each run so the
     egress plane is observed (§10.5). Omitted, the sandbox runs with no network, exactly as
@@ -174,7 +187,7 @@ def sandbox_executor_factory(
         fixture: Path,
         client_factory: Callable[[RunPlan], tuple[ModelClient, str]],
     ) -> RunExecutor:
-        from bellwether.sandbox import DockerBackend
+        from bellwether.sandbox import DockerBackend, IsolationProfile, ZoneMap
 
         return SandboxRunExecutor(
             backend=DockerBackend(image=backend_image),
@@ -185,6 +198,9 @@ def sandbox_executor_factory(
             run_root=run_root,
             limits=run_limits,
             proxy=proxy,
+            isolation=isolation if isolation is not None else IsolationProfile(),
+            zones=zones if zones is not None else ZoneMap(),
+            randomize_identifiers=randomize_identifiers,
         )
 
     return make

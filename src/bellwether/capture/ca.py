@@ -1,4 +1,4 @@
-"""The proxy CA trust chain — install it everywhere, then prove interception (§9.2).
+"""The proxy CA trust chain — install it everywhere, then confirm interception (§9.2).
 
 The entire egress design depends on the container trusting the recording proxy's CA, and
 several common runtimes ignore the system trust store. **A silent interception failure

@@ -55,7 +55,7 @@
     "Judged scores carry an unmeasured bias term. Judges are blinded to metadata, never to content: model identity leaks through style, skill activity through content."
   ],
   "matrix": {
-    "boundary_z": null,
+    "boundary_z": 2.289,
     "descriptive_only": false,
     "design": "sequential",
     "escalation_truncated": false,
@@ -91,8 +91,8 @@
   "skill": {
     "criticality": "medium",
     "name": "flaky-formatter",
-    "package_digest": "sha256:8ed3fc7ad9923c9318b0f4ec868f0b60302636f7cb65e243af24ba923d115ccb",
-    "payload_digest": "sha256:dab0973fe32820a47361eddf89fab63335244d17a7514cbf35d2a4ab5156c556"
+    "package_digest": "sha256:7ed9284e5c5c661146f4159f01217d180d1e7d6960eda29db28650304dec1bd5",
+    "payload_digest": "sha256:4a6b8235ae74c1ccb14f886dea91697057f3095422a1f4c4f4722eae2ae65940"
   },
   "verdict": {
     "gates": [

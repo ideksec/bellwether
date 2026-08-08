@@ -51,7 +51,7 @@ uv run ruff check .                     # lint
 uv run ruff format --check .            # format  (this one has bitten us — run it explicitly)
 uv run mypy                             # types, strict, whole package
 uv run lint-imports                     # module boundaries (config→…→cli, acyclic; metrics ⊥ verdict)
-uv run python tools/language_lint.py    # verdict vocabulary (bans safe/secure/guarantee/prove/ensure/verified/vouch in user-facing strings)
+uv run python tools/language_lint.py    # verdict vocabulary (bans safe/secure/verified/approved/certified/guarantee/prove/ensure in user-facing strings; "vouch" is allowed only in the negative — the project's own "does not vouch" thesis)
 uv run python tools/pin_lint.py         # supply-chain pinning (SHA-pinned actions, digest-pinned images)
 uv run pytest -m "not docker"           # the offline suite — no API key, no daemon
 ```

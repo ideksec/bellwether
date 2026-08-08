@@ -6,7 +6,7 @@ test machinery can behave only while it is being watched.
 
 The payload is defined by an **allowlist** (:mod:`bellwether.skill.payload`), so a new
 Bellwether file added later cannot leak into the container by omission. This module is
-the second half of that guarantee: it copies what the allowlist selected, and it asserts
+the second half of that promise: it copies what the allowlist selected, and it asserts
 the outcome rather than trusting the filter — the cost of being wrong here is that every
 run of every skill is silently observing a different thing than it reports.
 """

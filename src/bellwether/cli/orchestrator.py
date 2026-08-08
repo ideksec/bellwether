@@ -98,9 +98,9 @@ __all__ = [
     "analyse_run",
     "build_figures",
     "drive_evaluation",
-    "resolve_capability_weights",
     "orchestrate",
     "plan_matrix",
+    "resolve_capability_weights",
 ]
 
 
@@ -554,9 +554,9 @@ def resolve_capability_weights(policy_weights: Mapping[str, float]) -> dict[str,
     policy this reproduces the default table exactly, so it is a no-op until a weight is
     actually overridden.
     """
-    resolved = {cls: int(w) for cls, w in DEFAULT_CAPABILITY_WEIGHTS.items()}
+    resolved = dict(DEFAULT_CAPABILITY_WEIGHTS)
     for key, weight in policy_weights.items():
-        resolved[_POLICY_WEIGHT_KEY_TO_BASE_CLASS.get(key, key)] = int(round(weight))
+        resolved[_POLICY_WEIGHT_KEY_TO_BASE_CLASS.get(key, key)] = round(weight)
     return resolved
 
 

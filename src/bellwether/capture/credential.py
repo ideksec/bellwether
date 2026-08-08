@@ -9,7 +9,7 @@ sees the scoped token; the provider sees the real key; the two never meet inside
 sandbox.
 
 This module is the host-side core of that exchange, and it is deliberately pure so the
-guarantee is unit-testable without a container:
+invariant is unit-testable without a container:
 
 - :func:`mint_sandbox_token` — a per-run, reproducible, opaque token;
 - :class:`CredentialBroker` — holds the scoped-token↔real-key mapping *on the host*, builds
