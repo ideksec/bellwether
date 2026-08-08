@@ -3,10 +3,11 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the CI-integration work — the shipped GitHub Actions workflow,
-`bellwether changed-skills`, and `bellwether pr-comment` — on top of the worked demo (HTML
-report + `bellwether demo`). **Update it at the end of a session, not the start** — a status
-file that lags is worse than none, because it is trusted.
+Last updated at the end of the **recording-proxy-to-live-verdict** arc: the proxy is now wired into
+the executor as a dual-homed sidecar, a benign skill has reached **`ready` on a live labelled PR
+with egress observed**, and every run's evidence (per-run ARF traces + report) is uploaded from CI.
+**Update it at the end of a session, not the start** — a status file that lags is worse than none,
+because it is trusted.
 
 ---
 
@@ -29,20 +30,52 @@ file that lags is worse than none, because it is trusted.
 | Analysis orchestrator (trace → verdict → artifact tree) | **done** |
 | Sandbox execution driver (`RunExecutor`) | **done** |
 | ▶ First-light checkpoint — `benign-stable` end to end in a real sandbox | **reached** |
-| WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, **live interception** | **done** — the full done-when (inject-on-forward, block-on-deny, no credential in the artifact) runs in a real container topology on CI |
+| WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, live interception | **done** — the full done-when runs on CI |
+| **Recording proxy wired into the executor** — dual-homed sidecar per run, CA mounted, egress → Plane D of the trace | **done** (PR #42–#43); the config switch is `egress.image` |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
-| WP-16 — canaries: mint, decode-then-match, classify, redact | **done** |
+| WP-16 — canaries: mint, decode-then-match, classify, redact | **logic done** — not yet planted/scanned in a live run |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
-| Evaluation driver + run resolution + **`bellwether run` wiring** (`cli/{orchestrator,run_plan,run}`, `cli/app`) | **done** — assembly tested offline; a live-container CLI run is not yet CI-exercised |
-| WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **host core done** — the resolver sidecar + UDP/53 lockdown are CI-only |
-| HTML report (`report/html.py`) — a self-contained page written for every eval, a first slice of §17.4 | **done** |
-| Worked demo (`bellwether demo`) — three example skills → three reports through the real pipeline, offline | **done** |
-| PR-comment posting (`bellwether pr-comment`) — idempotent upsert of the report onto a PR, behind a transport seam | **done** |
-| Changed-skills detection (`bellwether changed-skills`) + the shipped GitHub Actions workflow | **done** — evaluates only skills a PR touched; live branch gated on the key secret |
-| **Live `bellwether run` on CI** — a real model evaluation, PR-triggered, posting the verdict | **proven** (PR #39) |
-| WP-17 – WP-20 — Phase B | not started |
+| Evaluation driver + run resolution + `bellwether run` wiring | **done** |
+| WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **host core done** — the resolver sidecar + executor wiring are the next brick |
+| HTML report, worked demo (`bellwether demo`), PR-comment posting, changed-skills detection + GitHub Action | **done** |
+| Evidence preserved from CI — per-run ARF traces + report uploaded as an artifact, report echoed to the log | **done** (PR #45) |
+| **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
+| WP-15 executor wiring · WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
 714 tests: 669 offline, 45 under the `docker` mark. All green.
+
+## What's next — remaining work, in recommended order
+
+Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. What
+remains is **breadth, not a missing spine**: the other evidence planes wired into the live path, the
+second harness, the coverage-honesty and calibration proofs, and the acceptance corpus. The order
+below reflects dependencies and reuses momentum from the proxy work — it is not the raw WP numbering,
+because the build deliberately inserted the executor-integration + live-proof work (unnumbered) that
+made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
+
+1. **Wire the DNS resolver into the executor (finish WP-15).** Mirrors the just-completed proxy
+   wiring — a second sidecar on the internal bridge — and closes the covert channel that routes
+   around the HTTP proxy. Highest-leverage next brick: the pattern is fresh and proven.
+2. **Plant + scan canaries in a live run (finish WP-16).** The minting/decoding/redaction logic
+   exists; this places canaries in the sandbox and scans observed egress **and** DNS labels for them.
+   Depends on 1 (DNS observed).
+3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
+   record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
+   metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is
+   wrong.
+4. **Plane precedence & coverage matrix (WP-18).** With several planes now observed, implement the
+   §10.7/10.8 precedence — `trace_inconsistency` only where two planes are both in-domain — and the
+   per-plane coverage/fidelity reasons. Done-when: a benign run at overlay-diff fidelity yields zero
+   spurious `trace_inconsistency`.
+5. **`claude-code` adapter (WP-17).** The second harness, so a skill is evaluated under the real CLI
+   and its hooks, cross-checked against the host sink. Largely independent — can move earlier if a
+   real-harness signal is wanted sooner; flagged late only because it is a big chunk with an
+   external-docs dependency.
+6. **Corpus & acceptance (WP-20).** The eleven §25 corpus skills with expected-verdict fixtures; CI
+   asserts each verdict. This is the v0.1 "done" line and depends on everything above.
+
+Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
+the DNS/canary work), and `openai_compatible` provider support (a follow-on to the live client).
 
 **The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
 `egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
@@ -100,9 +133,10 @@ The live evaluation is **opt-in per PR** — it runs only when a PR both changes
 carries the `bellwether-run` label, so nothing spends by surprise; the changed-skills detection
 alone never triggers a paid run. `examples/live/` holds the cheap config (api-loop + Haiku, one
 look of 6, egress advisory) and `bellwether run` takes a `--max-tokens` cost ceiling. The executor
-now wires the recording proxy (above); the remaining gap is proving the full interception live on
-CI — a real HTTPS request from inside the sandbox appearing in the trace — and building the CLI
-plumbing that constructs the proxy provider from config for a labeled live run (see "what to do
+wires the recording proxy, the CLI builds the provider from `egress.image`, and **a labelled live PR
+reached `ready` with the egress gate passing on observed evidence** (PR #45). The one thing still
+unproven live is *interception of real skill traffic* — the benign skill makes no egress, so an
+actual HTTPS request appearing in the trace waits on the live-canary/doctor-probe work (see "What's
 next").
 
 **There is now something to look at.** `bellwether demo` renders three example skills
@@ -119,11 +153,10 @@ through the sandbox executor, orchestrate the verdict, write the artifact tree, 
 and the `run` command loads config/policy/skill and calls it. The assembly is tested offline end to
 end with an injected scripted executor (`benign-stable` → `conditional`, the first-light shape),
 and the command's refusal paths (no skill, missing config, no daemon, unset key, placeholder model)
-exit 3 with a clear reason. What is *not* yet exercised is a real container run from the CLI against
-a live model — that reuses the proven `SandboxRunExecutor` (which now optionally stands a recording
-proxy up per run) but has not been run on CI end to end, and the declared scope is intentionally not
-applied until the CLI constructs the proxy provider from config so egress is captured (its
-auto-derived egress assertions are `not_evaluable` without the proxy).
+exit 3 with a clear reason. A **real container run from the CLI against a live model is now proven on
+CI** (PR #45: standup-summariser, 6× under Haiku, proxy observing egress, verdict `ready` posted).
+The declared scope is still intentionally not applied — its auto-derived egress/DNS assertions want
+the DNS plane observed too, which lands with the resolver-wiring brick.
 
 ### What WP-12 built
 
@@ -509,21 +542,17 @@ it cheap — `cli/changed.py`, `bellwether changed-skills`, and
 
 ## What to do next
 
-**`bellwether run` is now wired end to end** and tested offline (resolution → matrix → drive →
-orchestrate → verdict → artifact tree). The remaining work is to make it real on a container and to
-close the smaller gaps:
+This section keeps the **granular** run-path gaps; the top-of-file "What's next — recommended order"
+is the authoritative sequence, and the two agree. The live-container CLI run against a real model is
+**done** (PR #45 reached `ready`); what remains under it is polish and the other planes:
 
-1. **A live-container CLI run, on CI — now the one gating item for real PR integration.** The
-   report renders, the demo proves the pipeline, and `bellwether pr-comment` posts the result
-   (`docs/ci-integration.md` has the wiring); the one thing not yet exercised end to end on CI is a
-   real `bellwether run` against a live model — a container plus a real key, with the recording proxy
-   in the executor. It also needs: the **declared scope applied** once the executor captures egress
-   (its auto-derived egress assertions are `not_evaluable` without the proxy, which is why the driver
-   passes `scope=None` today); `RunLimits` derived from the profile rather than the defaults; and
-   **per-scenario fixtures** (the executor takes one fixture per run, so a skill whose scenarios need
-   different starting trees is not yet expressible). Wire the precondition check and weight validation
-   into `doctor`/`run`, the §21 enforced-settings refusal, and the FIFO sink writer at the same time —
-   see the table below.
+1. **Residual run-path gaps (now that the live run itself is proven).** The declared **scope is still
+   not applied** — its auto-derived egress/DNS assertions want the DNS plane observed, so it comes
+   online with the resolver-wiring brick; until then the driver passes `scope=None`. Also open:
+   `RunLimits` derived from the profile rather than the defaults; **per-scenario fixtures** (the
+   executor takes one fixture per run, so a skill whose scenarios need different starting trees is not
+   yet expressible); and wiring the precondition check, weight validation, the §21 enforced-settings
+   refusal, and the FIFO sink writer into `doctor`/`run` — see the table below.
 2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
    decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
@@ -642,6 +671,9 @@ Two working rules follow:
 
 ## Reference
 
+- `CLAUDE.md` — **orientation for an agent picking this up.** The cadence, the six checks, the
+  non-negotiable disciplines, and the environment gotchas, all in one page. Read it first if you are
+  an agent; it points back here for state.
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
