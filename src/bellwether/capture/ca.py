@@ -50,13 +50,15 @@ class CaMechanism:
 
 #: The complete §9.2 table. Node ignores the system store and reads a *bundled* CA list, so
 #: ``NODE_EXTRA_CA_CERTS`` is not optional; Python's ``requests``/``httpx`` follow ``certifi``
-#: via ``REQUESTS_CA_BUNDLE``/``SSL_CERT_FILE``; some curl builds read ``CURL_CA_BUNDLE``.
+#: via ``REQUESTS_CA_BUNDLE``/``SSL_CERT_FILE``; some curl builds read ``CURL_CA_BUNDLE``; and
+#: git over HTTPS reads ``GIT_SSL_CAINFO`` rather than the system store when it is set.
 CA_MECHANISMS: tuple[CaMechanism, ...] = (
     CaMechanism("store", "system store", "Go, curl (system build), most C clients"),
     CaMechanism("env", "NODE_EXTRA_CA_CERTS", "Node runtimes (bundled CA list, ignore the store)"),
     CaMechanism("env", "REQUESTS_CA_BUNDLE", "Python requests / httpx via certifi"),
     CaMechanism("env", "SSL_CERT_FILE", "Python ssl / certifi and others"),
     CaMechanism("env", "CURL_CA_BUNDLE", "curl builds that read it"),
+    CaMechanism("env", "GIT_SSL_CAINFO", "git over HTTPS"),
 )
 
 
@@ -93,5 +95,13 @@ def interception_confirmed(recorded_hosts: Iterable[str], probe_host: str) -> bo
     interception silently failed — the CA is not trusted, egress is invisible, and a run
     would produce zero-egress traces that read as a clean skill. Doctor MUST fail loudly on a
     ``False`` here rather than proceed.
+
+    Both sides are put through the same host normalisation (strip, lowercase, drop a trailing
+    dot) before comparison, so a probe reported as ``Example.Test`` still matches a recorded
+    ``example.test`` — a casing or FQDN-dot mismatch must never read as a failed interception.
     """
-    return probe_host in {host.strip().lower().rstrip(".") for host in recorded_hosts}
+
+    def _normalise(host: str) -> str:
+        return host.strip().lower().rstrip(".")
+
+    return _normalise(probe_host) in {_normalise(host) for host in recorded_hosts}

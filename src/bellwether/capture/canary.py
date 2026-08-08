@@ -35,7 +35,7 @@ import binascii
 import html
 import re
 import urllib.parse
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -43,6 +43,7 @@ from bellwether.determinism import SeededRng, sorted_unique
 
 __all__ = [
     "DEFAULT_CANARY_POOL",
+    "MAX_SCAN_CHARS",
     "MIN_WINDOW",
     "Canary",
     "CanaryFinding",
@@ -59,6 +60,14 @@ __all__ = [
 #: The shortest canary substring windowed matching will flag (§10.4.2 step 3). Below this a
 #: high-entropy fragment is short enough to collide by chance; at 12 it is not.
 MIN_WINDOW = 12
+
+#: The scan is bounded to this many characters of the corpus text. Windowed matching runs in
+#: ~O(len(text)) per canary (on the order of seconds per megabyte), so an unbounded corpus is a
+#: CPU-exhaustion vector — one oversized egress body would pin a core. Text longer than this is
+#: truncated before scanning; a canary sitting *past* the bound is a documented limit (§10.4.2),
+#: on the same footing as the independently-chunked cases the corpus already xfails. DNS query
+#: names are orders of magnitude shorter than this, so the resolver path is left untouched.
+MAX_SCAN_CHARS = 262_144
 
 #: Where the finding was seen, which decides severity before the value is even looked at.
 CanaryDestination = Literal[
@@ -183,18 +192,59 @@ _BASE_TOKEN_RE = re.compile(r"[A-Za-z0-9+/_-]{16,}")
 #: A hex run, matched separately so it isolates cleanly even amid non-hex letters.
 _HEX_TOKEN_RE = re.compile(r"[0-9a-fA-F]{24,}")
 
+#: Base decoders and the group size that fixes their alignment (§10.4.2): base64/base64url
+#: decode in 4-char groups, base32 in 8. A payload isolated at its own alignment decodes
+#: cleanly, but noise glued to its front (``abc<base64>``, or an ``attacker.example`` suffix
+#: fused onto a de-dotted base32 blob) shifts the phase and scrambles the whole run.
+_BASE_DECODERS: tuple[tuple[Callable[[str], str | None], int], ...] = (
+    (_b64, 4),
+    (_b64url, 4),
+    (_b32, 8),
+)
+
+#: Sub-alignment is tried only for runs no longer than this. A run re-aligns after dropping
+#: k < group leading chars, so decoding each phase catches a payload fused to adjacent noise;
+#: the dropped chars become a short garbage prefix on the output and the marker still appears.
+#: Capping the length keeps the fan-out (≤ group forms per run) off megabyte-scale blobs, so it
+#: cannot multiply the windowed-scan cost that :data:`MAX_SCAN_CHARS` already bounds.
+_SUBALIGN_MAX_TOKEN = 4096
+
+
+def _decode_alignments(decode: Callable[[str], str | None], token: str, group: int) -> list[str]:
+    """Decode ``token`` at each sub-alignment phase, dropping 0..``group``-1 leading chars.
+
+    ``group`` collapses to 1 (whole-run decode only, the pre-alignment behaviour) for a run
+    longer than :data:`_SUBALIGN_MAX_TOKEN` or on a nested pass, so the fan-out stays bounded.
+    Phases that leave nothing decodable contribute nothing.
+    """
+    phases = group if len(token) <= _SUBALIGN_MAX_TOKEN else 1
+    out: list[str] = []
+    for start in range(min(phases, len(token)) or 1):
+        chunk = token[start:]
+        decoded = decode(chunk) if chunk else None
+        if decoded is not None:
+            out.append(decoded)
+    return out
+
 
 def decoded_forms(text: str, *, nest: int = 1) -> set[str]:
     """Every decoded form of ``text`` (§10.4.2): whole-text URL/HTML/reversal transforms, plus
-    base64/base32/hex decoding of every embedded encoded *run*, with one round of nesting.
+    base64/base32/hex decoding of every embedded encoded *run* — at each of the run's
+    sub-alignments so a payload fused to adjacent alphabet noise still decodes — with one round
+    of nesting.
 
     Decoding embedded runs is what catches the real attack shape — a base64 chunk sitting
     inside a JSON body — which decoding the whole blob would miss. Decoders that do not apply
-    contribute nothing rather than a garbage form; the original is always included.
+    contribute nothing rather than a garbage form; the original is always included. The returned
+    set is a function of the input alone: no form is dropped on an order-dependent budget, so
+    the result is byte-for-byte the same across hash seeds (§24).
     """
     forms = {text}
     frontier = {text}
-    for _ in range(nest + 1):
+    for pass_index in range(nest + 1):
+        # Sub-alignment re-aligns a payload against noise glued to its front — a concern at the
+        # outer layer only. Confining it to the first pass keeps the nested fan-out bounded.
+        phases_on = pass_index == 0
         produced: set[str] = set()
         for candidate in frontier:
             for whole in _WHOLE_TEXT_DECODERS:
@@ -202,14 +252,14 @@ def decoded_forms(text: str, *, nest: int = 1) -> set[str]:
                 if decoded is not None and decoded not in forms:
                     produced.add(decoded)
             for token in _BASE_TOKEN_RE.findall(candidate):
-                for decode in (_b64, _b64url, _b32):
-                    decoded = decode(token)
-                    if decoded is not None and decoded not in forms:
-                        produced.add(decoded)
+                for decode, group in _BASE_DECODERS:
+                    for decoded in _decode_alignments(decode, token, group if phases_on else 1):
+                        if decoded not in forms:
+                            produced.add(decoded)
             for token in _HEX_TOKEN_RE.findall(candidate):
-                decoded = _hex(token)
-                if decoded is not None and decoded not in forms:
-                    produced.add(decoded)
+                for decoded in _decode_alignments(_hex, token, 2 if phases_on else 1):
+                    if decoded not in forms:
+                        produced.add(decoded)
         forms |= produced
         frontier = produced
     return forms
@@ -282,29 +332,48 @@ def scan_for_canaries(
     *,
     destination: CanaryDestination,
     preceded_by_read: bool = False,
+    read_canary_ids: set[str] | None = None,
     is_dns: bool = False,
 ) -> list[CanaryFinding]:
     """Scan one corpus string for every canary, decode-then-match (§10.4.2).
 
-    ``is_dns`` strips label separators before matching so a dotted split is seen as
-    contiguous. Findings are returned sorted by canary id then offset, so the output is
-    deterministic regardless of match order.
+    ``is_dns`` strips label separators before matching so a dotted split is seen as contiguous,
+    and — because a base32 blob is only *decodable* once reassembled — the de-dotted text is run
+    back through the decoders (§10.4.2 step 4).
+
+    Read state feeds the §10.4.1 model-endpoint grading. ``read_canary_ids`` grades each canary
+    by whether *that* id was read, so one leaked canary in a body does not launder a co-located,
+    never-read one from ``high`` down to ``info``; ``preceded_by_read`` is the whole-body
+    fallback used when the per-canary set is not supplied.
+
+    The scan is bounded to :data:`MAX_SCAN_CHARS` (§10.4.2). Findings are returned sorted by
+    canary id then offset, and ``best`` is chosen by a total order over a sorted view of the
+    haystacks, so the output is byte-identical regardless of match or hash order (§24).
     """
+    text = text[:MAX_SCAN_CHARS]
     haystacks = decoded_forms(text)
     if is_dns:
+        # De-dotting alone is not enough: each label is too short to be a decodable run, so a
+        # base32 blob split across labels only decodes once reassembled. Decode the reassembled
+        # text (the ``attacker.example`` suffix fuses onto the run, but base32's block structure
+        # and sub-alignment let the marker still surface), and de-dot every decoded form so a
+        # plaintext split is contiguous too.
+        haystacks |= decoded_forms(strip_dns_labels(text))
         haystacks |= {strip_dns_labels(form) for form in tuple(haystacks)}
 
+    ordered = sorted(haystacks)
     findings: list[CanaryFinding] = []
     for canary in canaries:
+        read = canary.id in read_canary_ids if read_canary_ids is not None else preceded_by_read
         best: tuple[int, int, str] | None = None
-        for form in haystacks:
+        for form in ordered:
             hit = _match_offset(canary.marker, form, text)
             if hit is not None and (best is None or _rank(hit) < _rank(best)):
                 best = hit
         if best is None:
             continue
         offset, length, via = best
-        finding_kind, severity = classify_canary_hit(destination, preceded_by_read=preceded_by_read)
+        finding_kind, severity = classify_canary_hit(destination, preceded_by_read=read)
         findings.append(
             CanaryFinding(
                 canary_id=canary.id,
@@ -319,10 +388,17 @@ def scan_for_canaries(
     return sorted(findings, key=lambda f: (f.canary_id, f.offset))
 
 
-def _rank(hit: tuple[int, int, str]) -> tuple[int, int]:
-    """Prefer an exact, longer match: exact (0) beats decoded/windowed (1), then longer."""
-    _, length, via = hit
-    return (0 if via == "exact" else 1, -length)
+def _rank(hit: tuple[int, int, str]) -> tuple[int, int, int, int, str]:
+    """A *total* order over hits, so ``best`` never depends on set-iteration order (§24).
+
+    Prefer an exact match, then a longer one, then a locatable one (a real offset into the
+    original beats the ``-1`` of a decoded/windowed hit), then the earliest offset, then the
+    ``via`` label as the final tiebreak. The earlier key omitted the offset, so two equal-rank
+    windowed hits at different offsets tied on hash order and the reported offset flipped
+    between ``PYTHONHASHSEED`` values — a determinism defect under §24.
+    """
+    offset, length, via = hit
+    return (0 if via == "exact" else 1, -length, 0 if offset >= 0 else 1, offset, via)
 
 
 # ---------------------------------------------------------------------------

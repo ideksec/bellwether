@@ -84,6 +84,45 @@ def spine_with_two_calls() -> list[Action]:
     ]
 
 
+def three_call_spine(t2_start: float) -> list[Action]:
+    """A three-tool-call Plane A stream whose middle call opens at ``t2_start``.
+
+    seq order — the causal order — is fixed; only the middle call's timestamp varies, so
+    a caller can skew it *before* the first call to present the same causal spine with a
+    non-monotonic clock (clock skew, or genuinely parallel calls). Each call is 2s wide.
+    """
+    return [
+        action(0, 0, "harness", "skill_offered", {"skill": "s"}),
+        action(2, 10, "harness", "tool_call", {"tool": "read", "tool_call_id": "c1", "input": {}}),
+        action(
+            3,
+            12,
+            "harness",
+            "tool_result",
+            {"tool": "read", "tool_call_id": "c1", "duration_ms": 2000},
+        ),
+        action(
+            4, t2_start, "harness", "tool_call", {"tool": "read", "tool_call_id": "c2", "input": {}}
+        ),
+        action(
+            5,
+            t2_start + 2,
+            "harness",
+            "tool_result",
+            {"tool": "read", "tool_call_id": "c2", "duration_ms": 2000},
+        ),
+        action(6, 30, "harness", "tool_call", {"tool": "read", "tool_call_id": "c3", "input": {}}),
+        action(
+            7,
+            32,
+            "harness",
+            "tool_result",
+            {"tool": "read", "tool_call_id": "c3", "duration_ms": 2000},
+        ),
+        action(8, 40, "harness", "final_output", {"text": "done"}),
+    ]
+
+
 def fs_event(seq: int, seconds: float, path: str, zone: str = "workspace", **extra: Any) -> Action:
     payload = {
         "path": path,
@@ -226,6 +265,26 @@ def test_jittering_non_spine_timestamps_by_2s_leaves_the_sequence_unchanged() ->
                 )
             )
         assert order_of(jittered) == reference
+
+
+def test_non_monotonic_spine_timestamps_do_not_change_epoch_assignment() -> None:
+    """BW-26: epoch boundaries follow the spine's causal (seq) order, not its clock.
+
+    A skewed spine — here the middle tool call timestamped *before* the first, which makes
+    the raw ``window_starts`` non-monotonic and would misfeed ``bisect`` — must not move a
+    non-spine event to a different epoch. The existing done-when only jitters non-spine
+    events; this jitters the spine itself. Without the monotonic clamp the early event is
+    swallowed by the skewed-early middle window instead of landing in epoch 0.
+    """
+    early = fs_event(100, 9, "/work/a7f3c1/early.txt")  # ts=9: before every call, epoch 0
+
+    monotonic = order_of([*three_call_spine(20), early])  # middle call at t=20 (sorted)
+    skewed = order_of([*three_call_spine(8), early])  # middle call at t=8 (non-monotonic)
+
+    assert skewed == monotonic
+    # Causally correct: the event sits before the first tool call (seq 2), not captured
+    # by the middle call (seq 4) whose clock happens to read early.
+    assert monotonic.index(100) < monotonic.index(2)
 
 
 def test_canonical_traces_are_equal_across_shuffles_and_machines() -> None:
@@ -463,6 +522,64 @@ def test_step_signatures_use_tier_1_not_the_exact_target() -> None:
 
     assert run("src/a.py") == run("src/b.py")
     assert run("src/a.py")[0] == ("tool_call", "read", "workspace_read")
+
+
+def test_filesystem_events_stay_out_of_the_step_sequence_but_remain_capabilities() -> None:
+    """BW-05: Plane B is not in ``traj_planes`` (§11.6), so its post-run write set must
+    not enter the step sequence — while the writes still count as capabilities."""
+    events = [
+        action(
+            0,
+            0,
+            "harness",
+            "tool_call",
+            {"tool": "write", "tool_call_id": "t", "input": {"path": "report.md"}},
+        ),
+        action(
+            1,
+            1,
+            "harness",
+            "tool_result",
+            {"tool": "write", "tool_call_id": "t", "duration_ms": 1000},
+        ),
+        fs_event(100, 0.5, "/work/a7f3c1/report.md"),
+        fs_event(101, 0.6, "/work/a7f3c1/extra.md"),
+    ]
+    canonical = canonicalize(events, CTX)
+
+    # No file_write / file_delete step leaked into the trajectory...
+    assert all(step[0] not in ("file_write", "file_delete") for step in canonical.step_sequence)
+    assert ("tool_call", "write", "workspace_write") in canonical.step_sequence
+    # ...but the workspace writes are still capabilities (caps accumulation unchanged).
+    assert "workspace_write" in canonical.caps_t1
+
+
+def test_filesystem_write_count_does_not_perturb_the_step_sequence() -> None:
+    """BW-05: two runs identical in Plane-A behaviour but differing in how many output
+    files they wrote must produce the same step sequence — otherwise the file count reads
+    as trajectory variance and corrupts the differentiating metric (§11.6)."""
+
+    def run(n_writes: int) -> tuple[Any, ...]:
+        events: list[Action] = [
+            action(
+                0,
+                0,
+                "harness",
+                "tool_call",
+                {"tool": "write", "tool_call_id": "t", "input": {"path": "out.md"}},
+            ),
+            action(
+                1,
+                1,
+                "harness",
+                "tool_result",
+                {"tool": "write", "tool_call_id": "t", "duration_ms": 1000},
+            ),
+        ]
+        events += [fs_event(100 + i, 0.5, f"/work/a7f3c1/out{i}.md") for i in range(n_writes)]
+        return canonicalize(events, CTX).step_sequence
+
+    assert run(1) == run(5)
 
 
 def test_capability_sets_are_sorted_and_tiered() -> None:

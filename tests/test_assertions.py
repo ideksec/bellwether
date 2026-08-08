@@ -239,6 +239,27 @@ def test_read_presence_passes_but_read_absence_is_not_evaluable(index: EvidenceI
     assert reported.status == "fail"  # a reported read is enough to refute the claim
 
 
+def test_dotdot_traversal_read_is_caught_by_deny_read() -> None:
+    """BW-04: `sub/../.env` reaches ${WORKSPACE}/.env. The reported read must carry the
+    reached path, so file_not_read (as derived from a `deny_read` glob) refutes on it,
+    instead of the raw `${WORKSPACE}/sub/../.env` slipping past the exact glob."""
+    idx = index_of(make_trace([tool_call(1, "read", path="sub/../.env")]))
+    result = evaluate(spec("file_not_read", "${WORKSPACE}/.env"), idx)
+    assert result.status == "fail", result.reason
+    assert result.evidence == (1,)
+
+
+def test_dotdot_traversal_escape_is_not_counted_inside_the_workspace() -> None:
+    """BW-04: a `../../etc/shadow` escape must record the reached `/etc/shadow`, so a
+    `${WORKSPACE}/**` read scope flags it as exceeded rather than swallowing it as an
+    in-scope workspace access — the disagreement `capability_for` never had."""
+    scope = make_scope(filesystem={"read": ["${WORKSPACE}/**"], "write": [], "deny_read": []})
+    idx = index_of(make_trace([tool_call(1, "read", path="../../etc/shadow")]))
+    table = evaluate_scope(scope, idx)
+    exceeded = [e for e in table.exceeded() if e.area == "filesystem.read"]
+    assert [e.subject for e in exceeded] == ["/etc/shadow"]
+
+
 def test_content_match_requires_the_retained_workspace(tmp_path: Path) -> None:
     trace = make_trace(session_actions())
     without = evaluate(
@@ -315,6 +336,56 @@ def test_a_degraded_write_plane_blocks_write_assertions() -> None:
         result = evaluate(spec(name, params), degraded)
         assert result.status == "not_evaluable", name
         assert "no overlay mounted" in result.reason
+
+
+def test_a_partial_write_plane_blocks_absence_but_not_presence() -> None:
+    """BW-06: a `partial` write plane observed only part of its domain, so a zone it never
+    watched could hide the very write an absence assertion denies (§10.8). Absence must
+    read not_evaluable; presence — a write it *did* see — still stands."""
+    coverage = Coverage(
+        harness_events=PlaneCoverage(fidelity="full"),
+        filesystem_writes=PlaneCoverage(
+            fidelity="partial", reason="overlay upper dir partially lost"
+        ),
+    )
+    degraded = index_of(make_trace(session_actions(), coverage=coverage))
+    for name, params in [
+        ("no_harness_state_write", None),
+        ("no_write_outside", ["report.md"]),
+        ("workspace_unchanged", None),
+        ("file_not_written", "report.md"),
+    ]:
+        result = evaluate(spec(name, params), degraded)
+        assert result.status == "not_evaluable", name
+        assert "overlay upper dir partially lost" in result.reason, name
+    # Presence is still evidence on a partial plane: the write it observed is real.
+    assert evaluate(spec("file_written", {"path_glob": "report.md"}), degraded).status == "pass"
+
+
+def test_plane_a_absence_assertions_need_harness_coverage() -> None:
+    """BW-06: `tool_not_called`, a false `skill_activated`, and a missing
+    `other_skill_activated` are Plane-A absence claims. A `partial` harness stream could
+    have dropped the very event they deny, so each returns not_evaluable with the coverage
+    reason — while Plane-A *presence* still passes on the same partial stream."""
+    coverage = Coverage(
+        harness_events=PlaneCoverage(fidelity="partial", reason="hook stream truncated"),
+        filesystem_writes=PlaneCoverage(fidelity="overlay_diff"),
+    )
+    # No skill_activated event and no `fetch` call in this trace.
+    absent = index_of(make_trace([tool_call(1, "read", path="x.py")], coverage=coverage))
+    for absence in (
+        spec("tool_not_called", "fetch"),
+        spec("skill_activated", False),
+        spec("other_skill_activated", "some-other-skill"),
+    ):
+        result = evaluate(absence, absent)
+        assert result.status == "not_evaluable", absence.name
+        assert "hook stream truncated" in result.reason, absence.name
+
+    # Presence stands on the partial stream: what it did observe is real.
+    present = index_of(make_trace(session_actions(), coverage=coverage))
+    assert evaluate(spec("skill_activated", True), present).status == "pass"
+    assert evaluate(spec("tool_called", {"name": "read", "min": 1}), present).status == "pass"
 
 
 def test_record_only_never_fails_the_run(index: EvidenceIndex) -> None:

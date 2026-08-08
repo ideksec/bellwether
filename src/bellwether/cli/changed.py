@@ -16,6 +16,7 @@ skill was deleted — is not returned, because there is nothing left to evaluate
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
@@ -33,7 +34,15 @@ def skill_dir_for(rel_path: str, *, root: Path) -> PurePosixPath | None:
     normalized = rel_path.strip().replace("\\", "/")
     if not normalized:
         return None
-    path = PurePosixPath(normalized)
+    # A changed path must name a file *inside* the checkout. An absolute path, or one that
+    # climbs out of ``root`` with ``..``, would make ``root / parent`` resolve outside the
+    # repository — where it could be attributed to a ``SKILL.md`` that is not part of the
+    # evaluated skill at all. Reject it before the on-disk probe. (An internal ``..`` that
+    # stays within ``root`` is collapsed and kept; git diff paths never carry one anyway.)
+    collapsed = posixpath.normpath(normalized)
+    if posixpath.isabs(collapsed) or collapsed == ".." or collapsed.startswith("../"):
+        return None
+    path = PurePosixPath(collapsed)
     for parent in (path.parent, *path.parent.parents):
         if (root / parent / "SKILL.md").is_file():
             return parent

@@ -88,13 +88,18 @@ def outcome_consistency(p_hat: float) -> float:
 
 
 def summarise_outcomes(
-    outcomes: Sequence[RunOutcome], *, n_planned: int | None = None
+    outcomes: Sequence[RunOutcome],
+    *,
+    n_planned: int | None = None,
+    pocock_z: float | None = None,
 ) -> OutcomeStability:
     """Aggregate one repetition set's run outcomes into the §13.3 figures.
 
     ``n_planned`` defaults to ``len(outcomes)`` — the runs actually executed — but the
     caller passes the design's planned count where a slot was dropped after exhausting
-    its retries (§13.2), so ``n_errored`` reflects the drop.
+    its retries (§13.2), so ``n_errored`` reflects the drop. ``pocock_z`` is the configured
+    ``profile.matrix.boundary_z`` for the ``pocock_interval``; it defaults to the three-look
+    constant so a non-default look schedule is not scored with the wrong correction.
     """
     passes = sum(1 for o in outcomes if o == "pass")
     fails = sum(1 for o in outcomes if o == "fail")
@@ -126,12 +131,12 @@ def summarise_outcomes(
     from bellwether.constants import POCOCK_BOUNDARY_Z
 
     p_hat = passes / n_evaluable
-    pocock_z = POCOCK_BOUNDARY_Z[3]
+    z = pocock_z if pocock_z is not None else POCOCK_BOUNDARY_Z[3]
     return OutcomeStability(
         denominators=denominators,
         pass_rate=round6(p_hat),
         nominal_interval=wilson_interval(passes, n_evaluable, z=NOMINAL_Z),
-        pocock_interval=wilson_interval(passes, n_evaluable, z=pocock_z),
+        pocock_interval=wilson_interval(passes, n_evaluable, z=z),
         outcome_consistency=outcome_consistency(p_hat),
         flake=0 < p_hat < 1,
         consistently_failing=p_hat < 0.5,

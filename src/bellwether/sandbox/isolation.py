@@ -99,6 +99,13 @@ class IsolationProfile:
             )
         if self.uid == 0:
             problems.append("the container ran as root")
+        if self.seccomp != "default":
+            # `unconfined` removes the syscall filter entirely; any other named profile is
+            # still a departure from the §9.2 baseline a report must state plainly.
+            detail = (
+                ", which removes syscall filtering entirely" if self.seccomp == "unconfined" else ""
+            )
+            problems.append(f"seccomp was set to a non-default profile: {self.seccomp}{detail}")
         return problems
 
     def docker_flags(self) -> list[str]:

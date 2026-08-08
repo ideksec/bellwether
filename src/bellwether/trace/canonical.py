@@ -45,6 +45,30 @@ __all__ = [
 #: tier are None where the event has neither (a model turn, a final output).
 StepSignature = tuple[str, str | None, str | None]
 
+#: §11.2 assigns each ARF plane a trajectory-plane letter; §11.6's ``canon.traj_planes``
+#: lists which letters contribute *ordering*. A plane whose letter is absent from that
+#: list is still observed for its **capabilities** but kept out of the step sequence.
+#: The standing case is filesystem (B): at overlay-diff fidelity Plane B records a
+#: post-run *set* with no genuine ordering (§10.2, build.py), so admitting its events to
+#: the sequence injects spurious trajectory variance — two runs identical in Plane-A
+#: behaviour but differing in how many output files they wrote would score as
+#: sequence-unstable, corrupting the differentiating metric. ``proxy_inferred`` and
+#: ``normalizer`` carry no letter at all (§11.2) and never contribute ordering.
+_PLANE_TRAJ_LETTER: dict[str, str] = {
+    "harness": "A",
+    "filesystem": "B",
+    "credentials": "C",
+    "egress": "D",
+    "dns": "E",
+    "process": "D′",  # D-prime, U+2032 — matches the spec's spelling (§10.3, §11.2)
+}
+
+
+def _in_trajectory(action: Action, trajectory_planes: frozenset[str]) -> bool:
+    """Whether this action contributes a step to the trajectory (§11.6)."""
+    letter = _PLANE_TRAJ_LETTER.get(action.plane)
+    return letter is not None and letter in trajectory_planes
+
 
 @dataclass(frozen=True)
 class NormalizationContext:
@@ -115,6 +139,9 @@ def canonicalize(
     ordering is content-based (§11.5), the capability sets are sorted, and nothing
     run-local survives normalization.
     """
+    effective_canon = canon or CanonBlock()
+    trajectory_planes = frozenset(effective_canon.traj_planes)
+
     ordered = anchor_events(list(actions), normalized_target=lambda a: _target(a, context))
 
     steps: list[StepSignature] = []
@@ -124,8 +151,12 @@ def canonicalize(
 
     for action in ordered:
         capability = capability_for(action, context)
-        tool = action.action.get("tool")
-        steps.append((action.kind, tool if isinstance(tool, str) else None, _t1(capability)))
+        if _in_trajectory(action, trajectory_planes):
+            # The step sequence is *how* the skill worked, over the planes §11.6 admits.
+            # A plane observed only for its capabilities (filesystem at overlay-diff) is
+            # excluded here but still feeds the capability sets below.
+            tool = action.action.get("tool")
+            steps.append((action.kind, tool if isinstance(tool, str) else None, _t1(capability)))
 
         if capability is None:
             continue
@@ -153,7 +184,7 @@ def canonicalize(
         caps_t2=tuple(sorted(t2)),
         caps_t3=tuple(sorted(t3)),
         sensitive_hits=hits,
-        canon=canon or CanonBlock(),
+        canon=effective_canon,
     )
 
 

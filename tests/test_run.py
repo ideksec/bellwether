@@ -246,6 +246,71 @@ def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON):  # ty
 # ---------------------------------------------------------------------------
 
 
+def _weakened_config() -> Config:
+    """`_config()` with a §21-enforced setting turned off (model-API body scanning)."""
+    cfg = _config()
+    return cfg.model_copy(
+        update={"egress": cfg.egress.model_copy(update={"scan_model_api_bodies": False})}
+    )
+
+
+def _policy_with_target_in(profile_name: str) -> Policy:
+    """The shipped policy with the run target injected into ``profile_name`` (which `_policy`
+    only wires into 'low'), so a non-low profile can actually resolve a target."""
+    pol = _policy()
+    with_target = pol.profile("low")  # already carries the injected target + warn dispositions
+    return pol.model_copy(update={"profiles": {**pol.profiles, profile_name: with_target}})
+
+
+def test_run_refuses_a_disabled_enforced_setting_above_low(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    # BW-02 / §21: with model-API body scanning off, a run above the 'low' profile must be
+    # refused before it spends — the guarantee the threat model advertises but `run` lacked.
+    from bellwether.errors import BellwetherError
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    with pytest.raises(BellwetherError, match="enforced setting"):
+        run_evaluation(
+            config=_weakened_config(),
+            policy=_policy_with_target_in("medium"),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id="firstlight",
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            profile_override="medium",
+        )
+
+
+def test_run_allows_a_disabled_enforced_setting_at_low(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    # §21 emits a finding at 'low' but does NOT refuse — the low profile is the escape hatch.
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    result = run_evaluation(
+        config=_weakened_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="firstlight",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        profile_override="low",
+    )
+    assert result.verdict.verdict in {"ready", "conditional", "not_ready"}
+
+
 def test_run_evaluation_produces_a_verdict_and_an_artifact_tree(
     package: SkillPackage, tmp_path: Path
 ) -> None:

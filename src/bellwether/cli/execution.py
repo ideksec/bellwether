@@ -33,7 +33,8 @@ from bellwether.capture import (
 )
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
-from bellwether.determinism import SeededRng
+from bellwether.config.models.config import SandboxConfig, ZoneConfig
+from bellwether.determinism import SeededRng, stable_hash
 from bellwether.harness import (
     ApiLoopAdapter,
     ModelClient,
@@ -43,7 +44,7 @@ from bellwether.harness import (
     SandboxToolset,
 )
 from bellwether.harness.tools import docker_exec_runner
-from bellwether.sandbox import DockerBackend, prepare_sandbox
+from bellwether.sandbox import DockerBackend, IsolationProfile, ZoneMap, prepare_sandbox
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
     NormalizationContext,
@@ -62,7 +63,12 @@ from bellwether.trace import (
     write_trace,
 )
 
-__all__ = ["SandboxRunExecutor", "offered_skill"]
+__all__ = [
+    "SandboxRunExecutor",
+    "isolation_from_config",
+    "offered_skill",
+    "zone_map_from_config",
+]
 
 #: A model client and the model id to request, for one matrix target. The client is what
 #: the ``api-loop`` adapter drives; the id travels into the trace's ``model_id_requested``
@@ -84,6 +90,43 @@ def offered_skill(package: SkillPackage) -> OfferedSkill:
         description=description or "",
         body=package.parsed.body,
     )
+
+
+def isolation_from_config(sandbox: SandboxConfig) -> IsolationProfile:
+    """Map ``sandbox.*`` config (§21) onto the isolation profile the backend renders (§9.2).
+
+    The mapping lives in the ``cli`` layer, not on ``SandboxConfig``, because the module
+    layering forbids ``config`` from importing ``sandbox`` — a config that constructed an
+    ``IsolationProfile`` would reach *up* the stack. Only the resource and writable-path
+    knobs a user actually configures are carried; the hardening fields (``cap_drop``,
+    ``no_new_privileges``, ``uid``, seccomp) stay at the §9.2 baseline and are not
+    user-overridable here.
+    """
+    return IsolationProfile(
+        memory=sandbox.memory,
+        cpus=sandbox.cpus,
+        pids_limit=sandbox.pids_limit,
+        timeout_seconds=sandbox.timeout_seconds,
+        writable_paths=tuple(sandbox.writable_paths),
+    )
+
+
+def zone_map_from_config(zones: ZoneConfig) -> ZoneMap:
+    """Map ``capture.zones`` config (§21) onto the zone map the sandbox mounts by (§10.2)."""
+    return ZoneMap.from_config(
+        workspace=zones.workspace,
+        harness_state=zones.harness_state,
+        scratch=zones.scratch,
+    )
+
+
+def _seed_from_eval_id(eval_id: str) -> int:
+    """A stable, non-negative base seed derived from the evaluation id (§3.5, §24).
+
+    Sixteen hex digits — 64 bits — is ample to separate evaluations, and the derivation is
+    ``stable_hash`` so it does not depend on the process-salted builtin ``hash`` (§24).
+    """
+    return int(stable_hash(eval_id).removeprefix("sha256:")[:16], 16)
 
 
 def _proxy_run_id(eval_id: str, plan: RunPlan) -> str:
@@ -146,6 +189,17 @@ class SandboxRunExecutor:
     rng_seed: int = 0
     limits: RunLimits = field(default_factory=RunLimits)
     proxy: SidecarProxyProvider | None = None
+    #: The isolation profile every container in this evaluation runs under (§9.2). Defaults
+    #: to the §9.2 baseline; the lead derives it from config via :func:`isolation_from_config`
+    #: and passes it in from ``run.py`` so ``sandbox.memory``/``timeout_seconds``/… take effect
+    #: rather than being silently ignored.
+    isolation: IsolationProfile = field(default_factory=IsolationProfile)
+    #: Where each captured zone is mounted (§10.2). Derived from config via
+    #: :func:`zone_map_from_config`; the default matches the shipped ``capture.zones``.
+    zones: ZoneMap = field(default_factory=ZoneMap)
+    #: Whether sandbox identifiers are randomised (§3.5). Recorded in the trace either way, so
+    #: a run with findable identifiers reads as a deliberate choice, not concealment.
+    randomize_identifiers: bool = True
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
@@ -154,15 +208,22 @@ class SandboxRunExecutor:
         run_dir = (
             self.run_root / plan.scenario.id / plan.target.slug / str(plan.repetition)
         ).resolve()
-        rng = SeededRng(self.rng_seed, f"{plan.scenario.id}/{plan.target.slug}/{plan.repetition}")
-        prepared = prepare_sandbox(self.package, self.fixture, run_dir, rng=rng)
+        prepared = prepare_sandbox(
+            self.package,
+            self.fixture,
+            run_dir,
+            rng=self._sandbox_rng(plan),
+            zones=self.zones,
+            isolation=self.isolation,
+            randomize_identifiers=self.randomize_identifiers,
+        )
 
         # Stand the recording proxy up first, before the sandbox that routes through it. A failure
         # here must not leave a mounted overlay behind, so it happens before mount; the proxy owns
         # its own cleanup on a failed open (no network or container leaks).
         run_proxy = self._open_proxy(plan, run_dir)
         network = run_proxy.sandbox_network() if run_proxy is not None else "none"
-        extra_env = run_proxy.sandbox_env() if run_proxy is not None else None
+        extra_env = self._extra_env(plan, run_proxy)
         extra_ro_binds = run_proxy.sandbox_ro_binds() if run_proxy is not None else None
 
         try:
@@ -254,6 +315,36 @@ class SandboxRunExecutor:
 
         context = NormalizationContext(workspace_root=str(prepared.identifiers.workspace_root))
         return ExecutedRun(trace=trace, context=context, trace_jsonl=jsonl)
+
+    def _sandbox_rng(self, plan: RunPlan) -> SeededRng:
+        """The per-run RNG stream — distinct per evaluation *and* per matrix coordinate (§3.5).
+
+        ``eval_id`` is mixed into both the base seed and the stream label. Without it, a fixed
+        ``rng_seed`` (its default is 0) draws the *same* hostname and container name for the same
+        ``(scenario, target, repetition)`` in every evaluation: identical names collide the moment
+        two evaluations run concurrently, and a container whose name is reproducible across
+        evaluations is itself the §3.5 environment tell randomisation exists to remove. Mixing
+        ``eval_id`` keeps reproducibility where it belongs — the same ``(eval_id, rng_seed,
+        coordinate)`` still yields the same stream — while separating one evaluation from the next.
+        """
+        coordinate = f"{plan.scenario.id}/{plan.target.slug}/{plan.repetition}"
+        seed = self.rng_seed ^ _seed_from_eval_id(self.eval_id)
+        return SeededRng(seed, f"{self.eval_id}/{coordinate}")
+
+    def _extra_env(self, plan: RunPlan, run_proxy: RunProxy | None) -> dict[str, str]:
+        """Environment delivered into the container: the scenario's own env, then the proxy's.
+
+        A scenario's ``env`` values may be canaries (§7.2), so they have to actually reach the
+        container rather than being dropped on the floor — this is the only delivery path for
+        them. The proxy's wiring (``HTTPS_PROXY`` and the CA-trust vars) is merged last so a
+        scenario cannot, by accident or design, unset the very channel egress is observed
+        through. Both then merge last-wins over the sandbox's pinned base env inside
+        ``build_argv``.
+        """
+        env: dict[str, str] = dict(plan.scenario.env)
+        if run_proxy is not None:
+            env.update(run_proxy.sandbox_env())
+        return env
 
     def _open_proxy(self, plan: RunPlan, run_dir: Path) -> RunProxy | None:
         """Stand the recording proxy up for one run, or ``None`` when no proxy is configured.

@@ -68,6 +68,16 @@ def test_injection_handles_x_api_key() -> None:
     assert injected["x-api-key"] == _REAL_KEY
 
 
+def test_injection_handles_x_goog_api_key() -> None:
+    """BW-32: a provider that authenticates with ``x-goog-api-key`` (Google) must have its scoped
+    token swapped for the real key too — an Anthropic/OpenAI-only auth-header set would forward
+    the container's token to that provider on the wire."""
+    injected = strip_and_inject(
+        {"x-goog-api-key": "bw-sbx-TOKEN"}, sandbox_token="bw-sbx-TOKEN", real_key=_REAL_KEY
+    )
+    assert injected["x-goog-api-key"] == _REAL_KEY
+
+
 def test_injection_leaves_a_foreign_token_untouched() -> None:
     """The proxy injects only for the token it minted — a skill that ships its own key does
     not get it swapped for Bellwether's."""

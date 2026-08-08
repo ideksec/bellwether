@@ -88,3 +88,24 @@ def test_blank_and_whitespace_paths_are_ignored(tmp_path: Path) -> None:
     assert changed_skills(["", "   ", "skills/alpha/SKILL.md"], root=tmp_path) == [
         PurePosixPath("skills/alpha")
     ]
+
+
+def test_a_path_that_escapes_the_repo_root_is_ignored(tmp_path: Path) -> None:
+    """BW-34: a '../'-prefixed or absolute changed path must never be attributed to a SKILL.md
+    outside the checkout. Such a path names no file in the evaluated repo, so it is no skill —
+    and probing outside root could hand back a directory that is not part of the run at all."""
+    root = tmp_path / "repo"
+    _make_skill(root, "skills/alpha")
+    # A SKILL.md sitting OUTSIDE the repo root, reachable only by climbing out with '..' or by
+    # an absolute path — exactly what the guard must refuse to attribute.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text("---\nname: s\ndescription: d\n---\n", encoding="utf-8")
+
+    # Only the in-repo skill comes back; the escaping path contributes nothing.
+    assert changed_skills(["../outside/evil.py", "skills/alpha/SKILL.md"], root=root) == [
+        PurePosixPath("skills/alpha")
+    ]
+    # And directly: neither a relative escape nor an absolute path names a skill dir.
+    assert skill_dir_for("../outside/evil.py", root=root) is None
+    assert skill_dir_for(str(outside / "evil.py"), root=root) is None

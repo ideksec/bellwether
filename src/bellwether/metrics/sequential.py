@@ -84,15 +84,20 @@ def decide_at_look(
     is_final_look: bool,
     tier1_agreement: bool,
     all_not_evaluable: bool = False,
+    boundary_z: float | None = None,
 ) -> LookDecision:
     """Resolve the gate at one look (§13.1's decision table).
 
-    The interval is the Wilson score interval at the Pocock z for three looks. The
-    capability-agreement rule can only *hold a pass open*, never turn a fail into a
-    continue: a resolved fail is a fail regardless of capability stability, and a set
-    that cannot even produce evidence (``all_not_evaluable``) is never escalated.
+    The interval is the Wilson score interval at the Pocock-corrected ``boundary_z`` for
+    the configured look schedule — the caller passes ``profile.matrix.boundary_z`` so a
+    non-default schedule is not silently scored with the three-look constant (which would
+    under-correct a finer schedule). Defaults to the three-look constant when unspecified.
+    The capability-agreement rule can only *hold a pass open*, never turn a fail into a
+    continue: a resolved fail is a fail regardless of capability stability, and a set that
+    cannot even produce evidence (``all_not_evaluable``) is never escalated.
     """
-    interval = wilson_interval(passes, n_evaluable, z=POCOCK_BOUNDARY_Z[3])
+    z = boundary_z if boundary_z is not None else POCOCK_BOUNDARY_Z[3]
+    interval = wilson_interval(passes, n_evaluable, z=z)
     lower, upper = interval.lower, interval.upper
 
     if upper < threshold:

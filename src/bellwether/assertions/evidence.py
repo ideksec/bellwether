@@ -14,11 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bellwether.sandbox import normalize_container_path
 from bellwether.trace import (
     Action,
     Coverage,
     ExitReason,
     NormalizationContext,
+    PlaneCoverage,
     Trace,
 )
 
@@ -125,14 +127,27 @@ class EvidenceIndex:
     def workspace_writes(self) -> list[WriteEvidence]:
         return [write for write in self.writes if write.zone == "workspace" and not write.deleted]
 
-    def plane_reason(self, plane: str) -> str | None:
-        """The §10.7 reason an assertion cannot run, or None where the plane is usable."""
+    def plane_reason(self, plane: str, *, for_absence: bool = False) -> str | None:
+        """The §10.7 reason an assertion cannot run, or None where the plane is usable.
+
+        ``for_absence`` applies §10.8's stricter test. A ``partial`` plane is usable for a
+        presence claim but not for an absence one: it observed only part of its domain and
+        so cannot witness that something never happened. Presence assertions leave
+        ``for_absence`` at its default; absence assertions set it, and a partial plane
+        then reads as ``not_evaluable`` with its coverage reason rather than silently
+        passing the absence claim.
+        """
         unavailable = self.coverage.unavailable()
         if plane in unavailable:
             return unavailable[plane]
-        status = getattr(self.coverage, plane, None)
+        status: PlaneCoverage | None = getattr(self.coverage, plane, None)
         if status is None:
             return f"the {plane} plane recorded no coverage for this run"
+        if for_absence and not status.is_usable_for_absence():
+            return status.reason or (
+                f"{plane} coverage is {status.fidelity}, which cannot support an absence "
+                "claim: only part of the plane's domain was observed"
+            )
         return None
 
 
@@ -181,5 +196,16 @@ def _index_filesystem_action(action: Action, context: NormalizationContext) -> W
 
 
 def _normalize_tool_path(path: str, context: NormalizationContext) -> str:
+    """The path a tool call actually *reached*, normalized (§11.4, §12.6).
+
+    ``..`` is collapsed the same way ``capability_for`` collapses it (via
+    ``normalize_container_path``), so ``reported_reads`` records the reached path rather
+    than the raw one. Without this the two views disagree: a read of ``sub/../.env``
+    would evade a ``file_not_read('${WORKSPACE}/.env')`` derived from ``deny_read``, and a
+    traversal escape such as ``../../etc/shadow`` would still carry a ``${WORKSPACE}``
+    prefix and read as an in-scope workspace access instead of the out-of-scope
+    ``/etc/shadow`` it truly is.
+    """
     absolute = path if path.startswith("/") else f"{context.workspace_root.rstrip('/')}/{path}"
-    return context.normalize_path(absolute)
+    reached = str(normalize_container_path(absolute))
+    return context.normalize_path(reached)

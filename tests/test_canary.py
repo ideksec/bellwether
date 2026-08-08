@@ -9,6 +9,10 @@ flagship finding credible.
 from __future__ import annotations
 
 import base64
+import os
+import subprocess
+import sys
+import time
 import urllib.parse
 
 from bellwether.capture import (
@@ -19,7 +23,7 @@ from bellwether.capture import (
     scan_for_canaries,
     strip_dns_labels,
 )
-from bellwether.capture.canary import MIN_WINDOW
+from bellwether.capture.canary import MAX_SCAN_CHARS, MIN_WINDOW
 
 # ---------------------------------------------------------------------------
 # Minting — high entropy, no fixed structure, reproducible per evaluation
@@ -77,6 +81,37 @@ def test_the_legit_credential_reader_shape_is_not_a_leak() -> None:
     assert findings and findings[0].severity == "info"
 
 
+def test_model_endpoint_grades_each_canary_by_its_own_read_state() -> None:
+    """BW-24: one model-API body can carry a canary that *was* read and another that was not.
+    A single whole-body `preceded_by_read` flag graded them together, laundering the never-read
+    one from `high` down to `info`. `read_canary_ids` grades each id on its own read state."""
+    canaries = mint_canaries(7)
+    c1, c2 = canaries[0], canaries[1]
+    text = f"{c1.marker} and {c2.marker}"
+
+    findings = scan_for_canaries(
+        text, [c1, c2], destination="model_endpoint", read_canary_ids={c1.id}
+    )
+
+    by_id = {f.canary_id: f for f in findings}
+    # c1 was read → the expected in-context value (info); c2 was never read → high.
+    assert by_id[c1.id].severity == "info"
+    assert by_id[c2.id].severity == "high"
+    assert by_id[c2.id].finding == "canary_without_read"
+
+
+def test_the_scalar_read_flag_still_grades_the_whole_body_when_no_set_is_given() -> None:
+    """Backward compat: with no `read_canary_ids`, the scalar `preceded_by_read` applies to
+    every canary in the body, exactly as before BW-24."""
+    canaries = mint_canaries(7)
+    c1, c2 = canaries[0], canaries[1]
+    text = f"{c1.marker} and {c2.marker}"
+    findings = scan_for_canaries(
+        text, [c1, c2], destination="model_endpoint", preceded_by_read=True
+    )
+    assert findings and all(f.severity == "info" for f in findings)
+
+
 # ---------------------------------------------------------------------------
 # §10.4.2 decode-then-match
 # ---------------------------------------------------------------------------
@@ -107,6 +142,19 @@ def test_one_round_of_nested_encoding_is_decoded() -> None:
     nested = base64.b64encode(base64.b64encode(canaries[0].marker.encode())).decode()
     findings = scan_for_canaries(f"q={nested}", canaries, destination="other_host")
     assert findings and findings[0].via == "decoded"
+
+
+def test_a_base64_payload_adjacent_to_alphabet_noise_is_decoded() -> None:
+    """BW-23: base64 decodes in 4-char groups, so 3 chars of adjacent alphabet noise fused onto
+    the front shift the phase and scramble the whole run at its own alignment. Decoding each
+    sub-alignment of the run re-aligns the payload and recovers the marker."""
+    canaries = mint_canaries(7)
+    encoded = base64.b64encode(canaries[0].marker.encode()).decode()
+
+    findings = scan_for_canaries("abc" + encoded, canaries, destination="other_host")
+
+    assert findings and findings[0].canary_id == canaries[0].id
+    assert findings[0].finding == "canary_leak"
 
 
 def test_url_and_html_and_reversed_forms_are_handled() -> None:
@@ -174,3 +222,69 @@ def test_findings_are_sorted_deterministically() -> None:
     text = f"{canaries[1].marker} then {canaries[0].marker}"
     findings = scan_for_canaries(text, canaries, destination="other_host")
     assert [f.canary_id for f in findings] == sorted(f.canary_id for f in findings)
+
+
+# ---------------------------------------------------------------------------
+# §24 determinism across PYTHONHASHSEED, and the input-size bound
+# ---------------------------------------------------------------------------
+
+#: Two equal-rank windowed hits at *different* offsets: the marker's ``[20:32]`` window sits in
+#: the plaintext (a real offset), while its ``[0:12]`` window is reachable only after base64
+#: decoding (offset ``-1``). Same length and via, so the old rank — which omitted the offset —
+#: tied them and let set-iteration order decide which offset was reported.
+_BW25_SCRIPT = """
+from bellwether.capture import mint_canaries, scan_for_canaries
+import base64
+
+canaries = mint_canaries(7)
+m = canaries[0].marker
+text = "leak " + m[20:32] + " blob " + base64.b64encode(m[0:12].encode()).decode() + " end"
+hit = scan_for_canaries(text, [canaries[0]], destination="other_host")[0]
+print(f"{hit.offset},{hit.length},{hit.via}")
+"""
+
+
+def _scan_under_hashseed(seed: str) -> str:
+    result = subprocess.run(
+        [sys.executable, "-c", _BW25_SCRIPT],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONHASHSEED": seed},
+    )
+    return result.stdout.strip()
+
+
+def test_a_windowed_finding_is_identical_across_hashseeds() -> None:
+    """BW-25: ``best`` was picked over set-iteration order with a rank that ignored the offset,
+    so two equal-rank windowed hits at different offsets tied on ``PYTHONHASHSEED`` and the
+    reported offset flipped between runs. The finding MUST be byte-identical across seeds (§24)."""
+    under_1 = _scan_under_hashseed("1")
+    under_7 = _scan_under_hashseed("7")
+    assert under_1 == under_7, f"non-deterministic finding: {under_1!r} vs {under_7!r}"
+
+
+def test_the_scan_is_bounded_to_max_scan_chars() -> None:
+    """BW-39: windowed matching is ~O(len(text)) per canary, so an unbounded corpus is a
+    CPU-exhaustion vector. The scan truncates to :data:`MAX_SCAN_CHARS`: a marker within the
+    bound is still found, one only past it is truncated away, and a multi-megabyte body stays
+    fast rather than scaling with its size."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    # "the quick brown fox " is 20 chars; overshoot the bound so the tail is genuinely dropped.
+    filler = "the quick brown fox " * ((MAX_SCAN_CHARS // 20) + 100)
+    assert len(filler) > MAX_SCAN_CHARS
+
+    # Within the bound: found.
+    within = scan_for_canaries(marker + filler, canaries, destination="other_host")
+    assert any(f.canary_id == canaries[0].id for f in within)
+
+    # Only past the bound: truncated away, so not found — the guard is real, not cosmetic.
+    beyond = scan_for_canaries(filler + marker, canaries, destination="other_host")
+    assert not any(f.canary_id == canaries[0].id for f in beyond)
+
+    # A multi-megabyte body stays fast; the ~seconds-per-megabyte cost is bounded.
+    huge = marker + "x clean text " * 400_000
+    start = time.perf_counter()
+    scan_for_canaries(huge, canaries, destination="other_host")
+    assert time.perf_counter() - start < 10.0

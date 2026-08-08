@@ -99,6 +99,12 @@ def compute_bci(
         if not 0.0 <= value <= 1.0:
             raise ValueError(f"BCI component {name!r} must be in [0, 1], got {value}")
         used.append(BCIComponent(name=name, value=value, weight=weight))
+    # A component supplied with a value but carrying no weight would otherwise vanish from
+    # both used and excluded, defeating the §13.7 audit guarantee that every component is
+    # accounted for. Record it as excluded rather than dropping it silently.
+    for name, value in components.items():
+        if value is not None and name not in resolved:
+            excluded.append((name, "supplied but has no configured weight; not composited"))
 
     total_weight = sum(component.weight for component in used)
     # Nothing to compose → surface 0 with everything excluded rather than dividing by zero.

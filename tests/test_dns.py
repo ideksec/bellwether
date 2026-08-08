@@ -14,6 +14,8 @@ label-separator-aware so a payload chunked across labels is still found.
 
 from __future__ import annotations
 
+import base64
+
 from bellwether.capture import (
     DnsAllowlist,
     DnsQuery,
@@ -130,6 +132,26 @@ def test_a_marker_chunked_across_labels_is_found() -> None:
     # A DNS destination is non-model, so any hit is a critical leak (§10.4.1).
     assert hit.finding == "canary_leak"
     assert hit.severity == "critical"
+
+
+def test_a_base32_encoded_marker_chunked_across_labels_is_found() -> None:
+    """BW-07: the base32 variant of the DNS attack. Encode the marker with the DNS-safe
+    alphabet, then split the *ciphertext* into 8-char labels. The reassembled (de-dotted) text
+    is the only decodable form — each 8-char label is far too short to be a run on its own — so
+    the de-dotted text must be fed back through the decoders, not merely matched. The plaintext
+    split above does not exercise this; only decode-*after*-reassembly finds it."""
+    canary = mint_canaries(7)[0]
+    cipher = base64.b32encode(canary.marker.encode()).decode()
+    labels = ".".join(cipher[i : i + 8] for i in range(0, len(cipher), 8))
+    qname = f"{labels}.attacker.example"
+
+    findings = scan_query_for_canaries(qname, [canary])
+
+    assert len(findings) == 1
+    assert findings[0].canary_id == canary.id
+    # DNS is non-model, so the reassembled-and-decoded hit is a critical leak (§10.4.1).
+    assert findings[0].finding == "canary_leak"
+    assert findings[0].severity == "critical"
 
 
 def test_a_clean_query_name_yields_no_findings() -> None:

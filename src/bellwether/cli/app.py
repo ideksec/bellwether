@@ -186,6 +186,22 @@ def doctor(
             }
         )
 
+    # §15 static scan is not built yet (v0.2). A policy that requires it would otherwise be a
+    # silent no-op — a required check that reads as passed. Surface it here rather than hide it.
+    _static_profiles = [loaded_policy.defaults, *loaded_policy.profiles.values()]
+    if any(profile.gates.static.require_scan for profile in _static_profiles):
+        checks.append(
+            {
+                "check": "static scan (§15)",
+                "status": "warn",
+                "detail": (
+                    "policy sets gates.static.require_scan, but the static scanner is not built "
+                    "in this version (v0.2 work package); it will not run — set require_scan: "
+                    "false until it lands, or treat scan findings as unavailable"
+                ),
+            }
+        )
+
     for advisory in loaded_config.advisories():
         checks.append({"check": "advisory", "status": "warn", "detail": advisory})
 

@@ -87,16 +87,20 @@ RUNTIME_FINDING_KINDS: Final[tuple[str, ...]] = (
     "possible_egress_induced_failure",
 )
 
-#: How a run ended (§12.7). The split is deliberate: ``timeout``, ``oom`` and
-#: ``pids_limit`` are failures — they are things the skill did — while
-#: ``budget_exceeded`` and ``cancelled`` are ``not_evaluable``, because they are things
-#: the operator did.
+#: How a run ended (§12.7), and how that maps to the run outcome. The split is deliberate:
+#: ``timeout``, ``oom``, ``pids_limit``, ``harness_error`` and ``sandbox_error`` are
+#: failures — things that happened while the skill ran — while ``budget_exceeded`` and
+#: ``cancelled`` are ``not_evaluable``, because they are decisions the operator made.
+#: ``completed`` defers to the assertion results (``assertion_derived``). This dict is the
+#: single source of truth: :mod:`bellwether.assertions.results` derives its failing and
+#: not-evaluable sets from it, so the two cannot drift (a test asserts the agreement).
 EXIT_REASONS: Final[dict[str, str]] = {
-    "completed": "fail_is_assertion_derived",
+    "completed": "assertion_derived",
     "timeout": "fail",
     "oom": "fail",
     "pids_limit": "fail",
-    "sandbox_error": "not_evaluable",
+    "harness_error": "fail",
+    "sandbox_error": "fail",
     "budget_exceeded": "not_evaluable",
     "cancelled": "not_evaluable",
 }

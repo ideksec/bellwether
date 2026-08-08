@@ -27,6 +27,7 @@ from bellwether.cli.orchestrator import (
     drive_evaluation,
     orchestrate,
     plan_matrix,
+    resolve_capability_weights,
 )
 from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import resolve_run
@@ -81,6 +82,21 @@ def run_evaluation(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
     )
 
+    # §21 / THREAT_MODEL: the settings that bound residual-channel exfiltration and the
+    # covert channels (model-API body scanning, the sidecar deployment, the controlled
+    # resolver, canary redaction and marker randomisation) MUST NOT be disable-able without
+    # a critical finding and a refusal to run above the 'low' profile. Detection lived only
+    # in `doctor`; enforce it here so the guarantee holds on the path a real run takes.
+    violations = config.enforced_setting_violations()
+    if violations and resolved.profile_name != "low":
+        rendered = "\n  - ".join(v.render() for v in violations)
+        raise BellwetherError(
+            f"refusing to run under profile '{resolved.profile_name}' with "
+            f"{len(violations)} enforced setting(s) disabled (§21); a result collected this "
+            f"way would not be earned. Correct them, or run under the 'low' profile:\n  - "
+            f"{rendered}"
+        )
+
     suite = package.scenarios
     if suite is None or not suite.scenarios:
         raise BellwetherError(
@@ -108,7 +124,10 @@ def run_evaluation(
     # not_evaluable, which would block the evidence gate for a benign skill. So the first-light driver
     # scores against the scenario assertions only, exactly as the checkpoint does; the declared scope
     # comes online with the egress plane in the executor.
-    readings = drive_evaluation(plans, executor, profile=resolved.profile, scope=None)
+    weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
+    readings = drive_evaluation(
+        plans, executor, profile=resolved.profile, scope=None, weights=weights
+    )
 
     criticality = (
         package.manifest.metadata.criticality if package.manifest is not None else "medium"

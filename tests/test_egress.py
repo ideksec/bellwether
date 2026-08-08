@@ -100,6 +100,35 @@ def test_a_lookalike_domain_does_not_match() -> None:
     )
 
 
+def test_a_userinfo_authority_routes_to_the_real_host_not_the_userinfo() -> None:
+    """BW-27/BW-40: in an RFC-3986 ``userinfo@host`` authority the host is what follows the
+    ``@``. A naive ``rsplit(':')`` port-strip read ``api.anthropic.com:443@evil.com`` as the
+    provider; parsing it as a client does routes it to ``evil.com`` — skill-attributed and
+    blocked, never ``model_api``."""
+    host = "api.anthropic.com:443@evil.com"
+    assert (
+        classify_egress(host, provider_endpoints=_PROVIDERS, infrastructure_endpoints=_INFRA)
+        == "skill_attributed"
+    )
+    assert not _allowlist().permits(host)
+    flow = _flow(host)
+    assert flow.host == "evil.com"
+    assert flow.egress_class == "skill_attributed"
+    assert flow.blocked
+
+
+def test_a_leading_dot_host_does_not_match_a_provider() -> None:
+    """BW-27/BW-40: a leading-dot host has an empty first label, so it is not a subdomain of the
+    provider — the old ``endswith('.' + endpoint)`` matched ``.api.anthropic.com`` against
+    ``api.anthropic.com`` and mis-permitted it."""
+    host = ".api.anthropic.com"
+    assert (
+        classify_egress(host, provider_endpoints=_PROVIDERS, infrastructure_endpoints=_INFRA)
+        == "skill_attributed"
+    )
+    assert not _allowlist().permits(host)
+
+
 def test_provider_hosts_parses_base_urls() -> None:
     hosts = provider_hosts(["https://api.anthropic.com/v1", "api.openai.com:443"])
     assert hosts == {"api.anthropic.com", "api.openai.com"}
@@ -166,6 +195,45 @@ def test_redaction_keeps_allowlisted_headers_and_redacts_the_rest() -> None:
     # The names survive so the request shape is legible; the secret values do not.
     assert "sk-real-secret" not in json.dumps(redacted)
     assert "another-secret" not in json.dumps(redacted)
+
+
+def test_client_free_text_headers_are_redacted_not_kept_verbatim() -> None:
+    """BW-14: ``User-Agent`` and ``Accept`` are skill/client free text — a skill can write a
+    secret into either — so they are redacted like any other value. Only structural headers
+    (content-type, host, anthropic-version, …) are kept verbatim."""
+    redacted = redact_headers(
+        {
+            "User-Agent": "curl/8.0 SECRET-IN-UA",
+            "Accept": "SECRET-IN-ACCEPT",
+            "Content-Type": "application/json",
+        }
+    )
+    assert redacted["User-Agent"] == "<redacted>"
+    assert redacted["Accept"] == "<redacted>"
+    assert redacted["Content-Type"] == "application/json"  # structural, still kept
+
+
+def test_a_secret_in_user_agent_does_not_reach_the_flow_record() -> None:
+    """BW-14 at the artifact boundary: a value placed in ``User-Agent`` must be ``<redacted>``
+    in the resulting ``EgressFlow.request_headers`` — the record that ends up in an artifact."""
+    flow = make_flow(
+        ts="2026-08-06T00:00:00+00:00",
+        method="POST",
+        scheme="https",
+        host="api.anthropic.com",
+        port=443,
+        path="/v1/messages",
+        provider_endpoints=_PROVIDERS,
+        infrastructure_endpoints=_INFRA,
+        allowlist=_allowlist(),
+        request_headers={
+            "User-Agent": "curl/8.0 BW-SECRET-IN-UA",
+            "Content-Type": "application/json",
+        },
+    )
+    assert flow.request_headers["User-Agent"] == "<redacted>"
+    assert flow.request_headers["Content-Type"] == "application/json"
+    assert "BW-SECRET-IN-UA" not in json.dumps(dict(flow.request_headers))
 
 
 # ---------------------------------------------------------------------------

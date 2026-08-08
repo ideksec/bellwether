@@ -30,7 +30,13 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from bellwether.capture.credential import CredentialBroker
-from bellwether.capture.egress import CapLedger, EgressAllowlist, EgressFlow, make_flow
+from bellwether.capture.egress import (
+    CapLedger,
+    EgressAllowlist,
+    EgressFlow,
+    _host_matches,
+    make_flow,
+)
 
 __all__ = ["ProxyDecision", "decide_request"]
 
@@ -43,11 +49,16 @@ class ProxyDecision:
     and the sandbox never reaches it. ``flow`` is written to the shared flow log either way —
     a block is recorded, not silently dropped. ``cap_exceeded`` names the per-run cap that
     forced a block, which the run surfaces as ``budget_exceeded`` (§10.5.1).
+
+    ``upstream_headers`` is ``repr=False``: after injection it carries the *real* model API key
+    (that is the whole point of the field), so the default dataclass repr must not print it into
+    a log or a traceback. It mirrors ``ProxyAddon._flows`` being kept out of its repr for the
+    same reason — the real credential lives only where it has to and is never rendered.
     """
 
     action: Literal["forward", "block"]
     flow: EgressFlow
-    upstream_headers: Mapping[str, str] = field(default_factory=dict)
+    upstream_headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     cap_exceeded: str | None = None
     injected: bool = False
 
@@ -95,16 +106,35 @@ def decide_request(
 
     # (2) Cap-check the permitted request. A request that would cross a cap is refused before
     # it leaves — the residual-channel bound only holds if it is enforced *before* forwarding.
-    cap = caps.would_exceed(len(body))
+    # The cap charges the *whole* serialised request, not just the body: the path/query and the
+    # headers are attacker-controlled bandwidth too, so a tiny body with a huge header must not
+    # slip past the byte cap. (+4 per header approximates the ``": "`` and CRLF framing.)
+    request_size = (
+        len(path.encode())
+        + sum(len(name) + len(value) + 4 for name, value in headers.items())
+        + len(body)
+    )
+    cap = caps.would_exceed(request_size)
     if cap is not None:
         return ProxyDecision(action="block", flow=flow, cap_exceeded=cap)
-    caps.record(len(body))
+    caps.record(request_size)
 
-    # (3) Inject the real credential for a permitted model-API request whose provider we hold
-    # a key for. Non-model traffic (permitted infrastructure) forwards its own headers.
+    # (3) Inject the real credential for a permitted model-API request whose provider we hold a
+    # key for. Non-model traffic (permitted infrastructure) forwards its own headers. The
+    # provider is resolved by the same label-boundary match classification uses (§10.5.0), not an
+    # exact host lookup: a provider *subdomain* (``eu.api.anthropic.com``) classifies model_api,
+    # so it must map to the same provider — an exact ``get`` would miss it and leave the scoped
+    # token, not the real key, on the wire. Sorted for a deterministic pick if two keys overlap.
     upstream = dict(headers)
     injected = False
-    provider = provider_of_host.get(flow.host)
+    provider = next(
+        (
+            name
+            for endpoint, name in sorted(provider_of_host.items())
+            if _host_matches(flow.host, endpoint)
+        ),
+        None,
+    )
     if (
         flow.egress_class == "model_api"
         and provider is not None

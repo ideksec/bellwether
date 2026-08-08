@@ -14,8 +14,9 @@ report.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+from bellwether.constants import EXIT_REASONS
 from bellwether.trace import ExitReason
 
 __all__ = ["AssertionResult", "AssertionStatus", "RunOutcome", "run_outcome"]
@@ -46,13 +47,18 @@ class AssertionResult:
     record_only: bool = False
 
 
-#: §12.7's exit-reason split, restated from the constants so the two cannot drift: the
-#: left set is attributable to the skill and fails the run; the right set is a decision
+#: §12.7's exit-reason split, DERIVED from ``constants.EXIT_REASONS`` so the two cannot
+#: drift (an earlier hand-copied version had: it mapped ``sandbox_error`` to not_evaluable
+#: and omitted ``harness_error`` entirely — see the test that now asserts the agreement).
+#: The left set is attributable to the skill and fails the run; the right set is a decision
 #: Bellwether made, which is not the skill's fault.
+#: (The keys of ``EXIT_REASONS`` are exit reasons by construction, hence the cast.)
 _FAILING_EXITS: frozenset[ExitReason] = frozenset(
-    {"timeout", "oom", "pids_limit", "harness_error", "sandbox_error"}
+    cast("ExitReason", reason) for reason, kind in EXIT_REASONS.items() if kind == "fail"
 )
-_NOT_EVALUABLE_EXITS: frozenset[ExitReason] = frozenset({"budget_exceeded", "cancelled"})
+_NOT_EVALUABLE_EXITS: frozenset[ExitReason] = frozenset(
+    cast("ExitReason", reason) for reason, kind in EXIT_REASONS.items() if kind == "not_evaluable"
+)
 
 
 def run_outcome(

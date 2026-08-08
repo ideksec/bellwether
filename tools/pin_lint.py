@@ -14,7 +14,10 @@ graph are enforced — by failing the build, not by convention:
    workflows are exempt. A ``# v5`` trailing comment is encouraged (Dependabot reads it to
    bump the pin) and ignored here.
 2. **Every container image named in a workflow is pinned by digest** (``@sha256:…``). This
-   covers the ``*_IMAGE`` env vars and ``docker pull`` lines the CI uses.
+   covers the ``*_IMAGE`` env vars and ``docker pull`` lines the CI uses, and also the other
+   ways a mutable image slips into a workflow: a job/step ``container:`` (inline or its
+   ``image:`` mapping), a ``services:`` entry's ``image:``, and a ``docker run`` in a step. A
+   value that carries a tag but no ``@sha256:`` digest (and is not a ``$VAR``) is flagged.
 3. **Every Dockerfile ``FROM`` is pinned by digest.** The sidecar image builds from a base; a
    floating base tag is the same mutable-input hole as a floating action, one layer down.
 
@@ -34,6 +37,26 @@ _USES = re.compile(r"""^\s*-?\s*uses:\s*["']?(?P<ref>[^"'\s]+)["']?""")
 #: when it carries a tag but no ``@sha256:`` digest.
 _IMAGE_ENV = re.compile(r"""(?P<key>[A-Z0-9_]*IMAGE)\s*:\s*["']?(?P<val>\S+?)["']?\s*$""")
 _DOCKER_PULL = re.compile(r"""docker\s+pull\s+(?:-q\s+)?["']?(?P<val>[^"'\s]+)""")
+#: A GitHub Actions ``container:`` with an *inline* image value. The job-/step-defining
+#: ``container:`` whose value is a nested mapping carries no inline value, so it is not matched
+#: (its image, if any, is caught by ``_IMAGE_KEY`` on the nested ``image:`` line instead). This
+#: is what keeps a job whose id happens to be ``container`` from being read as an image.
+_CONTAINER_INLINE = re.compile(r"""^\s*container:\s+["']?(?P<val>[^"'\s#]+)""")
+#: An ``image:`` mapping key — used under ``container:`` and under each ``services:`` entry.
+_IMAGE_KEY = re.compile(r"""^\s*image:\s+["']?(?P<val>[^"'\s#]+)""")
+#: A ``docker run`` invocation; the image is the first positional token after its flags.
+_DOCKER_RUN = re.compile(r"""docker\s+run\s+(?P<rest>\S.*)$""")
+#: ``docker run`` options that consume the *following* token as their value, so a value such as
+#: ``-v host:/c`` or ``-p 8080:80`` is not mistaken for (nor scanned as) the image argument.
+_DOCKER_RUN_VALUE_FLAGS = frozenset(
+    {
+        "-v", "--volume", "-e", "--env", "--env-file", "-p", "--publish", "--name",
+        "-w", "--workdir", "-u", "--user", "--entrypoint", "--network", "--net",
+        "--platform", "-l", "--label", "--mount", "--add-host", "--device", "-h",
+        "--hostname", "--restart", "-m", "--memory", "--cpus", "--security-opt",
+        "--cap-add", "--cap-drop", "--tmpfs", "--pull", "--gpus", "--link", "--expose",
+    }
+)  # fmt: skip
 #: A Dockerfile ``FROM`` line: ``FROM image[:tag][@sha256:...] [AS stage]``. A ``FROM`` of a
 #: previous build stage (``FROM builder``) carries no registry ref and is exempt.
 _FROM = re.compile(r"""^\s*FROM\s+(?P<val>\S+)""", re.IGNORECASE)
@@ -59,6 +82,36 @@ def _image_is_pinned(value: str) -> bool:
     return "@sha256:" in value
 
 
+def _has_tag(value: str) -> bool:
+    """True if an image reference carries a ``:tag`` — a colon in its *final* path segment, so a
+    ``registry:5000/name`` port is not misread as a tag. Used to flag only things that actually
+    look like a tagged image, which keeps the ``container:``/``image:``/``docker run`` scans from
+    tripping over non-image tokens."""
+    return ":" in value.rsplit("/", 1)[-1]
+
+
+def _docker_run_image(rest: str) -> str | None:
+    """The image positional argument of a ``docker run <rest>``, or None if none is found.
+
+    Flags are skipped: an ``--opt=value`` is self-contained, a bare option from
+    :data:`_DOCKER_RUN_VALUE_FLAGS` consumes the next token, and any other ``-``-prefixed token
+    is treated as a boolean flag. The first surviving token is the image. This is a heuristic —
+    it does not parse shell quoting — so callers pair it with :func:`_has_tag`, flagging only a
+    token that genuinely looks like a tagged image.
+    """
+    tokens = rest.split()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-"):
+            return token
+        if "=" not in token and token in _DOCKER_RUN_VALUE_FLAGS:
+            index += 2  # the flag plus the value token it consumes
+        else:
+            index += 1
+    return None
+
+
 def check_workflow(path: Path) -> list[str]:
     problems: list[str] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -80,6 +133,29 @@ def check_workflow(path: Path) -> list[str]:
             problems.append(
                 f"{path}:{number}: 'docker pull {pull.group('val')}' is not digest-pinned"
             )
+        container = _CONTAINER_INLINE.match(line)
+        if container:
+            val = container.group("val")
+            if _has_tag(val) and not _image_is_pinned(val):
+                problems.append(
+                    f"{path}:{number}: container image {val!r} is not pinned by digest; "
+                    f"append '@sha256:...'"
+                )
+        image = _IMAGE_KEY.match(line)
+        if image:
+            val = image.group("val")
+            if _has_tag(val) and not _image_is_pinned(val):
+                problems.append(
+                    f"{path}:{number}: image {val!r} is not pinned by digest; append '@sha256:...'"
+                )
+        run = _DOCKER_RUN.search(line)
+        if run:
+            val = _docker_run_image(run.group("rest"))
+            if val is not None and _has_tag(val) and not _image_is_pinned(val):
+                problems.append(
+                    f"{path}:{number}: 'docker run' image {val!r} is not digest-pinned; "
+                    f"append '@sha256:...'"
+                )
     return problems
 
 

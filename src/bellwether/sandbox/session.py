@@ -70,6 +70,11 @@ class PreparedSandbox:
     #: caller opted out; a zone without one falls back to tmpfs and its writes are
     #: unobservable, which the coverage block must then say.
     captured_zones: tuple[ZoneOverlay, ...] = ()
+    #: Host file holding the pinned ``/etc/machine-id`` value (§9.2), bound read-only into
+    #: the container by the backend. Absolute so it is a valid Docker bind-mount source and
+    #: never read as a named volume. ``None`` only where a caller assembled a sandbox by
+    #: hand; :func:`prepare_sandbox` always sets it.
+    machine_id_file: Path | None = None
 
     def mounts(self) -> list[tuple[Path, PurePosixPath, str]]:
         """``(host path, container path, mode)`` for each mount.
@@ -142,6 +147,8 @@ def prepare_sandbox(
         with contextlib.suppress(PermissionError):
             os.chown(directory, *profile.owner)
 
+    machine_id_file = _write_machine_id(root, profile)
+
     return PreparedSandbox(
         identifiers=identifiers,
         zones=zone_map,
@@ -151,7 +158,29 @@ def prepare_sandbox(
         upper_dir=upper,
         work_dir=work,
         captured_zones=_prepare_zone_overlays(root, zone_map, profile),
+        machine_id_file=machine_id_file,
     )
+
+
+def _write_machine_id(root: Path, profile: IsolationProfile) -> Path:
+    """Write the pinned ``/etc/machine-id`` value to a run-scoped host file (§9.2).
+
+    Pinned rather than randomised: a varying machine-id leaks into logs from anything using
+    systemd's ID as a seed, turning an environment difference into what reads as skill
+    nondeterminism (§3.5). The backend binds this file read-only over ``/etc/machine-id``,
+    which is the only way to pin it under a ``--read-only`` root the container cannot write.
+
+    The path is resolved to an absolute one because it becomes a Docker bind-mount source,
+    and a relative source is read by the daemon as a (missing) named volume, not a file.
+    Mode ``0444`` matches a real ``/etc/machine-id`` and is world-readable, so the non-root
+    container user can read it without any ownership dance.
+    """
+    path = (root / "machine-id").resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # systemd expects 32 lowercase hex characters followed by a single newline.
+    path.write_text(f"{profile.pinned.machine_id}\n", encoding="utf-8")
+    path.chmod(0o444)
+    return path
 
 
 def _prepare_zone_overlays(

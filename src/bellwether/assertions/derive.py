@@ -306,8 +306,10 @@ def _unused_or_unobservable(
 ) -> ScopeEntry:
     """``unused`` is a claim about absence, and absence needs a plane that could have
     seen the use. A declared read glob under overlay-only capture is ``not_evaluable``,
-    not ``unused`` — the skill may be reading it through a subprocess every run."""
-    reason = index.plane_reason(plane)
+    not ``unused`` — the skill may be reading it through a subprocess every run. A
+    ``partial`` plane fails the same test (§10.8): it watched only part of its domain, so
+    "declared, never used" could be blind to a use in the part it missed."""
+    reason = index.plane_reason(plane, for_absence=True)
     if reason is not None:
         return ScopeEntry(area=area, subject=glob, status="not_evaluable", reason=reason)
     return ScopeEntry(area=area, subject=glob, status="unused", reason=fallback)

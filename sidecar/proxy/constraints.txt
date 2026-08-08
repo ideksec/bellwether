@@ -1,0 +1,14 @@
+# pip constraints for the recording-proxy sidecar image (BW-17).
+#
+# Installing Bellwether into the sidecar pulls its transitive deps, and one of them —
+# typing-extensions — got resolved to 4.16.0, which violates mitmproxy 12.2.3's requirement
+# `typing-extensions<=4.14`. A constraint (unlike a requirement) does not force a package to be
+# installed; it only bounds the version *if* something pulls it in. Bounding typing-extensions to
+# mitmproxy 12.2.3's supported range keeps every `pip install` below from bumping it out from
+# under mitmproxy, so the sidecar's mitmproxy addon API stays intact.
+#
+# This is a targeted stopgap, not the full pin. The complete fix is to hash-pin the sidecar's
+# entire Python closure — `uv export` its locked requirements and `pip install --require-hashes`
+# against them — so what is reviewed is exactly what runs, the same discipline uv.lock gives the
+# main package. Until then this constraint keeps the known conflict from recurring.
+typing-extensions>=4.13.2,<=4.14

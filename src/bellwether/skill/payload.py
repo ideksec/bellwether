@@ -13,6 +13,7 @@ a harness would have loaded is a real problem; it is just a visible one.
 from __future__ import annotations
 
 import fnmatch
+import unicodedata
 from dataclasses import dataclass
 
 __all__ = ["DEFAULT_PAYLOAD_ALLOWLIST", "EVALS_DIR", "PayloadAllowlist", "PayloadSplit"]
@@ -21,6 +22,21 @@ __all__ = ["DEFAULT_PAYLOAD_ALLOWLIST", "EVALS_DIR", "PayloadAllowlist", "Payloa
 #: Consolidating it into one directory is what makes the exclusion a single rule rather
 #: than a growing list of filenames (§5).
 EVALS_DIR = "evals/"
+
+
+def _is_machinery(path: str) -> bool:
+    """True where ``path`` is (or is under) the ``evals/`` machinery directory (§5).
+
+    Case- and form-insensitive: ``EVALS/manifest.yaml`` is Bellwether machinery just as
+    much as ``evals/manifest.yaml`` and must not slip into the container merely because a
+    checkout upper-cased the directory. The allowlist already fails closed — an unmatched
+    path is excluded anyway — so this only fixes the *label*: such a file is machinery,
+    not an unmatched skill file a reviewer should chase.
+    """
+    folded = unicodedata.normalize("NFC", path).casefold()
+    prefix = EVALS_DIR.casefold()
+    return folded == prefix.rstrip("/") or folded.startswith(prefix)
+
 
 #: Files a harness would load. Globs are matched against the POSIX path relative to the
 #: skill root, so ``reference/**`` covers any depth.
@@ -60,7 +76,7 @@ class PayloadAllowlist:
     patterns: tuple[str, ...] = DEFAULT_PAYLOAD_ALLOWLIST
 
     def matches(self, path: str) -> bool:
-        if path == EVALS_DIR.rstrip("/") or path.startswith(EVALS_DIR):
+        if _is_machinery(path):
             return False
         return any(self._match(path, pattern) for pattern in self.patterns)
 
@@ -80,7 +96,7 @@ class PayloadAllowlist:
         machinery: list[str] = []
         unmatched: list[str] = []
         for path in sorted(paths):
-            if path == EVALS_DIR.rstrip("/") or path.startswith(EVALS_DIR):
+            if _is_machinery(path):
                 machinery.append(path)
             elif self.matches(path):
                 included.append(path)

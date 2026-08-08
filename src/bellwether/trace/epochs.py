@@ -99,7 +99,7 @@ def anchor_events(
     others = [a for a in actions if a.plane != "harness"]
 
     tool_calls = [a for a in spine if a.kind == "tool_call"]
-    windows = _windows(tool_calls, spine)
+    windows = _monotonic_windows(_windows(tool_calls, spine))
     window_starts = [w[0] for w in windows]
 
     #: epoch index -> events. Epoch i (1-based) is tool call i's window; gap epochs are
@@ -173,6 +173,32 @@ def _windows(
         duration_ms = durations.get(call_id, 0) if isinstance(call_id, str) else 0
         windows.append((call.ts, call.ts + dt.timedelta(milliseconds=duration_ms)))
     return windows
+
+
+def _monotonic_windows(
+    windows: list[tuple[dt.datetime, dt.datetime]],
+) -> list[tuple[dt.datetime, dt.datetime]]:
+    """Force the window boundaries non-decreasing in spine (seq) order (§11.5).
+
+    The spine's causal order is its *seq* order, not its clock: epoch ``i`` cannot begin
+    before epoch ``i-1``. But spine timestamps are not guaranteed monotonic — clock skew
+    across a runner, or genuinely parallel tool calls whose start instants interleave, can
+    place a later call's timestamp before an earlier one's. ``_epoch_for`` then locates an
+    event with ``bisect``, which requires ``window_starts`` sorted and silently misassigns
+    when it is not.
+
+    Clamping each window's start up to the previous start restores a sorted boundary list
+    using seq order rather than the untrusted clock, and holds every window's end at or
+    after its (possibly raised) start. It is a no-op on an already-monotonic spine — so
+    the ordinary run is untouched — and deterministic, so §24 still holds.
+    """
+    clamped: list[tuple[dt.datetime, dt.datetime]] = []
+    floor: dt.datetime | None = None
+    for start, end in windows:
+        clamped_start = start if floor is None else max(start, floor)
+        clamped.append((clamped_start, max(end, clamped_start)))
+        floor = clamped_start
+    return clamped
 
 
 def _epoch_for(

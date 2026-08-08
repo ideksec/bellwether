@@ -9,8 +9,11 @@ MUST NOT
     Execute skill content. Static analysis that runs the thing it is analysing is not
     static analysis.
 
-Built in v0.1 for the corpus cases (``fetch-and-exec``, ``obfuscated-injection``,
-``eval-aware``); broadened in v0.2.
+**Not yet implemented.** The scanner is a v0.2 work package (spec §25); this module is a
+placeholder with no checks. Because ``policy.gates.static.require_scan`` defaults to true,
+``doctor`` surfaces an advisory when a loaded policy requires a scan this build cannot run,
+rather than letting a required-but-absent scan pass silently — a required check quietly left
+out reads as a check that passed, which is the failure this project exists to distrust.
 """
 
 from __future__ import annotations
