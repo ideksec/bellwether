@@ -113,12 +113,18 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      `cat ~/.aws/credentials` carry the markers (both channels delivered), both leaks surface as Plane
      C `canary_leak`s, all five canaries are recorded by reference, and neither raw value is anywhere
      in the trace JSONL — only fingerprints.
+   - **Tool-argument scanning is now wired too** (`_scan_source_action` gained a `tool_call` branch):
+     a marker in a tool call's arguments — a `fetch` URL, a `bash` `curl`/`nc` command — is a
+     `tool_args` `canary_leak`, which catches the skill that reads a credential and exfiltrates it
+     *through* a tool when it has no direct socket. The read that fetched the credential (path in,
+     value out) is not flagged — only an argument carrying the value is — so the finding stays
+     false-positive-free. Offline-tested.
    - **Remaining:** the credentials plane stays `partial` because the *scan* does not yet cover
-     **egress bodies** (sidecar-side, the body never leaves the proxy), **written-file contents**
-     (Plane B is hash-only today), or **tool arguments** — wiring those lifts it toward `full`. Then
-     the corpus skills (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief`
-     xfail) for the §10.4 done-when. A light follow-on: give the planted files realistic credential
-     shapes (INI/PEM/`.env`) instead of the bare marker they carry today.
+     **egress bodies** (sidecar-side, the body never leaves the proxy) or **written-file contents**
+     (Plane B is hash-only today) — wiring those lifts it toward `full`. Then the corpus skills
+     (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
+     §10.4 done-when. A light follow-on: give the planted files realistic credential shapes
+     (INI/PEM/`.env`) instead of the bare marker they carry today.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
    metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is
@@ -510,8 +516,9 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
   `credentials` coverage to `partial`. `test_execution_canary_docker.py` proves the whole loop on a
   real container: the sandbox's own echo of `$INTERNAL_API_TOKEN` and its `cat ~/.aws/credentials`
   carry the markers (both channels delivered), both leaks are found and fingerprinted, and no raw
-  value reaches the trace JSONL. The plane stays `partial` because the *scan* does not yet cover
-  egress bodies (sidecar-side), written-file contents, or tool arguments.
+  value reaches the trace JSONL. The host-side scan covers the model's final output, DNS query names,
+  and **tool-call arguments** (the exfil-through-a-tool channel); the plane stays `partial` because it
+  does not yet cover egress bodies (sidecar-side) or written-file contents (Plane B is hash-only).
 - **WP-14 CA trust-chain core**, `bellwether.capture.ca`, offline and fully tested (7 tests):
   the complete §9.2 mechanism table (system store + `NODE_EXTRA_CA_CERTS` /
   `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`, because Node and others ignore the

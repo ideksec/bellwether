@@ -379,16 +379,17 @@ class SandboxRunExecutor:
                     egress=PlaneStatus(fidelity="full") if run_proxy is not None else None,
                     # Same for the resolver's query log: a zero-query run is observed-clean DNS.
                     dns=PlaneStatus(fidelity="full") if run_resolver is not None else None,
-                    # Canaries planted (env var + file slots) and scanned in the model output and DNS
-                    # query names. Partial not full: the scan does not yet cover egress bodies
-                    # (sidecar-side), written-file contents, or tool arguments.
+                    # Canaries planted (env var + file slots) and scanned in the model output, DNS
+                    # query names, and tool-call arguments. Partial not full: the scan does not yet
+                    # cover egress bodies (sidecar-side) or written-file contents (Plane B is
+                    # hash-only).
                     credentials=(
                         PlaneStatus(
                             fidelity="partial",
                             reason=(
                                 "canaries planted (environment variable and file slots) and scanned "
-                                "in the model output and DNS query names; egress-body, written-file, "
-                                "and tool-argument scanning are not yet wired"
+                                "in the model output, DNS query names, and tool-call arguments; "
+                                "egress-body and written-file scanning are not yet wired"
                             ),
                         )
                         if planting is not None
