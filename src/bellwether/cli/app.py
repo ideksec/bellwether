@@ -287,7 +287,12 @@ def run(
     import datetime as dt
 
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
-    from bellwether.cli.run import build_proxy_provider, run_evaluation, sandbox_executor_factory
+    from bellwether.cli.run import (
+        build_proxy_provider,
+        build_resolver_provider,
+        run_evaluation,
+        sandbox_executor_factory,
+    )
     from bellwether.harness import RunLimits
     from bellwether.skill import load_skill
 
@@ -328,6 +333,9 @@ def run(
                     # Wired only when egress.image is set (a live config); otherwise None and the
                     # sandbox runs networkless, exactly as first-light (§10.5).
                     proxy=build_proxy_provider(loaded_config),
+                    # Wired only when dns.image is set; otherwise None and DNS stays not_evaluable
+                    # (§10.6). When both are on, the resolver shares the proxy's internal bridge.
+                    resolver=build_resolver_provider(loaded_config),
                     # Carry the configured sandbox profile (memory/cpus/pids/timeout/writable
                     # paths), zone map, and §3.5 identifier randomisation into the container.
                     isolation=isolation_from_config(loaded_config.sandbox),

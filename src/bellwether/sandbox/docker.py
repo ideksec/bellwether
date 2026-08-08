@@ -269,6 +269,7 @@ class DockerBackend:
         *,
         image: str | None = None,
         network: str = "none",
+        dns: str | None = None,
         sink_bind: tuple[Path, PurePosixPath] | None = None,
         extra_env: Mapping[str, str] | None = None,
         extra_ro_binds: Sequence[tuple[Path, PurePosixPath]] | None = None,
@@ -300,6 +301,14 @@ class DockerBackend:
 
         argv = [self.binary, "run", "--rm", *prepared.isolation.docker_flags()]
         argv += ["--network", network]
+        if dns is not None:
+            # Point the container's resolver at the controlled resolver, by IP (§9.2, §10.6): a
+            # single nameserver, so there is no secondary to fall back to, and the internal bridge
+            # (no route out) is what makes that the *only* resolver reachable — §3.3 invariant 3.
+            # `--dns-opt single-request` keeps glibc from splitting A/AAAA across sockets, so every
+            # lookup is one query to one place, the resolver sees them all, and the covert channel
+            # cannot leak on a path the log misses.
+            argv += ["--dns", dns, "--dns-option", "single-request"]
         argv += ["--hostname", prepared.identifiers.hostname]
         argv += ["--name", prepared.identifiers.container_name]
 
@@ -370,6 +379,7 @@ class DockerBackend:
         *,
         image: str | None = None,
         network: str = "none",
+        dns: str | None = None,
         sink_bind: tuple[Path, PurePosixPath] | None = None,
         extra_env: Mapping[str, str] | None = None,
         extra_ro_binds: Sequence[tuple[Path, PurePosixPath]] | None = None,
@@ -388,6 +398,7 @@ class DockerBackend:
             [],
             image=image,
             network=network,
+            dns=dns,
             sink_bind=sink_bind,
             extra_env=extra_env,
             extra_ro_binds=extra_ro_binds,

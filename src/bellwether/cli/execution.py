@@ -31,6 +31,7 @@ from bellwether.capture import (
     collect_filesystem_events,
     filesystem_writes_status,
 )
+from bellwether.cli.dns_run import DnsResolverProvider, RunResolver
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
 from bellwether.config.models.config import SandboxConfig, ZoneConfig
@@ -54,6 +55,7 @@ from bellwether.trace import (
     SkillRef,
     TargetRef,
     assemble_coverage,
+    dns_actions,
     egress_actions,
     exit_reason_from_events,
     filesystem_actions,
@@ -178,6 +180,11 @@ class SandboxRunExecutor:
             dual-homed sidecar: the sandbox routes through it, its CA is trusted, and the flows
             it records become the trace's egress plane — so egress reads *observed* rather than
             unavailable. When ``None`` the sandbox runs with no network, exactly as first-light.
+        resolver: The controlled-resolver provider (§10.6). When set, each run's sandbox is
+            pointed at the resolver via ``--dns`` and the queries it records become Plane E — so
+            DNS reads *observed*, and the covert channel that routes around the HTTP proxy is
+            closed and logged. Shares the proxy's internal bridge when egress is on; creates its
+            own when egress is off. When ``None`` DNS stays unavailable.
     """
 
     backend: DockerBackend
@@ -189,6 +196,7 @@ class SandboxRunExecutor:
     rng_seed: int = 0
     limits: RunLimits = field(default_factory=RunLimits)
     proxy: SidecarProxyProvider | None = None
+    resolver: DnsResolverProvider | None = None
     #: The isolation profile every container in this evaluation runs under (§9.2). Defaults
     #: to the §9.2 baseline; the lead derives it from config via :func:`isolation_from_config`
     #: and passes it in from ``run.py`` so ``sandbox.memory``/``timeout_seconds``/… take effect
@@ -222,14 +230,29 @@ class SandboxRunExecutor:
         # here must not leave a mounted overlay behind, so it happens before mount; the proxy owns
         # its own cleanup on a failed open (no network or container leaks).
         run_proxy = self._open_proxy(plan, run_dir)
-        network = run_proxy.sandbox_network() if run_proxy is not None else "none"
+        # The controlled resolver shares the proxy's internal bridge when egress is on (one network,
+        # both peers on it) and creates its own when egress is off; either way the sandbox is pointed
+        # at it by IP with --dns. Opened after the proxy so it can join that bridge and be handed the
+        # proxy's container name to resolve (§10.6).
+        run_resolver = self._open_resolver(plan, run_dir, run_proxy)
+        if run_proxy is not None:
+            network = run_proxy.sandbox_network()
+        elif run_resolver is not None:
+            network = run_resolver.sandbox_network()
+        else:
+            network = "none"
+        dns = run_resolver.sandbox_dns() if run_resolver is not None else None
         extra_env = self._extra_env(plan, run_proxy)
         extra_ro_binds = run_proxy.sandbox_ro_binds() if run_proxy is not None else None
 
         try:
             self.backend.mount(prepared)
             self.backend.start_persistent(
-                prepared, network=network, extra_env=extra_env, extra_ro_binds=extra_ro_binds
+                prepared,
+                network=network,
+                dns=dns,
+                extra_env=extra_env,
+                extra_ro_binds=extra_ro_binds,
             )
             client, model_id = self.client_factory(plan)
             adapter = ApiLoopAdapter(
@@ -258,6 +281,10 @@ class SandboxRunExecutor:
             # finally closes it). Absent a proxy, there is no egress plane and coverage says so.
             egress_flows = run_proxy.flows() if run_proxy is not None else []
             plane_d = egress_actions(egress_flows, start_seq=len(plane_a) + len(plane_b))
+            # Plane E: what the controlled resolver saw. Read while the resolver is still up (before
+            # the finally closes it). Absent a resolver, there is no DNS plane and coverage says so.
+            dns_queries = run_resolver.queries() if run_resolver is not None else []
+            plane_e = dns_actions(dns_queries, start_seq=len(plane_a) + len(plane_b) + len(plane_d))
 
             header = RunHeader(
                 run_id=f"{self.eval_id}-{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}",
@@ -289,6 +316,8 @@ class SandboxRunExecutor:
                     # The proxy writing its flow log is proof the egress plane was captured, even
                     # at zero flows — an observed-clean run, not an unobserved one (§10.7).
                     egress=PlaneStatus(fidelity="full") if run_proxy is not None else None,
+                    # Same for the resolver's query log: a zero-query run is observed-clean DNS.
+                    dns=PlaneStatus(fidelity="full") if run_resolver is not None else None,
                 ),
                 started_at=started_at,
             )
@@ -303,13 +332,20 @@ class SandboxRunExecutor:
             )
 
             trace_path = write_trace(
-                run_dir / "trace.arf.jsonl", header, plane_a + plane_b + plane_d, footer
+                run_dir / "trace.arf.jsonl",
+                header,
+                plane_a + plane_b + plane_d + plane_e,
+                footer,
             )
             jsonl = trace_path.read_text(encoding="utf-8")
             trace = read_trace(trace_path)
         finally:
             self.backend.stop_persistent(prepared)
             self.backend.unmount(prepared)
+            # The resolver goes first: when it joined the proxy's bridge, the proxy's close removes
+            # that bridge, which a still-attached resolver container would block.
+            if run_resolver is not None:
+                run_resolver.close()
             if run_proxy is not None:
                 run_proxy.close()
 
@@ -357,3 +393,25 @@ class SandboxRunExecutor:
             return None
         run_id = _proxy_run_id(self.eval_id, plan)
         return self.proxy.open(run_id, shared_dir=run_dir / "proxy")
+
+    def _open_resolver(
+        self, plan: RunPlan, run_dir: Path, run_proxy: RunProxy | None
+    ) -> RunResolver | None:
+        """Stand the controlled resolver up for one run, or ``None`` when none is configured.
+
+        When the proxy is on, the resolver joins its internal bridge (so the sandbox reaches both on
+        one network) and is handed the proxy's container name to resolve — without it the sandbox
+        could not look up ``HTTPS_PROXY`` through the controlled resolver. When the proxy is off, the
+        resolver owns a fresh internal bridge. The same sanitised per-run id names the container.
+        """
+        if self.resolver is None:
+            return None
+        run_id = _proxy_run_id(self.eval_id, plan)
+        network = run_proxy.sandbox_network() if run_proxy is not None else None
+        extra_allowed = [run_proxy.sidecar.container_name()] if run_proxy is not None else []
+        return self.resolver.open(
+            run_id,
+            shared_dir=run_dir / "resolver",
+            network=network,
+            extra_allowed=extra_allowed,
+        )

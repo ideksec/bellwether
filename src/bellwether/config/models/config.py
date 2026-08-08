@@ -111,6 +111,11 @@ class DnsConfig(StrictModel):
     """The controlled resolver (§10.6). An HTTP proxy does not see UDP/53."""
 
     mode: Annotated[Literal["controlled_resolver", "off"], YamlWord] = "controlled_resolver"
+    #: The controlled-resolver sidecar image, digest-pinned like ``sandbox.image``. Empty leaves
+    #: the resolver unwired: the run has no DNS plane. Set it (in a live config) to point the
+    #: sandbox at the resolver via ``--dns`` and observe query names — the covert channel that
+    #: routes around the HTTP proxy (§10.6). Mirrors ``egress.image``.
+    image: str = ""
     allowlist: list[str] = Field(default_factory=list)
     log_all_queries: bool = True
 
@@ -346,6 +351,11 @@ class Config(Document):
             notes.append(
                 f"egress.image {self.egress.image!r} is not pinned by digest; "
                 "a moving proxy image makes two evaluations non-comparable"
+            )
+        if self.dns.image and "@sha256:" not in self.dns.image:
+            notes.append(
+                f"dns.image {self.dns.image!r} is not pinned by digest; "
+                "a moving resolver image makes two evaluations non-comparable"
             )
         for name, provider in sorted(self.providers.items()):
             unfilled = provider.unfilled_aliases()

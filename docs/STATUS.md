@@ -55,7 +55,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-15 executor wiring · WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-824 tests: 778 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
+829 tests: 783 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -79,19 +79,24 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      contract** — `query_record_line`/`parse_query_record`/`read_query_records`/`write_query_records`
      in `capture/dns.py` (the mirror of `proxy_addon`'s flow serializers: canonical JSONL, a missing
      log raises rather than reading clean) and the `ControlledResolver` base seam (the DNS analog of
-     `RecordingProxy`, `NotImplementedError` bodies so a partial impl fails loudly). All offline-tested.
-   - **Remaining, in order:** (b) the resolver's in-container **recorder + entry** — a `ResolverConfig`
-     + a dnslib-agnostic recording core + `resolver_entry.py`, mirroring `capture/sidecar_entry.py`
-     (the query-record contract and the base seam are done; this is the recorder that uses them and
-     the dnslib UDP binding, plus the resolver's answer-vs-NXDOMAIN response, which the sidecar image
-     provides); (c) the **host lifecycle + provider** (`DnsResolverSidecar`, `RunResolver`,
-     `DnsResolverProvider`) — resolver-only, *not* dual-homed, exposing `sandbox_dns()` (an IP)
-     rather than proxy env/CA; (d) `dns.image` config + `build_resolver_provider` landing together
-     with the executor that consumes them (no orphan switch); (e) `--dns <resolver-ip>` +
-     `--dns-opt` no-fallback in `sandbox/docker.py:build_argv` (the genuinely new plumbing — Docker
-     `--dns` takes an IP, not a container name, so the resolver needs a known bridge IP); (f) the
-     CI-gated docker done-when (`test_resolver_docker` + `test_execution_resolver_docker`) and a
-     `doctor` check that a direct public-resolver query from the container fails (§3.3 invariant 3).
+     `RecordingProxy`, `NotImplementedError` bodies so a partial impl fails loudly); (4) the resolver's
+     in-container **recorder + entry** (`capture/resolver_entry.py` — `ResolverConfig`, the pure
+     `_RecordingResolver.record`, the empty-log-at-t0 readiness proof, `load_resolver_from_env`; the one
+     dnslib-shaped `resolve` hook is lazily imported, CI-proven); (5) the **host lifecycle**
+     (`capture/dns_sidecar.py:DnsResolverSidecar` — start/readiness/`resolver_ip` via `docker inspect`/
+     `queries`/stop, runner-seam tested) and the **per-run provider** (`cli/dns_run.py:RunResolver` +
+     `DnsResolverProvider` — create-or-join the internal bridge, resolver-only, `sandbox_dns()` an IP);
+     (6) the **config switch + executor wiring** — `dns.image` (digest-pinned) + `build_resolver_provider`
+     landed together with the executor that consumes them: `SandboxRunExecutor.resolver`, `_open_resolver`
+     (shares the proxy's bridge and is handed the proxy container name), `--dns <ip> --dns-option
+     single-request` in `sandbox/docker.py:build_argv`, Plane E read back into the trace, `dns: full`
+     coverage. All offline-tested (argv assertions, fake backend/resolver, provider from config).
+   - **Remaining, in order:** (a) the **resolver sidecar image** (`sidecar/resolver/` — Dockerfile with
+     a digest-pinned base + dnslib, a runnable `resolver_entry.py` that drives `load_resolver_from_env`
+     with a dnslib `DNSServer`); (b) the CI-gated docker done-when (`test_resolver_docker` +
+     `test_execution_resolver_docker`, mirroring the proxy's) and a `doctor` check that a direct
+     public-resolver query from the container fails (§3.3 invariant 3). Everything host-side is wired
+     and offline-green; what remains is the container image and the live proof, both CI-only.
 
    Found + fixed en route (not WP-15): `egress_actions` emitted a non-spec kind `"egress"` for a
    *permitted* flow — the §1581 kind the canonicalizer maps is `"egress_request"` — so every
