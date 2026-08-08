@@ -69,6 +69,27 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
 1. **Wire the DNS resolver into the executor (finish WP-15).** Mirrors the just-completed proxy
    wiring — a second sidecar on the internal bridge — and closes the covert channel that routes
    around the HTTP proxy. Highest-leverage next brick: the pattern is fresh and proven.
+   - **Landed:** the Plane E *trace seam* — `trace.build.dns_actions` (query log → `dns_query`/
+     `dns_blocked` action records) and the `dns` parameter on `assemble_coverage` (so a run whose
+     resolver logged is `dns: full`, not the old hardcoded "lands in WP-15"). Offline-tested.
+   - **Remaining, in order:** (a) the `dns_query`/`dns_blocked` → capability mapping in
+     `trace/canonical.py` (decide the resolved-vs-blocked weight — the table has `dns_query: 10`
+     but no `dns_blocked`, unlike egress; ground it in §13.5 before wiring); (b) the resolver
+     **producer core** — query-log serializers + a `ControlledResolver` base + a dnslib-agnostic
+     recorder + the in-container entry, mirroring `capture/sidecar_entry.py` and `proxy_addon`'s
+     serializers; (c) the **host lifecycle + provider** (`DnsResolverSidecar`, `RunResolver`,
+     `DnsResolverProvider`) — resolver-only, *not* dual-homed, exposing `sandbox_dns()` (an IP)
+     rather than proxy env/CA; (d) `dns.image` config + `build_resolver_provider` landing together
+     with the executor that consumes them (no orphan switch); (e) `--dns <resolver-ip>` +
+     `--dns-opt` no-fallback in `sandbox/docker.py:build_argv` (the genuinely new plumbing — Docker
+     `--dns` takes an IP, not a container name, so the resolver needs a known bridge IP); (f) the
+     CI-gated docker done-when (`test_resolver_docker` + `test_execution_resolver_docker`) and a
+     `doctor` check that a direct public-resolver query from the container fails (§3.3 invariant 3).
+
+   Found + fixed en route (not WP-15): `egress_actions` emitted a non-spec kind `"egress"` for a
+   *permitted* flow — the §1581 kind the canonicalizer maps is `"egress_request"` — so every
+   permitted egress flow was silently uncanonicalised (unscored). Corrected, with the end-to-end
+   capability test the old kind-only test lacked.
 2. **Plant + scan canaries in a live run (finish WP-16).** The minting/decoding/redaction logic
    exists; this places canaries in the sandbox and scans observed egress **and** DNS labels for them.
    Depends on 1 (DNS observed).
