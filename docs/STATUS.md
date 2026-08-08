@@ -42,7 +42,16 @@ file that lags is worse than none, because it is trusted.
 | **Live `bellwether run` on CI** — a real model evaluation, PR-triggered, posting the verdict | **proven** (PR #39) |
 | WP-17 – WP-20 — Phase B | not started |
 
-713 tests: 668 offline, 45 under the `docker` mark. All green.
+714 tests: 669 offline, 45 under the `docker` mark. All green.
+
+**The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
+`egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
+labeled live PR stands the dual-homed proxy up around each repetition and egress reads *observed*.
+A benign skill is observed-clean, which lifts the `conditional` cap the unobserved plane imposed:
+this is the run that reaches **`ready`**. The smoke policy keeps `egress_outside_allowlist` at
+`warn` for this first proof (a clean run passes either way; a surprise flow in the shakeout warns
+rather than reddening the run before the pipeline is trusted); promoting it to `block` is the
+deliberate follow-up. A test guards the config against rotting back to proxy-off.
 
 **The producer path has an executor-level done-when on CI.** `test_execution_proxy_docker` stands
 a real mitmproxy sidecar up around a real sandbox run *through `SandboxRunExecutor`* — the two
@@ -59,8 +68,9 @@ on a labeled PR.
 networkless exactly as first-light; set to the sidecar image, it assembles the dual-homed provider
 (default-deny allowlist from the configured providers plus `egress.allowlist`, an empty broker
 because the `api-loop` model runs host-side) and the `run` command hands it to the executor. So a
-live config now produces observed egress end to end from the CLI; only a labeled live PR remains to
-prove a benign run reaches `ready`.
+live config now produces observed egress end to end from the CLI, and the live workflow is wired to
+build the sidecar image and run with it — a labeled live PR is the last step, and it is what proves a
+benign run reaches `ready`.
 
 **The recording proxy is now wired into the live executor** (§10.5, §3.3). Both halves of the
 egress plane exist. The consumer half (PR #41) taught the gate to read observed egress:

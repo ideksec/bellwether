@@ -1323,3 +1323,24 @@ The empty broker is deliberate for `api-loop`: the model runs host-side with the
 holds no credential and §3.3 invariant 1 is met in its strongest form. Keeping the switch in config, off
 by default, means the risky path (a container with a route out, however mediated) is opt-in and visible in
 the run's config digest, not a behaviour that changed under the user silently.
+
+## §10.5, §25 — The live smoke run observes egress; the sidecar image is built in the workflow
+
+**Spec.** §10.5 routes egress through the recording proxy; §25's first-light checkpoint proves the
+pipeline end to end on the project's own CI.
+
+**Resolution.** `examples/live/config.yaml` sets `egress.image: bw-proxy-sidecar:live`, and the
+`Bellwether` workflow builds that image (`docker build -f sidecar/proxy/Dockerfile`) in a step gated
+on the same `bellwether-run` label as the paid run, immediately before it. The image is a moving tag,
+not a digest — a non-blocking advisory prints — which is acceptable for a smoke image built fresh each
+run; a real skill repository would pin its own. Built as the runner user, it is visible to the sudo'd
+`bellwether run` because both share the one system daemon.
+
+The payoff is the verdict lift: before the proxy, egress was `not_evaluable`, so the security-runtime
+gate could not pass and a clean benign skill was capped at `conditional` (§25's first-light shape).
+With the proxy wired, a benign run is observed-*clean*, the gate passes, and the run reaches `ready`.
+The smoke policy deliberately keeps `egress_outside_allowlist` at `warn` for this first proof: a clean
+run passes regardless (an observed-clean plane is a pass, not a warn), and `warn` means a surprise flow
+during the shakeout does not redden the run before the pipeline itself is trusted. Promoting to `block`
+— now meaningful, because egress is finally observed — is a deliberate follow-up once the benign run is
+confirmed clean. `test_live_config` guards the config against silently rotting back to proxy-off.
