@@ -1,0 +1,14 @@
+# pip constraints for the controlled-resolver sidecar image (BW-17).
+#
+# Installing Bellwether into the sidecar pulls its transitive deps, and one of them —
+# typing-extensions — has resolved to a version newer than some pinned tools accept. A constraint
+# (unlike a requirement) does not force a package to be installed; it only bounds the version *if*
+# something pulls it in. Bounding it here keeps every `pip install` in the Dockerfile from bumping
+# it out from under a pinned dependency, matching the recording-proxy sidecar's constraint so both
+# images resolve the same shared deps.
+#
+# This is a targeted stopgap, not the full pin. The complete fix is to hash-pin the sidecar's entire
+# Python closure — `uv export` its locked requirements and `pip install --require-hashes` against
+# them — so what is reviewed is exactly what runs, the same discipline uv.lock gives the main
+# package. Until then this constraint keeps a known conflict class from recurring.
+typing-extensions>=4.13.2,<=4.14

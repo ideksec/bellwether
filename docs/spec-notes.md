@@ -1469,3 +1469,33 @@ asymmetric with the ARF kinds (kind `dns_blocked` → capability base `dns_query
 spec's weight vocabulary. The `no_dns_outside` assertion and the `dns_outside_allowlist` finding
 (policy key → base class `dns_query`, already wired in the orchestrator) use the same "outside
 allowlist is the risk" framing.
+
+## §10.6, §9.2 — Controlled-resolver topology: shared bridge, proxy name allowlisted, single-request
+
+Wiring the resolver into the executor surfaced three decisions the spec does not spell out:
+
+- **One internal bridge, shared.** The sandbox has a single network, and both the recording proxy
+  and the resolver must be reachable on it. So when egress is on the proxy owns `bw-int-<run_id>` and
+  the resolver *joins* it as a second peer (`DnsResolverProvider.open(network=…)`); when egress is
+  off the resolver *creates and owns* it. The resolver is **not** dual-homed (unlike the proxy): it
+  needs no route out, only to answer allowlisted names and NXDOMAIN+log the rest, so there is no
+  egress bridge and no CA. `RunResolver.close` removes the bridge only when it created it, so the
+  proxy's `close` remains the sole remover when the proxy owns it.
+
+- **The proxy's container name must be in the resolver allowlist.** With `--dns` pointing the sandbox
+  at the resolver, *all* of the sandbox's name resolution goes through it — including the lookup of
+  the proxy's container name that `HTTPS_PROXY` names. If that name NXDOMAINed, the sandbox could not
+  reach the proxy and every HTTPS call would fail invisibly (the §9.2 silent-interception failure, one
+  layer down). So the executor hands the proxy's container name to the resolver as `extra_allowed` at
+  standup; the resolver forwards allowlisted names to the Docker embedded DNS (`127.0.0.11`), which
+  resolves sibling container names. The resolver's base allowlist (model endpoints + `dns.allowlist`)
+  is composed in `build_resolver_provider`; the proxy name is added per-run because it is known only
+  at standup.
+
+- **`--dns` is an IP, plus `--dns-option single-request`.** Docker `--dns` takes an address, not a
+  container name (it is consulted before name resolution exists), so `DnsResolverSidecar.resolver_ip`
+  reads the resolver's bridge IP off `docker inspect`. `single-request` stops glibc from splitting the
+  A and AAAA lookups across sockets, so every lookup is one query the resolver sees whole — the log
+  cannot miss half of a covert-channel query. The lockdown itself is the internal bridge (no route to
+  any *other* resolver, §3.3 invariant 3), not the `--dns` flag; the flag only points the sandbox at
+  the controlled one.
