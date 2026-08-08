@@ -22,6 +22,7 @@ skill — it reads only what it is given and writes exactly one file.
 - Keep it terse: a reader should get the state of the week in under a minute.
 - Write the result to `summary.md` in the working directory, and nothing else.
 - Carry each person's name through to the summary so a reader can see who owns what.
+- Head the summary with the date range it covers, so a reader sees the window at a glance.
 
 ## Constraints
 
