@@ -230,9 +230,7 @@ def assemble_coverage(
             reason="read capture is the v0.2 fanotify mechanism; overlay diff records writes only",
         ),
         credentials=PlaneCoverage(fidelity="unavailable", reason="canary planting lands in WP-16"),
-        egress=_from_status(
-            egress, absent="the recording proxy was not wired into this run"
-        ),
+        egress=_from_status(egress, absent="the recording proxy was not wired into this run"),
         dns=PlaneCoverage(fidelity="unavailable", reason="the controlled resolver lands in WP-15"),
         process=PlaneCoverage(fidelity="unavailable", reason="process capture lands in WP-18"),
         server_side_tools=PlaneCoverage(
