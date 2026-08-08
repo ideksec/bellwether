@@ -42,7 +42,16 @@ file that lags is worse than none, because it is trusted.
 | **Live `bellwether run` on CI** — a real model evaluation, PR-triggered, posting the verdict | **proven** (PR #39) |
 | WP-17 – WP-20 — Phase B | not started |
 
-691 tests: 649 offline, 42 under the `docker` mark. All green.
+695 tests: 653 offline, 42 under the `docker` mark. All green.
+
+**The egress gate now consumes observed egress** (§10.5, §16.2). It used to hard-code
+`not_evaluable` with a "recording proxy lands in WP-13" reason; now `analyse_run` reads whether
+the proxy ran (coverage) and whether any default-deny block was recorded, threads that through
+the reading, and the gate decides: an observed-clean run **passes**, an observed run with a
+block takes the policy disposition (`block`/`warn`), and a run where the proxy did not run still
+**defers**. This is the consumer half of wiring the recording proxy into the live executor —
+inert until the executor produces egress (the next brick), but it is what lets a benign live run
+reach `ready` instead of the current `conditional` once the proxy is wired in.
 
 **The live PR-integration path is proven end to end.** On PR #39 a real Haiku evaluation ran on
 CI — skill detected from the diff, run six times in the sandbox, verdict rendered and posted as a
@@ -597,6 +606,6 @@ Two working rules follow:
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
-  Forty-eight entries. Read it before changing anything in the skill, sandbox, capture or
+  Forty-nine entries. Read it before changing anything in the skill, sandbox, capture or
   config layers.
 - `CONTRIBUTING.md` — the six mechanically-enforced rules and how to run everything.

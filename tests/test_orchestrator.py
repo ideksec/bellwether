@@ -256,12 +256,12 @@ def test_benign_stable_is_highly_consistent(tmp_path: Path) -> None:
 
 
 def test_egress_is_reported_not_evaluable_with_a_reason(tmp_path: Path) -> None:
-    """§25: the egress plane does not exist yet, so its gate is not_evaluable — and it says
-    why, rather than passing silently."""
+    """§25: this scripted run does not wire the proxy, so egress is not observed and the gate
+    is not_evaluable — and it says why, rather than passing silently."""
     result = _run_pipeline(tmp_path, tmp_path / "out")
     egress = [g for g in result.verdict.gates if "egress" in g.name]
     assert egress and egress[0].status == "not_evaluable"
-    assert "egress capture plane not available" in egress[0].worst_reason
+    assert "egress is not observed" in egress[0].worst_reason
 
 
 def test_the_functional_gate_stops_at_look_one(tmp_path: Path) -> None:

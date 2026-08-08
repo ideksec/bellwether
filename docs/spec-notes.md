@@ -1252,3 +1252,23 @@ that cannot work here silently failing the build. **(2)** Every action is pinned
 reusing the exact `checkout`/`setup-uv` pins the CI workflow already vets, because `pin_lint` holds
 Bellwether's own workflows to the supply-chain rule Bellwether exists to check — a tool about
 mutable-input hygiene must not pull a floating action tag in its own CI.
+
+## §10.5, §16.2 — The egress gate reads observed evidence; the executor and the gate are decoupled
+
+**Spec.** §16.2's egress gate blocks a skill that reaches outside the allowlist; §10.7 requires an
+unobserved plane never to read as a passed check.
+
+**Resolution.** Wiring the recording proxy into a live run is two halves that meet at the trace, and
+they are deliberately separate. The **producer** (the executor standing up the sidecar and writing the
+proxy's flows into the trace) is container work, validated on CI. The **consumer** — this entry — is
+pure and offline-tested: `assemble_coverage` gains an `egress` status, `analyse_run` derives
+`egress_observed` (the proxy's flow log appeared, so the plane was captured — true even at zero flows,
+which is observed-clean, not unobserved) and `egress_blocked` (a default-deny block was recorded), and
+those thread through the `SetReading` into `_security_runtime_result`. The gate's decision table is
+then honest in all three states: proxy did not run → `not_evaluable` (an unobserved channel is never
+called clean, §10.7); ran and blocked nothing → `pass`; ran and recorded a block → the policy
+disposition (`block`, or `warn` on a softer profile). Keeping the consumer decoupled from the producer
+means the gate logic is unit-tested against synthetic readings without a container, and the executor
+change lands behind it without touching the verdict math. `egress_observed` is set only when *every*
+run in the set was observed: a set with one blind run has an incomplete picture, so the gate defers
+rather than passing on partial evidence.

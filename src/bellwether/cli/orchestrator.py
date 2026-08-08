@@ -164,6 +164,12 @@ class AnalysedRun:
     scope_exceeded: tuple[str, ...]
     trace_jsonl: str
     canonical_json: str
+    #: The recording proxy ran for this run, so egress is observed ground truth — even at zero
+    #: flows, which is an observed-clean run, not an unobserved one (§10.5, §10.7).
+    egress_observed: bool = False
+    #: A default-deny block was recorded: the skill tried to reach a host outside the allowlist
+    #: (§10.5.0). Evidence of intent, and what turns the egress gate from pass to block.
+    egress_blocked: bool = False
 
 
 def plan_matrix(
@@ -314,6 +320,9 @@ def analyse_run(
     canonical_json = canonical_json_of(
         canon.caps_t1, canon.caps_t2, canon.caps_t3, canon.step_sequence
     )
+    # The proxy writing its flow log is proof the egress plane was captured (§10.7); a run where
+    # it never ran leaves the plane unavailable, and `plane_reason` returns why.
+    egress_observed = index.plane_reason("egress") is None
     return AnalysedRun(
         key=key,
         outcome=outcome,
@@ -326,6 +335,8 @@ def analyse_run(
         scope_exceeded=scope_exceeded,
         trace_jsonl=executed.trace_jsonl,
         canonical_json=canonical_json,
+        egress_observed=egress_observed,
+        egress_blocked=index.egress_blocked_present,
     )
 
 
@@ -384,6 +395,12 @@ class SetReading:
     rare_capability_risk: str
     tier1_agreement: bool
     scope_exceeded: tuple[str, ...]
+    #: Egress was observed on *every* run in the set — the proxy ran throughout, so the set's
+    #: egress evidence is complete and the gate can be decided rather than deferred.
+    egress_observed: bool
+    #: At least one run recorded a default-deny block — a skill-attributed reach outside the
+    #: allowlist somewhere in the set.
+    egress_blocked: bool
     weights_digest: str
     runs: tuple[AnalysedRun, ...]
 
@@ -441,6 +458,10 @@ def aggregate(
     )
 
     scope_exceeded = tuple(sorted({cap for run in runs for cap in run.scope_exceeded}))
+    # Observed only if *every* run's proxy ran: a set with one unobserved run has an
+    # incomplete egress picture, so the gate defers rather than passing on partial evidence.
+    egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
+    egress_blocked = any(run.egress_blocked for run in runs)
     return SetReading(
         scenario_id=scenario_id,
         target=target,
@@ -459,6 +480,8 @@ def aggregate(
         rare_capability_risk=_rare_risk(capability.rare_findings),
         tier1_agreement=capability.tier1_agreement,
         scope_exceeded=scope_exceeded,
+        egress_observed=egress_observed,
+        egress_blocked=egress_blocked,
         weights_digest=capability.weights_digest,
         runs=tuple(runs),
     )
@@ -596,22 +619,41 @@ _PLANE_DEPENDENT_CHECKS: Mapping[str, str] = {
 
 
 def _security_runtime_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
-    """The one plane-dependent gate that first-light exercises: egress, not yet observable.
+    """The egress gate (§10.5, §16.2), decided from what the recording proxy observed.
 
-    Reported ``not_evaluable`` with the coverage reason, required only where the policy
-    disposition is ``block`` — so a ``warn`` disposition (first-light) does not block.
+    Three states. Where the proxy did not run for every run in the set, egress is *not
+    observed* and the gate defers (``not_evaluable``) — an unobserved channel is never called
+    clean. Where it ran and recorded a default-deny block, the skill reached outside the
+    allowlist and the gate takes the policy disposition (``block`` or, for a softer profile,
+    ``warn``). Where it ran and blocked nothing, the run is observed-clean and the gate passes.
     """
-    gates = profile.gates.security_runtime
-    disposition = gates.egress_outside_allowlist
-    reason = (
-        "egress capture plane not available in this build (recording proxy lands in WP-13); "
-        "no egress gate can be evaluated"
+    disposition = profile.gates.security_runtime.egress_outside_allowlist
+    if not reading.egress_observed:
+        return _tgr(
+            reading.target,
+            "not_evaluable",
+            "unobserved",
+            disposition,
+            "the recording proxy was not wired into this run, so egress is not observed and "
+            "the gate cannot be decided (§10.7)",
+        )
+    if reading.egress_blocked:
+        status = "block" if disposition == "block" else "warn"
+        return _tgr(
+            reading.target,
+            status,
+            "egress outside the allowlist (default-deny block recorded)",
+            disposition,
+            "the skill attempted egress to a host outside the allowlist; the proxy blocked it "
+            "(§10.5.0)",
+        )
+    return _tgr(
+        reading.target,
+        "pass",
+        "no egress outside the allowlist",
+        disposition,
+        "the recording proxy observed the run and recorded no egress outside the allowlist",
     )
-    if disposition == "block":
-        # A blocking egress gate on an egress-blind build is exactly what §16.4 refuses
-        # before the run; if we reach here the caller ran anyway, so surface it honestly.
-        return _tgr(reading.target, "not_evaluable", "unobserved", disposition, reason)
-    return _tgr(reading.target, "not_evaluable", "unobserved", disposition, reason)
 
 
 @dataclass(frozen=True)

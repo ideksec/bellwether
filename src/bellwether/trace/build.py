@@ -205,6 +205,7 @@ def assemble_coverage(
     *,
     harness_events: PlaneStatus | None = None,
     filesystem_writes: PlaneStatus | None = None,
+    egress: PlaneStatus | None = None,
 ) -> Coverage:
     """Build the §10.7 coverage block from what WP-5 can actually capture.
 
@@ -212,6 +213,10 @@ def assemble_coverage(
     left out reads as a check that passed, so the planes later work packages bring are
     listed as unavailable with the work package named — a reason a user can act on,
     which here means "do not expect this evidence yet".
+
+    ``egress`` is set when the recording-proxy sidecar ran for this run (WP-13): the proxy
+    writing its flow log is proof the plane was captured, even when it recorded zero flows —
+    an observed-clean run, not an unobserved one. Absent it, egress stays ``unavailable``.
     """
     return Coverage(
         harness_events=_from_status(
@@ -225,7 +230,7 @@ def assemble_coverage(
             reason="read capture is the v0.2 fanotify mechanism; overlay diff records writes only",
         ),
         credentials=PlaneCoverage(fidelity="unavailable", reason="canary planting lands in WP-16"),
-        egress=PlaneCoverage(fidelity="unavailable", reason="the recording proxy lands in WP-13"),
+        egress=_from_status(egress, absent="the recording proxy was not wired into this run"),
         dns=PlaneCoverage(fidelity="unavailable", reason="the controlled resolver lands in WP-15"),
         process=PlaneCoverage(fidelity="unavailable", reason="process capture lands in WP-18"),
         server_side_tools=PlaneCoverage(

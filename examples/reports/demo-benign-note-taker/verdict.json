@@ -27,7 +27,7 @@
     },
     {
       "name": "security_runtime.egress",
-      "reason": "api-loop-scripted-frontier: egress capture plane not available in this build (recording proxy lands in WP-13); no egress gate can be evaluated",
+      "reason": "api-loop-scripted-frontier: the recording proxy was not wired into this run, so egress is not observed and the gate cannot be decided (§10.7)",
       "required": false,
       "status": "not_evaluable"
     }

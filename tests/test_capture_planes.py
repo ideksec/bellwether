@@ -329,8 +329,10 @@ def test_every_plane_is_stated_including_the_unbuilt_ones() -> None:
         "process",
         "server_side_tools",
     }
-    # Each absent plane names the work package that brings it, or why it is off.
-    assert "WP-13" in unavailable["egress"]
+    # Each absent plane names the work package that brings it, or why it is off. Egress is
+    # wireable now (the recording proxy is built), so its reason names why it was not captured
+    # *this run* rather than a work package.
+    assert "recording proxy" in unavailable["egress"]
     assert "WP-15" in unavailable["dns"]
     assert "WP-16" in unavailable["credentials"]
     assert "WP-18" in unavailable["process"]

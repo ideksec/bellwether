@@ -14,7 +14,7 @@ _failed one or more blocking gates._ Policy profile **medium**; skill **flaky-fo
 | functional | 🔴 `block` | 0.128638 | 0.6 | api-loop-scripted-frontier: pass-rate lower bound 0.128638 vs 0.6 (fail) |
 | consistency | 🟡 `warn` | 61.15788 | 80.0 | api-loop-scripted-frontier: BCI 61.15788 < 80.0; weighted Jaccard 0.778947 < 0.8 |
 | scope | 🟢 `pass` | within scope | declared scope | api-loop-scripted-frontier: declared vs observed |
-| security_runtime.egress | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: egress capture plane not available in this build (recording proxy lands in WP-13); no egress gate can be evaluated |
+| security_runtime.egress | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: the recording proxy was not wired into this run, so egress is not observed and the gate cannot be decided (§10.7) |
 
 ### Repetition outcomes
 
