@@ -24,7 +24,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bellwether.capture import (
     Canary,
@@ -49,7 +49,13 @@ from bellwether.harness import (
     SandboxToolset,
 )
 from bellwether.harness.tools import docker_exec_runner
-from bellwether.sandbox import DockerBackend, IsolationProfile, ZoneMap, prepare_sandbox
+from bellwether.sandbox import (
+    DockerBackend,
+    IsolationProfile,
+    PreparedSandbox,
+    ZoneMap,
+    prepare_sandbox,
+)
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
     IdentityBlock,
@@ -152,6 +158,21 @@ def _proxy_run_id(eval_id: str, plan: RunPlan) -> str:
     return sanitized.lstrip("-_.") or "run"
 
 
+def _resolve_canary_path(slot_path: str, *, home: str, workspace_root: str) -> PurePosixPath:
+    """Resolve a canary slot path to the absolute container path it is planted at (§10.4).
+
+    ``~/x`` maps to the container ``HOME`` — the realistic home of ``~/.aws/credentials`` and the
+    like; a bare relative path maps to the workspace root, a skill's working directory, where a ``.env``
+    naturally sits; an absolute path is taken verbatim. The result is where the read-only bind lands so
+    a thieving skill finds the credential exactly where a real one would live.
+    """
+    if slot_path.startswith("~/"):
+        return PurePosixPath(home) / slot_path[2:]
+    if slot_path.startswith("/"):
+        return PurePosixPath(slot_path)
+    return PurePosixPath(workspace_root) / slot_path
+
+
 def _reported_model_id(events: Sequence[RawHarnessEvent], fallback: str) -> str:
     """The model id the provider said it served, read from the ``model_turn`` events.
 
@@ -196,11 +217,13 @@ class SandboxRunExecutor:
         plant_canaries: Whether to plant this evaluation's canaries and scan the observed planes
             for them (§10.4). When ``True``, per-evaluation markers are minted from a seed derived
             from ``eval_id``/``rng_seed`` (identical across the repetitions in an evaluation, so the
-            run cache keyed on ``fixture_digest`` still hits — §9.3), the env-var canary is delivered
-            into the container, and the host-side planes (the model's final output, DNS query names)
-            are scanned for leaks into Plane C. When ``False`` the credentials plane stays
-            unavailable. **File-slot planting (writable mounts) and egress-body scanning are not yet
-            wired**, so with planting on the plane reads ``partial``, not ``full``.
+            run cache keyed on ``fixture_digest`` still hits — §9.3), the whole pool is delivered
+            into the container (the env-var canary as an environment variable, the file canaries as
+            read-only binds at their slot paths — ``~/.aws/credentials``, ``.env``, …), and the
+            host-side planes (the model's final output, DNS query names) are scanned for leaks into
+            Plane C. When ``False`` the credentials plane stays unavailable. The plane reads
+            ``partial`` not ``full`` because the scan does not yet cover egress bodies (sidecar-side),
+            written-file contents, or tool arguments.
     """
 
     backend: DockerBackend
@@ -260,17 +283,17 @@ class SandboxRunExecutor:
             network = "none"
         dns = run_resolver.sandbox_dns() if run_resolver is not None else None
         # This evaluation's canaries (§10.4). Minted per *evaluation*, not per repetition, so the
-        # markers are identical across the runs in an evaluation. Planting only stages the env-var
-        # canary for now; the file slots are recorded but their delivery is the next brick.
+        # markers are identical across the runs in an evaluation. The whole pool is delivered — the
+        # env-var canary through the env, the file canaries as read-only binds — so every minted
+        # canary is a planted one, scanned for, redacted, and recorded by reference in the header.
         canaries = self._canaries()
         planting = plan_canary_planting(canaries) if canaries else None
-        # The canaries whose markers actually reached the container this run — the ones the planner
-        # delivered as env vars. Derived from the planner's own output so the env-vs-file placement
-        # rule lives only there, and only a delivered marker is ever scanned for or recorded as planted.
-        delivered = set(planting.env.values()) if planting is not None else set()
-        planted = [c for c in canaries if c.marker in delivered]
         extra_env = self._extra_env(plan, run_proxy, planting)
-        extra_ro_binds = run_proxy.sandbox_ro_binds() if run_proxy is not None else None
+        ro_binds: list[tuple[Path, PurePosixPath]] = (
+            list(run_proxy.sandbox_ro_binds()) if run_proxy is not None else []
+        )
+        ro_binds += self._stage_canary_files(planting, prepared, run_dir)
+        extra_ro_binds = ro_binds or None
 
         try:
             self.backend.mount(prepared)
@@ -319,7 +342,7 @@ class SandboxRunExecutor:
             # sidecar-side (the body never leaves the proxy), so Plane D is not a source here yet.
             plane_c = canary_actions(
                 plane_a + plane_e,
-                planted,
+                canaries,
                 start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
             )
 
@@ -347,7 +370,7 @@ class SandboxRunExecutor:
                     image=self.backend.image,
                     workspace_root=str(prepared.identifiers.workspace_root),
                 ),
-                identity=self._identity_block(planting, planted),
+                identity=self._identity_block(planting, canaries),
                 coverage=assemble_coverage(
                     harness_events=PlaneStatus(fidelity="full") if events else None,
                     filesystem_writes=filesystem_writes_status(set(zone_diffs)),
@@ -356,15 +379,16 @@ class SandboxRunExecutor:
                     egress=PlaneStatus(fidelity="full") if run_proxy is not None else None,
                     # Same for the resolver's query log: a zero-query run is observed-clean DNS.
                     dns=PlaneStatus(fidelity="full") if run_resolver is not None else None,
-                    # Canaries planted: the env-var channel is observed, but file-slot planting and
-                    # egress-body scanning are not yet wired, so the plane reads partial not full.
+                    # Canaries planted (env var + file slots) and scanned in the model output and DNS
+                    # query names. Partial not full: the scan does not yet cover egress bodies
+                    # (sidecar-side), written-file contents, or tool arguments.
                     credentials=(
                         PlaneStatus(
                             fidelity="partial",
                             reason=(
-                                "canaries planted as environment variables and scanned in the "
-                                "model output and DNS query names; file-slot planting (writable "
-                                "mounts) and egress-body scanning are not yet wired"
+                                "canaries planted (environment variable and file slots) and scanned "
+                                "in the model output and DNS query names; egress-body, written-file, "
+                                "and tool-argument scanning are not yet wired"
                             ),
                         )
                         if planting is not None
@@ -387,7 +411,9 @@ class SandboxRunExecutor:
             # into its final output or a DNS name would otherwise land raw in the uploaded artifact.
             # Runs after canary_actions (which needed the raw marker to find the leak) and over every
             # plane, so no artifact holds a value the Plane C finding has already recorded escaped.
-            actions = redact_trace_actions(plane_a + plane_b + plane_d + plane_e + plane_c, planted)
+            actions = redact_trace_actions(
+                plane_a + plane_b + plane_d + plane_e + plane_c, canaries
+            )
             trace_path = write_trace(
                 run_dir / "trace.arf.jsonl",
                 header,
@@ -460,6 +486,35 @@ class SandboxRunExecutor:
         if not self.plant_canaries:
             return []
         return mint_canaries(self._canary_seed())
+
+    def _stage_canary_files(
+        self, planting: CanaryPlanting | None, prepared: PreparedSandbox, run_dir: Path
+    ) -> list[tuple[Path, PurePosixPath]]:
+        """Write each file canary to a host file and bind it read-only at its slot path (§10.4).
+
+        Read-only is enough and safer: a thief only needs to *read* the credential, and a read-only
+        mount cannot be tampered into concealing the plant. The bind is how the marker reaches the
+        container without reaching the trace — the header records the slot by reference only (§10.4.3).
+        The host paths are resolved absolute because a Docker bind source must be (a relative one is
+        read as a named volume and fails at container start).
+        """
+        if planting is None or not planting.files:
+            return []
+        home = prepared.environment().get("HOME", "/home/agent")
+        workspace_root = str(prepared.identifiers.workspace_root)
+        canary_dir = (run_dir / "canaries").resolve()
+        canary_dir.mkdir(parents=True, exist_ok=True)
+        binds: list[tuple[Path, PurePosixPath]] = []
+        for index, (slot_path, content) in enumerate(planting.files):
+            host_file = canary_dir / f"f{index}"
+            host_file.write_text(content, encoding="utf-8")
+            binds.append(
+                (
+                    host_file,
+                    _resolve_canary_path(slot_path, home=home, workspace_root=workspace_root),
+                )
+            )
+        return binds
 
     def _identity_block(
         self, planting: CanaryPlanting | None, planted: list[Canary]

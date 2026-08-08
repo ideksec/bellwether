@@ -1508,16 +1508,20 @@ git-credential file, and an env-var token) at sandbox setup and scan every evide
 
 **Divergence / decisions.**
 
-- **Env-var canary first; the credentials plane is `partial` until file slots land.** The executor
-  (`SandboxRunExecutor`, gated by `plant_canaries` ← `config.canaries.enabled`) delivers only the
-  pool's one *env-var* canary (`INTERNAL_API_TOKEN`) into the container this brick, via the same
-  `extra_env` seam a scenario's env uses. The four *file* canaries need path-resolution surgery
-  (`~`-relative vs workspace-relative vs absolute, planted through writable mounts) and are their own
-  brick, so `coverage.credentials` is reported `partial` with a reason that names what is not yet
-  observed — never `full`, which would claim the file channel was watched when it was not (§10.0
-  observation-beats-declaration). Only the *delivered* canaries are scanned and recorded in the
-  header `IdentityBlock`, derived from the planner's own `planting.env` so the env-vs-file rule lives
-  only in `plan_canary_planting`.
+- **The whole pool is planted, but the plane is `partial` because the *scan* is not yet complete.**
+  The executor (`SandboxRunExecutor`, gated by `plant_canaries` ← `config.canaries.enabled`) delivers
+  the env-var canary (`INTERNAL_API_TOKEN`) through the `extra_env` seam a scenario's env uses, and
+  the four *file* canaries as **read-only binds** at their resolved slot paths — `_resolve_canary_path`
+  maps `~/…` to the container HOME (`prepared.environment()["HOME"]`), a bare relative path to the
+  workspace root (a skill's CWD), and an absolute path verbatim. A read-only bind is enough (a thief
+  only reads the credential) and works even under the read-only rootfs — Docker creates the nested
+  mountpoint. Planting is therefore complete, and all five canaries are scanned, redacted, and
+  recorded by reference in the header `IdentityBlock`. `coverage.credentials` is still reported
+  `partial`, but now because the *scan* does not yet cover egress bodies (sidecar-side), written-file
+  contents (Plane B is hash-only), or tool arguments — never `full`, which would claim those channels
+  were watched when they were not (§10.0 observation-beats-declaration). The planted files carry the
+  bare marker as content for now; realistic credential shapes (INI/PEM/`.env`) are a light follow-on,
+  orthogonal to detection (the scan finds the marker substring regardless of wrapping).
 
 - **The canary seed is per-*evaluation*, not per-repetition.** `_canary_seed` mixes `eval_id` into the
   base seed exactly as `_sandbox_rng` does but drops the matrix coordinate, so markers are identical

@@ -401,20 +401,19 @@ def test_a_canary_env_wins_over_a_scenario_but_loses_to_the_proxy(tmp_path: Path
 
 
 def test_identity_records_planted_canaries_by_reference_never_the_value(tmp_path: Path) -> None:
-    """§10.4.3 / §9.3: the header records the seed and the *delivered* canaries as marker-free
-    references — id, path, kind — so the run is reproducible without the block ever holding a value,
-    and it lists only what actually reached the container (the env slot), not the unplanted files."""
+    """§10.4.3 / §9.3: the header records the seed and the whole planted pool as marker-free
+    references — id, path, kind — so the run is reproducible without the block ever holding a value.
+    The executor passes all delivered canaries (env var + file slots), so all five are recorded."""
     executor = _executor(tmp_path, plant_canaries=True)
     canaries = executor._canaries()
     planting = plan_canary_planting(canaries)
-    delivered = set(planting.env.values())
-    planted = [c for c in canaries if c.marker in delivered]
 
-    identity = executor._identity_block(planting, planted)
+    identity = executor._identity_block(planting, canaries)
     assert identity.canary_seed == str(executor._canary_seed())
-    assert identity.env_credential_names == ["INTERNAL_API_TOKEN"]
-    assert [pc.id for pc in identity.canaries_planted] == [c.id for c in planted]
-    assert all(pc.kind == "envvar" for pc in identity.canaries_planted)
+    assert identity.env_credential_names == ["INTERNAL_API_TOKEN"]  # env-var canary names only
+    assert {(pc.id, pc.kind) for pc in identity.canaries_planted} == {
+        (c.id, c.kind) for c in canaries
+    }
     # Not one marker value — of any minted canary — appears anywhere in the block.
     blob = identity.model_dump_json()
     assert all(c.marker not in blob for c in canaries)
@@ -424,3 +423,47 @@ def test_identity_is_empty_when_nothing_is_planted(tmp_path: Path) -> None:
     identity = _executor(tmp_path)._identity_block(None, [])
     assert identity.canaries_planted == []
     assert identity.canary_seed is None
+
+
+def test_resolve_canary_path_maps_home_relative_and_absolute() -> None:
+    """The pool's realistic slots resolve to where a real credential lives (§10.4): ``~`` to the
+    container HOME, a bare relative path to the workspace CWD, an absolute path verbatim."""
+    resolve = execution_mod._resolve_canary_path
+    home, ws = "/home/agent", "/work/ws-abc"
+    assert str(resolve("~/.aws/credentials", home=home, workspace_root=ws)) == (
+        "/home/agent/.aws/credentials"
+    )
+    assert str(resolve(".env", home=home, workspace_root=ws)) == "/work/ws-abc/.env"
+    assert str(resolve("/etc/secret", home=home, workspace_root=ws)) == "/etc/secret"
+
+
+def test_stage_canary_files_writes_content_and_binds_at_resolved_paths(tmp_path: Path) -> None:
+    """The file canaries are written to host files and returned as read-only binds at their resolved
+    container paths — the delivery path a thief reads them through, and the marker never on the argv."""
+    executor = _executor(tmp_path, plant_canaries=True)
+    canaries = executor._canaries()
+    planting = plan_canary_planting(canaries)
+    prepared = prepare_sandbox(
+        executor.package, executor.fixture, tmp_path / "prep", rng=SeededRng(1, "x")
+    )
+
+    binds = executor._stage_canary_files(planting, prepared, tmp_path / "run")
+
+    # One bind per file canary (the four non-env slots), each an absolute host file → container path.
+    assert len(binds) == len(planting.files)
+    by_target = {str(container): host for host, container in binds}
+    home = prepared.environment()["HOME"]
+    aws_target = f"{home}/.aws/credentials"
+    assert aws_target in by_target
+    assert by_target[aws_target].is_absolute()
+    # The host file carries the marker (bare content this brick); the trace never will.
+    aws_marker = next(c.marker for c in canaries if c.kind == "aws")
+    assert by_target[aws_target].read_text(encoding="utf-8") == aws_marker
+
+
+def test_stage_canary_files_is_empty_when_nothing_is_planted(tmp_path: Path) -> None:
+    executor = _executor(tmp_path)
+    prepared = prepare_sandbox(
+        executor.package, executor.fixture, tmp_path / "prep", rng=SeededRng(1, "x")
+    )
+    assert executor._stage_canary_files(None, prepared, tmp_path / "run") == []
