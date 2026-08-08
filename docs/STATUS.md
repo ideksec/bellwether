@@ -42,16 +42,24 @@ file that lags is worse than none, because it is trusted.
 | **Live `bellwether run` on CI** — a real model evaluation, PR-triggered, posting the verdict | **proven** (PR #39) |
 | WP-17 – WP-20 — Phase B | not started |
 
-695 tests: 653 offline, 42 under the `docker` mark. All green.
+708 tests: 664 offline, 44 under the `docker` mark. All green.
 
-**The egress gate now consumes observed egress** (§10.5, §16.2). It used to hard-code
-`not_evaluable` with a "recording proxy lands in WP-13" reason; now `analyse_run` reads whether
-the proxy ran (coverage) and whether any default-deny block was recorded, threads that through
-the reading, and the gate decides: an observed-clean run **passes**, an observed run with a
-block takes the policy disposition (`block`/`warn`), and a run where the proxy did not run still
-**defers**. This is the consumer half of wiring the recording proxy into the live executor —
-inert until the executor produces egress (the next brick), but it is what lets a benign live run
-reach `ready` instead of the current `conditional` once the proxy is wired in.
+**The recording proxy is now wired into the live executor** (§10.5, §3.3). Both halves of the
+egress plane exist. The consumer half (PR #41) taught the gate to read observed egress:
+`analyse_run` reads whether the proxy ran (coverage) and whether any default-deny block was
+recorded, and the gate decides — an observed-clean run **passes**, an observed run with a block
+takes the policy disposition (`block`/`warn`), a run with no proxy still **defers**. The producer
+half is the executor now standing a **dual-homed** sidecar up around each run: the sandbox lives on
+a Docker `--internal` bridge (no route out, §3.3 invariant 3), the sidecar is attached to *both*
+that bridge and an ordinary egress bridge (the sole crossing to the internet, recording every
+flow), the sandbox routes through it via `HTTPS_PROXY` and trusts its CA (mounted read-only from
+the shared volume, §9.2), and what the proxy records becomes Plane D of the trace. This is what the
+user's "it needs internet — otherwise the skill fails or knows it's in a sandbox" requires: the
+skill reaches the internet *and* every byte is observed. The Docker seams (`extra_env`,
+`extra_ro_binds`, `connect_network`) and the standup logic (`cli/proxy_run.py`) are proven — the
+seams live on a real daemon, the topology and teardown offline with fakes, and dual-homing against
+a real daemon on CI. The full live interception from inside the sandbox (a real HTTPS request in the
+trace, a benign run reaching `ready`) is the next brick.
 
 **The live PR-integration path is proven end to end.** On PR #39 a real Haiku evaluation ran on
 CI — skill detected from the diff, run six times in the sandbox, verdict rendered and posted as a
@@ -63,9 +71,11 @@ two cheap fixes (a relative Docker bind-mount path; a doubled artifact-tree dire
 The live evaluation is **opt-in per PR** — it runs only when a PR both changes a skill *and*
 carries the `bellwether-run` label, so nothing spends by surprise; the changed-skills detection
 alone never triggers a paid run. `examples/live/` holds the cheap config (api-loop + Haiku, one
-look of 6, egress advisory) and `bellwether run` takes a `--max-tokens` cost ceiling. The one gap
-that remains is that the live executor does not yet wire the recording proxy, so egress/scope
-violations are visible in the capability heatmap but not gated (see "what to do next").
+look of 6, egress advisory) and `bellwether run` takes a `--max-tokens` cost ceiling. The executor
+now wires the recording proxy (above); the remaining gap is proving the full interception live on
+CI — a real HTTPS request from inside the sandbox appearing in the trace — and building the CLI
+plumbing that constructs the proxy provider from config for a labeled live run (see "what to do
+next").
 
 **There is now something to look at.** `bellwether demo` renders three example skills
 (`examples/skills/`) to three reports (`examples/reports/`) — including an HTML report —
@@ -82,8 +92,9 @@ and the `run` command loads config/policy/skill and calls it. The assembly is te
 end with an injected scripted executor (`benign-stable` → `conditional`, the first-light shape),
 and the command's refusal paths (no skill, missing config, no daemon, unset key, placeholder model)
 exit 3 with a clear reason. What is *not* yet exercised is a real container run from the CLI against
-a live model — that reuses the proven `SandboxRunExecutor` but has not been run on CI end to end,
-and the declared scope is intentionally not applied until the executor captures egress (its
+a live model — that reuses the proven `SandboxRunExecutor` (which now optionally stands a recording
+proxy up per run) but has not been run on CI end to end, and the declared scope is intentionally not
+applied until the CLI constructs the proxy provider from config so egress is captured (its
 auto-derived egress assertions are `not_evaluable` without the proxy).
 
 ### What WP-12 built

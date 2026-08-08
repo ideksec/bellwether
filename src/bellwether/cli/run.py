@@ -28,6 +28,7 @@ from bellwether.cli.orchestrator import (
     orchestrate,
     plan_matrix,
 )
+from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import resolve_run
 from bellwether.config.models.config import Config
 from bellwether.config.models.policy import Policy
@@ -133,6 +134,7 @@ def sandbox_executor_factory(
     run_root: Path,
     eval_id: str,
     limits: RunLimits | None = None,
+    proxy: SidecarProxyProvider | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -141,6 +143,10 @@ def sandbox_executor_factory(
     ``limits`` bounds each repetition — most importantly ``max_total_tokens``, the hard ceiling on
     what one run can spend against a live provider; omitted, it takes the :class:`RunLimits`
     defaults.
+
+    ``proxy``, when supplied, stands a dual-homed recording-proxy sidecar up around each run so the
+    egress plane is observed (§10.5). Omitted, the sandbox runs with no network, exactly as
+    first-light — egress stays ``not_evaluable`` rather than being reported clean unobserved.
     """
     run_limits = limits if limits is not None else RunLimits()
 
@@ -159,6 +165,7 @@ def sandbox_executor_factory(
             eval_id=eval_id,
             run_root=run_root,
             limits=run_limits,
+            proxy=proxy,
         )
 
     return make

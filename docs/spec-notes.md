@@ -1272,3 +1272,39 @@ means the gate logic is unit-tested against synthetic readings without a contain
 change lands behind it without touching the verdict math. `egress_observed` is set only when *every*
 run in the set was observed: a set with one blind run has an incomplete picture, so the gate defers
 rather than passing on partial evidence.
+
+## §10.5, §3.3, §9.2 — The executor stands a dual-homed recording proxy up per run
+
+**Spec.** §10.5 routes all container egress through a recording proxy; §3.3 invariant 3 forbids any
+unmediated route out; §9.2 requires the proxy CA to be trusted so TLS is intercepted rather than
+silently failing.
+
+**Resolution.** The producer half named in the entry above. `SandboxRunExecutor` gains an optional
+`proxy` provider; when set, each run is stood up behind a **dual-homed** sidecar, assembled in
+`cli/proxy_run.py`:
+
+- Two bridges per run — an `--internal` bridge (the sandbox's only home, no gateway) and an ordinary
+  egress bridge (has a gateway). The sandbox is attached to the internal one alone, so §3.3 invariant
+  3 is a routing fact: the kernel refuses any socket to a public address before userspace runs.
+- The sidecar starts on the internal bridge (reachable by the sandbox) and is then attached to the
+  egress bridge too (`connect_network`), so it — and only it — has a way out. It is the sole crossing
+  between the sandbox's world and the internet, and it records every crossing. This is what lets the
+  skill actually reach the internet (a skill that cannot either fails or learns it is sandboxed) while
+  staying fully observed.
+- The sandbox is pointed at the sidecar with `HTTPS_PROXY` and told to trust its CA. Three new seams
+  carry this without widening the security surface: `build_argv` gains `extra_env` (merged last-wins;
+  the real key never enters the container, only ordinary proxy/CA env, §3.3 invariant 1) and
+  `extra_ro_binds` (the CA mounted read-only at the trust path, after the payload so it stays on top).
+
+**The CA is trusted by environment variables, not the system store.** `update-ca-certificates` needs
+root and a writable root filesystem; the sandbox is neither (`--read-only`, uid 1000). So the sidecar
+writes its CA into the shared volume (`--set confdir=/bw/mitmproxy`), the executor mounts that PEM into
+the container, and the full §9.2 env table (`REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`,
+`CURL_CA_BUNDLE`) points every runtime at it. A CA that never appears is a **loud** failure
+(`ca_cert_path` raises), never a fall-through to an untrusted proxy — which would intercept nothing and
+produce the zero-egress trace §9.2 exists to prevent. Baking a `.crt` into the system store for the Go
+and system-curl case is a build-time concern deferred with the live-proof brick.
+
+**The broker is empty for `api-loop`.** The model runs host-side with the real key, so the sandbox is
+handed no credential at all: the strongest form of §3.3 invariant 1 holds trivially — there is nothing
+to steal. The proxy still records and allowlist-checks the skill's own traffic.

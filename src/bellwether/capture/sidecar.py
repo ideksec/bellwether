@@ -50,6 +50,14 @@ SIDECAR_ENTRY_PATH = "/opt/bw/proxy_entry.py"
 _CONFIG_NAME = "config.json"
 _FLOW_LOG_NAME = "flows.jsonl"
 
+#: The mitmproxy confdir, on the shared volume so the host can read the CA the proxy generates.
+#: mitmproxy writes its CA files here on first start; the sandbox trusts one of them (§9.2).
+_CONFDIR_NAME = "mitmproxy"
+#: The PEM-encoded CA certificate mitmproxy writes into its confdir. This is the client-trust
+#: form the sandbox's CA-bundle env vars point at; the ``.crt`` copy for a system store is a
+#: build-time concern the read-only, non-root sandbox cannot run ``update-ca-certificates`` for.
+_CA_CERT_NAME = "mitmproxy-ca-cert.pem"
+
 
 @dataclass(frozen=True)
 class SidecarHandle:
@@ -61,6 +69,7 @@ class SidecarHandle:
     proxy_url: str
     config_host_path: Path
     flow_log_host_path: Path
+    ca_cert_host_path: Path
 
 
 @dataclass
@@ -112,6 +121,10 @@ class MitmproxySidecar(RecordingProxy):
             # this mitmproxy refuses "global" destinations and the fake-provider tests cannot run.
             "--set",
             "block_global=false",
+            # Put the CA in the shared volume, so the host can mount it into the sandbox and TLS
+            # is actually intercepted rather than silently failing to a zero-egress trace (§9.2).
+            "--set",
+            f"confdir={SIDECAR_SHARED_MOUNT / _CONFDIR_NAME}",
         ]
         return argv
 
@@ -134,6 +147,7 @@ class MitmproxySidecar(RecordingProxy):
         container_name = f"bw-proxy-{run_id}"
         config_host = self.shared_dir / _CONFIG_NAME
         flow_log_host = self.shared_dir / _FLOW_LOG_NAME
+        ca_cert_host = self.shared_dir / _CONFDIR_NAME / _CA_CERT_NAME
         config_container = SIDECAR_SHARED_MOUNT / _CONFIG_NAME
 
         self.shared_dir.mkdir(parents=True, exist_ok=True)
@@ -163,6 +177,7 @@ class MitmproxySidecar(RecordingProxy):
             proxy_url=f"http://{container_name}:{self.listen_port}",
             config_host_path=config_host,
             flow_log_host_path=flow_log_host,
+            ca_cert_host_path=ca_cert_host,
         )
         self._await_ready(flow_log_host, container_name)
 
@@ -188,6 +203,36 @@ class MitmproxySidecar(RecordingProxy):
     def proxy_url(self) -> str:
         """The URL the sandbox uses as its ``HTTPS_PROXY`` — the sidecar on the bridge."""
         return self._require_handle().proxy_url
+
+    def container_name(self) -> str:
+        """The running sidecar's container name, so the launcher can attach it to a second
+        network for dual-homing (§3.3): internal bridge in, egress bridge out."""
+        return self._require_handle().container_name
+
+    def ca_cert_path(self) -> Path:
+        """The host path of the proxy's CA certificate, once the sidecar has written it (§9.2).
+
+        mitmproxy generates its CA into the confdir on the shared volume when its proxy server
+        first starts, which can lag the addon's flow-log readiness signal — so this waits for
+        the file rather than assuming it. A CA that never appears is a hard failure, not a quiet
+        fall-through to an untrusted proxy, which would produce the zero-egress trace §9.2 warns
+        of: the sandbox would trust no CA, every HTTPS connect would fail, and the run would read
+        as a clean skill that simply made no requests.
+        """
+        handle = self._require_handle()
+        deadline = self.ready_timeout
+        waited = 0.0
+        step = 0.1
+        while waited <= deadline:
+            if handle.ca_cert_host_path.exists():
+                return handle.ca_cert_host_path
+            self.sleep(step)
+            waited += step
+        raise BellwetherError(
+            f"recording-proxy sidecar {handle.container_name} wrote no CA certificate at "
+            f"{handle.ca_cert_host_path} within {self.ready_timeout:g}s; the sandbox would trust "
+            "no proxy CA and every HTTPS request would fail invisibly (§9.2)"
+        )
 
     def flows(self) -> list[EgressFlow]:
         """The recorded flows. A missing log raises (via :func:`read_flow_records`) — the sidecar
