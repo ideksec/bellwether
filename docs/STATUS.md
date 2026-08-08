@@ -46,7 +46,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, live interception | **done** — the full done-when runs on CI |
 | **Recording proxy wired into the executor** — dual-homed sidecar per run, CA mounted, egress → Plane D of the trace | **done** (PR #42–#43); the config switch is `egress.image` |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
-| WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, Plane C scan, executor wiring (env + files) | **whole pool planted (env var + file binds); leaks scanned across final output, DNS, tool args, non-model egress URLs, and written files; redacted end-to-end in a real sandbox** (`test_execution_canary_docker.py`); only egress-body scanning (sidecar-side) remains, keeping it `partial` |
+| WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, Plane C scan, executor + sidecar wiring | **whole pool planted (env var + file binds); leaks scanned across final output, DNS, tool args, non-model egress URLs *and bodies* (bodies sidecar-side), and written files; redacted end-to-end** (`test_execution_canary_docker.py`); `partial` now only because the model-API channel (read-state grading) is a follow-on |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
@@ -135,18 +135,24 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      the marker contiguous on its own line so the exact-match scan still finds it and redaction
      fingerprints just the value. A bare token is bait a capable skill routes around; a real-looking
      file is one it treats as a real secret.
-   - **Egress-body scanning — the capture-layer foundation is now in** (`make_flow` scans the request
-     body for canaries where it exists, before the body is reduced to a digest; `EgressFlow.canary_hits`
-     carries the marker-free hits; `decide_request`/`ProxyAddon` thread the run's canaries; the
-     flow-record serialization round-trips `canary_hits`). Non-model bodies are scanned (`other_host`,
-     critical); model-API bodies are skipped, same as model-API URLs (read-state grading is a
-     follow-on). All offline-tested.
-   - **Remaining (finishes WP-16):** wire the foundation end to end — the host writes the run's markers
-     into the sidecar config, `build_addon` reconstructs the canaries, and the executor reads
-     `flow.canary_hits` into Plane C findings correlated to the egress action; add the CI test that
-     stands the sidecar up and posts a canary body. That lifts `credentials` toward `full`. Then the
-     corpus skills (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief`
-     xfail) for the §10.4 done-when.
+   - **Egress-body scanning is wired end to end.** `make_flow` scans the request body for canaries
+     where it exists, before the body is reduced to a digest, recording marker-free `EgressCanaryHit`s
+     on the flow; `decide_request`/`ProxyAddon` thread the run's canaries; the flow-record serialization
+     round-trips the hits. The host writes the run's markers into the sidecar config (on the shared
+     volume the CI upload excludes, so no marker reaches an artifact); `build_addon` reconstructs the
+     canaries inside the sidecar; the executor threads the run's canaries into `proxy.open` and reads
+     `flow.canary_hits` into Plane C body leaks (`egress_body_actions`) correlated to the egress action.
+     Non-model bodies are scanned (`other_host`, critical); model-API bodies are skipped, same as
+     model-API URLs. Every logic step is offline-tested (`make_flow` body scan, flow round-trip,
+     `build_config` markers, `build_addon` reconstruct-and-scan, `egress_body_actions`); the real
+     sidecar's compose-and-record path is covered by the existing proxy CI test.
+   - **Remaining (finishes WP-16):** `credentials` stays `partial` for one reason only now — the
+     **model-API channel** (a canary sent to the model, graded `canary_in_context` vs
+     `canary_without_read` by the per-request read state) is a follow-on. A real-POST sidecar-body CI
+     test is deferred: it needs an HTTP client in the sandbox image the minimal test image lacks; the
+     body-scan logic is offline-proven and the sidecar composition is CI-proven. Then the corpus skills
+     (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
+     §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
    metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is
@@ -540,9 +546,11 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
   carry the markers (both channels delivered), both leaks are found and fingerprinted, and no raw
   value reaches the trace JSONL. The host-side scan covers the model's final output, DNS query names,
   **tool-call arguments** (the exfil-through-a-tool channel), **non-model egress request URLs**
-  (path/host/SNI — URL-based exfil to an attacker host), and **written-file contents** (read host-side
-  from the overlay upper, since Plane B is hash-only); the plane stays `partial` because only egress
-  request *bodies* (sidecar-side) remain unscanned.
+  (path/host/SNI — URL-based exfil to an attacker host), **non-model egress request bodies** (scanned
+  sidecar-side in `make_flow`, the hits carried back on the flow), and **written-file contents** (read
+  host-side from the overlay upper, since Plane B is hash-only); the plane stays `partial` only because
+  the model-API channel (a canary sent to the model, with `canary_in_context` vs `canary_without_read`
+  read-state grading) is a follow-on.
 - **WP-14 CA trust-chain core**, `bellwether.capture.ca`, offline and fully tested (7 tests):
   the complete §9.2 mechanism table (system store + `NODE_EXTRA_CA_CERTS` /
   `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`, because Node and others ignore the

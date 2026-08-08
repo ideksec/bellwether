@@ -373,7 +373,14 @@ class RecordingProxy:
     silently observing nothing (a zero-egress trace reads as a clean skill — §14/WP-14).
     """
 
-    def start(self, run_id: str, *, allowlist: EgressAllowlist, caps: CapLedger) -> None:
+    def start(
+        self,
+        run_id: str,
+        *,
+        allowlist: EgressAllowlist,
+        caps: CapLedger,
+        canaries: Sequence[Canary] = (),
+    ) -> None:
         raise NotImplementedError
 
     def flows(self) -> list[EgressFlow]:

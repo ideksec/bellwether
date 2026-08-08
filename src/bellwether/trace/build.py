@@ -21,11 +21,12 @@ from bellwether.capture import FilesystemEvent, PlaneStatus
 from bellwether.capture.canary import (
     Canary,
     CanaryFinding,
+    classify_canary_hit,
     redact_canaries,
     scan_for_canaries,
 )
 from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
-from bellwether.capture.egress import EgressFlow
+from bellwether.capture.egress import EgressCanaryHit, EgressFlow
 from bellwether.determinism import canonical_json
 from bellwether.harness import RawHarnessEvent
 from bellwether.trace.models import (
@@ -43,6 +44,7 @@ __all__ = [
     "canary_actions",
     "dns_actions",
     "egress_actions",
+    "egress_body_actions",
     "exit_reason_from_events",
     "filesystem_actions",
     "harness_actions",
@@ -367,6 +369,42 @@ def written_file_actions(
     seq = start_seq
     for source, content in sources:
         for finding in scan_for_canaries(content, canaries, destination="written_file"):
+            actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
+            seq += 1
+    return actions
+
+
+def egress_body_actions(
+    sources: Iterable[tuple[Action, Sequence[EgressCanaryHit]]], *, start_seq: int = 0
+) -> list[Action]:
+    """Derive Plane C findings from canaries the proxy found in request *bodies* (§10.5.2).
+
+    An egress body never leaves the proxy, so it is scanned sidecar-side and the hits arrive already
+    located on the flow as marker-free :class:`EgressCanaryHit`\\s — this pairs each egress action with
+    its flow's hits, grades each by its destination (a non-model body is an ``other_host``
+    ``canary_leak``), and records it as a Plane C action anchored to the egress request that carried
+    it. The value was never on the record; only the by-reference hit crosses from the sidecar.
+
+    Deterministic: sources are consumed in order and each flow's hits in the order the sidecar found
+    them (§24).
+    """
+    actions: list[Action] = []
+    seq = start_seq
+    for source, hits in sources:
+        for hit in hits:
+            finding_kind, severity = classify_canary_hit(
+                hit.destination,  # type: ignore[arg-type]
+                preceded_by_read=False,
+            )
+            finding = CanaryFinding(
+                canary_id=hit.canary_id,
+                destination=hit.destination,  # type: ignore[arg-type]
+                finding=finding_kind,  # type: ignore[arg-type]
+                severity=severity,  # type: ignore[arg-type]
+                offset=hit.offset,
+                length=hit.length,
+                via=hit.via,
+            )
             actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
             seq += 1
     return actions

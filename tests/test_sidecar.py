@@ -19,6 +19,7 @@ from bellwether.capture import (
     CredentialBroker,
     EgressAllowlist,
     MitmproxySidecar,
+    mint_canaries,
 )
 from bellwether.capture.sidecar import SIDECAR_ENTRY_PATH
 from bellwether.capture.sidecar_entry import SidecarConfig
@@ -142,6 +143,27 @@ def test_start_writes_a_secretless_config_and_becomes_ready(tmp_path: Path) -> N
     # The real key is never written to the shared config the container can read.
     assert _REAL_KEY not in config_text
     assert sidecar.proxy_url() == "http://bw-proxy-r1:8080"
+    # No canaries were passed, so none are configured.
+    assert config.canary_markers == ()
+
+
+def test_start_writes_the_run_canaries_into_the_config(tmp_path: Path) -> None:
+    """The run's canaries travel into the sidecar config as (id, marker) pairs so the proxy can scan
+    bodies for them (§10.5.2). Like the scoped tokens, they live only on the shared volume the CI
+    upload excludes — never an artifact (§10.4.3)."""
+    runner = _FakeRunner(flow_log=tmp_path / "flows.jsonl")
+    sidecar = _sidecar(tmp_path, runner)
+    canaries = mint_canaries(7)
+
+    sidecar.start(
+        "r1",
+        allowlist=_allowlist(),
+        caps=CapLedger(max_requests=5, max_request_bytes=100),
+        canaries=canaries,
+    )
+
+    config = SidecarConfig.from_json((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert config.canary_markers == tuple((c.id, c.marker) for c in canaries)
 
 
 def test_the_ca_is_exposed_once_the_sidecar_has_written_it(tmp_path: Path) -> None:

@@ -27,7 +27,7 @@ from bellwether.capture import (
 from bellwether.capture.egress import EgressCanaryHit, EgressFlow
 from bellwether.capture.proxy_addon import flow_record_line, parse_flow_record
 from bellwether.determinism import canonical_json, stable_hash
-from bellwether.trace import egress_actions
+from bellwether.trace import egress_actions, egress_body_actions
 
 _PROVIDERS = frozenset({"api.anthropic.com", "api.openai.com"})
 _INFRA = frozenset({"telemetry.example-harness.com"})
@@ -335,6 +335,24 @@ def test_flow_record_round_trips_canary_hits() -> None:
     )
     restored = parse_flow_record(flow_record_line(flow))
     assert restored.canary_hits == flow.canary_hits
+
+
+def test_egress_body_actions_turns_flow_hits_into_a_plane_c_leak() -> None:
+    """The host-side end (§10.5.2): a canary the proxy found in a body becomes a Plane C other_host
+    leak, anchored to the egress action for the request that carried it."""
+    canaries = mint_canaries(7)
+    flow = _body_flow("attacker.example", f"exfil={canaries[0].marker}".encode(), canaries=canaries)
+    [egress_action] = egress_actions([flow])
+    plane_c = egress_body_actions([(egress_action, flow.canary_hits)])
+    assert [a.kind for a in plane_c] == ["canary_leak"]
+    assert plane_c[0].action["destination"] == "other_host"
+    assert plane_c[0].action["canary_id"] == canaries[0].id
+    assert plane_c[0].correlation.anchor_seq == egress_action.seq
+
+
+def test_egress_body_actions_is_empty_without_hits() -> None:
+    [action] = egress_actions([_body_flow("api.example", b"clean")])
+    assert egress_body_actions([(action, ())]) == []
 
 
 def test_make_flow_blocks_an_unallowlisted_host() -> None:

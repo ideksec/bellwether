@@ -71,6 +71,7 @@ from bellwether.trace import (
     canary_actions,
     dns_actions,
     egress_actions,
+    egress_body_actions,
     exit_reason_from_events,
     filesystem_actions,
     harness_actions,
@@ -274,10 +275,19 @@ class SandboxRunExecutor:
             randomize_identifiers=self.randomize_identifiers,
         )
 
+        # This evaluation's canaries (§10.4). Minted per *evaluation*, not per repetition, so the
+        # markers are identical across the runs in an evaluation. The whole pool is delivered — the
+        # env-var canary through the env, the file canaries as read-only binds — so every minted
+        # canary is a planted one, scanned for, redacted, and recorded by reference in the header.
+        # Computed before the proxy standup because the proxy scans request bodies for these markers.
+        canaries = self._canaries()
+        planting = plan_canary_planting(canaries) if canaries else None
+
         # Stand the recording proxy up first, before the sandbox that routes through it. A failure
         # here must not leave a mounted overlay behind, so it happens before mount; the proxy owns
-        # its own cleanup on a failed open (no network or container leaks).
-        run_proxy = self._open_proxy(plan, run_dir)
+        # its own cleanup on a failed open (no network or container leaks). It is handed the run's
+        # canaries so it scans each request body for them (§10.5.2).
+        run_proxy = self._open_proxy(plan, run_dir, canaries)
         # The controlled resolver shares the proxy's internal bridge when egress is on (one network,
         # both peers on it) and creates its own when egress is off; either way the sandbox is pointed
         # at it by IP with --dns. Opened after the proxy so it can join that bridge and be handed the
@@ -290,12 +300,6 @@ class SandboxRunExecutor:
         else:
             network = "none"
         dns = run_resolver.sandbox_dns() if run_resolver is not None else None
-        # This evaluation's canaries (§10.4). Minted per *evaluation*, not per repetition, so the
-        # markers are identical across the runs in an evaluation. The whole pool is delivered — the
-        # env-var canary through the env, the file canaries as read-only binds — so every minted
-        # canary is a planted one, scanned for, redacted, and recorded by reference in the header.
-        canaries = self._canaries()
-        planting = plan_canary_planting(canaries) if canaries else None
         extra_env = self._extra_env(plan, run_proxy, planting)
         ro_binds: list[tuple[Path, PurePosixPath]] = (
             list(run_proxy.sandbox_ro_binds()) if run_proxy is not None else []
@@ -347,22 +351,23 @@ class SandboxRunExecutor:
             # other planes recorded (§10.4). Scan the host-side sources — the model's final output and
             # tool-call arguments in Plane A, the non-model request URLs in Plane D, the DNS query
             # names in Plane E — for the markers planted this run, and correlate each hit back to the
-            # source that carried it. Egress *bodies* are scanned sidecar-side (the body never leaves
-            # the proxy), so only the request line of Plane D is a source here.
-            plane_c = canary_actions(
-                plane_a + plane_d + plane_e,
-                canaries,
-                start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
-            )
-            # And the contents of files the skill *wrote*: Plane B records writes by hash only, so the
+            # source that carried it. The Plane C sequence space follows the other planes.
+            plane_c_base = len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e)
+            plane_c = canary_actions(plane_a + plane_d + plane_e, canaries, start_seq=plane_c_base)
+            # The contents of files the skill *wrote*: Plane B records writes by hash only, so the
             # bytes are read host-side here and scanned — a marker in a written file is a written_file
             # leak correlated to the Plane B write that created it (§10.4.1). The content never enters
             # the trace, so there is nothing to redact for it.
             plane_c += self._written_file_leaks(
-                prepared,
-                plane_b,
-                canaries,
-                start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e) + len(plane_c),
+                prepared, plane_b, canaries, start_seq=plane_c_base + len(plane_c)
+            )
+            # And the request *bodies* the proxy scanned sidecar-side (the body never leaves the
+            # proxy): the hits arrive on each flow, already located, so they are paired with their
+            # Plane D egress action and recorded as body leaks (§10.5.2). ``egress_flows[i]`` is the
+            # flow ``plane_d[i]`` was built from, so the two line up by position.
+            plane_c += egress_body_actions(
+                list(zip(plane_d, (flow.canary_hits for flow in egress_flows), strict=True)),
+                start_seq=plane_c_base + len(plane_c),
             )
 
             header = RunHeader(
@@ -398,18 +403,19 @@ class SandboxRunExecutor:
                     egress=PlaneStatus(fidelity="full") if run_proxy is not None else None,
                     # Same for the resolver's query log: a zero-query run is observed-clean DNS.
                     dns=PlaneStatus(fidelity="full") if run_resolver is not None else None,
-                    # Canaries planted (env var + file slots) and scanned in the model output, DNS
-                    # query names, tool-call arguments, non-model egress URLs, and written-file
-                    # contents. Partial not full: the scan does not yet cover egress request *bodies*,
-                    # which are scanned sidecar-side (the body never leaves the proxy).
+                    # Canaries planted (env var + file slots) and scanned for leaks across the model
+                    # output, DNS query names, tool-call arguments, non-model egress URLs *and bodies*
+                    # (bodies sidecar-side), and written-file contents. Partial not full: the model-API
+                    # channel — a canary sent to the model, graded canary_in_context vs
+                    # canary_without_read by the per-request read state — is a follow-on.
                     credentials=(
                         PlaneStatus(
                             fidelity="partial",
                             reason=(
                                 "canaries planted (environment variable and file slots) and scanned "
-                                "in the model output, DNS query names, tool-call arguments, non-model "
-                                "egress URLs, and written-file contents; egress-body scanning "
-                                "(sidecar-side) is not yet wired"
+                                "for leaks in the model output, DNS query names, tool-call arguments, "
+                                "non-model egress URLs and bodies, and written-file contents; the "
+                                "model-API channel and its read-state grading are a follow-on"
                             ),
                         )
                         if planting is not None
@@ -596,17 +602,18 @@ class SandboxRunExecutor:
             canaries_planted=[PlantedCanary(id=c.id, path=c.path, kind=c.kind) for c in planted],
         )
 
-    def _open_proxy(self, plan: RunPlan, run_dir: Path) -> RunProxy | None:
+    def _open_proxy(self, plan: RunPlan, run_dir: Path, canaries: list[Canary]) -> RunProxy | None:
         """Stand the recording proxy up for one run, or ``None`` when no proxy is configured.
 
         The per-run id names the sidecar container and its two bridges; it is derived from the
         run's coordinates and sanitised to the characters Docker names allow, so a name collision
-        cannot smuggle shell metacharacters into a ``docker`` argv.
+        cannot smuggle shell metacharacters into a ``docker`` argv. The run's canaries travel into
+        the sidecar config so the proxy scans each request body for them (§10.5.2).
         """
         if self.proxy is None:
             return None
         run_id = _proxy_run_id(self.eval_id, plan)
-        return self.proxy.open(run_id, shared_dir=run_dir / "proxy")
+        return self.proxy.open(run_id, shared_dir=run_dir / "proxy", canaries=canaries)
 
     def _open_resolver(
         self, plan: RunPlan, run_dir: Path, run_proxy: RunProxy | None
