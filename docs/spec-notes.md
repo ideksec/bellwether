@@ -1521,8 +1521,10 @@ git-credential file, and an env-var token) at sandbox setup and scan every evide
   tool-call arguments — does not yet cover egress bodies (sidecar-side) or written-file contents
   (Plane B is hash-only); never `full`, which would claim those channels were watched when they were
   not (§10.0 observation-beats-declaration). The planted files carry the
-  bare marker as content for now; realistic credential shapes (INI/PEM/`.env`) are a light follow-on,
-  orthogonal to detection (the scan finds the marker substring regardless of wrapping).
+  marker wrapped in a realistic credential shape per kind (`_file_body`: an AWS INI block, an
+  OpenSSH-PEM wrapper, a `.env`, a git-credentials URL), the marker contiguous on its own line so the
+  exact-match scan finds it and redaction fingerprints only the value — a bare token is bait a capable
+  skill routes around, a real-looking file is one it treats as a real secret.
 
 - **The canary seed is per-*evaluation*, not per-repetition.** `_canary_seed` mixes `eval_id` into the
   base seed exactly as `_sandbox_rng` does but drops the matrix coordinate, so markers are identical

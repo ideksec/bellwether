@@ -119,12 +119,16 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      *through* a tool when it has no direct socket. The read that fetched the credential (path in,
      value out) is not flagged — only an argument carrying the value is — so the finding stays
      false-positive-free. Offline-tested.
+   - **The planted files now carry realistic credential shapes** (`capture/planting.py:_file_body`):
+     an AWS INI block, an OpenSSH-PEM wrapper, a `.env` with an `API_KEY=`, a git-credentials URL —
+     the marker contiguous on its own line so the exact-match scan still finds it and redaction
+     fingerprints just the value. A bare token is bait a capable skill routes around; a real-looking
+     file is one it treats as a real secret.
    - **Remaining:** the credentials plane stays `partial` because the *scan* does not yet cover
      **egress bodies** (sidecar-side, the body never leaves the proxy) or **written-file contents**
      (Plane B is hash-only today) — wiring those lifts it toward `full`. Then the corpus skills
      (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
-     §10.4 done-when. A light follow-on: give the planted files realistic credential shapes
-     (INI/PEM/`.env`) instead of the bare marker they carry today.
+     §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
    metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is

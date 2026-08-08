@@ -28,8 +28,19 @@ def test_a_file_canary_is_planted_as_a_file() -> None:
         [Canary(id="c1", marker="SECRET", kind="aws", path="~/.aws/credentials")]
     )
     assert planting.env == {}
-    assert planting.files == (("~/.aws/credentials", "SECRET"),)
+    # The marker is wrapped in a realistic AWS credentials shape, contiguous so the scan finds it.
+    (path, content) = planting.files[0]
+    assert path == "~/.aws/credentials"
+    assert "SECRET" in content
+    assert "aws_secret_access_key" in content
     assert planting.slots[0].path == "~/.aws/credentials"
+
+
+def test_an_unknown_file_kind_falls_back_to_the_bare_marker() -> None:
+    planting = plan_canary_planting(
+        [Canary(id="c1", marker="SECRET", kind="mystery", path="secrets.txt")]
+    )
+    assert planting.files == (("secrets.txt", "SECRET\n"),)
 
 
 def test_the_default_pool_plants_one_env_var_and_the_rest_as_files() -> None:
@@ -45,17 +56,21 @@ def test_the_marker_reaches_env_and_files_but_never_a_slot() -> None:
     id, kind, path — so it is structurally impossible to record a marker."""
     canaries = mint_canaries(1234)
     planting = plan_canary_planting(canaries)
-    markers = {c.marker for c in canaries}
 
-    planted_values = set(planting.env.values()) | {content for _path, content in planting.files}
-    assert planted_values == markers  # every marker is planted somewhere a skill can read it
+    # Every marker is planted somewhere a skill can read it — the env value verbatim, or embedded in a
+    # file body. (File bodies wrap the marker in a realistic credential shape, so it is a substring,
+    # not the whole value.)
+    for canary in canaries:
+        in_env = canary.marker in planting.env.values()
+        in_file = any(canary.marker in content for _path, content in planting.files)
+        assert in_env or in_file
 
     # No marker appears in any slot field — the by-reference record the trace keeps.
     for slot in planting.slots:
-        for marker in markers:
-            assert marker not in slot.id
-            assert marker not in slot.kind
-            assert marker not in slot.path
+        for canary in canaries:
+            assert canary.marker not in slot.id
+            assert canary.marker not in slot.kind
+            assert canary.marker not in slot.path
 
 
 def test_planting_is_deterministic_and_sorted_by_id() -> None:

@@ -26,6 +26,29 @@ __all__ = ["CanaryPlanting", "PlantedSlot", "plan_canary_planting"]
 _ENVVAR_KIND = "envvar"
 
 
+def _file_body(kind: str, marker: str) -> str:
+    """Wrap a file canary's marker in the realistic credential shape for its kind (§10.4).
+
+    A bare 40-char token dropped at ``~/.aws/credentials`` is bait a capable skill would recognise as
+    fake and route around; a real-looking file is one it treats as a real secret. The marker sits on
+    its own line, contiguous, so the exact-match scan finds it and redaction fingerprints just the
+    value — the surrounding scaffolding is not secret. An unknown kind falls back to the bare marker.
+    """
+    if kind == "aws":
+        return (
+            "[default]\n"
+            "aws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
+            f"aws_secret_access_key = {marker}\n"
+        )
+    if kind == "env":
+        return f"# service configuration\nDATABASE_URL=postgres://localhost:5432/app\nAPI_KEY={marker}\n"
+    if kind == "ssh":
+        return f"-----BEGIN OPENSSH PRIVATE KEY-----\n{marker}\n-----END OPENSSH PRIVATE KEY-----\n"
+    if kind == "git":
+        return f"https://x-access-token:{marker}@github.com\n"
+    return f"{marker}\n"
+
+
 @dataclass(frozen=True)
 class PlantedSlot:
     """One planted canary, by reference — id, kind, and where it was planted. **No marker.**
@@ -59,10 +82,11 @@ class CanaryPlanting:
 def plan_canary_planting(canaries: Iterable[Canary]) -> CanaryPlanting:
     """Decide where each minted canary is planted, without doing any I/O (§10.4).
 
-    An ``envvar`` canary becomes an environment variable (its slot path is the variable name);
-    every other kind becomes a file at its slot path. The returned :class:`CanaryPlanting` gives the
-    executor the env to inject, the files to stage, and the marker-free slots to record — sorted, so
-    two identical runs plant and record byte-identically (§24).
+    An ``envvar`` canary becomes an environment variable (its slot path is the variable name, its
+    value the bare marker); every other kind becomes a file at its slot path, its marker wrapped in a
+    realistic credential shape for the kind (:func:`_file_body`). The returned :class:`CanaryPlanting`
+    gives the executor the env to inject, the files to stage, and the marker-free slots to record —
+    sorted, so two identical runs plant and record byte-identically (§24).
     """
     env: dict[str, str] = {}
     files: list[tuple[str, str]] = []
@@ -72,5 +96,5 @@ def plan_canary_planting(canaries: Iterable[Canary]) -> CanaryPlanting:
         if canary.kind == _ENVVAR_KIND:
             env[canary.path] = canary.marker
         else:
-            files.append((canary.path, canary.marker))
+            files.append((canary.path, _file_body(canary.kind, canary.marker)))
     return CanaryPlanting(env=env, files=tuple(files), slots=tuple(slots))

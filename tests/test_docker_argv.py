@@ -456,9 +456,9 @@ def test_stage_canary_files_writes_content_and_binds_at_resolved_paths(tmp_path:
     aws_target = f"{home}/.aws/credentials"
     assert aws_target in by_target
     assert by_target[aws_target].is_absolute()
-    # The host file carries the marker (bare content this brick); the trace never will.
+    # The host file carries the marker (wrapped in a realistic credential shape); the trace never will.
     aws_marker = next(c.marker for c in canaries if c.kind == "aws")
-    assert by_target[aws_target].read_text(encoding="utf-8") == aws_marker
+    assert aws_marker in by_target[aws_target].read_text(encoding="utf-8")
 
 
 def test_stage_canary_files_is_empty_when_nothing_is_planted(tmp_path: Path) -> None:
