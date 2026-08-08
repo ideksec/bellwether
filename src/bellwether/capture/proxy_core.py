@@ -25,10 +25,11 @@ to the addon:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
+from bellwether.capture.canary import Canary
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import (
     CapLedger,
@@ -79,15 +80,18 @@ def decide_request(
     broker: CredentialBroker,
     provider_of_host: Mapping[str, str],
     caps: CapLedger,
+    canaries: Sequence[Canary] = (),
 ) -> ProxyDecision:
     """Decide one request (§10.5). See the module docstring for the fixed order.
 
     ``provider_of_host`` maps a model-API host to the provider name the broker keys on, so a
     permitted ``model_api`` request gets its scoped token swapped for that provider's real
-    key. ``caps`` is mutated (a forwarded request is counted); a blocked one is not.
+    key. ``caps`` is mutated (a forwarded request is counted); a blocked one is not. ``canaries``
+    are the run's planted markers; ``make_flow`` scans the body for them and records any hit by
+    reference before the body is reduced to a digest (§10.5.2).
     """
-    # (1) Classify, allowlist-check, redact, reduce the body — make_flow does all four and
-    # produces the record that is written regardless of the outcome.
+    # (1) Classify, allowlist-check, redact, scan the body for canaries, reduce the body — make_flow
+    # does all of it and produces the record that is written regardless of the outcome.
     flow = make_flow(
         ts=ts,
         method=method,
@@ -100,6 +104,7 @@ def decide_request(
         allowlist=allowlist,
         request_headers=headers,
         request_body=body,
+        canaries=canaries,
     )
     if flow.blocked:
         return ProxyDecision(action="block", flow=flow)

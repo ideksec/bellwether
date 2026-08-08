@@ -22,17 +22,19 @@ Two rules here carry the plane's whole point:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import urlsplit
 
+from bellwether.capture.canary import Canary, scan_for_canaries
 from bellwether.determinism import stable_hash
 
 __all__ = [
     "DEFAULT_HEADER_ALLOWLIST",
     "CapLedger",
     "EgressAllowlist",
+    "EgressCanaryHit",
     "EgressClass",
     "EgressFlow",
     "RecordingProxy",
@@ -223,13 +225,31 @@ def redact_headers(
 
 
 @dataclass(frozen=True)
+class EgressCanaryHit:
+    """A canary marker found in a request body, recorded by reference (§10.4.3, §10.5.2).
+
+    The body itself never reaches the trace — only its digest and byte count — so the scan runs in
+    the proxy, where the body exists, and this is what survives: *which* canary, *where* in the body,
+    and *how* it was encoded. Never the value. ``destination`` is the §10.4.1 destination the host
+    grades severity from; a body to a non-model host is ``other_host``.
+    """
+
+    canary_id: str
+    destination: str
+    offset: int
+    length: int
+    via: str
+
+
+@dataclass(frozen=True)
 class EgressFlow:
     """One captured request/response, classified and allowlist-checked (§10.5).
 
     The request body is never carried here — only its length and digest — because a body
     may hold a credential or a canary and this record ends up in an artifact. Canary
-    *scanning* of bodies happens in the proxy before this record exists (§10.5.2, WP-16);
-    what survives to the trace is the digest and the byte count.
+    *scanning* of bodies happens in the proxy before this record exists (§10.5.2, WP-16):
+    ``canary_hits`` records any marker found, by reference, so the host can raise the Plane C
+    finding without the body — the digest and the byte count are all else that survives.
     """
 
     ts: str
@@ -247,12 +267,40 @@ class EgressFlow:
     response_size: int | None = None
     sni: str = ""
     block_reason: str = ""
+    canary_hits: tuple[EgressCanaryHit, ...] = ()
 
     @property
     def counts_as_egress(self) -> bool:
         """Whether this flow counts toward ``no_egress`` (§10.5.0): only skill-attributed,
         and only if it was actually permitted — a blocked attempt is a separate record."""
         return self.egress_class == "skill_attributed" and not self.blocked
+
+
+def _scan_body_for_canaries(
+    body: bytes, egress_class: EgressClass, canaries: Sequence[Canary]
+) -> tuple[EgressCanaryHit, ...]:
+    """Scan a request body for planted markers, by reference (§10.5.2, §10.4.1).
+
+    Only *non-model* bodies are scanned here: a marker on its way to an arbitrary host is exfiltration,
+    a critical ``other_host`` leak needing no read state. A body to the model API is skipped — that is
+    the ``canary_in_context`` vs ``canary_without_read`` grading, which needs the per-request read
+    state the host holds, and is a follow-on (the same reason model-API *URLs* are skipped). The scan
+    is bounded inside ``scan_for_canaries``; the body is decoded leniently so binary payloads do not
+    abort it.
+    """
+    if egress_class == "model_api" or not body or not canaries:
+        return ()
+    text = body.decode("utf-8", "replace")
+    return tuple(
+        EgressCanaryHit(
+            canary_id=finding.canary_id,
+            destination=finding.destination,
+            offset=finding.offset,
+            length=finding.length,
+            via=finding.via,
+        )
+        for finding in scan_for_canaries(text, canaries, destination="other_host")
+    )
 
 
 def make_flow(
@@ -271,13 +319,15 @@ def make_flow(
     response_status: int | None = None,
     response_size: int | None = None,
     sni: str = "",
+    canaries: Sequence[Canary] = (),
 ) -> EgressFlow:
     """Build a classified, allowlist-checked, redacted :class:`EgressFlow` from a request.
 
     This is the one place a raw request becomes a record fit for an artifact: it classifies
-    (§10.5.0), applies the default-deny allowlist, redacts headers, and reduces the body to a
-    digest and a length so no credential or canary value survives. The proxy sidecar calls it
-    per flow.
+    (§10.5.0), applies the default-deny allowlist, redacts headers, scans the body for planted
+    canaries (§10.5.2), and reduces the body to a digest and a length so no credential or canary
+    value survives. The proxy sidecar calls it per flow, passing the run's ``canaries`` so a marker
+    in a body is recorded by reference before the body is dropped.
     """
     egress_class = classify_egress(
         host,
@@ -301,6 +351,7 @@ def make_flow(
         response_size=response_size,
         sni=sni,
         block_reason=allowlist.block_reason(host),
+        canary_hits=_scan_body_for_canaries(request_body, egress_class, canaries),
     )
 
 

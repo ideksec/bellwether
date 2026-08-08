@@ -135,13 +135,18 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      the marker contiguous on its own line so the exact-match scan still finds it and redaction
      fingerprints just the value. A bare token is bait a capable skill routes around; a real-looking
      file is one it treats as a real secret.
-   - **Remaining:** the credentials plane stays `partial` because the *scan* does not yet cover
-     **egress request bodies** — the one channel that is genuinely sidecar-side, since the body never
-     leaves the proxy (this is where POST-body exfil and the model-endpoint read-state grading land).
-     It is a larger, CI-validated unit: marker injection into the sidecar config, a body scan in
-     `decide_request`, a `canary_hits` field on the flow record, and host-side parsing into Plane C.
-     Wiring it lifts the plane toward `full`. Then the corpus skills (`canary-thief`, `dns-thief`,
-     `legit-credential-reader`, `encoded-chunked-thief` xfail) for the §10.4 done-when.
+   - **Egress-body scanning — the capture-layer foundation is now in** (`make_flow` scans the request
+     body for canaries where it exists, before the body is reduced to a digest; `EgressFlow.canary_hits`
+     carries the marker-free hits; `decide_request`/`ProxyAddon` thread the run's canaries; the
+     flow-record serialization round-trips `canary_hits`). Non-model bodies are scanned (`other_host`,
+     critical); model-API bodies are skipped, same as model-API URLs (read-state grading is a
+     follow-on). All offline-tested.
+   - **Remaining (finishes WP-16):** wire the foundation end to end — the host writes the run's markers
+     into the sidecar config, `build_addon` reconstructs the canaries, and the executor reads
+     `flow.canary_hits` into Plane C findings correlated to the egress action; add the CI test that
+     stands the sidecar up and posts a canary body. That lifts `credentials` toward `full`. Then the
+     corpus skills (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief`
+     xfail) for the §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
    metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is

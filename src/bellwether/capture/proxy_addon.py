@@ -27,8 +27,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from bellwether.capture.canary import Canary
 from bellwether.capture.credential import CredentialBroker
-from bellwether.capture.egress import CapLedger, EgressAllowlist, EgressClass, EgressFlow
+from bellwether.capture.egress import (
+    CapLedger,
+    EgressAllowlist,
+    EgressCanaryHit,
+    EgressClass,
+    EgressFlow,
+)
 from bellwether.capture.proxy_core import decide_request
 from bellwether.determinism import canonical_json
 
@@ -106,6 +113,9 @@ class ProxyAddon:
     provider_of_host: Mapping[str, str]
     caps: CapLedger
     clock: Callable[[], str]
+    #: The run's planted canaries. ``decide_request`` scans each request body for their markers and
+    #: records any hit on the flow by reference (§10.5.2); empty when planting is off.
+    canaries: tuple[Canary, ...] = ()
     _flows: list[EgressFlow] = field(default_factory=list, repr=False)
 
     def on_request(self, request: RequestLike) -> BlockResponse | None:
@@ -131,6 +141,7 @@ class ProxyAddon:
             broker=self.broker,
             provider_of_host=self.provider_of_host,
             caps=self.caps,
+            canaries=self.canaries,
         )
         self._flows.append(decision.flow)
 
@@ -184,6 +195,16 @@ def _flow_to_dict(flow: EgressFlow) -> dict[str, Any]:
         "response_size": flow.response_size,
         "sni": flow.sni,
         "block_reason": flow.block_reason,
+        "canary_hits": [
+            {
+                "canary_id": hit.canary_id,
+                "destination": hit.destination,
+                "offset": hit.offset,
+                "length": hit.length,
+                "via": hit.via,
+            }
+            for hit in flow.canary_hits
+        ],
     }
 
 
@@ -204,6 +225,16 @@ def _flow_from_dict(payload: Mapping[str, Any]) -> EgressFlow:
         response_status=payload["response_status"],
         response_size=payload["response_size"],
         sni=payload["sni"],
+        canary_hits=tuple(
+            EgressCanaryHit(
+                canary_id=hit["canary_id"],
+                destination=hit["destination"],
+                offset=hit["offset"],
+                length=hit["length"],
+                via=hit["via"],
+            )
+            for hit in payload.get("canary_hits", ())
+        ),
         block_reason=payload["block_reason"],
     )
 
