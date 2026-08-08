@@ -99,6 +99,7 @@ from bellwether.capture.proxy_addon import (
     write_flow_records,
 )
 from bellwether.capture.proxy_core import ProxyDecision, decide_request
+from bellwether.capture.resolver_entry import ResolverConfig, build_allowlist
 from bellwether.capture.sidecar import MitmproxySidecar, SidecarHandle
 from bellwether.capture.sidecar_entry import (
     SidecarConfig,
@@ -135,12 +136,14 @@ __all__ = [
     "ProxyDecision",
     "RecordingProxy",
     "RequestLike",
+    "ResolverConfig",
     "SidecarConfig",
     "SidecarHandle",
     "SinkEvent",
     "SinkStats",
     "block_response_args",
     "build_addon",
+    "build_allowlist",
     "ca_trust_environment",
     "canary_markers",
     "classify_canary_hit",
