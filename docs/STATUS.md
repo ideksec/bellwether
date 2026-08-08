@@ -55,7 +55,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-833 tests: 784 offline, 49 under the `docker` mark (43 run, 6 CI-only skips). All green.
+839 tests: 790 offline, 49 under the `docker` mark (43 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -91,7 +91,17 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    capability test the old kind-only test lacked.
 2. **Plant + scan canaries in a live run (finish WP-16).** The minting/decoding/redaction logic
    exists; this places canaries in the sandbox and scans observed egress **and** DNS labels for them.
-   Depends on 1 (DNS observed).
+   Depends on 1 (DNS observed) — now unblocked.
+   - **Landed:** the **planting planner** (`capture/planting.py:plan_canary_planting`) — turns a
+     run's minted canaries into the env vars + files that carry the markers plus the marker-free
+     `PlantedSlot`s the trace records (§10.4.3: the value reaches the container, never an artifact).
+     Pure, offline-tested.
+   - **Remaining:** stage the planting into the sandbox (env via `_extra_env`, files via writable
+     mounts) and record `PlantedCanary` refs in the trace; scan observed evidence against the run's
+     canaries (DNS query names + model output host-side; egress bodies sidecar-side at capture) into
+     Plane C `canary_read`/`canary_leak` findings; flip `credentials` coverage to observed; verify
+     no raw marker in any artifact; then the corpus skills (`canary-thief`, `dns-thief`,
+     `legit-credential-reader`, `encoded-chunked-thief` xfail) for the §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
    metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is
