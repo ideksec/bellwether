@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from bellwether.trace.build import (
     assemble_coverage,
+    dns_actions,
     egress_actions,
     exit_reason_from_events,
     filesystem_actions,
@@ -84,6 +85,7 @@ __all__ = [
     "assemble_coverage",
     "canonicalize",
     "capability_for",
+    "dns_actions",
     "egress_actions",
     "exit_reason_from_events",
     "filesystem_actions",

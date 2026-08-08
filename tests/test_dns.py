@@ -24,6 +24,8 @@ from bellwether.capture import (
     scan_query_for_canaries,
 )
 from bellwether.capture.dns import DNS_DESTINATION
+from bellwether.determinism import canonical_json
+from bellwether.trace import dns_actions
 
 # ---------------------------------------------------------------------------
 # The allowlist: default-deny, matching on a label boundary
@@ -174,3 +176,67 @@ def test_a_clean_query_name_yields_no_findings() -> None:
 
 def test_dns_destination_is_the_non_model_label() -> None:
     assert DNS_DESTINATION == "dns"
+
+
+# ---------------------------------------------------------------------------
+# ARF records (§11.2) via trace.dns_actions — Plane E
+# ---------------------------------------------------------------------------
+
+_TS = "2026-08-08T12:00:00+00:00"
+
+
+def _query(name: str, *, resolved: bool, reason: str = "") -> DnsQuery:
+    return DnsQuery(ts=_TS, name=name, resolved=resolved, reason=reason)
+
+
+def test_resolved_and_blocked_queries_get_distinct_kinds() -> None:
+    """A resolved name is ``dns_query``; a default-deny NXDOMAIN is ``dns_blocked`` — drawn
+    apart exactly as egress splits ``egress`` from ``egress_blocked``, because a blocked
+    lookup is evidence of intent and must not read like an ordinary query (§10.5.0, §10.6)."""
+    queries = [
+        _query("api.anthropic.com", resolved=True),
+        _query("secret.evil.example", resolved=False, reason="not in the DNS allowlist; NXDOMAIN"),
+    ]
+    actions = dns_actions(queries)
+    assert [a.kind for a in actions] == ["dns_query", "dns_blocked"]
+    assert all(a.plane == "dns" for a in actions)
+    assert [a.seq for a in actions] == [0, 1]
+
+
+def test_a_blocked_query_carries_its_nxdomain_reason() -> None:
+    actions = dns_actions(
+        [_query("evil.example", resolved=False, reason="NXDOMAIN (default-deny)")]
+    )
+    assert actions[0].action["reason"] == "NXDOMAIN (default-deny)"
+    assert actions[0].action["resolved"] is False
+
+
+def test_the_query_name_is_retained_for_the_canary_scan() -> None:
+    """The name is kept verbatim (not redacted): WP-7's canary scan reruns the label-stripped
+    form through the corpus, so blanking it here would blind the covert-channel detector."""
+    actions = dns_actions([_query("sec.ret.value.attacker.example", resolved=False)])
+    assert actions[0].action["name"] == "sec.ret.value.attacker.example"
+
+
+def test_dns_actions_are_deterministic() -> None:
+    queries = [_query("api.anthropic.com", resolved=True), _query("evil.example", resolved=False)]
+    a = [canonical_json(x.action) for x in dns_actions(queries)]
+    b = [canonical_json(x.action) for x in dns_actions(queries)]
+    assert a == b
+
+
+def test_dns_actions_start_seq_offsets_the_sequence_space() -> None:
+    actions = dns_actions([_query("api.anthropic.com", resolved=True)], start_seq=17)
+    assert actions[0].seq == 17
+
+
+def test_decide_query_output_flows_through_dns_actions() -> None:
+    """End-to-end on the host core: the resolver's own decision records become Plane E."""
+    allowlist = DnsAllowlist(frozenset({"api.anthropic.com"}))
+    decided = [
+        decide_query("api.anthropic.com", allowlist=allowlist, ts=_TS),
+        decide_query("exfil.attacker.example", allowlist=allowlist, ts=_TS),
+    ]
+    actions = dns_actions(decided)
+    assert [a.kind for a in actions] == ["dns_query", "dns_blocked"]
+    assert actions[1].action["reason"]  # the NXDOMAIN reason is carried
