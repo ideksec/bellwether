@@ -1438,3 +1438,34 @@ turned up two fixes that were only *partly* landed, plus one deliberate divergen
   strictly safer than the pre-fix behaviour, which was an actual host-process OOM. The cost is that a
   pathological run hard-stops the evaluation rather than yielding a degraded-but-scored result; graceful
   per-plane degradation is left for when the coverage matrix lands.
+
+## §11.4, §13.5 — DNS capability tiers: `dns_blocked` carries the weight-10 `dns_query` class
+
+§11.4's tier-1 capability enumeration does not list a DNS class at all, yet §13.5 (the weight
+table) names one — "`dns_query` outside allowlist | 10" — and `DEFAULT_CAPABILITY_WEIGHTS` has
+`dns_query: 10` (with no `dns_blocked` counterpart, unlike egress's `egress`/`egress_blocked`
+pair). `trace/canonical.py` fills that enumeration gap for the two ARF kinds `dns_actions`
+produces:
+
+- **`dns_blocked`** (a name the resolver refused — outside the allowlist, NXDOMAIN) is the
+  label-encoded covert channel Plane E exists to catch. It maps to tier1 **`dns_query:<name>`**,
+  *not* `dns_blocked:<name>`. The capability weight is looked up by base class (the part before
+  `:`); the spec's weight-10 class is `dns_query`, so the outside-allowlist query must carry that
+  base. A `dns_blocked:<name>` tier1 would resolve to base `dns_blocked`, which has no weight
+  entry and would fall to the floor (1) — silently under-weighting the exact reach the
+  `max_rare_capability_risk` gate must catch. This is also why no `dns_blocked` weight was added
+  to the table (the egress analogy is tempting but wrong): the spec deliberately weights the
+  *outside-allowlist* query, and that is the blocked one.
+
+- **`dns_query`** (a resolved, in-allowlist lookup) is permitted infrastructure — the resolver
+  answered it because the name is on the allowlist (a model endpoint or an operator entry). It
+  maps to tier1 **`dns:<name>`** (base `dns`, absent from the table → floor weight), present in
+  the capability set for trajectory/completeness but benign. This is the DNS counterpart of the
+  model-vs-non-model split egress makes: an in-allowlist resolution is not the risk, the
+  outside-allowlist query is.
+
+So the resolved/blocked distinction is load-bearing for scoring, and the naming is intentionally
+asymmetric with the ARF kinds (kind `dns_blocked` → capability base `dns_query`) to honour the
+spec's weight vocabulary. The `no_dns_outside` assertion and the `dns_outside_allowlist` finding
+(policy key → base class `dns_query`, already wired in the orchestrator) use the same "outside
+allowlist is the risk" framing.

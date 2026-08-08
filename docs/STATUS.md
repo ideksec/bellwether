@@ -55,7 +55,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-15 executor wiring · WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-788 tests: 742 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
+789 tests: 743 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -69,12 +69,14 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
 1. **Wire the DNS resolver into the executor (finish WP-15).** Mirrors the just-completed proxy
    wiring — a second sidecar on the internal bridge — and closes the covert channel that routes
    around the HTTP proxy. Highest-leverage next brick: the pattern is fresh and proven.
-   - **Landed:** the Plane E *trace seam* — `trace.build.dns_actions` (query log → `dns_query`/
+   - **Landed:** (1) the Plane E *trace seam* — `trace.build.dns_actions` (query log → `dns_query`/
      `dns_blocked` action records) and the `dns` parameter on `assemble_coverage` (so a run whose
-     resolver logged is `dns: full`, not the old hardcoded "lands in WP-15"). Offline-tested.
-   - **Remaining, in order:** (a) the `dns_query`/`dns_blocked` → capability mapping in
-     `trace/canonical.py` (decide the resolved-vs-blocked weight — the table has `dns_query: 10`
-     but no `dns_blocked`, unlike egress; ground it in §13.5 before wiring); (b) the resolver
+     resolver logged is `dns: full`, not the old hardcoded "lands in WP-15"); (2) the
+     `dns_query`/`dns_blocked` → capability mapping in `trace/canonical.py` — an outside-allowlist
+     query (`dns_blocked`) is the weight-10 `dns_query:<name>` covert-channel class, an in-allowlist
+     resolution (`dns_query`) is the floor-weighted `dns:<name>` class (grounded in §13.5, see
+     spec-notes; §11.4 didn't enumerate a DNS tier-1 class). Both offline-tested.
+   - **Remaining, in order:** (b) the resolver
      **producer core** — query-log serializers + a `ControlledResolver` base + a dnslib-agnostic
      recorder + the in-container entry, mirroring `capture/sidecar_entry.py` and `proxy_addon`'s
      serializers; (c) the **host lifecycle + provider** (`DnsResolverSidecar`, `RunResolver`,
