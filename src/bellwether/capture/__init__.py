@@ -60,11 +60,17 @@ from bellwether.capture.credential import (
 )
 from bellwether.capture.dns import (
     DNS_DESTINATION,
+    ControlledResolver,
     DnsAllowlist,
     DnsQuery,
     decide_query,
+    parse_query_record,
+    query_record_line,
+    read_query_records,
     scan_query_for_canaries,
+    write_query_records,
 )
+from bellwether.capture.dns_sidecar import DnsResolverSidecar, ResolverHandle
 from bellwether.capture.egress import (
     DEFAULT_HEADER_ALLOWLIST,
     CapLedger,
@@ -94,6 +100,7 @@ from bellwether.capture.proxy_addon import (
     write_flow_records,
 )
 from bellwether.capture.proxy_core import ProxyDecision, decide_request
+from bellwether.capture.resolver_entry import ResolverConfig, build_allowlist
 from bellwether.capture.sidecar import MitmproxySidecar, SidecarHandle
 from bellwether.capture.sidecar_entry import (
     SidecarConfig,
@@ -115,9 +122,11 @@ __all__ = [
     "CanaryFinding",
     "CanaryPlacement",
     "CapLedger",
+    "ControlledResolver",
     "CredentialBroker",
     "DnsAllowlist",
     "DnsQuery",
+    "DnsResolverSidecar",
     "EgressAllowlist",
     "EgressClass",
     "EgressFlow",
@@ -129,12 +138,15 @@ __all__ = [
     "ProxyDecision",
     "RecordingProxy",
     "RequestLike",
+    "ResolverConfig",
+    "ResolverHandle",
     "SidecarConfig",
     "SidecarHandle",
     "SinkEvent",
     "SinkStats",
     "block_response_args",
     "build_addon",
+    "build_allowlist",
     "ca_trust_environment",
     "canary_markers",
     "classify_canary_hit",
@@ -151,9 +163,12 @@ __all__ = [
     "mint_canaries",
     "mint_sandbox_token",
     "parse_flow_record",
+    "parse_query_record",
     "provider_hosts",
     "proxy_environment",
+    "query_record_line",
     "read_flow_records",
+    "read_query_records",
     "redact_canaries",
     "redact_headers",
     "scan_for_canaries",
@@ -162,4 +177,5 @@ __all__ = [
     "strip_dns_labels",
     "system_store_install_commands",
     "write_flow_records",
+    "write_query_records",
 ]

@@ -255,6 +255,27 @@ def capability_for(action: Action, context: NormalizationContext) -> Capability 
             return Capability(tier1=f"egress_blocked:{host}", tier2=f"egress_blocked:{host}")
         return None
 
+    if kind == "dns_query":
+        # A resolved (in-allowlist) lookup: permitted infrastructure, floor-weighted. §13.5's
+        # only DNS weight class is "dns_query outside allowlist" (10) — an in-allowlist
+        # resolution is not that, so it stays at the floor, present for trajectory/completeness.
+        name = payload.get("name")
+        if isinstance(name, str):
+            return Capability(tier1=f"dns:{name}", tier2=f"dns:{name}")
+        return None
+
+    if kind == "dns_blocked":
+        # A name the resolver refused (outside the allowlist, NXDOMAIN) — the label-encoded
+        # covert channel Plane E exists to catch (§10.6). This is §13.5's "dns_query outside
+        # allowlist" weight-10 class, whose base class is `dns_query`; the tier1 is therefore
+        # dns_query:<name>, NOT dns_blocked:<name> (which has no weight entry and would fall to
+        # the floor, under-weighting the exact reach the gate must catch). §11.4 does not
+        # enumerate a DNS tier-1 class; this fills that gap — see docs/spec-notes.md.
+        name = payload.get("name")
+        if isinstance(name, str):
+            return Capability(tier1=f"dns_query:{name}", tier2=f"dns_query:{name}")
+        return None
+
     if kind == "process_exec":
         argv = payload.get("argv")
         if isinstance(argv, list) and argv and isinstance(argv[0], str):

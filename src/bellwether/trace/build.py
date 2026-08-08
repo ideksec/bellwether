@@ -17,12 +17,14 @@ import datetime as dt
 from typing import Any
 
 from bellwether.capture import FilesystemEvent, PlaneStatus
+from bellwether.capture.dns import DnsQuery
 from bellwether.capture.egress import EgressFlow
 from bellwether.harness import RawHarnessEvent
 from bellwether.trace.models import Action, Actor, Coverage, ExitReason, PlaneCoverage, TokenTotals
 
 __all__ = [
     "assemble_coverage",
+    "dns_actions",
     "egress_actions",
     "exit_reason_from_events",
     "filesystem_actions",
@@ -155,13 +157,16 @@ def filesystem_actions(
 def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Action]:
     """Turn classified proxy flows into Plane D action records (§10.5, §11.2).
 
-    A permitted request is ``kind: "egress"``; a default-deny block is ``kind:
+    A permitted request is ``kind: "egress_request"``; a default-deny block is ``kind:
     "egress_blocked"`` — the two are drawn apart deliberately, because a blocked attempt is
-    evidence of intent (§10.5.0) and must never read like an ordinary request. Every record
-    carries its ``egress_class`` so the ``no_egress`` assertion can count only
-    skill-attributed traffic without re-deriving the classification. The request body is
-    never here — only its digest and length (§10.5): the record ends up in an artifact, and
-    a body may hold a credential or a canary.
+    evidence of intent (§10.5.0) and must never read like an ordinary request. The kind is
+    ``egress_request`` (not ``egress``) because that is the §11.2/§1581 ARF action kind the
+    canonicalizer maps to an ``egress:<host>`` capability; emitting a bare ``egress`` here
+    left every *permitted* flow uncanonicalised — silently absent from the capability sets,
+    the scope table, and the rare-capability gate. Every record carries its ``egress_class``
+    so the ``no_egress`` assertion can count only skill-attributed traffic without re-deriving
+    the classification. The request body is never here — only its digest and length (§10.5):
+    the record ends up in an artifact, and a body may hold a credential or a canary.
 
     ``seq`` values follow the flows' given order from ``start_seq``; the caller owns the
     sequence space and WP-7's cross-plane merge places these relative to the other planes.
@@ -194,7 +199,39 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
                 seq=start_seq + offset,
                 ts=dt.datetime.fromisoformat(flow.ts),
                 plane="egress",
-                kind="egress_blocked" if flow.blocked else "egress",
+                kind="egress_blocked" if flow.blocked else "egress_request",
+                action=payload,
+            )
+        )
+    return actions
+
+
+def dns_actions(queries: list[DnsQuery], *, start_seq: int = 0) -> list[Action]:
+    """Turn the controlled resolver's query log into Plane E action records (§10.6, §11.2).
+
+    An allowlisted (resolved) name is ``kind: "dns_query"``; a default-deny NXDOMAIN is
+    ``kind: "dns_blocked"`` — drawn apart for the same reason egress splits ``egress`` from
+    ``egress_blocked`` (§10.5.0): a blocked lookup is evidence of intent, not an ordinary
+    query, and must never read like one. Every query name is logged whether or not it
+    resolved, because the log is the plane's ground truth and a refused name is exactly the
+    evidence the resolver exists to capture. The name itself is retained — WP-7's canary scan
+    (§10.4.2) runs the label-stripped form back through the corpus, so redacting it here would
+    blind the covert-channel detector.
+
+    ``seq`` values follow the queries' given order from ``start_seq``; the caller owns the
+    sequence space and WP-7's cross-plane merge places these relative to the other planes.
+    """
+    actions: list[Action] = []
+    for offset, query in enumerate(queries):
+        payload: dict[str, Any] = {"name": query.name, "resolved": query.resolved}
+        if query.reason:
+            payload["reason"] = query.reason
+        actions.append(
+            Action(
+                seq=start_seq + offset,
+                ts=dt.datetime.fromisoformat(query.ts),
+                plane="dns",
+                kind="dns_query" if query.resolved else "dns_blocked",
                 action=payload,
             )
         )
@@ -206,6 +243,7 @@ def assemble_coverage(
     harness_events: PlaneStatus | None = None,
     filesystem_writes: PlaneStatus | None = None,
     egress: PlaneStatus | None = None,
+    dns: PlaneStatus | None = None,
 ) -> Coverage:
     """Build the §10.7 coverage block from what WP-5 can actually capture.
 
@@ -217,6 +255,9 @@ def assemble_coverage(
     ``egress`` is set when the recording-proxy sidecar ran for this run (WP-13): the proxy
     writing its flow log is proof the plane was captured, even when it recorded zero flows —
     an observed-clean run, not an unobserved one. Absent it, egress stays ``unavailable``.
+    ``dns`` is the same for the controlled resolver (WP-15): the resolver writing its query
+    log is proof Plane E was captured, even with zero queries; absent it, dns stays
+    ``unavailable``.
     """
     return Coverage(
         harness_events=_from_status(
@@ -231,7 +272,7 @@ def assemble_coverage(
         ),
         credentials=PlaneCoverage(fidelity="unavailable", reason="canary planting lands in WP-16"),
         egress=_from_status(egress, absent="the recording proxy was not wired into this run"),
-        dns=PlaneCoverage(fidelity="unavailable", reason="the controlled resolver lands in WP-15"),
+        dns=_from_status(dns, absent="the controlled resolver was not wired into this run"),
         process=PlaneCoverage(fidelity="unavailable", reason="process capture lands in WP-18"),
         server_side_tools=PlaneCoverage(
             fidelity="unavailable", reason="proxy-side body parsing lands in WP-13"

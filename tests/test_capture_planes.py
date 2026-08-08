@@ -18,6 +18,7 @@ import pytest
 
 from bellwether.capture import (
     HostEventSink,
+    PlaneStatus,
     collect_filesystem_events,
     filesystem_writes_status,
 )
@@ -329,11 +330,11 @@ def test_every_plane_is_stated_including_the_unbuilt_ones() -> None:
         "process",
         "server_side_tools",
     }
-    # Each absent plane names the work package that brings it, or why it is off. Egress is
-    # wireable now (the recording proxy is built), so its reason names why it was not captured
-    # *this run* rather than a work package.
+    # Each absent plane names the work package that brings it, or why it is off. Egress and
+    # DNS are wireable now (the recording proxy and the controlled resolver are built), so
+    # their reasons name why they were not captured *this run* rather than a work package.
     assert "recording proxy" in unavailable["egress"]
-    assert "WP-15" in unavailable["dns"]
+    assert "controlled resolver" in unavailable["dns"]
     assert "WP-16" in unavailable["credentials"]
     assert "WP-18" in unavailable["process"]
 
@@ -344,11 +345,16 @@ def test_active_planes_reach_the_coverage_block(tmp_path: Path) -> None:
     coverage = assemble_coverage(
         harness_events=sink.status(),
         filesystem_writes=filesystem_writes_status({"workspace", "harness_state", "scratch"}),
+        dns=PlaneStatus(fidelity="full"),
     )
 
     assert coverage.harness_events is not None
     assert coverage.harness_events.fidelity == "full"
     assert coverage.filesystem_writes is not None
     assert coverage.filesystem_writes.fidelity == "overlay_diff"
+    # The controlled resolver ran for this run, so Plane E is observed, not unavailable.
+    assert coverage.dns is not None
+    assert coverage.dns.fidelity == "full"
     assert "harness_events" not in coverage.unavailable()
     assert "filesystem_writes" not in coverage.unavailable()
+    assert "dns" not in coverage.unavailable()

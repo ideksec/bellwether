@@ -24,6 +24,7 @@ from bellwether.cli.execution import SandboxRunExecutor
 
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
+from bellwether.cli.dns_run import DnsResolverProvider
 from bellwether.cli.orchestrator import (
     EvalResult,
     RunExecutor,
@@ -42,7 +43,13 @@ from bellwether.errors import BellwetherError
 from bellwether.harness import ModelClient, RunLimits, build_model_client
 from bellwether.skill import SkillPackage
 
-__all__ = ["ExecutorFactory", "build_proxy_provider", "policy_digest", "run_evaluation"]
+__all__ = [
+    "ExecutorFactory",
+    "build_proxy_provider",
+    "build_resolver_provider",
+    "policy_digest",
+    "run_evaluation",
+]
 
 #: How the caller supplies the execution half. The production factory builds a
 #: :class:`SandboxRunExecutor` around a Docker backend; a test passes a replay executor. It receives
@@ -159,6 +166,7 @@ def sandbox_executor_factory(
     limits: RunLimits | None = None,
     proxy: SidecarProxyProvider | None = None,
     *,
+    resolver: DnsResolverProvider | None = None,
     isolation: IsolationProfile | None = None,
     zones: ZoneMap | None = None,
     randomize_identifiers: bool = True,
@@ -198,6 +206,7 @@ def sandbox_executor_factory(
             run_root=run_root,
             limits=run_limits,
             proxy=proxy,
+            resolver=resolver,
             isolation=isolation if isolation is not None else IsolationProfile(),
             zones=zones if zones is not None else ZoneMap(),
             randomize_identifiers=randomize_identifiers,
@@ -242,4 +251,35 @@ def build_proxy_provider(config: Config) -> SidecarProxyProvider | None:
         max_requests=egress.per_run_caps.max_requests,
         max_request_bytes=egress.per_run_caps.max_request_bytes,
         broker=CredentialBroker({}),
+    )
+
+
+def build_resolver_provider(config: Config) -> DnsResolverProvider | None:
+    """Assemble the controlled-resolver provider from config, or ``None`` when it is unwired.
+
+    Mirrors :func:`build_proxy_provider`: the resolver is wired only when ``dns.image`` is set
+    (§10.6); left empty — the shipped default — DNS stays ``not_evaluable``. A live config sets the
+    digest-pinned resolver image to turn it on.
+
+    The allowlist is default-deny: the configured providers' hosts (the sandbox may legitimately
+    resolve the model endpoint) plus the operator's explicit ``dns.allowlist`` additions. The
+    proxy's own container name is *not* added here — it is known only at standup and is handed to
+    the resolver per run by the executor.
+    """
+    dns = config.dns
+    if not dns.image:
+        return None
+
+    from bellwether.capture import DnsAllowlist, provider_hosts
+    from bellwether.harness.live_client import DEFAULT_ANTHROPIC_BASE_URL
+    from bellwether.sandbox import DockerBackend
+
+    base_urls = [
+        provider.base_url or DEFAULT_ANTHROPIC_BASE_URL for provider in config.providers.values()
+    ]
+    allowlist = DnsAllowlist(allowed=provider_hosts(base_urls) | frozenset(dns.allowlist))
+    return DnsResolverProvider(
+        backend=DockerBackend(image=config.sandbox.image),
+        image=dns.image,
+        allowlist=allowlist,
     )

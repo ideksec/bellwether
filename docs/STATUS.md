@@ -49,13 +49,13 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | WP-16 — canaries: mint, decode-then-match, classify, redact | **logic done** — not yet planted/scanned in a live run |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
-| WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **host core done** — the resolver sidecar + executor wiring are the next brick |
+| WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
 | HTML report, worked demo (`bellwether demo`), PR-comment posting, changed-skills detection + GitHub Action | **done** |
 | Evidence preserved from CI — per-run ARF traces + report uploaded as an artifact, report echoed to the log | **done** (PR #45) |
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
-| WP-15 executor wiring · WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
+| WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-781 tests: 735 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
+833 tests: 784 offline, 49 under the `docker` mark (43 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -66,9 +66,29 @@ below reflects dependencies and reuses momentum from the proxy work — it is no
 because the build deliberately inserted the executor-integration + live-proof work (unnumbered) that
 made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
 
-1. **Wire the DNS resolver into the executor (finish WP-15).** Mirrors the just-completed proxy
-   wiring — a second sidecar on the internal bridge — and closes the covert channel that routes
-   around the HTTP proxy. Highest-leverage next brick: the pattern is fresh and proven.
+1. **WP-15 (controlled DNS resolver) — code-complete; CI validates the live path.** The whole
+   resolver mirrors the recording proxy, built as a second sidecar on the run's internal bridge, and
+   all of it is offline-green. Landed: the Plane E *trace seam* (`dns_actions` + `dns` coverage); the
+   `dns_query`/`dns_blocked` → capability mapping (`trace/canonical.py`, grounded in §13.5 — see
+   spec-notes); the resolver↔host **query-record contract** + `ControlledResolver` seam
+   (`capture/dns.py`); the in-container **recorder + entry** (`capture/resolver_entry.py`); the
+   **host lifecycle** (`capture/dns_sidecar.py:DnsResolverSidecar`, `resolver_ip` via `docker
+   inspect`) + **per-run provider** (`cli/dns_run.py`, resolver-only, create-or-join the bridge); the
+   **config switch + executor wiring** (`dns.image` digest-pinned + `build_resolver_provider`, wired
+   into `SandboxRunExecutor.resolver`/`_open_resolver` with `--dns <ip> --dns-option single-request`
+   in `build_argv`, Plane E into the trace, `dns: full` coverage); and the **resolver sidecar image**
+   (`sidecar/resolver/` — digest-pinned base + dnslib). Two CI-gated docker done-when tests exist
+   (`test_resolver_docker`, `test_execution_resolver_docker`), mirroring the proxy's.
+   - **Left for CI / follow-on:** the image build + live standup run on CI (both need open egress, so
+     they skip locally, exactly like the proxy's docker tests) — push to a branch to validate. The
+     §3.3-invariant-3 live-probe (a direct public-resolver query from the container fails) and the
+     `dns-thief` corpus assertion land with WP-20's corpus; the covert-channel *detection* is already
+     unit-tested offline (canary-in-labels, the capability mapping, the query records).
+
+   Found + fixed en route (not WP-15): `egress_actions` emitted a non-spec kind `"egress"` for a
+   *permitted* flow — the §1581 kind the canonicalizer maps is `"egress_request"` — so every
+   permitted egress flow was silently uncanonicalised (unscored). Corrected, with the end-to-end
+   capability test the old kind-only test lacked.
 2. **Plant + scan canaries in a live run (finish WP-16).** The minting/decoding/redaction logic
    exists; this places canaries in the sandbox and scans observed egress **and** DNS labels for them.
    Depends on 1 (DNS observed).

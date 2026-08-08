@@ -16,8 +16,11 @@ of §3.3 invariant 3 that makes it unavoidable rather than merely available, and
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from bellwether.capture.canary import (
     Canary,
@@ -25,13 +28,19 @@ from bellwether.capture.canary import (
     CanaryFinding,
     scan_for_canaries,
 )
+from bellwether.determinism import canonical_json
 
 __all__ = [
     "DNS_DESTINATION",
+    "ControlledResolver",
     "DnsAllowlist",
     "DnsQuery",
     "decide_query",
+    "parse_query_record",
+    "query_record_line",
+    "read_query_records",
     "scan_query_for_canaries",
+    "write_query_records",
 ]
 
 #: A DNS query is a non-model destination, so a canary in one is ``critical`` (§10.4.1).
@@ -130,3 +139,84 @@ def scan_query_for_canaries(name: str, canaries: Iterable[Canary]) -> list[Canar
     destination, and this is the covert channel the resolver exists to close.
     """
     return scan_for_canaries(name, canaries, destination=DNS_DESTINATION, is_dns=True)
+
+
+# ---------------------------------------------------------------------------
+# The resolver ↔ host query-record contract (§10.6)
+#
+# The mirror of the proxy's flow-record contract (:mod:`bellwether.capture.proxy_addon`):
+# the resolver sidecar appends one canonical JSONL line per query to a log on the shared
+# volume, and the host reads it back into :class:`DnsQuery` objects to build Plane E of the
+# trace. Canonical form keeps the shared file byte-stable, so two identical runs produce
+# identical query logs.
+# ---------------------------------------------------------------------------
+
+
+def _query_to_dict(query: DnsQuery) -> dict[str, Any]:
+    """A :class:`DnsQuery` as a plain JSON-able dict. Explicit rather than ``asdict`` so a new
+    field on the dataclass fails the round-trip test loudly instead of silently dropping."""
+    return {
+        "ts": query.ts,
+        "name": query.name,
+        "resolved": query.resolved,
+        "reason": query.reason,
+    }
+
+
+def _query_from_dict(payload: Mapping[str, Any]) -> DnsQuery:
+    return DnsQuery(
+        ts=payload["ts"],
+        name=payload["name"],
+        resolved=payload["resolved"],
+        reason=payload.get("reason", ""),
+    )
+
+
+def query_record_line(query: DnsQuery) -> str:
+    """One canonical JSONL line for a query — sorted keys, no trailing newline."""
+    return canonical_json(_query_to_dict(query))
+
+
+def parse_query_record(line: str) -> DnsQuery:
+    """Reconstruct a :class:`DnsQuery` from one JSONL line written by the resolver."""
+    return _query_from_dict(json.loads(line))
+
+
+def write_query_records(path: Path, queries: list[DnsQuery]) -> None:
+    """Write queries as JSONL — the resolver's side of the shared-volume contract."""
+    path.write_text("".join(f"{query_record_line(query)}\n" for query in queries), encoding="utf-8")
+
+
+def read_query_records(path: Path) -> list[DnsQuery]:
+    """Read the resolver's query log into :class:`DnsQuery` objects — the host's side.
+
+    A missing file is an *error state*, not an empty run: the resolver always writes the log
+    (an empty one at t=0), so its absence means the resolver never ran, and a zero-query trace
+    that reads as a clean skill is exactly the failure this plane exists to prevent. Absence
+    raises rather than returning ``[]``; blank lines are skipped so a trailing newline is
+    harmless. Mirrors :func:`bellwether.capture.proxy_addon.read_flow_records`.
+    """
+    text = path.read_text(encoding="utf-8")
+    return [parse_query_record(line) for line in text.splitlines() if line.strip()]
+
+
+class ControlledResolver:
+    """The controlled-resolver seam (§10.6, §22) — the DNS analog of :class:`RecordingProxy`.
+
+    A ``Protocol`` in spirit: the resolver sidecar implements it (the container half), and the
+    analysis path depends only on this surface — start a run, read its queries, stop — so the
+    resolver can be swapped without touching capture code, the same treatment the sandbox
+    backend and the recording proxy get. Kept a base class with a ``NotImplementedError`` body
+    rather than a bare ``Protocol`` so a partial implementation fails loudly instead of silently
+    resolving nothing (a zero-query trace reads as a clean skill — the covert channel §10.6
+    exists to police would go unrecorded).
+    """
+
+    def start(self, run_id: str, *, allowlist: DnsAllowlist) -> None:
+        raise NotImplementedError
+
+    def queries(self) -> list[DnsQuery]:
+        raise NotImplementedError
+
+    def stop(self) -> None:
+        raise NotImplementedError

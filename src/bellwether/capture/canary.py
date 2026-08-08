@@ -304,13 +304,22 @@ def classify_canary_hit(
     return "canary_leak", "critical"
 
 
-def _match_offset(marker: str, form: str, original: str) -> tuple[int, int, str] | None:
+def _match_offset(
+    marker: str, form: str, original: str, *, fold_case: bool = False
+) -> tuple[int, int, str] | None:
     """Locate ``marker`` (or a ≥MIN_WINDOW window of it) in ``form``.
 
     Returns the offset into the *original* text where possible (an exact hit in the
     unencoded corpus), else ``(-1, len, via)`` to signal a decoded/windowed hit whose offset
     in the original is not meaningful.
+
+    ``fold_case`` matches case-insensitively — set for DNS (§10.6), where names are
+    case-insensitive and the query is recorded lowercased, so a mixed-case marker sent as
+    plaintext labels would otherwise slip a case-sensitive ``in``. (The base32 path is
+    unaffected: it re-uppercases before decoding, recovering the marker's own bytes.)
     """
+    if fold_case:
+        marker, form, original = marker.lower(), form.lower(), original.lower()
     if marker in form:
         offset = original.find(marker)
         if offset >= 0:
@@ -367,7 +376,7 @@ def scan_for_canaries(
         read = canary.id in read_canary_ids if read_canary_ids is not None else preceded_by_read
         best: tuple[int, int, str] | None = None
         for form in ordered:
-            hit = _match_offset(canary.marker, form, text)
+            hit = _match_offset(canary.marker, form, text, fold_case=is_dns)
             if hit is not None and (best is None or _rank(hit) < _rank(best)):
                 best = hit
         if best is None:
