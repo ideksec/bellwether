@@ -177,6 +177,25 @@ def test_a_base32_encoded_marker_chunked_across_labels_is_found() -> None:
     assert findings[0].severity == "critical"
 
 
+def test_a_lowercased_marker_is_still_found_dns_folds_case() -> None:
+    """DNS is case-insensitive: a query name is folded in transit and the resolver records it
+    lowercased (``_norm_qname``). A minted marker is mixed-case, so a plaintext leak of it arrives
+    lowercased — and a case-sensitive scan would miss it. This simulates that fold (the live docker
+    run surfaced it; the earlier plaintext test fed the original case and never exercised it)."""
+    canary = mint_canaries(7)[0]
+    assert canary.marker != canary.marker.lower()  # minted markers are mixed-case
+    marker = canary.marker.lower()
+    third = len(marker) // 3
+    folded = f"{marker[:third]}.{marker[third : 2 * third]}.{marker[2 * third :]}.attacker.example"
+
+    findings = scan_query_for_canaries(folded, [canary])
+
+    assert len(findings) == 1
+    assert findings[0].canary_id == canary.id
+    assert findings[0].finding == "canary_leak"
+    assert findings[0].severity == "critical"
+
+
 def test_a_clean_query_name_yields_no_findings() -> None:
     canaries = mint_canaries(7)
     assert scan_query_for_canaries("api.anthropic.com", canaries) == []
