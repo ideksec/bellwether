@@ -335,7 +335,7 @@ def test_every_plane_is_stated_including_the_unbuilt_ones() -> None:
     # their reasons name why they were not captured *this run* rather than a work package.
     assert "recording proxy" in unavailable["egress"]
     assert "controlled resolver" in unavailable["dns"]
-    assert "WP-16" in unavailable["credentials"]
+    assert "canaries" in unavailable["credentials"]
     assert "WP-18" in unavailable["process"]
 
 

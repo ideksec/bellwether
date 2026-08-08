@@ -90,6 +90,7 @@ from bellwether.capture.filesystem import (
     collect_filesystem_events,
     filesystem_writes_status,
 )
+from bellwether.capture.planting import CanaryPlanting, PlantedSlot, plan_canary_planting
 from bellwether.capture.proxy_addon import (
     BlockResponse,
     ProxyAddon,
@@ -121,6 +122,7 @@ __all__ = [
     "Canary",
     "CanaryFinding",
     "CanaryPlacement",
+    "CanaryPlanting",
     "CapLedger",
     "ControlledResolver",
     "CredentialBroker",
@@ -134,6 +136,7 @@ __all__ = [
     "HostEventSink",
     "MitmproxySidecar",
     "PlaneStatus",
+    "PlantedSlot",
     "ProxyAddon",
     "ProxyDecision",
     "RecordingProxy",
@@ -164,6 +167,7 @@ __all__ = [
     "mint_sandbox_token",
     "parse_flow_record",
     "parse_query_record",
+    "plan_canary_planting",
     "provider_hosts",
     "proxy_environment",
     "query_record_line",

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bellwether.capture.canary import Canary
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import CapLedger, EgressAllowlist
 from bellwether.capture.proxy_addon import BlockResponse, ProxyAddon, write_flow_records
@@ -65,6 +66,10 @@ class SidecarConfig:
     max_request_bytes: int
     flow_log_path: str
     listen_port: int = 8080
+    #: The run's planted canaries as ``(id, marker)`` pairs, so the sidecar can scan request bodies
+    #: for them (§10.5.2). Sensitive like the scoped tokens above — both live only on the shared
+    #: volume, which the CI upload excludes (``runs/**``), so no marker reaches an artifact (§10.4.3).
+    canary_markers: tuple[tuple[str, str], ...] = ()
 
     def to_json(self) -> str:
         """Canonical JSON, so the config the host writes and the sidecar reads is byte-stable."""
@@ -81,6 +86,7 @@ class SidecarConfig:
                 "max_request_bytes": self.max_request_bytes,
                 "flow_log_path": self.flow_log_path,
                 "listen_port": self.listen_port,
+                "canary_markers": [list(pair) for pair in self.canary_markers],
             }
         )
 
@@ -99,6 +105,7 @@ class SidecarConfig:
             max_request_bytes=payload["max_request_bytes"],
             flow_log_path=payload["flow_log_path"],
             listen_port=payload.get("listen_port", 8080),
+            canary_markers=tuple((pair[0], pair[1]) for pair in payload.get("canary_markers", ())),
         )
 
 
@@ -117,6 +124,12 @@ def build_addon(
     """
     provider_endpoints = frozenset(config.provider_endpoints)
     infrastructure_endpoints = frozenset(config.infrastructure_endpoints)
+    # Reconstruct the run's canaries for body scanning. Only id and marker travel and only they are
+    # used by the scan; kind/path are the sandbox-side plant sites, irrelevant to matching in a body.
+    canaries = tuple(
+        Canary(id=canary_id, marker=marker, kind="", path="")
+        for canary_id, marker in config.canary_markers
+    )
     return ProxyAddon(
         allowlist=EgressAllowlist(
             provider_endpoints=provider_endpoints,
@@ -131,6 +144,7 @@ def build_addon(
             max_requests=config.max_requests, max_request_bytes=config.max_request_bytes
         ),
         clock=clock,
+        canaries=canaries,
     )
 
 

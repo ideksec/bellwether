@@ -341,6 +341,9 @@ def run(
                     isolation=isolation_from_config(loaded_config.sandbox),
                     zones=zone_map_from_config(loaded_config.capture.zones),
                     randomize_identifiers=loaded_config.sandbox.randomize_identifiers,
+                    # Plant canaries and scan the observed planes for them when config enables it
+                    # (§10.4); the env-var channel is delivered and scanned host-side today.
+                    plant_canaries=loaded_config.canaries.enabled,
                 ),
                 # The artifact writer appends <eval_id> itself, so the parent is `out`;
                 # passing `out / eval_id` here doubled it and hid the report from pr-comment.

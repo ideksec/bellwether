@@ -69,11 +69,14 @@ class _FakeSidecar:
         self.stopped = False
         self._flows: list[EgressFlow] = []
 
-    def start(self, run_id: str, *, allowlist: EgressAllowlist, caps: object) -> None:
+    def start(
+        self, run_id: str, *, allowlist: EgressAllowlist, caps: object, canaries: object = ()
+    ) -> None:
         if self.fail_start:
             raise BellwetherError("sidecar refused to come up")
         self.started = True
         self._run_id = run_id
+        self.canaries = canaries
 
     def container_name(self) -> str:
         return f"bw-proxy-{self._run_id}"

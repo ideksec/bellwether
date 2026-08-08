@@ -20,12 +20,14 @@ from bellwether.capture import (
     classify_egress,
     correlate_egress_induced_failure,
     make_flow,
+    mint_canaries,
     provider_hosts,
     redact_headers,
 )
-from bellwether.capture.egress import EgressFlow
+from bellwether.capture.egress import EgressCanaryHit, EgressFlow
+from bellwether.capture.proxy_addon import flow_record_line, parse_flow_record
 from bellwether.determinism import canonical_json, stable_hash
-from bellwether.trace import egress_actions
+from bellwether.trace import egress_actions, egress_body_actions
 
 _PROVIDERS = frozenset({"api.anthropic.com", "api.openai.com"})
 _INFRA = frozenset({"telemetry.example-harness.com"})
@@ -269,6 +271,88 @@ def test_make_flow_reduces_the_body_to_a_digest_and_length() -> None:
     assert "hello" not in json.dumps(
         {"h": dict(flow.request_headers), "s": flow.request_body_sha256}
     )
+
+
+def _body_flow(host: str, body: bytes, *, canaries: object = ()) -> EgressFlow:
+    return make_flow(
+        ts="2026-08-06T00:00:00+00:00",
+        method="POST",
+        scheme="https",
+        host=host,
+        port=443,
+        path="/collect",
+        provider_endpoints=_PROVIDERS,
+        infrastructure_endpoints=_INFRA,
+        allowlist=_allowlist(frozenset({host})),
+        request_body=body,
+        canaries=canaries,  # type: ignore[arg-type]
+    )
+
+
+def test_make_flow_scans_a_non_model_body_for_a_canary() -> None:
+    """§10.5.2: a marker in a POST body to a non-model host is exfiltration — a critical other_host
+    leak. The proxy scans the body where it exists and records the hit by reference; the value is
+    reduced to a digest and never reaches the flow record."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    flow = _body_flow("attacker.example", f"stolen={marker}".encode(), canaries=canaries)
+    assert [h.canary_id for h in flow.canary_hits] == [canaries[0].id]
+    assert flow.canary_hits[0].destination == "other_host"
+    # The record written to the shared log holds no marker — only the by-reference hit.
+    assert marker not in flow_record_line(flow)
+
+
+def test_make_flow_skips_the_model_api_body() -> None:
+    """A body to the model API is not scanned here: sending a canary to the model can be legitimate
+    after a read (``canary_in_context``), and grading it needs the host's read state — a follow-on,
+    exactly as model-API URLs are skipped."""
+    canaries = mint_canaries(7)
+    flow = _body_flow("api.anthropic.com", f"x={canaries[0].marker}".encode(), canaries=canaries)
+    assert flow.canary_hits == ()
+
+
+def test_make_flow_records_no_hits_without_canaries() -> None:
+    flow = _body_flow("attacker.example", b"just some data")
+    assert flow.canary_hits == ()
+
+
+def test_flow_record_round_trips_canary_hits() -> None:
+    """The sidecar writes the hit to the shared log and the host reads it back identically (§10.5)."""
+    flow = EgressFlow(
+        ts="2026-08-06T00:00:00+00:00",
+        method="POST",
+        scheme="https",
+        host="attacker.example",
+        port=443,
+        path="/collect",
+        egress_class="skill_attributed",
+        blocked=False,
+        canary_hits=(
+            EgressCanaryHit(
+                canary_id="c1", destination="other_host", offset=7, length=40, via="exact"
+            ),
+        ),
+    )
+    restored = parse_flow_record(flow_record_line(flow))
+    assert restored.canary_hits == flow.canary_hits
+
+
+def test_egress_body_actions_turns_flow_hits_into_a_plane_c_leak() -> None:
+    """The host-side end (§10.5.2): a canary the proxy found in a body becomes a Plane C other_host
+    leak, anchored to the egress action for the request that carried it."""
+    canaries = mint_canaries(7)
+    flow = _body_flow("attacker.example", f"exfil={canaries[0].marker}".encode(), canaries=canaries)
+    [egress_action] = egress_actions([flow])
+    plane_c = egress_body_actions([(egress_action, flow.canary_hits)])
+    assert [a.kind for a in plane_c] == ["canary_leak"]
+    assert plane_c[0].action["destination"] == "other_host"
+    assert plane_c[0].action["canary_id"] == canaries[0].id
+    assert plane_c[0].correlation.anchor_seq == egress_action.seq
+
+
+def test_egress_body_actions_is_empty_without_hits() -> None:
+    [action] = egress_actions([_body_flow("api.example", b"clean")])
+    assert egress_body_actions([(action, ())]) == []
 
 
 def test_make_flow_blocks_an_unallowlisted_host() -> None:

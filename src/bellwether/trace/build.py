@@ -14,22 +14,43 @@ normalizer (WP-7) — a record built here carries what was *observed*, not what 
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from bellwether.capture import FilesystemEvent, PlaneStatus
-from bellwether.capture.dns import DnsQuery
-from bellwether.capture.egress import EgressFlow
+from bellwether.capture.canary import (
+    Canary,
+    CanaryFinding,
+    classify_canary_hit,
+    redact_canaries,
+    scan_for_canaries,
+)
+from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
+from bellwether.capture.egress import EgressCanaryHit, EgressFlow
+from bellwether.determinism import canonical_json
 from bellwether.harness import RawHarnessEvent
-from bellwether.trace.models import Action, Actor, Coverage, ExitReason, PlaneCoverage, TokenTotals
+from bellwether.trace.models import (
+    Action,
+    Actor,
+    Correlation,
+    Coverage,
+    ExitReason,
+    PlaneCoverage,
+    TokenTotals,
+)
 
 __all__ = [
     "assemble_coverage",
+    "canary_actions",
     "dns_actions",
     "egress_actions",
+    "egress_body_actions",
     "exit_reason_from_events",
     "filesystem_actions",
     "harness_actions",
+    "redact_trace_actions",
     "token_totals_from_events",
+    "written_file_actions",
 ]
 
 
@@ -238,12 +259,206 @@ def dns_actions(queries: list[DnsQuery], *, start_seq: int = 0) -> list[Action]:
     return actions
 
 
+def _scan_source_action(action: Action, canaries: Sequence[Canary]) -> list[CanaryFinding]:
+    """Scan one already-built plane action for canary markers, by kind (§10.4.1).
+
+    A DNS query name, the model's final output, a tool call's arguments, and a non-model egress
+    request's URL are all non-model destinations, so a marker in any is a ``canary_leak`` at critical.
+    A tool-argument hit catches the skill that reads a credential and then exfiltrates it *through* a
+    tool — a ``fetch`` URL, a ``bash`` ``curl``/``nc`` command — which is how a sandbox with no direct
+    socket still gets a secret out; the whole argument object is scanned (canonicalised) so a marker in
+    any nested field surfaces. An egress hit scans the request line the proxy recorded — path, host,
+    SNI — which catches the classic ``GET /exfil?d=<secret>`` to an attacker host; requests to the
+    model API are skipped here because their URL is harness-built and their body-side, read-state
+    grading (``canary_in_context`` vs ``canary_without_read``) is a follow-on, and egress *bodies* are
+    scanned sidecar-side since the body never leaves the proxy.
+    """
+    if action.kind in ("dns_query", "dns_blocked"):
+        name = action.action.get("name")
+        if isinstance(name, str):
+            return scan_query_for_canaries(name, canaries)
+    elif action.kind == "final_output":
+        text = action.action.get("text")
+        if isinstance(text, str):
+            return scan_for_canaries(text, canaries, destination="final_output")
+    elif action.kind == "tool_call":
+        tool_input = action.action.get("input")
+        if tool_input is not None:
+            return scan_for_canaries(canonical_json(tool_input), canaries, destination="tool_args")
+    elif action.kind in ("egress_request", "egress_blocked"):
+        # The model API's URL is harness-built (no skill marker) and its grading is body-side and
+        # read-state-dependent — a follow-on — so only non-model requests are scanned here. The path,
+        # host and SNI are what the proxy records host-side; a marker in any is exfiltration to an
+        # arbitrary host, a critical leak needing no read state (§10.4.1).
+        if action.action.get("egress_class") != "model_api":
+            parts = [action.action.get(field) for field in ("path", "host", "sni")]
+            request_line = " ".join(part for part in parts if isinstance(part, str))
+            if request_line:
+                return scan_for_canaries(request_line, canaries, destination="other_host")
+    return []
+
+
+def canary_actions(
+    source_actions: Iterable[Action], canaries: Sequence[Canary], *, start_seq: int = 0
+) -> list[Action]:
+    """Derive Plane C canary findings by scanning the observed plane actions (§10.4).
+
+    Canaries are not a plane the sandbox emits; they are *found* in what the other planes recorded —
+    a marker in a DNS query name, in the final output, in a tool call's arguments, in a non-model
+    egress URL. So this scans the already-built source actions and emits one Plane C action per hit,
+    its ``kind`` the finding class
+    (``canary_leak`` / ``canary_without_read`` / ``canary_in_context``, §10.4.1) and its
+    ``correlation.anchor_seq`` pointing at the source action the marker appeared in — so a reviewer can
+    follow the leak to the exact query, output, or tool call that carried it. **No marker value is in
+    the record**, only the canary id and where it went (§10.4.3).
+
+    Deterministic: source actions are consumed in order and each source's findings come back sorted,
+    so the same evidence yields byte-identical Plane C actions (§24).
+    """
+    actions: list[Action] = []
+    seq = start_seq
+    for source in source_actions:
+        for finding in _scan_source_action(source, canaries):
+            actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
+            seq += 1
+    return actions
+
+
+def _plane_c_action(
+    finding: CanaryFinding, *, seq: int, ts: dt.datetime, anchor_seq: int
+) -> Action:
+    """Build one Plane C (``credentials``) action from a canary finding, correlated to its source.
+
+    Shared by every scan source (the plane-action scan and the written-file content scan) so a
+    finding is recorded the same way wherever it was found: ``kind`` is the finding class, the payload
+    holds the canary id / destination / severity / offset / length / via — **never the marker** — and
+    ``anchor_seq`` points at the source action the marker rode out on (§10.4.3).
+    """
+    return Action(
+        seq=seq,
+        ts=ts,
+        plane="credentials",
+        kind=finding.finding,
+        action={
+            "canary_id": finding.canary_id,
+            "destination": finding.destination,
+            "severity": finding.severity,
+            "offset": finding.offset,
+            "length": finding.length,
+            "via": finding.via,
+        },
+        correlation=Correlation(anchor_seq=anchor_seq),
+    )
+
+
+def written_file_actions(
+    sources: Iterable[tuple[Action, str]], canaries: Sequence[Canary], *, start_seq: int = 0
+) -> list[Action]:
+    """Derive Plane C findings by scanning the *contents* of files the skill wrote (§10.4).
+
+    Plane B records a write by its hash, not its bytes, so the content cannot be scanned from the
+    trace — the executor reads each written regular file host-side and passes it in as a
+    ``(write_action, content)`` pair. A marker in a file the skill wrote is a ``written_file`` leak,
+    critical and needing no read state (§10.4.1), anchored to the Plane B write that created it. The
+    content never enters the trace (Plane B stays hash-only), so there is nothing to redact here — the
+    Plane C record is marker-free by construction.
+
+    Deterministic: pairs are consumed in order and each file's findings come back sorted (§24).
+    """
+    actions: list[Action] = []
+    seq = start_seq
+    for source, content in sources:
+        for finding in scan_for_canaries(content, canaries, destination="written_file"):
+            actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
+            seq += 1
+    return actions
+
+
+def egress_body_actions(
+    sources: Iterable[tuple[Action, Sequence[EgressCanaryHit]]], *, start_seq: int = 0
+) -> list[Action]:
+    """Derive Plane C findings from canaries the proxy found in request *bodies* (§10.5.2).
+
+    An egress body never leaves the proxy, so it is scanned sidecar-side and the hits arrive already
+    located on the flow as marker-free :class:`EgressCanaryHit`\\s — this pairs each egress action with
+    its flow's hits, grades each by its destination (a non-model body is an ``other_host``
+    ``canary_leak``), and records it as a Plane C action anchored to the egress request that carried
+    it. The value was never on the record; only the by-reference hit crosses from the sidecar.
+
+    Deterministic: sources are consumed in order and each flow's hits in the order the sidecar found
+    them (§24).
+    """
+    actions: list[Action] = []
+    seq = start_seq
+    for source, hits in sources:
+        for hit in hits:
+            finding_kind, severity = classify_canary_hit(
+                hit.destination,  # type: ignore[arg-type]
+                preceded_by_read=False,
+            )
+            finding = CanaryFinding(
+                canary_id=hit.canary_id,
+                destination=hit.destination,  # type: ignore[arg-type]
+                finding=finding_kind,  # type: ignore[arg-type]
+                severity=severity,  # type: ignore[arg-type]
+                offset=hit.offset,
+                length=hit.length,
+                via=hit.via,
+            )
+            actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
+            seq += 1
+    return actions
+
+
+def _redact_value(value: Any, canaries: Sequence[Canary]) -> Any:
+    """Redact every exact canary marker in ``value``, recursing into dicts and lists.
+
+    Payloads are free-form (§11.2) — a marker can sit in the model's final-output string, a nested
+    tool-call input dict, a DNS name, an egress path or header — so the walk redacts every string it
+    reaches. Only string *values* are rewritten; dict keys are left alone, because a high-entropy
+    marker never legitimately names a field and rewriting a key would corrupt the record's shape.
+    """
+    if isinstance(value, str):
+        return redact_canaries(value, canaries)
+    if isinstance(value, dict):
+        return {k: _redact_value(v, canaries) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v, canaries) for v in value]
+    return value
+
+
+def redact_trace_actions(actions: Iterable[Action], canaries: Sequence[Canary]) -> list[Action]:
+    """Replace every exact planted-canary marker in the actions with its fingerprint (§10.4.3).
+
+    The trace is uploaded to CI, so a marker a skill *leaked* — into its final output, a DNS query
+    name, an egress path — must never reach the artifact raw. The Plane C finding already records
+    that the value escaped and where; this strips the value itself, leaving
+    ``<canary:c1@offset=,len=>`` in its place. It runs after :func:`canary_actions` (which needs the
+    raw marker to find the leak) and before the trace is written.
+
+    A no-op when nothing was planted, and it copies an action only when a marker was actually present,
+    so an unrelated record keeps its identity. Pure per-string rewrite, so the output is byte-stable
+    for the same input (§24).
+    """
+    if not canaries:
+        return list(actions)
+    redacted: list[Action] = []
+    for action in actions:
+        new_payload = _redact_value(action.action, canaries)
+        if new_payload == action.action:
+            redacted.append(action)
+        else:
+            redacted.append(action.model_copy(update={"action": new_payload}))
+    return redacted
+
+
 def assemble_coverage(
     *,
     harness_events: PlaneStatus | None = None,
     filesystem_writes: PlaneStatus | None = None,
     egress: PlaneStatus | None = None,
     dns: PlaneStatus | None = None,
+    credentials: PlaneStatus | None = None,
 ) -> Coverage:
     """Build the §10.7 coverage block from what WP-5 can actually capture.
 
@@ -270,7 +485,7 @@ def assemble_coverage(
             fidelity="unavailable",
             reason="read capture is the v0.2 fanotify mechanism; overlay diff records writes only",
         ),
-        credentials=PlaneCoverage(fidelity="unavailable", reason="canary planting lands in WP-16"),
+        credentials=_from_status(credentials, absent="no canaries were planted for this run"),
         egress=_from_status(egress, absent="the recording proxy was not wired into this run"),
         dns=_from_status(dns, absent="the controlled resolver was not wired into this run"),
         process=PlaneCoverage(fidelity="unavailable", reason="process capture lands in WP-18"),

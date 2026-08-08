@@ -24,12 +24,13 @@ against a real daemon on CI.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from bellwether.capture import (
     DEFAULT_CA_CONTAINER_PATH,
+    Canary,
     CapLedger,
     CredentialBroker,
     EgressAllowlist,
@@ -132,10 +133,13 @@ class SidecarProxyProvider:
     provider_of_host: dict[str, str] = field(default_factory=dict)
     sidecar_factory: SidecarFactory | None = None
 
-    def open(self, run_id: str, *, shared_dir: Path) -> RunProxy:
+    def open(self, run_id: str, *, shared_dir: Path, canaries: Sequence[Canary] = ()) -> RunProxy:
         """Create the two bridges, start the sidecar on the internal one, dual-home it, wait for
         its CA, and return the wired :class:`RunProxy`. Any failure mid-standup tears down whatever
         came up, so a crashed open leaks no network or container.
+
+        ``canaries`` are the run's planted markers; they travel into the sidecar config so the proxy
+        scans each request body for them (§10.5.2). Empty when planting is off.
         """
         internal = f"bw-int-{run_id}"
         egress = f"bw-egr-{run_id}"
@@ -155,6 +159,7 @@ class SidecarProxyProvider:
                 caps=CapLedger(
                     max_requests=self.max_requests, max_request_bytes=self.max_request_bytes
                 ),
+                canaries=canaries,
             )
             # Dual-home: the sidecar came up on the internal bridge (reachable by the sandbox); now
             # attach it to the egress bridge too, so it — and only it — has a route out (§3.3).

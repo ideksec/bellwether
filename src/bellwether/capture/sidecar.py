@@ -26,10 +26,11 @@ from __future__ import annotations
 
 import subprocess
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from bellwether.capture.canary import Canary
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import CapLedger, EgressAllowlist, EgressFlow, RecordingProxy
 from bellwether.capture.proxy_addon import read_flow_records
@@ -128,9 +129,13 @@ class MitmproxySidecar(RecordingProxy):
         ]
         return argv
 
-    def build_config(self, *, allowlist: EgressAllowlist, caps: CapLedger) -> SidecarConfig:
+    def build_config(
+        self, *, allowlist: EgressAllowlist, caps: CapLedger, canaries: Sequence[Canary] = ()
+    ) -> SidecarConfig:
         """The non-secret config the sidecar reads, assembled from the run's allowlist and caps and
-        this proxy's broker export and host map. No real key is here — only the scoped tokens."""
+        this proxy's broker export and host map. No real key is here — only the scoped tokens, and the
+        run's canary ``(id, marker)`` pairs so the sidecar can scan bodies (§10.5.2). Both are sensitive
+        and stay on the shared volume the CI upload excludes, never an artifact (§10.4.3)."""
         return SidecarConfig(
             provider_endpoints=tuple(sorted(allowlist.provider_endpoints)),
             infrastructure_endpoints=tuple(sorted(allowlist.infrastructure_endpoints)),
@@ -141,9 +146,17 @@ class MitmproxySidecar(RecordingProxy):
             max_request_bytes=caps.max_request_bytes,
             flow_log_path=str(SIDECAR_SHARED_MOUNT / _FLOW_LOG_NAME),
             listen_port=self.listen_port,
+            canary_markers=tuple((canary.id, canary.marker) for canary in canaries),
         )
 
-    def start(self, run_id: str, *, allowlist: EgressAllowlist, caps: CapLedger) -> None:
+    def start(
+        self,
+        run_id: str,
+        *,
+        allowlist: EgressAllowlist,
+        caps: CapLedger,
+        canaries: Sequence[Canary] = (),
+    ) -> None:
         container_name = f"bw-proxy-{run_id}"
         config_host = self.shared_dir / _CONFIG_NAME
         flow_log_host = self.shared_dir / _FLOW_LOG_NAME
@@ -155,7 +168,8 @@ class MitmproxySidecar(RecordingProxy):
         # this run someone else's flows; remove it before the sidecar recreates it.
         flow_log_host.unlink(missing_ok=True)
         config_host.write_text(
-            self.build_config(allowlist=allowlist, caps=caps).to_json(), encoding="utf-8"
+            self.build_config(allowlist=allowlist, caps=caps, canaries=canaries).to_json(),
+            encoding="utf-8",
         )
 
         result = self.runner(

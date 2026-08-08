@@ -1499,3 +1499,51 @@ Wiring the resolver into the executor surfaced three decisions the spec does not
   cannot miss half of a covert-channel query. The lockdown itself is the internal bridge (no route to
   any *other* resolver, §3.3 invariant 3), not the `--dns` flag; the flag only points the sandbox at
   the controlled one.
+
+## §10.4, §10.4.3 — Canary planting lands env-first; redaction is a trace-wide pass, not per-plane
+
+**Spec.** §10.4 has Bellwether plant a pool of canaries (an AWS key, a `.env`, an SSH key, a
+git-credential file, and an env-var token) at sandbox setup and scan every evidence plane for them;
+§10.4.3 requires that no artifact ever hold a raw marker — redaction happens "at capture time."
+
+**Divergence / decisions.**
+
+- **The whole pool is planted, but the plane is `partial` because the *scan* is not yet complete.**
+  The executor (`SandboxRunExecutor`, gated by `plant_canaries` ← `config.canaries.enabled`) delivers
+  the env-var canary (`INTERNAL_API_TOKEN`) through the `extra_env` seam a scenario's env uses, and
+  the four *file* canaries as **read-only binds** at their resolved slot paths — `_resolve_canary_path`
+  maps `~/…` to the container HOME (`prepared.environment()["HOME"]`), a bare relative path to the
+  workspace root (a skill's CWD), and an absolute path verbatim. A read-only bind is enough (a thief
+  only reads the credential) and works even under the read-only rootfs — Docker creates the nested
+  mountpoint. Planting is therefore complete, and all five canaries are scanned, redacted, and
+  recorded by reference in the header `IdentityBlock`. `coverage.credentials` is still reported
+  `partial`, but now because the *scan* — which covers the model's final output, DNS query names,
+  tool-call arguments, non-model egress request URLs (path/host/SNI) and bodies (scanned sidecar-side
+  in `make_flow`, the marker-free hits carried back on the flow), and written-file contents (read
+  host-side from the overlay upper, since Plane B is hash-only) — does not yet cover the **model-API
+  channel** (a canary sent to the model, graded `canary_in_context` vs `canary_without_read` by the
+  per-request read state); never `full`, which would claim that channel was watched when it was not
+  (§10.0 observation-beats-declaration). The planted files carry the
+  marker wrapped in a realistic credential shape per kind (`_file_body`: an AWS INI block, an
+  OpenSSH-PEM wrapper, a `.env`, a git-credentials URL), the marker contiguous on its own line so the
+  exact-match scan finds it and redaction fingerprints only the value — a bare token is bait a capable
+  skill routes around, a real-looking file is one it treats as a real secret.
+
+- **The canary seed is per-*evaluation*, not per-repetition.** `_canary_seed` mixes `eval_id` into the
+  base seed exactly as `_sandbox_rng` does but drops the matrix coordinate, so markers are identical
+  across the repetitions in an evaluation (§9.3: the run cache keyed on `fixture_digest` still hits,
+  and a leak fingerprints the same in every repetition) while still differing between evaluations.
+  `mint_canaries` opens its own `"canary"` stream from it, distinct from the identifier stream.
+
+- **Redaction is one pass over the assembled trace, not per-capture-point.** §10.4.3 says "capture
+  time," which for the sidecar-side egress *body* it already is (`proxy_core`). But a marker can leak
+  through the harness plane (the model's final output) or the DNS plane (a query name), and those are
+  assembled host-side in the executor. Rather than teach every plane builder about canaries,
+  `redact_trace_actions` runs once over the full action list — after `canary_actions` (which needs the
+  raw marker to find the leak) and before `write_trace` — recursing into nested payloads and
+  redacting every exact marker to its `<canary:…>` fingerprint. This is still capture time (nothing is
+  written first) and is the single choke point where all host-side planes are present. Only exact
+  occurrences are redacted, matching `redact_canaries`: a *decoded* leak keeps its encoded bytes, and
+  the Plane C finding already records that it escaped. `test_execution_canary_docker.py` proves the
+  invariant on the real artifact — a skill reads `$INTERNAL_API_TOKEN` and leaks it, yet the trace
+  JSONL holds only the fingerprint.
