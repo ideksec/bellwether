@@ -71,6 +71,16 @@ jobs:
           echo "These skills changed:"; cat changed-skills.txt
           echo "Add the 'bellwether-run' label to this PR to evaluate them (costs model tokens)."
 
+      - name: Build the recording-proxy sidecar image
+        # Only when a paid evaluation will actually run. The live config's egress.image points at
+        # this tag; building it here (rather than pulling a published digest) keeps the smoke setup
+        # self-contained. It is built as the runner user but the same daemon serves the sudo `run`
+        # below, so the sudo'd container sees the image (§10.5).
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        run: docker build -f sidecar/proxy/Dockerfile -t bw-proxy-sidecar:live .
+
       - name: Evaluate and comment
         if: >-
           steps.detect.outputs.skills != '' &&

@@ -36,6 +36,15 @@ sandbox:
   writable_paths: ["/work", "/tmp", "/home/agent/.claude"]
   randomize_identifiers: true
 
+egress:
+  # Turn the recording proxy on. The workflow builds this image before the run; it is a moving
+  # tag rather than a digest (a non-blocking advisory prints), which is acceptable for the
+  # project's own smoke image built fresh each run. With it set, each repetition is stood up
+  # behind a dual-homed sidecar: the sandbox routes through it and egress is *observed* (§10.5),
+  # so a clean benign run reaches `ready` instead of being held `conditional` on an unobserved
+  # plane. The api-loop model runs host-side, so the sandbox is handed no credential.
+  image: bw-proxy-sidecar:live
+
 capture:
   filesystem_writes: overlay
   filesystem_reads: fanotify
