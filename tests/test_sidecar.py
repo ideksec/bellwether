@@ -56,6 +56,10 @@ class _FakeRunner:
         if argv[:3] == ["docker", "run", "--rm"]:
             if self.write_log and self.start_rc == 0:
                 self.flow_log.write_text("", encoding="utf-8")  # sidecar's empty log at t=0
+                # mitmproxy writes its CA into the confdir on the shared volume when it starts.
+                ca = self.flow_log.parent / "mitmproxy" / "mitmproxy-ca-cert.pem"
+                ca.parent.mkdir(parents=True, exist_ok=True)
+                ca.write_text("-----BEGIN CERTIFICATE-----\nfake\n", encoding="utf-8")
             return subprocess.CompletedProcess(argv, self.start_rc, stdout="cid\n", stderr="boom")
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
@@ -94,6 +98,8 @@ def test_the_argv_carries_the_topology_and_entry() -> None:
     assert f"-s {SIDECAR_ENTRY_PATH}" in argv
     assert "block_global=false" in argv
     assert "--listen-port 8080" in argv
+    # The CA lands in the shared volume so the host can mount it into the sandbox (§9.2).
+    assert "confdir=/bw/mitmproxy" in argv
 
 
 def test_the_real_key_is_forwarded_by_name_never_valued_on_the_command_line() -> None:
@@ -136,6 +142,51 @@ def test_start_writes_a_secretless_config_and_becomes_ready(tmp_path: Path) -> N
     # The real key is never written to the shared config the container can read.
     assert _REAL_KEY not in config_text
     assert sidecar.proxy_url() == "http://bw-proxy-r1:8080"
+
+
+def test_the_ca_is_exposed_once_the_sidecar_has_written_it(tmp_path: Path) -> None:
+    """The host reads the proxy CA from the shared volume to mount it into the sandbox (§9.2).
+
+    ``ca_cert_path`` waits for the file mitmproxy writes and returns its host path; the container
+    name is exposed the same way, for the dual-homing attach."""
+    runner = _FakeRunner(flow_log=tmp_path / "flows.jsonl")
+    sidecar = _sidecar(tmp_path, runner)
+    sidecar.start(
+        "r1", allowlist=_allowlist(), caps=CapLedger(max_requests=5, max_request_bytes=100)
+    )
+
+    ca = sidecar.ca_cert_path()
+    assert ca == tmp_path / "mitmproxy" / "mitmproxy-ca-cert.pem"
+    assert ca.exists()
+    assert sidecar.container_name() == "bw-proxy-r1"
+
+
+def test_a_sidecar_that_writes_no_ca_is_a_loud_failure(tmp_path: Path) -> None:
+    """A CA that never appears must fail loudly, not fall through to an untrusted proxy that would
+    intercept nothing and produce a zero-egress trace that reads clean (§9.2)."""
+
+    class _NoCa(_FakeRunner):
+        def __call__(self, argv: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+            result = super().__call__(argv, **kw)
+            ca = self.flow_log.parent / "mitmproxy" / "mitmproxy-ca-cert.pem"
+            ca.unlink(missing_ok=True)  # the addon loaded, but mitmproxy wrote no CA
+            return result
+
+    sidecar = MitmproxySidecar(
+        image="img@sha256:x",
+        network="net",
+        broker=_broker(),
+        provider_of_host={},
+        shared_dir=tmp_path,
+        runner=_NoCa(flow_log=tmp_path / "flows.jsonl"),
+        sleep=lambda _s: None,
+        ready_timeout=0.5,
+    )
+    sidecar.start(
+        "r1", allowlist=_allowlist(), caps=CapLedger(max_requests=5, max_request_bytes=100)
+    )
+    with pytest.raises(BellwetherError, match="no CA certificate"):
+        sidecar.ca_cert_path()
 
 
 def test_a_stale_flow_log_is_cleared_before_the_run(tmp_path: Path) -> None:

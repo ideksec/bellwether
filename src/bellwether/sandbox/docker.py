@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -130,6 +131,32 @@ class DockerBackend:
             check=False,
         )
 
+    def connect_network(self, network: str, container: str) -> None:
+        """Attach an already-running container to a second network — how the recording
+        proxy is dual-homed (§3.3, §10.5).
+
+        The proxy sidecar starts on the internal bridge, the sandbox's only home, so the
+        sandbox can reach it but has no route past it. To forward the allowlisted egress
+        the proxy also needs a way *out*, which the internal bridge deliberately denies —
+        so it is attached, second, to an ordinary (non-``--internal``) bridge with a
+        gateway to the host network. The two homes keep the invariant intact: the sandbox
+        sees only the internal side, and the sole crossing between the sandbox's world and
+        the internet is the proxy process itself, which records every flow. The sandbox is
+        never connected here; connecting it would be the unmediated route out §3.3 forbids.
+        """
+        result = subprocess.run(
+            [self.binary, "network", "connect", network, container],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise BellwetherError(
+                f"could not connect {container!r} to network {network!r}: "
+                f"{result.stderr.strip() or result.returncode}"
+            )
+
     def mount(self, prepared: PreparedSandbox) -> OverlayMount:
         """Mount the overlays: the workspace, then each captured zone (§10.2).
 
@@ -174,6 +201,8 @@ class DockerBackend:
         image: str | None = None,
         network: str = "none",
         sink_bind: tuple[Path, PurePosixPath] | None = None,
+        extra_env: Mapping[str, str] | None = None,
+        extra_ro_binds: Sequence[tuple[Path, PurePosixPath]] | None = None,
     ) -> ContainerResult:
         """Run one command in a container under the isolation profile.
 
@@ -186,8 +215,19 @@ class DockerBackend:
         given container path. It is passed as plain paths, not as a capture object,
         because the layering runs ``sandbox -> capture`` and the backend must not know
         what consumes the FIFO — only that the file is the harness's event channel.
+
+        ``extra_ro_binds`` mounts host-owned files read-only at container paths — how the
+        recording proxy's CA certificate reaches the sandbox so TLS is intercepted (§9.2).
         """
-        argv = self.build_argv(prepared, command, image=image, network=network, sink_bind=sink_bind)
+        argv = self.build_argv(
+            prepared,
+            command,
+            image=image,
+            network=network,
+            sink_bind=sink_bind,
+            extra_env=extra_env,
+            extra_ro_binds=extra_ro_binds,
+        )
 
         try:
             result = subprocess.run(
@@ -218,11 +258,22 @@ class DockerBackend:
         image: str | None = None,
         network: str = "none",
         sink_bind: tuple[Path, PurePosixPath] | None = None,
+        extra_env: Mapping[str, str] | None = None,
+        extra_ro_binds: Sequence[tuple[Path, PurePosixPath]] | None = None,
     ) -> list[str]:
         """Render the full docker command line.
 
         The single place an argv is built, so that what is recorded, what is shown to a
         human, and what actually ran cannot drift apart.
+
+        ``extra_env`` is merged over the sandbox's own environment, last-wins. It is how the
+        recording proxy is wired in — ``HTTPS_PROXY`` and the CA-trust vars point the container
+        at the sidecar (§10.5) — and the values are ordinary env, never a secret: the real key
+        never enters the container, only the scoped token (§3.3).
+
+        ``extra_ro_binds`` are host files mounted read-only at container paths, placed after
+        the payload so they sit on top of any writable parent — how the proxy CA reaches the
+        sandbox's trust store path (§9.2). Read-only because the container never writes them.
         """
         chosen = image or self.image
         if not chosen:
@@ -280,7 +331,13 @@ class DockerBackend:
             # the payload: the file must sit on top of any writable parent.
             argv += ["-v", f"{host_fifo}:{container_fifo}:rw"]
 
-        for key, value in sorted(prepared.environment().items()):
+        for host_file, container_file in extra_ro_binds or ():
+            # After the payload, so a CA mounted under a writable parent stays read-only —
+            # the same ordering discipline the payload mount relies on.
+            argv += ["-v", f"{host_file}:{container_file}:ro"]
+
+        merged_env = {**prepared.environment(), **(extra_env or {})}
+        for key, value in sorted(merged_env.items()):
             argv += ["-e", f"{key}={value}"]
         argv += ["-w", str(workspace_target)]
         argv.append(chosen)
@@ -293,6 +350,8 @@ class DockerBackend:
         image: str | None = None,
         network: str = "none",
         sink_bind: tuple[Path, PurePosixPath] | None = None,
+        extra_env: Mapping[str, str] | None = None,
+        extra_ro_binds: Sequence[tuple[Path, PurePosixPath]] | None = None,
     ) -> str:
         """Start a long-lived container for an agent loop to exec into.
 
@@ -303,7 +362,15 @@ class DockerBackend:
         filesystem, one process namespace, and one identity, the way a real session
         does.
         """
-        argv = self.build_argv(prepared, [], image=image, network=network, sink_bind=sink_bind)
+        argv = self.build_argv(
+            prepared,
+            [],
+            image=image,
+            network=network,
+            sink_bind=sink_bind,
+            extra_env=extra_env,
+            extra_ro_binds=extra_ro_binds,
+        )
         # build_argv always renders [binary, "run", ...]; the detach flag goes right
         # after. A numeric sleep rather than `infinity`, because busybox sleep — which
         # the alpine CI image provides — does not accept the GNU spelling.

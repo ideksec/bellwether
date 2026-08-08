@@ -174,6 +174,80 @@ def test_the_internal_bridge_is_not_merely_a_networkless_container(
     assert not _has_default_route(networkless.stdout)
 
 
+def test_connect_network_dual_homes_a_container(backend: DockerBackend) -> None:
+    """§3.3 dual-homing: a container starts on the internal bridge (no route out) and is then
+    attached to an ordinary egress bridge, gaining a default route — how the proxy sidecar gets
+    a way out the sandbox does not. Proven by the default route appearing only after the connect.
+    """
+    import subprocess
+
+    internal = "bw-test-int-dual"
+    egress = "bw-test-egr-dual"
+    container = "bw-test-dual-homed"
+    for name in (internal, egress):
+        backend.remove_network(name)
+    subprocess.run([backend.binary, "rm", "-f", container], capture_output=True, text=True)
+    backend.create_network(internal, internal=True)
+    backend.create_network(egress, internal=False)
+
+    started = subprocess.run(
+        [
+            backend.binary,
+            "run",
+            "--rm",
+            "-d",
+            "--name",
+            container,
+            "--network",
+            internal,
+            backend.image,
+            "sleep",
+            "60",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert started.returncode == 0, started.stderr
+    try:
+        before = subprocess.run(
+            [backend.binary, "exec", container, "cat", "/proc/net/route"],
+            capture_output=True,
+            text=True,
+        )
+        assert before.returncode == 0, before.stderr
+        assert not _has_default_route(before.stdout), "internal bridge should hand out no gateway"
+
+        backend.connect_network(egress, container)
+
+        after = subprocess.run(
+            [backend.binary, "exec", container, "cat", "/proc/net/route"],
+            capture_output=True,
+            text=True,
+        )
+        assert after.returncode == 0, after.stderr
+        assert _has_default_route(after.stdout), (
+            f"the egress bridge should have added a default route:\n{after.stdout}"
+        )
+    finally:
+        subprocess.run([backend.binary, "rm", "-f", container], capture_output=True, text=True)
+        backend.remove_network(egress)
+        backend.remove_network(internal)
+
+
+def test_connect_network_names_the_reason_it_could_not(backend: DockerBackend) -> None:
+    """Attaching a container that does not exist is a loud failure with the reason, not a silent
+    pass — the dual-home is load-bearing for §3.3 and must never fail quietly."""
+    from bellwether.errors import BellwetherError
+
+    backend.remove_network("bw-test-egr-missing")
+    backend.create_network("bw-test-egr-missing", internal=False)
+    try:
+        with pytest.raises(BellwetherError, match="could not connect"):
+            backend.connect_network("bw-test-egr-missing", "bw-container-does-not-exist")
+    finally:
+        backend.remove_network("bw-test-egr-missing")
+
+
 def test_remove_network_is_idempotent(backend: DockerBackend) -> None:
     """Teardown of a network that is already gone is the same clean end state as removing a
     live one — a crashed run must not leave a name that blocks the next."""

@@ -28,6 +28,7 @@ from bellwether.cli.orchestrator import (
     orchestrate,
     plan_matrix,
 )
+from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import resolve_run
 from bellwether.config.models.config import Config
 from bellwether.config.models.policy import Policy
@@ -36,7 +37,7 @@ from bellwether.errors import BellwetherError
 from bellwether.harness import ModelClient, RunLimits, build_model_client
 from bellwether.skill import SkillPackage
 
-__all__ = ["ExecutorFactory", "policy_digest", "run_evaluation"]
+__all__ = ["ExecutorFactory", "build_proxy_provider", "policy_digest", "run_evaluation"]
 
 #: How the caller supplies the execution half. The production factory builds a
 #: :class:`SandboxRunExecutor` around a Docker backend; a test passes a replay executor. It receives
@@ -133,6 +134,7 @@ def sandbox_executor_factory(
     run_root: Path,
     eval_id: str,
     limits: RunLimits | None = None,
+    proxy: SidecarProxyProvider | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -141,6 +143,10 @@ def sandbox_executor_factory(
     ``limits`` bounds each repetition — most importantly ``max_total_tokens``, the hard ceiling on
     what one run can spend against a live provider; omitted, it takes the :class:`RunLimits`
     defaults.
+
+    ``proxy``, when supplied, stands a dual-homed recording-proxy sidecar up around each run so the
+    egress plane is observed (§10.5). Omitted, the sandbox runs with no network, exactly as
+    first-light — egress stays ``not_evaluable`` rather than being reported clean unobserved.
     """
     run_limits = limits if limits is not None else RunLimits()
 
@@ -159,6 +165,46 @@ def sandbox_executor_factory(
             eval_id=eval_id,
             run_root=run_root,
             limits=run_limits,
+            proxy=proxy,
         )
 
     return make
+
+
+def build_proxy_provider(config: Config) -> SidecarProxyProvider | None:
+    """Assemble the recording-proxy provider from config, or ``None`` when it is unwired.
+
+    The proxy is wired only when ``egress.image`` is set (§10.5); left empty — the shipped default —
+    the sandbox runs with no network and egress stays ``not_evaluable``, exactly as first-light. A
+    live config sets the digest-pinned sidecar image to turn it on.
+
+    The allowlist is default-deny: the configured providers' hosts are ``model_api`` by
+    construction, and ``egress.allowlist`` entries are the operator's explicit additions. The broker
+    is **empty** — the ``api-loop`` model runs host-side with the real key, so the sandbox is handed
+    no credential at all (§3.3 invariant 1 in its strongest form: nothing to steal). The proxy still
+    records and allowlist-checks the skill's own traffic.
+    """
+    egress = config.egress
+    if not egress.image:
+        return None
+
+    from bellwether.capture import CredentialBroker, EgressAllowlist, provider_hosts
+    from bellwether.harness.live_client import DEFAULT_ANTHROPIC_BASE_URL
+    from bellwether.sandbox import DockerBackend
+
+    base_urls = [
+        provider.base_url or DEFAULT_ANTHROPIC_BASE_URL for provider in config.providers.values()
+    ]
+    allowlist = EgressAllowlist(
+        provider_endpoints=provider_hosts(base_urls),
+        infrastructure_endpoints=frozenset(),
+        extra=frozenset(egress.allowlist),
+    )
+    return SidecarProxyProvider(
+        backend=DockerBackend(image=config.sandbox.image),
+        image=egress.image,
+        allowlist=allowlist,
+        max_requests=egress.per_run_caps.max_requests,
+        max_request_bytes=egress.per_run_caps.max_request_bytes,
+        broker=CredentialBroker({}),
+    )

@@ -32,6 +32,7 @@ from bellwether.capture import (
     filesystem_writes_status,
 )
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
+from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
 from bellwether.determinism import SeededRng
 from bellwether.harness import (
     ApiLoopAdapter,
@@ -52,6 +53,7 @@ from bellwether.trace import (
     SkillRef,
     TargetRef,
     assemble_coverage,
+    egress_actions,
     exit_reason_from_events,
     filesystem_actions,
     harness_actions,
@@ -82,6 +84,19 @@ def offered_skill(package: SkillPackage) -> OfferedSkill:
         description=description or "",
         body=package.parsed.body,
     )
+
+
+def _proxy_run_id(eval_id: str, plan: RunPlan) -> str:
+    """A per-run token for the sidecar container and bridge names (§10.5).
+
+    Docker container and network names must match ``[a-zA-Z0-9][a-zA-Z0-9_.-]*``; the run's
+    coordinates can carry anything, so every other character is folded to ``-``. The token is not
+    a container the sandbox can see, so unlike the sandbox's own hostname it need not hide the
+    project — a leaked ``bw-int-…`` bridge is invisible from inside the sandbox.
+    """
+    raw = f"{eval_id}-{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}"
+    sanitized = "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in raw)
+    return sanitized.lstrip("-_.") or "run"
 
 
 def _reported_model_id(events: Sequence[RawHarnessEvent], fallback: str) -> str:
@@ -116,6 +131,10 @@ class SandboxRunExecutor:
         run_root: Where per-run sandbox directories and traces are written.
         rng_seed: Base seed; each run derives a distinct stream from it by coordinate.
         limits: Per-run turn/tool/token/wall ceilings.
+        proxy: The recording-proxy provider (§10.5). When set, each run is stood up behind a
+            dual-homed sidecar: the sandbox routes through it, its CA is trusted, and the flows
+            it records become the trace's egress plane — so egress reads *observed* rather than
+            unavailable. When ``None`` the sandbox runs with no network, exactly as first-light.
     """
 
     backend: DockerBackend
@@ -126,6 +145,7 @@ class SandboxRunExecutor:
     run_root: Path
     rng_seed: int = 0
     limits: RunLimits = field(default_factory=RunLimits)
+    proxy: SidecarProxyProvider | None = None
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
@@ -137,9 +157,19 @@ class SandboxRunExecutor:
         rng = SeededRng(self.rng_seed, f"{plan.scenario.id}/{plan.target.slug}/{plan.repetition}")
         prepared = prepare_sandbox(self.package, self.fixture, run_dir, rng=rng)
 
-        self.backend.mount(prepared)
-        self.backend.start_persistent(prepared)
+        # Stand the recording proxy up first, before the sandbox that routes through it. A failure
+        # here must not leave a mounted overlay behind, so it happens before mount; the proxy owns
+        # its own cleanup on a failed open (no network or container leaks).
+        run_proxy = self._open_proxy(plan, run_dir)
+        network = run_proxy.sandbox_network() if run_proxy is not None else "none"
+        extra_env = run_proxy.sandbox_env() if run_proxy is not None else None
+        extra_ro_binds = run_proxy.sandbox_ro_binds() if run_proxy is not None else None
+
         try:
+            self.backend.mount(prepared)
+            self.backend.start_persistent(
+                prepared, network=network, extra_env=extra_env, extra_ro_binds=extra_ro_binds
+            )
             client, model_id = self.client_factory(plan)
             adapter = ApiLoopAdapter(
                 client,
@@ -163,6 +193,10 @@ class SandboxRunExecutor:
                 observed_at=observed_at,
                 start_seq=len(plane_a),
             )
+            # Plane D: what the recording proxy saw. Read while the sidecar is still up (before the
+            # finally closes it). Absent a proxy, there is no egress plane and coverage says so.
+            egress_flows = run_proxy.flows() if run_proxy is not None else []
+            plane_d = egress_actions(egress_flows, start_seq=len(plane_a) + len(plane_b))
 
             header = RunHeader(
                 run_id=f"{self.eval_id}-{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}",
@@ -191,6 +225,9 @@ class SandboxRunExecutor:
                 coverage=assemble_coverage(
                     harness_events=PlaneStatus(fidelity="full") if events else None,
                     filesystem_writes=filesystem_writes_status(set(zone_diffs)),
+                    # The proxy writing its flow log is proof the egress plane was captured, even
+                    # at zero flows — an observed-clean run, not an unobserved one (§10.7).
+                    egress=PlaneStatus(fidelity="full") if run_proxy is not None else None,
                 ),
                 started_at=started_at,
             )
@@ -204,12 +241,28 @@ class SandboxRunExecutor:
                 tokens=token_totals_from_events(events),
             )
 
-            trace_path = write_trace(run_dir / "trace.arf.jsonl", header, plane_a + plane_b, footer)
+            trace_path = write_trace(
+                run_dir / "trace.arf.jsonl", header, plane_a + plane_b + plane_d, footer
+            )
             jsonl = trace_path.read_text(encoding="utf-8")
             trace = read_trace(trace_path)
         finally:
             self.backend.stop_persistent(prepared)
             self.backend.unmount(prepared)
+            if run_proxy is not None:
+                run_proxy.close()
 
         context = NormalizationContext(workspace_root=str(prepared.identifiers.workspace_root))
         return ExecutedRun(trace=trace, context=context, trace_jsonl=jsonl)
+
+    def _open_proxy(self, plan: RunPlan, run_dir: Path) -> RunProxy | None:
+        """Stand the recording proxy up for one run, or ``None`` when no proxy is configured.
+
+        The per-run id names the sidecar container and its two bridges; it is derived from the
+        run's coordinates and sanitised to the characters Docker names allow, so a name collision
+        cannot smuggle shell metacharacters into a ``docker`` argv.
+        """
+        if self.proxy is None:
+            return None
+        run_id = _proxy_run_id(self.eval_id, plan)
+        return self.proxy.open(run_id, shared_dir=run_dir / "proxy")

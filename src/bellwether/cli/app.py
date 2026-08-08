@@ -270,7 +270,7 @@ def run(
     """
     import datetime as dt
 
-    from bellwether.cli.run import run_evaluation, sandbox_executor_factory
+    from bellwether.cli.run import build_proxy_provider, run_evaluation, sandbox_executor_factory
     from bellwether.harness import RunLimits
     from bellwether.skill import load_skill
 
@@ -308,6 +308,9 @@ def run(
                     out / eval_id / "runs",
                     eval_id,
                     limits=RunLimits(max_total_tokens=max_tokens),
+                    # Wired only when egress.image is set (a live config); otherwise None and the
+                    # sandbox runs networkless, exactly as first-light (§10.5).
+                    proxy=build_proxy_provider(loaded_config),
                 ),
                 # The artifact writer appends <eval_id> itself, so the parent is `out`;
                 # passing `out / eval_id` here doubled it and hid the report from pr-comment.
