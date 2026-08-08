@@ -55,7 +55,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-15 executor wiring · WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-804 tests: 758 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
+817 tests: 771 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

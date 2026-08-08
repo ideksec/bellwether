@@ -70,6 +70,7 @@ from bellwether.capture.dns import (
     scan_query_for_canaries,
     write_query_records,
 )
+from bellwether.capture.dns_sidecar import DnsResolverSidecar, ResolverHandle
 from bellwether.capture.egress import (
     DEFAULT_HEADER_ALLOWLIST,
     CapLedger,
@@ -125,6 +126,7 @@ __all__ = [
     "CredentialBroker",
     "DnsAllowlist",
     "DnsQuery",
+    "DnsResolverSidecar",
     "EgressAllowlist",
     "EgressClass",
     "EgressFlow",
@@ -137,6 +139,7 @@ __all__ = [
     "RecordingProxy",
     "RequestLike",
     "ResolverConfig",
+    "ResolverHandle",
     "SidecarConfig",
     "SidecarHandle",
     "SinkEvent",
