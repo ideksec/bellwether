@@ -113,6 +113,12 @@ jobs:
             # The artifact tree is the single <out>/<eval_id>/ directory; find it at the top
             # level rather than descending into the root-owned overlay dirs under it.
             eval_dir=$(find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1)
+            # Surface the evidence inline: the rendered report (verdict, per-repetition outcome
+            # grid, capability heatmap) goes into the job log, so *why* a run landed where it did
+            # is visible here without opening the PR. The full ARF traces are uploaded below.
+            echo "::group::Bellwether report — ${skill}"
+            cat "${eval_dir}/report/pr_comment.md" 2>/dev/null || echo "(no report was rendered)"
+            echo "::endgroup::"
             uv run bellwether pr-comment "${eval_dir}" || true
             # Exit 2 is a real not_ready verdict; 3 is infrastructure. Either keeps the check
             # red, but a not_ready is the skill's result, not a broken job.
@@ -120,3 +126,23 @@ jobs:
             echo "::endgroup::"
           done < changed-skills.txt
           exit "${status}"
+
+      - name: Upload the evidence
+        # The point of the project made operational: a verdict is only as trustworthy as the
+        # ground truth behind it, so that ground truth must not die with the runner. This uploads
+        # the artifact tree — the per-run ARF traces, the rendered report, summary.json,
+        # verdict.json — so anyone can retrieve exactly what the run observed. The traces are
+        # redacted at capture (§3.3), so they are safe to publish by design. `always()` so a
+        # not_ready or infrastructure-failed run keeps its evidence too — those are the runs you
+        # most want to inspect. The bulky root-owned overlay working dirs under runs/ are excluded.
+        if: >-
+          always() &&
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bellwether-evidence
+          path: |
+            .bellwether-out/**
+            !.bellwether-out/**/runs/**
+          if-no-files-found: warn

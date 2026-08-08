@@ -1344,3 +1344,19 @@ run passes regardless (an observed-clean plane is a pass, not a warn), and `warn
 during the shakeout does not redden the run before the pipeline itself is trusted. Promoting to `block`
 — now meaningful, because egress is finally observed — is a deliberate follow-up once the benign run is
 confirmed clean. `test_live_config` guards the config against silently rotting back to proxy-off.
+
+## §10.7, §17.1 — A live CI run preserves its evidence, not just its verdict
+
+**Spec.** §10.7 forbids a clean-looking result that hides degraded or absent evidence; §17.1 makes
+the artifact tree the retrievable record of a run.
+
+**Resolution.** The `Bellwether` workflow's paid evaluation now (a) echoes the rendered report — the
+per-repetition outcome grid and capability heatmap — into the job log, so *why* a run landed where it
+did is legible inline, and (b) uploads the artifact tree (`traces/*.arf.jsonl`, `report.html`,
+`summary.json`, `verdict.json`) as a downloadable workflow artifact, on `always()` so a `not_ready` or
+infrastructure-failed run keeps its evidence too — those are the runs most worth inspecting. The ARF
+traces are redacted at capture (§3.3), so publishing them leaks nothing by design: they are meant to be
+shared evidence. Before this, the ground truth died with the ephemeral runner and only the summary
+comment survived, so a question like "why did run 3 fail?" could be answered only from the aggregate
+heatmap, never from the run's own trace. The bulky root-owned overlay working dirs under `runs/` are
+excluded from the upload; the canonical per-run traces in the artifact tree are the record.
