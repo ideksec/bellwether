@@ -113,22 +113,25 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      `cat ~/.aws/credentials` carry the markers (both channels delivered), both leaks surface as Plane
      C `canary_leak`s, all five canaries are recorded by reference, and neither raw value is anywhere
      in the trace JSONL — only fingerprints.
-   - **Tool-argument scanning is now wired too** (`_scan_source_action` gained a `tool_call` branch):
-     a marker in a tool call's arguments — a `fetch` URL, a `bash` `curl`/`nc` command — is a
-     `tool_args` `canary_leak`, which catches the skill that reads a credential and exfiltrates it
-     *through* a tool when it has no direct socket. The read that fetched the credential (path in,
-     value out) is not flagged — only an argument carrying the value is — so the finding stays
-     false-positive-free. Offline-tested.
+   - **Tool-argument and egress-URL scanning are now wired too** (`_scan_source_action` gained
+     `tool_call` and `egress_request`/`egress_blocked` branches). A marker in a tool call's arguments
+     — a `fetch` URL, a `bash` `curl`/`nc` command — is a `tool_args` `canary_leak`, catching the skill
+     that exfiltrates *through* a tool when it has no direct socket. A marker in a **non-model egress
+     request's path/host/SNI** — the classic `GET /exfil?d=<secret>` to an attacker host — is an
+     `other_host` leak caught host-side from the flow record (the body stays sidecar-side; the request
+     line does not). The read that fetched the credential (path in, value out) is not flagged, and
+     model-API URLs are skipped (harness-built; read-state grading is a follow-on) — so the finding
+     stays false-positive-free. Offline-tested against the real `egress_actions` record shape.
    - **The planted files now carry realistic credential shapes** (`capture/planting.py:_file_body`):
      an AWS INI block, an OpenSSH-PEM wrapper, a `.env` with an `API_KEY=`, a git-credentials URL —
      the marker contiguous on its own line so the exact-match scan still finds it and redaction
      fingerprints just the value. A bare token is bait a capable skill routes around; a real-looking
      file is one it treats as a real secret.
    - **Remaining:** the credentials plane stays `partial` because the *scan* does not yet cover
-     **egress bodies** (sidecar-side, the body never leaves the proxy) or **written-file contents**
-     (Plane B is hash-only today) — wiring those lifts it toward `full`. Then the corpus skills
-     (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
-     §10.4 done-when.
+     **egress bodies** (sidecar-side, the body never leaves the proxy — this is where POST-body exfil
+     and the model-endpoint read-state grading land) or **written-file contents** (Plane B is
+     hash-only today) — wiring those lifts it toward `full`. Then the corpus skills (`canary-thief`,
+     `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
    metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is
@@ -521,8 +524,9 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
   real container: the sandbox's own echo of `$INTERNAL_API_TOKEN` and its `cat ~/.aws/credentials`
   carry the markers (both channels delivered), both leaks are found and fingerprinted, and no raw
   value reaches the trace JSONL. The host-side scan covers the model's final output, DNS query names,
-  and **tool-call arguments** (the exfil-through-a-tool channel); the plane stays `partial` because it
-  does not yet cover egress bodies (sidecar-side) or written-file contents (Plane B is hash-only).
+  **tool-call arguments** (the exfil-through-a-tool channel), and **non-model egress request URLs**
+  (path/host/SNI — URL-based exfil to an attacker host); the plane stays `partial` because it does not
+  yet cover egress bodies (sidecar-side) or written-file contents (Plane B is hash-only).
 - **WP-14 CA trust-chain core**, `bellwether.capture.ca`, offline and fully tested (7 tests):
   the complete §9.2 mechanism table (system store + `NODE_EXTRA_CA_CERTS` /
   `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`, because Node and others ignore the

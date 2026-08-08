@@ -1517,10 +1517,11 @@ git-credential file, and an env-var token) at sandbox setup and scan every evide
   only reads the credential) and works even under the read-only rootfs — Docker creates the nested
   mountpoint. Planting is therefore complete, and all five canaries are scanned, redacted, and
   recorded by reference in the header `IdentityBlock`. `coverage.credentials` is still reported
-  `partial`, but now because the *scan* — which covers the model's final output, DNS query names, and
-  tool-call arguments — does not yet cover egress bodies (sidecar-side) or written-file contents
-  (Plane B is hash-only); never `full`, which would claim those channels were watched when they were
-  not (§10.0 observation-beats-declaration). The planted files carry the
+  `partial`, but now because the *scan* — which covers the model's final output, DNS query names,
+  tool-call arguments, and non-model egress request URLs (path/host/SNI) — does not yet cover egress
+  bodies (sidecar-side) or written-file contents (Plane B is hash-only); never `full`, which would
+  claim those channels were watched when they were not (§10.0 observation-beats-declaration). The
+  planted files carry the
   marker wrapped in a realistic credential shape per kind (`_file_body`: an AWS INI block, an
   OpenSSH-PEM wrapper, a `.env`, a git-credentials URL), the marker contiguous on its own line so the
   exact-match scan finds it and redaction fingerprints only the value — a bare token is bait a capable

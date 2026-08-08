@@ -336,12 +336,13 @@ class SandboxRunExecutor:
             dns_queries = run_resolver.queries() if run_resolver is not None else []
             plane_e = dns_actions(dns_queries, start_seq=len(plane_a) + len(plane_b) + len(plane_d))
             # Plane C: canaries are not a plane the sandbox emits — they are *found* in what the
-            # other planes recorded (§10.4). Scan the host-side sources (the model's final output in
-            # Plane A, the DNS query names in Plane E) for the markers actually planted this run, and
-            # correlate each hit back to the source that carried it. Egress *bodies* are scanned
-            # sidecar-side (the body never leaves the proxy), so Plane D is not a source here yet.
+            # other planes recorded (§10.4). Scan the host-side sources — the model's final output and
+            # tool-call arguments in Plane A, the non-model request URLs in Plane D, the DNS query
+            # names in Plane E — for the markers planted this run, and correlate each hit back to the
+            # source that carried it. Egress *bodies* are scanned sidecar-side (the body never leaves
+            # the proxy), so only the request line of Plane D is a source here.
             plane_c = canary_actions(
-                plane_a + plane_e,
+                plane_a + plane_d + plane_e,
                 canaries,
                 start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
             )
@@ -380,16 +381,17 @@ class SandboxRunExecutor:
                     # Same for the resolver's query log: a zero-query run is observed-clean DNS.
                     dns=PlaneStatus(fidelity="full") if run_resolver is not None else None,
                     # Canaries planted (env var + file slots) and scanned in the model output, DNS
-                    # query names, and tool-call arguments. Partial not full: the scan does not yet
-                    # cover egress bodies (sidecar-side) or written-file contents (Plane B is
-                    # hash-only).
+                    # query names, tool-call arguments, and non-model egress request URLs. Partial not
+                    # full: the scan does not yet cover egress bodies (sidecar-side) or written-file
+                    # contents (Plane B is hash-only).
                     credentials=(
                         PlaneStatus(
                             fidelity="partial",
                             reason=(
                                 "canaries planted (environment variable and file slots) and scanned "
-                                "in the model output, DNS query names, and tool-call arguments; "
-                                "egress-body and written-file scanning are not yet wired"
+                                "in the model output, DNS query names, tool-call arguments, and "
+                                "non-model egress URLs; egress-body and written-file scanning are "
+                                "not yet wired"
                             ),
                         )
                         if planting is not None
