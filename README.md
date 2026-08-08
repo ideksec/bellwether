@@ -32,28 +32,26 @@ reasoning behind the divergences.
 
 ## Status
 
-**Pre-v0.1. Under construction.** The whole offline analysis path is built and tested:
-scaffolding, config, the skill parser, the trace format, the sandbox, the first two capture
-planes (harness events, filesystem by zone), the `api-loop` reference harness adapter,
-canonicalization, the platform baseline, the assertion engine, the metrics, the verdict
-engine, the report layer (`summary.json` + the Markdown PR comment), the analysis
-orchestrator that assembles them into a verdict and an artifact tree, and the sandbox
-execution driver that runs a skill through a real container. The **recording proxy is done**:
-credential isolation, a default-deny egress allowlist, canaries, and an internal-bridge
-sandbox with no route out except the proxy — all proven live on CI, including the key
-property that the real API key reaches the provider but never the container. The **live
-model client** landed too, so every piece needed to drive a real run now exists.
+**Pre-v0.1. Under construction — but the loop closes end to end.** On a real pull request, a
+changed skill is detected, run six times in a hardened sandbox behind a recording proxy that
+observes its egress, scored across the gates, and posted back as a verdict — and a benign skill
+has reached **`ready`** this way, on CI, against a live model, with every run's evidence uploaded
+as a downloadable artifact. That is the whole thesis walking on its own legs.
 
-The **first-light checkpoint is reached**: `benign-stable` runs end to end in a real sandbox
-and produces a verdict and an artifact tree. **`bellwether run` is now wired from the CLI** —
-it resolves the run, builds the live model client, drives the matrix, and renders a verdict;
-the whole assembly is tested offline, and its refusal paths (no skill, bad config, no daemon,
-unset key) fail loudly. The **controlled DNS resolver** has its host-side core too — a
-default-deny, label-boundary allowlist, NXDOMAIN for everything else, a full query log, and a
-canary scan that catches a secret chunked across query labels — so the covert channel that
-routes around the HTTP proxy is closed in logic, with the resolver sidecar itself CI-only.
-What is not yet exercised is a full live-container run from the CLI on CI; the remaining
-pieces are the resolver container, the `claude-code` adapter, and the corpus.
+Under it, the entire offline analysis path is built and tested — the skill parser, the trace
+format, the sandbox, the first two capture planes (harness events, filesystem by zone), the
+`api-loop` harness, canonicalization, the platform baseline, the assertion engine, the metrics,
+the verdict engine, and the report layer. The **recording proxy is done and wired into the live
+run**: credential isolation (the real key reaches the provider but never the container), a
+default-deny egress allowlist, and a dual-homed sidecar on an internal bridge that is the
+sandbox's only route out — so egress is *observed*, not assumed. The **live model client**, the
+`bellwether run` CLI, and the shipped GitHub Action round out a working pipeline.
+
+What remains is **breadth, not a missing spine**: the other evidence planes wired into the live
+path (the controlled DNS resolver's host core is built; the resolver sidecar, live canaries, and
+process capture are next), the `claude-code` harness adapter, the coverage-honesty and
+noise-floor calibration proofs, and the v0.1 acceptance corpus. See
+[docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan.
 
 ### See it
 
@@ -202,47 +200,25 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 
 | Area | State |
 |---|---|
-| Project scaffolding, module boundaries, CI, determinism primitives | done |
-| `config.yaml`, `policy.yaml`, `evals/manifest.yaml`, `evals/scenarios.yaml` loading and validation | done |
-| `bellwether init`, `bellwether doctor`, `bellwether version` | done |
-| Skill parsing, the three digests, payload allowlist, executable inventory | done (WP-2) |
-| ARF trace schema, JSONL writer and reader, incomplete-trace detection | done (WP-3) |
-| Sandbox host side: zones, fixture materialisation, payload staging, identifiers, isolation profile | done (WP-4) |
-| Sandbox container backend: overlay mount, whiteout-aware upper-dir diff, container lifecycle | done (WP-4) |
-| Capture: host-owned event sink (Plane A), per-zone overlay filesystem capture (Plane B), coverage block | done (WP-5) |
-| `api-loop` harness adapter: agent loop, sandboxed tools, scripted provider, golden trace | done (WP-6) |
-| Canonicalization and epoch anchoring: capability tiers, step signatures, cross-plane ordering | done (WP-7) |
-| Platform baseline: document, glob matcher, near-miss flagging, process attribution | done (WP-8) |
-| Assertions: deterministic catalogue, scope derivation, Declared vs Observed, run outcomes | done (WP-9) |
-| Metrics: Wilson/Pocock sequential design, risk-weighted capability Jaccard, trajectory clustering, BCI | done (WP-10) |
-| Verdict engine: per-target gate composition, precondition check, weight validation | done (WP-11) |
-| Reporting: schema-versioned `summary.json`, the §13.8 figures, the Markdown PR comment | done (WP-12) |
-| Analysis orchestrator: trace → §13 metrics → §16.2 gates → verdict → §17.1 artifact tree | done |
-| Sandbox execution driver (`RunExecutor`); first-light checkpoint reached | done |
-| Egress semantics: classification, default-deny allowlist, per-run caps, redaction | done (WP-13 pt 1) |
-| Credential isolation: sandbox-scoped token, proxy-side injection, leak guard | done (WP-13 pt 2a) |
-| Proxy decision core: allowlist → caps → inject → record, in fixed order | done (WP-13 pt 2b-i) |
-| Proxy addon glue: mutate request or block, plus the sidecar↔host flow-record contract | done (WP-13 pt 2b-ii core) |
-| Sidecar entry: config, broker reconstruction, mitmdump addon (credential mapping survives the round trip) | done (WP-13 pt 2b-ii core) |
-| Sidecar host launcher: start/flows/stop, real key forwarded by name (never on the command line) | done (WP-13 pt 2b-ii core) |
-| Sidecar image: digest-pinned `mitmproxy` Dockerfile; build + addon-load proven on CI | done (WP-13 pt 2b-ii) |
-| Live interception: inject-on-forward, block-on-deny, no credential in the artifact, in a real container topology | done (WP-13 done-when) |
-| Live model client: Anthropic Messages API behind the `ModelClient` seam (translation + transport, tested offline) | done |
-| Sandbox network isolation: internal bridge, no route out except the proxy peer (§3.3 inv. 3) | done (WP-13) |
-| Canaries: mint, decode-then-match, destination classification, redaction | done (WP-16) |
-| CA trust chain: §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core) |
-| Recording-proxy sidecar: image, launcher, live interception (inject/block/no-leak on CI) | done (WP-13) |
-| `bellwether run` wired from the CLI: resolve → live client → matrix → verdict (tested offline) | done |
-| Controlled DNS resolver host core: default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan | done (WP-15 core) |
-| HTML report: a self-contained, theme-aware page written for every evaluation (a first slice of §17.4) | done |
-| Worked demo (`bellwether demo`): three example skills → three reports through the real pipeline, offline | done |
-| PR-comment posting (`bellwether pr-comment`): idempotent upsert of the report onto a pull request | done |
-| CI integration: a shipped GitHub Action that evaluates only the skills a PR changed (`bellwether changed-skills`) | done |
-| DNS resolver sidecar: allowlisted UDP/53, query log, invariant-3 lockdown (container half) | WP-15 container |
-| Live-container CLI `run` end to end on CI | pending |
-| `claude-code` harness adapter | WP-17 |
-| CA trust chain live probe, canaries corpus | WP-14 live / WP-16 |
-| Corpus and acceptance | WP-20 |
+| **Foundation** — scaffolding, module boundaries, CI, determinism primitives; `config`/`policy`/`manifest`/`scenario` loading; `init` / `doctor` / `version` | done |
+| **Skill & trace** — skill parsing + the three digests, payload allowlist, ARF schema, JSONL writer/reader, incomplete-trace detection | done (WP-2, WP-3) |
+| **Sandbox** — zones, fixture materialisation, payload staging, isolation profile; overlay mount + whiteout-aware upper-dir diff; container lifecycle | done (WP-4) |
+| **Capture** — host-owned event sink (Plane A), per-zone filesystem overlay (Plane B), the coverage block | done (WP-5) |
+| **Harness** — `api-loop` adapter: agent loop, sandboxed tools, scripted provider, golden trace | done (WP-6) |
+| **Analysis** — canonicalization + epoch anchoring, platform baseline, assertions + Declared-vs-Observed, metrics (Wilson/Pocock, risk-weighted Jaccard, trajectory clustering, BCI), verdict engine + precondition check | done (WP-7–11) |
+| **Reporting** — schema-versioned `summary.json`, the §13.8 figures, the Markdown PR comment, a self-contained theme-aware HTML report | done (WP-12, §17.4) |
+| **Orchestration** — analysis orchestrator (trace → metrics → gates → verdict → artifact tree) and the container execution driver; first-light checkpoint reached | done |
+| **Recording proxy** (WP-13) — egress classification + default-deny allowlist + per-run caps; credential isolation (scoped token, proxy-side injection, leak guard); mitmproxy sidecar; internal-bridge isolation with no route out but the proxy; live interception proven on CI | done |
+| **Proxy in the live run** — dual-homed sidecar per repetition, CA mounted so TLS is intercepted, egress recorded as Plane D of the trace (`egress.image` turns it on) | done |
+| **Live model client** — Anthropic Messages API behind the `ModelClient` seam | done |
+| **`bellwether run` from the CLI** — resolve → live client → matrix → verdict → artifact tree | done |
+| **CI integration** — `bellwether changed-skills`, `bellwether pr-comment`, the shipped GitHub Action (only changed skills, paid run label-gated), per-run evidence uploaded as an artifact | done |
+| **Live verdict on CI** — a benign skill reaching `ready` against a real model, egress observed | proven |
+| Canaries — mint, decode-then-match, destination classification, redaction (logic) | done (WP-16); live planting/scanning pending |
+| CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |
+| Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan (host core) | done (WP-15 core); resolver sidecar + executor wiring next |
+| Live canaries · plane-coverage matrix (WP-18) · noise-floor calibration (WP-19) | remaining |
+| `claude-code` harness adapter (WP-17) · corpus & acceptance (WP-20, the v0.1 line) | remaining |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
 they implement is [docs/spec.md](docs/spec.md). Where the implementation had to resolve
