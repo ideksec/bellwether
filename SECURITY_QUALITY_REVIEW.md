@@ -69,7 +69,7 @@ The single most important pattern is **"declared but not wired."** Many controls
 
 ## Remediation status (this branch)
 
-**All findings above have been fixed on `claude/codebase-security-quality-review-2q75hv`, except the deliberate exceptions listed below.** After remediation: the six mechanical checks pass, **733 offline tests pass** (up from 669 — ~64 regression tests were added, each failing before its fix and passing after), **43 docker tests pass / 3 CI-only skip**, and the demo reports regenerate byte-stably with unchanged verdicts. Each fix carries a test that reproduces the defect. The two Critical items (BW-01 digest collision, BW-02 enforced-settings) and all seven High items are among those fixed.
+**All findings above have been fixed on `claude/codebase-security-quality-review-2q75hv`, except the deliberate exceptions listed below.** After remediation: the six mechanical checks pass, **735 offline tests pass** (up from 669 — ~66 regression tests were added, each failing before its fix and passing after), **43 docker tests pass / 3 CI-only skip**, and the demo reports regenerate byte-stably with unchanged verdicts. Each fix carries a test that reproduces the defect. The two Critical items (BW-01 digest collision, BW-02 enforced-settings) and all seven High items are among those fixed. (A subsequent **re-verification pass** — see below — reproduced every finding's original failure against the fixed code, and found + closed two partial fixes, BW-22 and BW-40.)
 
 Deliberate exceptions, with reasons:
 
@@ -80,6 +80,28 @@ Deliberate exceptions, with reasons:
 - **BW-42, BW-43 — not code defects.** BW-42's single-linkage clustering is spec-mandated and its mitigation is the now-enforced BW-10 gate; BW-43 matches the documented `nest=1` bound.
 
 One architectural note for reviewers: BW-08's config→sandbox mapping could **not** live on `SandboxConfig` (it would break the `lint-imports` layering — `config` must not import `sandbox`, and `sandbox` must not import models), so `isolation_from_config`/`zone_map_from_config` live in the `cli` layer (`cli/execution.py`), wired from `run.py`. The merkle-digest change bumps `DIGEST_FORMAT` to `/3` (all package/payload digests change; the demo was regenerated, the golden trace uses placeholder digests and was unaffected).
+
+---
+
+## Re-verification pass (this branch)
+
+Every finding was **re-tested against the fixed code by reproducing its original failure condition** — a genuine before/after (reconstruct the pre-fix logic inline, show it bites; run the shipped code, show it holds), not merely a passing test. The 13 Critical/High/metrics findings were verified first-hand; the ~30 Medium/Low findings were reproduced across five independent passes, each required to reconstruct the pre-fix behaviour rather than tautologically assert the new one. **This pass found two genuine claim-vs-reality gaps — findings the report above marked fixed that were only *partly* fixed — and closed them here, each with a regression test.** Post-pass: six checks green, **735 offline tests pass**, **43 docker pass / 3 CI-only skip**, demo byte-stable.
+
+### Two residuals found by re-verification and fixed in the same pass
+
+- **BW-22 was only half-closed.** The digest walk was correctly switched to chunked hashing, but `skill/package.py` still read three files *whole* as text — `SKILL.md` (`:195`), the `evals/manifest.yaml` attestation rewrite (`:263`), and each payload doc for token estimation (`:282`) — so a multi-GB `SKILL.md` still OOM'd `load_skill` before any sandbox. **Fixed:** a `_MAX_TEXT_BYTES` (8 MiB) bound via `_read_text_bounded`; an oversized core file is refused at ingest (a finding about the skill), and an oversized payload doc is skipped for the best-effort token estimate. Regression: `test_an_oversized_skill_md_is_refused_not_read_whole`.
+- **BW-40 was fixed on the egress plane only.** `egress.py:_norm_host` was rewritten (`urlsplit`-based) and rejects the leading-dot/bracket/non-numeric-port spellings, but the finding also named the **`dns.py` mirror**, which was never touched — `.api.anthropic.com` still matched the allowlisted provider (`_norm_qname` strips only trailing dots, and `endswith("." + allowed)` reads the empty leading label as a subdomain). Low severity (verified it does **not** widen the destination surface — `.evil.com`/`evil.com`/`api.anthropic.com.evil.com` all still `NXDOMAIN`), but a real in-scope divergence between the two planes' parsers. **Fixed:** `_qname_matches` now rejects empty-label names (`_has_empty_label`), leaving `_norm_qname` — and therefore the canary scan — untouched. Regression: `test_a_leading_dot_or_empty_label_is_refused`.
+
+### Honest caveats surfaced (fixed-as-scoped or by-design sub-gaps, not claim-vs-reality gaps)
+
+These are consistent with each finding's *stated* fix; noted so a sign-off knows the exact boundary of what was closed:
+
+- **BW-14** — `user-agent`/`accept` are dropped from the verbatim allowlist (the stated fix), but `content-type` is still kept verbatim and header *values* are still not routed through the canary scanner (header-value canary detection is unwired until egress-body scanning lands).
+- **BW-28** — `guarantee`/`prove`/`ensure` are banned as base words; matching is whole-word, so inflections (`guarantees`, `proven`, `proof`) are not caught — the same limitation the pre-existing banned words (`safely`, `secured`) already had.
+- **BW-35** — `violations()` now flags a non-default `seccomp` (the recommended fix, line 301); the finding's *title* also named unbounded memory/cpus/pids, which remain unflagged (only reachable via a code change / alternate backend, so LATENT).
+- **BW-36** — the overlay-walk OOM is genuinely closed (bounded at 200 000 entries). The stated fix text preferred degrading the filesystem plane to `partial`; the implementation instead **raises** at the cap, which aborts the run. This is fail-closed (a flooding skill gets an error, never `ready`) and strictly better than the pre-fix OOM crash, but it is a hard-stop rather than graceful degradation.
+- **BW-39** — the scan is bounded by `MAX_SCAN_CHARS` (256 KiB), closing the CPU-DoS; the documented trade-off is that a canary placed *past* the cap in a very large body is not scanned there.
+- **BW-47** — remains **deferred** (still `scope=None`), so the scope gate still renders a green `pass / within scope` for a skill that used a manifest-denied tool, and the report's declared-vs-observed section says "No manifest scope to compare" (which reads as clean rather than "not applied"). The honest-message half of this finding's fix is still owed; tracked as the next step alongside the coverage matrix.
 
 ---
 

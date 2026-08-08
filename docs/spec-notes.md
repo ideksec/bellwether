@@ -1409,3 +1409,32 @@ with the scanner). Separately, the §21 enforced-settings refusal (which the thr
 active) previously lived only in `doctor`; it now runs inside `run_evaluation`, refusing above the
 `low` profile when a residual-channel control is disabled — so the guarantee holds on the path a real
 run and the CI workflow take, not just in the preflight.
+
+## §6, §10.6, §10.2 — Re-verification residuals: bounded text reads, DNS empty-label, overlay-cap posture
+
+A re-verification pass (reproducing every review finding's original failure against the fixed code)
+turned up two fixes that were only *partly* landed, plus one deliberate divergence worth recording.
+
+- **§6 loader-OOM (BW-22), second half.** The digest walk was hardened to chunked hashing, but
+  `skill/package.py` still read `SKILL.md`, the `evals/manifest.yaml` attestation source, and each
+  payload doc *whole* as text — so a multi-GB `SKILL.md` still OOM'd `load_skill` before any sandbox.
+  A single-file text-read ceiling (`_MAX_TEXT_BYTES`, 8 MiB) now refuses an oversized core file at
+  ingest (a finding about the skill, not a crash of the tool) and skips an oversized payload doc for
+  the best-effort token estimate. The digest of an oversized *binary* file is still computed (chunked);
+  only the whole-file *text* reads are bounded.
+
+- **§10.6 DNS allowlist empty-label (BW-40), DNS half.** The egress `_norm_host` leading-dot fix was
+  not mirrored into `dns.py`, so `.api.anthropic.com` matched the allowlisted provider
+  (`_norm_qname` strips only trailing dots; `endswith("." + allowed)` reads the empty leading label as
+  a subdomain). `_qname_matches` now rejects empty-label names via `_has_empty_label`. Deliberately
+  scoped to the *matcher*: `_norm_qname` is left unchanged because the canary scan consumes the raw
+  query name, and blanking it there would blind the covert-channel detector.
+
+- **§10.2 overlay-walk cap (BW-36) — raise, not degrade.** The finding's suggested fix degraded the
+  filesystem plane to `partial` at the cap; the shipped code instead **raises** `BellwetherError` once
+  the overlay upper dir exceeds `_MAX_UPPER_ENTRIES` (200 000). This is a deliberate divergence: the
+  security property (no unbounded `rglob` in host memory) holds either way, raising is fail-closed (a
+  skill that floods its workspace gets an error, never `ready`, and never a silent pass), and it is
+  strictly safer than the pre-fix behaviour, which was an actual host-process OOM. The cost is that a
+  pathological run hard-stops the evaluation rather than yielding a degraded-but-scored result; graceful
+  per-plane degradation is left for when the coverage matrix lands.

@@ -50,6 +50,19 @@ def test_a_lookalike_suffix_is_refused() -> None:
     assert not allowlist.permits("anthropic.com.attacker.example")
 
 
+def test_a_leading_dot_or_empty_label_is_refused() -> None:
+    """``.api.anthropic.com`` is not a subdomain of ``api.anthropic.com`` — a naive
+    ``endswith('.' + allowed)`` reads the empty label before the leading dot as the
+    subdomain and lets it in (BW-40). This is the DNS-plane mirror of the egress
+    ``_norm_host`` leading-dot fix; the two planes' allowlist parsers must agree."""
+    allowlist = _allowlist("api.anthropic.com")
+    assert not allowlist.permits(".api.anthropic.com")
+    assert not allowlist.permits("api..anthropic.com")
+    # the legitimate names around it still resolve
+    assert allowlist.permits("api.anthropic.com")
+    assert allowlist.permits("eu.api.anthropic.com")
+
+
 def test_matching_is_case_and_trailing_dot_insensitive() -> None:
     allowlist = _allowlist("api.anthropic.com")
     assert allowlist.permits("API.Anthropic.COM.")

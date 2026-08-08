@@ -397,6 +397,21 @@ def test_large_files_are_hashed_in_bounded_chunks(
     assert big.size_bytes == len(blob)
 
 
+def test_an_oversized_skill_md_is_refused_not_read_whole(tmp_path: Path) -> None:
+    """BW-22 (second half): the digest walk is chunked, but ``load_skill`` also read a few
+    files *whole* as text — ``SKILL.md``, the manifest, payload docs. A multi-GB ``SKILL.md``
+    therefore still OOM'd the loader before any sandbox. An oversized text file is now refused
+    at ingest with a clear error rather than read into memory."""
+    from bellwether.skill.package import _MAX_TEXT_BYTES
+
+    root = tmp_path / "huge"
+    root.mkdir()
+    body = "A" * (_MAX_TEXT_BYTES + 1024)
+    (root / "SKILL.md").write_text(f"---\nname: huge\ndescription: d\n---\n{body}", "utf-8")
+    with pytest.raises(SkillError, match=r"read whole during loading"):
+        load_skill(root, load_evals=False)
+
+
 # ---------------------------------------------------------------------------
 # Payload allowlist
 # ---------------------------------------------------------------------------
