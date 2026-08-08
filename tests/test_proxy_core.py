@@ -110,6 +110,17 @@ def test_a_byte_cap_blocks_an_oversized_body() -> None:
     assert decision.cap_exceeded == "max_request_bytes"
 
 
+def test_the_byte_cap_charges_headers_and_path_not_only_the_body() -> None:
+    """BW-13: a tiny body with a huge header must still trip the byte cap. The whole serialised
+    request is attacker-controlled bandwidth, so the path and the headers count toward the cap —
+    a body-only charge let a request smuggle megabytes through its headers under the cap."""
+    caps = CapLedger(max_requests=100, max_request_bytes=200)
+    # A 1-byte body clears a 200-byte cap on its own; a 500-char header does not.
+    decision = _decide("api.anthropic.com", body=b"x", caps=caps, auth="A" * 500)
+    assert decision.action == "block"
+    assert decision.cap_exceeded == "max_request_bytes"
+
+
 def test_a_blocked_request_does_not_consume_the_cap() -> None:
     """A denied host must not spend the sandbox-scoped token's budget — otherwise a skill
     could exhaust the cap with blocked attempts and deny the run its real calls."""
@@ -131,6 +142,21 @@ def test_a_model_api_request_gets_the_real_key_injected() -> None:
     decision = _decide("api.anthropic.com", broker=broker, auth=token)
     assert decision.injected
     assert decision.upstream_headers["Authorization"] == f"Bearer {_REAL_KEY}"
+
+
+def test_a_provider_subdomain_gets_the_real_key_injected_not_the_scoped_token() -> None:
+    """BW-15: classification matches a provider on a label boundary, so ``eu.api.anthropic.com``
+    is ``model_api``. Injection must resolve the provider the same way — an exact ``get`` on
+    ``provider_of_host`` (keyed on the base host ``api.anthropic.com``) misses the subdomain and
+    leaves the container's scoped token, not the real key, on the wire."""
+    broker = _broker()
+    token = broker.sandbox_token("anthropic")
+    decision = _decide("eu.api.anthropic.com", broker=broker, auth=token)
+    assert decision.flow.egress_class == "model_api"
+    assert decision.action == "forward"
+    assert decision.injected
+    assert decision.upstream_headers["Authorization"] == f"Bearer {_REAL_KEY}"
+    assert token not in decision.upstream_headers["Authorization"]
 
 
 def test_injection_never_happens_for_a_blocked_host() -> None:
@@ -161,3 +187,15 @@ def test_the_recorded_flow_never_holds_the_real_key_even_after_injection() -> No
 def test_a_blocked_flow_carries_its_reason() -> None:
     decision = _decide("evil.example.com")
     assert decision.flow.block_reason
+
+
+def test_the_decision_repr_never_prints_the_real_key() -> None:
+    """BW-31: ``upstream_headers`` holds the real key after injection (that is its job), so the
+    default dataclass repr must not render it into a log line or a traceback. The field is
+    ``repr=False``, mirroring ``ProxyAddon._flows``."""
+    broker = _broker()
+    token = broker.sandbox_token("anthropic")
+    decision = _decide("api.anthropic.com", broker=broker, auth=token)
+    assert decision.injected
+    assert decision.upstream_headers["Authorization"] == f"Bearer {_REAL_KEY}"  # really on the wire
+    assert _REAL_KEY not in repr(decision)

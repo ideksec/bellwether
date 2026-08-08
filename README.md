@@ -260,8 +260,10 @@ retrofitted:
   SHA, every container image (in workflows *and* Dockerfile `FROM` lines) to a `@sha256:`
   digest; `tools/pin_lint.py` fails the build on a mutable tag. A tool about supply chain
   must not pull mutable tags in its own CI. Python dependencies are hash-pinned in
-  `uv.lock` (`uv sync --frozen` verifies every hash), and the production sandbox image is
-  refused unless pinned by digest.
+  `uv.lock` (`uv sync --frozen` verifies every hash). Digest-pinning the runtime
+  sandbox/egress image, by contrast, is a **non-blocking advisory**, not a hard refusal: a
+  moving tag makes two evaluations non-comparable, so Bellwether reports an advisory when the
+  configured image is a floating tag but still runs — `examples/live` deliberately uses one.
 - **Types.** `mypy --strict` over the whole package.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the detail, [docs/STATUS.md](docs/STATUS.md)

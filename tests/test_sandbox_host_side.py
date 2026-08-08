@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from bellwether.determinism import SeededRng, stable_hash_bytes
-from bellwether.errors import SkillError
+from bellwether.errors import BellwetherError, SkillError
 from bellwether.sandbox import (
     DIRECTORY_MODE,
     EXECUTABLE_MODE,
@@ -342,6 +342,26 @@ def test_regular_files_beside_a_special_one_are_still_hashed(tmp_path: Path) -> 
     assert changes["real.txt"].file_type == "regular"
 
 
+def test_an_upper_directory_flood_is_refused_rather_than_materialised(tmp_path: Path) -> None:
+    """§10.7 / §10.0: a skill that writes a pathological number of files must not be able to
+    make the host-side collector allocate an unbounded list and die — the same "observed
+    process must not decide whether the observer finishes" concern as the FIFO hang, reached
+    through memory. Past the cap the read raises a stated BellwetherError; at or under it the
+    read is unaffected."""
+    upper = tmp_path / "upper"
+    lower = tmp_path / "lower"
+    upper.mkdir()
+    lower.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (upper / name).write_text("x", encoding="utf-8")
+
+    with pytest.raises(BellwetherError, match="more than 2 changed paths"):
+        read_overlay_diff(upper, lower, max_entries=2)
+
+    # Under the cap the read is exactly as before — the bound never touches the normal path.
+    assert len(read_overlay_diff(upper, lower, max_entries=1000)) == 3
+
+
 # ---------------------------------------------------------------------------
 # A declared skill name never builds a path (§3.5)
 # ---------------------------------------------------------------------------
@@ -470,12 +490,28 @@ def test_docker_flags_render_the_profile() -> None:
         ({"read_only_root": False}, "root filesystem was writable"),
         ({"docker_socket": True}, "equivalent to root on the host"),
         ({"uid": 0}, "ran as root"),
+        ({"seccomp": "unconfined"}, "seccomp was set to a non-default profile"),
+        ({"seccomp": "custom.json"}, "seccomp was set to a non-default profile"),
     ],
 )
 def test_weakenings_are_reported(kwargs: dict[str, object], expected: str) -> None:
     """A run under a relaxed profile is still evidence — about a different situation."""
     violations = " ".join(IsolationProfile(**kwargs).violations())  # type: ignore[arg-type]
     assert expected in violations
+
+
+def test_unconfined_seccomp_is_a_reported_weakening() -> None:
+    """`seccomp: unconfined` removes the syscall filter of §9.2 entirely; a report that
+    stayed silent about it would describe a stronger sandbox than the one that ran.
+
+    The default profile reports nothing — a weakening only exists relative to the baseline."""
+    assert IsolationProfile().violations() == []
+
+    problems = IsolationProfile(seccomp="unconfined").violations()
+    assert problems
+    (problem,) = [p for p in problems if p.startswith("seccomp")]
+    assert "unconfined" in problem
+    assert "removes syscall filtering" in problem
 
 
 def test_the_workspace_is_owned_by_the_container_uid(

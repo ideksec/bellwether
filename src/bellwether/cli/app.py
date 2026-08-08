@@ -186,6 +186,22 @@ def doctor(
             }
         )
 
+    # §15 static scan is not built yet (v0.2). A policy that requires it would otherwise be a
+    # silent no-op — a required check that reads as passed. Surface it here rather than hide it.
+    _static_profiles = [loaded_policy.defaults, *loaded_policy.profiles.values()]
+    if any(profile.gates.static.require_scan for profile in _static_profiles):
+        checks.append(
+            {
+                "check": "static scan (§15)",
+                "status": "warn",
+                "detail": (
+                    "policy sets gates.static.require_scan, but the static scanner is not built "
+                    "in this version (v0.2 work package); it will not run — set require_scan: "
+                    "false until it lands, or treat scan findings as unavailable"
+                ),
+            }
+        )
+
     for advisory in loaded_config.advisories():
         checks.append({"check": "advisory", "status": "warn", "detail": advisory})
 
@@ -270,6 +286,7 @@ def run(
     """
     import datetime as dt
 
+    from bellwether.cli.execution import isolation_from_config, zone_map_from_config
     from bellwether.cli.run import build_proxy_provider, run_evaluation, sandbox_executor_factory
     from bellwether.harness import RunLimits
     from bellwether.skill import load_skill
@@ -311,6 +328,11 @@ def run(
                     # Wired only when egress.image is set (a live config); otherwise None and the
                     # sandbox runs networkless, exactly as first-light (§10.5).
                     proxy=build_proxy_provider(loaded_config),
+                    # Carry the configured sandbox profile (memory/cpus/pids/timeout/writable
+                    # paths), zone map, and §3.5 identifier randomisation into the container.
+                    isolation=isolation_from_config(loaded_config.sandbox),
+                    zones=zone_map_from_config(loaded_config.capture.zones),
+                    randomize_identifiers=loaded_config.sandbox.randomize_identifiers,
                 ),
                 # The artifact writer appends <eval_id> itself, so the parent is `out`;
                 # passing `out / eval_id` here doubled it and hid the report from pr-comment.

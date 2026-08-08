@@ -63,6 +63,13 @@ def _skill_activated(params: Any, index: EvidenceIndex) -> AssertionResult:
     expected = params if isinstance(params, bool) else True
     hits = [(seq, name) for seq, name in index.activated_skills if name == index.skill_name]
     activated = bool(hits)
+    if not expected and not activated:
+        # `expected=False` with no observed activation is an absence claim over Plane A.
+        # Observing an activation would refute it outright (handled below), but silence
+        # only counts as "did not activate" where harness coverage could have seen one.
+        reason = index.plane_reason("harness_events", for_absence=True)
+        if reason is not None:
+            return _blocked("skill_activated", reason, params)
     ok = activated == expected
     return AssertionResult(
         name="skill_activated",
@@ -79,6 +86,13 @@ def _skill_activated(params: Any, index: EvidenceIndex) -> AssertionResult:
 def _other_skill_activated(params: Any, index: EvidenceIndex) -> AssertionResult:
     name = params if isinstance(params, str) else str(params)
     hits = [(seq, skill) for seq, skill in index.activated_skills if skill == name]
+    if not hits:
+        # No observed activation is a "did not load" verdict — an absence claim over
+        # Plane A. Degraded harness coverage cannot support it; a hit (below) is a
+        # presence and stands on its own.
+        reason = index.plane_reason("harness_events", for_absence=True)
+        if reason is not None:
+            return _blocked("other_skill_activated", reason, params)
     return AssertionResult(
         name="other_skill_activated",
         status="pass" if hits else "fail",
@@ -119,6 +133,12 @@ def _tool_called(params: Any, index: EvidenceIndex) -> AssertionResult:
 
 def _tool_not_called(params: Any, index: EvidenceIndex) -> AssertionResult:
     name = params if isinstance(params, str) else str(params)
+    # An absence claim over Plane A: only meaningful if the harness stream could have
+    # shown the call. Degraded harness coverage (a truncated hook stream, a partial
+    # replay) cannot witness "never called", so refuse rather than pass on silence.
+    reason = index.plane_reason("harness_events", for_absence=True)
+    if reason is not None:
+        return _blocked("tool_not_called", reason, params)
     matching = [call for call in index.tool_calls if call.name == name]
     return AssertionResult(
         name="tool_not_called",
@@ -204,7 +224,7 @@ def _file_written(params: Any, index: EvidenceIndex) -> AssertionResult:
 
 def _file_not_written(params: Any, index: EvidenceIndex) -> AssertionResult:
     glob = params if isinstance(params, str) else str(params)
-    reason = index.plane_reason("filesystem_writes")
+    reason = index.plane_reason("filesystem_writes", for_absence=True)
     if reason is not None:
         return _blocked("file_not_written", reason, params)
     pattern = glob_to_regex(_workspace_glob(glob))
@@ -263,7 +283,7 @@ def _file_not_read(params: Any, index: EvidenceIndex) -> AssertionResult:
             evidence=tuple(seq for seq, _ in hits),
             params=params,
         )
-    reason = index.plane_reason("filesystem_reads")
+    reason = index.plane_reason("filesystem_reads", for_absence=True)
     if reason is not None:
         # The absence claim: nothing reported, but a subprocess could read without a
         # tool event, and only read capture could rule that out.
@@ -275,7 +295,7 @@ def _file_not_read(params: Any, index: EvidenceIndex) -> AssertionResult:
 
 def _no_write_outside(params: Any, index: EvidenceIndex) -> AssertionResult:
     globs = [str(glob) for glob in (params if isinstance(params, list) else [params])]
-    reason = index.plane_reason("filesystem_writes")
+    reason = index.plane_reason("filesystem_writes", for_absence=True)
     if reason is not None:
         return _blocked("no_write_outside", reason, params)
     patterns = [glob_to_regex(_workspace_glob(glob)) for glob in globs]
@@ -300,7 +320,7 @@ def _no_write_outside(params: Any, index: EvidenceIndex) -> AssertionResult:
 
 
 def _workspace_unchanged(params: Any, index: EvidenceIndex) -> AssertionResult:
-    reason = index.plane_reason("filesystem_writes")
+    reason = index.plane_reason("filesystem_writes", for_absence=True)
     if reason is not None:
         return _blocked("workspace_unchanged", reason, params)
     touched = [write for write in index.writes if write.zone == "workspace"]
@@ -316,7 +336,7 @@ def _workspace_unchanged(params: Any, index: EvidenceIndex) -> AssertionResult:
 
 
 def _no_harness_state_write(params: Any, index: EvidenceIndex) -> AssertionResult:
-    reason = index.plane_reason("filesystem_writes")
+    reason = index.plane_reason("filesystem_writes", for_absence=True)
     if reason is not None:
         return _blocked("no_harness_state_write", reason, params)
     offending = [write for write in index.writes if write.zone == "harness_state"]

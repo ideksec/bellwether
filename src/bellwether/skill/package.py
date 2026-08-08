@@ -60,6 +60,28 @@ def slugify_name(name: str) -> str:
     return slug
 
 
+#: The ceiling on a single text file read whole during loading (``SKILL.md``, the manifest,
+#: a payload doc). A skill is attacker-authored in external mode, so an unbounded
+#: ``read_text()`` is a loader-OOM DoS — the same shape the digest walk was hardened against
+#: with chunked hashing (§6.1). The digest walk is now bounded, but these whole-file text
+#: reads were not, so a multi-GB ``SKILL.md`` still OOM'd ``load_skill`` before any sandbox.
+#: A file no ordinary skill approaches is refused at ingest — a finding about the skill, not a
+#: crash of the tool.
+_MAX_TEXT_BYTES = 8 << 20  # 8 MiB
+
+
+def _read_text_bounded(path: Path, *, label: str) -> str:
+    """Read a text file whole, refusing one large enough to threaten the loader's memory."""
+    size = path.stat().st_size
+    if size > _MAX_TEXT_BYTES:
+        raise SkillError(
+            f"{label} is {size} bytes, over the {_MAX_TEXT_BYTES}-byte limit for a file read "
+            "whole during loading; a skill this large is refused rather than read into memory "
+            "(a loader OOM would abort the evaluation before any sandbox existed)"
+        )
+    return path.read_text(encoding="utf-8")
+
+
 SKILL_FILE = "SKILL.md"
 MANIFEST_PATH = "evals/manifest.yaml"
 SCENARIOS_PATH = "evals/scenarios.yaml"
@@ -192,7 +214,7 @@ def load_skill(
         )
 
     records = read_file_records(root)
-    parsed = parse_skill_markdown(skill_file.read_text(encoding="utf-8"))
+    parsed = parse_skill_markdown(_read_text_bounded(skill_file, label=SKILL_FILE))
 
     split = (allowlist or PayloadAllowlist()).split([record.path for record in records])
     included = set(split.included)
@@ -260,7 +282,7 @@ def _attestation_digest(root: Path, records: list[FileRecord], recorded: str | N
         if record.path != MANIFEST_PATH:
             rewritten.append(record)
             continue
-        text = (root / record.path).read_text(encoding="utf-8")
+        text = _read_text_bounded(root / record.path, label=record.path)
         blanked = text.replace(recorded, RECORDED_REVIEW_PLACEHOLDER)
         rewritten.append(replace(record, sha256=stable_hash(blanked), size_bytes=len(blanked)))
     return merkle_digest(rewritten)
@@ -278,8 +300,13 @@ def _token_estimates(
     for path in split.included:
         if path == SKILL_FILE or not path.endswith((".md", ".txt")):
             continue
+        full = root / path
         try:
-            estimates[path] = estimate_tokens((root / path).read_text(encoding="utf-8"))
+            if full.stat().st_size > _MAX_TEXT_BYTES:
+                # A token estimate is best-effort; skip an oversized file rather than read it
+                # whole into memory (BW-22). The digest walk already accounted for it.
+                continue
+            estimates[path] = estimate_tokens(full.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError):
             continue
     return estimates

@@ -137,6 +137,15 @@ def test_the_hostname_is_the_randomised_one(backend: DockerBackend, mounted) -> 
         assert tell not in result.stdout.lower()
 
 
+def test_the_machine_id_is_pinned_inside_the_container(backend: DockerBackend, mounted) -> None:  # type: ignore[no-untyped-def]
+    """§9.2 MUST: ``/etc/machine-id`` is pinned so nothing inside derives a varying identifier
+    from it. Asserted from where it matters — read from inside a running container, not the
+    host-side file — because the pin is a bind mount that only the launched container proves."""
+    result = backend.run(mounted, ["cat", "/etc/machine-id"])
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == mounted.isolation.pinned.machine_id
+
+
 def test_no_bellwether_machinery_exists_inside_the_container(
     backend: DockerBackend,
     mounted,  # type: ignore[no-untyped-def]

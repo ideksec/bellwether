@@ -216,7 +216,20 @@ class PlaneCoverage(ArfModel):
     reason: str | None = None
 
     def is_usable(self) -> bool:
+        """Usable for a *presence* claim: the plane observed at least part of its domain,
+        so a thing it did see is real evidence (§10.8)."""
         return self.fidelity in {"full", "partial", "overlay_diff"}
+
+    def is_usable_for_absence(self) -> bool:
+        """Usable for an *absence* claim, which is stricter (§10.8).
+
+        "Nothing happened" is only meaningful at a fidelity that would have seen the
+        thing had it happened. ``partial`` coverage observed only part of its domain — a
+        zone it never watched could hide exactly the write or read the assertion denies —
+        so it supports presence but not absence. Only ``full`` and ``overlay_diff``
+        (which reads the whole post-run upper directory) can carry an absence claim.
+        """
+        return self.fidelity in {"full", "overlay_diff"}
 
 
 class Coverage(ArfModel):

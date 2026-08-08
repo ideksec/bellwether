@@ -43,16 +43,28 @@ def _norm_qname(name: str) -> str:
     return name.strip().lower().rstrip(".")
 
 
+def _has_empty_label(name: str) -> bool:
+    """True where a normalised name holds an empty label (a leading dot or ``a..b``).
+
+    A valid hostname has no empty labels. ``.api.anthropic.com`` is *not* a subdomain of
+    ``api.anthropic.com`` — but a naive ``endswith("." + allowed)`` reads the empty label
+    before the leading dot as the subdomain and lets it in. This is the DNS-plane mirror of
+    the egress ``_norm_host`` leading-dot fix (BW-40); rejecting the empty label here keeps
+    the two planes' allowlist parsers from disagreeing on the same input.
+    """
+    return name == "" or any(label == "" for label in name.split("."))
+
+
 def _qname_matches(name: str, allowed: str) -> bool:
     """True if ``name`` is ``allowed`` or a subdomain of it, on a label boundary.
 
     ``api.anthropic.com`` matches ``api.anthropic.com`` and ``eu.api.anthropic.com`` but never
-    ``notanthropic.com`` — the same label-boundary rule the egress allowlist uses, so a lookalike
-    name cannot smuggle itself in.
+    ``notanthropic.com`` or ``.api.anthropic.com`` — the same label-boundary rule the egress
+    allowlist uses, so a lookalike or empty-label name cannot smuggle itself in.
     """
     name = _norm_qname(name)
     allowed = _norm_qname(allowed)
-    if not name or not allowed:
+    if not name or not allowed or _has_empty_label(name) or _has_empty_label(allowed):
         return False
     return name == allowed or name.endswith("." + allowed)
 

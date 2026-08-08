@@ -57,13 +57,18 @@ RECORDED_REVIEW_PLACEHOLDER = "<recorded-review-digest>"
 #: itself so that a future change to the construction is visible as a changed digest
 #: rather than as a silent comparison between two different things.
 #:
+#: Version 3 feeds a per-record type tag (``file`` / ``symlink``) before the path. A
+#: symlink's leaf ``sha256`` is ``sha256("symlink:" + target)``, which is byte-identical
+#: to the leaf digest of a *regular file whose content is those bytes* — so before v3 a
+#: link ``run.sh -> helper.sh`` and a file ``run.sh`` containing ``symlink:helper.sh``
+#: hashed the same package to the same value. The type tag discriminates them at the leaf.
 #: Version 2 length-prefixes every field. Version 1 delimited them with newlines, and
 #: newlines are legal in POSIX filenames — so a package containing a file named
 #: ``a\nsha256:<hash>\nb`` produced the same digest as a package containing files ``a``
 #: and ``b``. A forgeable ``package_digest`` is a forgeable review attestation (§6.3) and
 #: a forgeable cache key (§19.2), so this is an integrity property, not a formatting
 #: preference.
-DIGEST_FORMAT = "bellwether/skill-digest/2"
+DIGEST_FORMAT = "bellwether/skill-digest/3"
 
 
 @dataclass(frozen=True, order=True)
@@ -91,6 +96,29 @@ class FileRecord:
     is_executable: bool = False
 
 
+#: Files are hashed in fixed-size chunks rather than read whole. A skill can commit a file
+#: larger than the loader's memory, and the loader must not be the thing that dies of it.
+#: Chunked SHA-256 equals the whole-file SHA-256, so digests are unchanged; only the memory
+#: ceiling is. Mirrors the overlay collector's ``_CHUNK_BYTES`` (§10.1).
+_CHUNK_BYTES = 1 << 20  # 1 MiB
+
+
+def _hash_file_in_chunks(path: Path) -> tuple[str, int]:
+    """SHA-256 a regular file without holding it in memory (§6.1).
+
+    Chunked hashing yields the same digest as hashing the whole byte string, so a skill's
+    ``package_digest`` does not depend on how a file was read — only the memory ceiling
+    does. Mirrors :func:`bellwether.sandbox.overlay._hash_regular_file`.
+    """
+    hasher = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(_CHUNK_BYTES):
+            hasher.update(chunk)
+            size += len(chunk)
+    return "sha256:" + hasher.hexdigest(), size
+
+
 def _hash_one(root: Path, relative: Path) -> FileRecord:
     absolute = root / relative
     posix = PurePosixPath(relative.as_posix()).as_posix()
@@ -105,11 +133,11 @@ def _hash_one(root: Path, relative: Path) -> FileRecord:
             symlink_target=target,
         )
 
-    data = absolute.read_bytes()
+    digest, size = _hash_file_in_chunks(absolute)
     return FileRecord(
         path=posix,
-        sha256=stable_hash_bytes(data),
-        size_bytes=len(data),
+        sha256=digest,
+        size_bytes=size,
         is_executable=bool(absolute.stat().st_mode & 0o100),
     )
 
@@ -123,13 +151,19 @@ def merkle_digest(records: list[FileRecord]) -> str:
     """Digest a set of files, order-independently and unambiguously.
 
     The input is ``DIGEST_FORMAT``, then the file count, then for each file — sorted by
-    path — the byte length of the path followed by the path, and the byte length of the
-    digest followed by the digest.
+    path — a per-record **type tag** (``file`` or ``symlink``), the byte length of the
+    path followed by the path, and the byte length of the digest followed by the digest.
 
     **Every field is length-prefixed**, so no arrangement of file names can be read as a
     different arrangement. Delimiting with a separator instead makes the encoding
     ambiguous the moment a filename can contain that separator, and POSIX filenames can
     contain almost anything.
+
+    The type tag discriminates a symlink from a regular file at the leaf. A symlink's
+    ``sha256`` is ``sha256("symlink:" + target)``, which is byte-identical to the digest
+    of a regular file whose *content* is those bytes; without the tag a link and such a
+    file hash the same package to the same value, and a forged ``package_digest`` is a
+    forged review attestation (§6.3) and a poisoned cache key (§19.2).
 
     Sorting here as well as in the walk means the result does not depend on the caller
     having preserved the walk's order: a subset such as the payload file list is built by
@@ -141,6 +175,7 @@ def merkle_digest(records: list[FileRecord]) -> str:
     ordered = sorted(records, key=lambda item: item.path)
     hasher.update(len(ordered).to_bytes(8, "big"))
     for record in ordered:
+        _feed(hasher, b"symlink" if record.is_symlink else b"file")
         _feed(hasher, record.path.encode("utf-8"))
         _feed(hasher, record.sha256.encode("utf-8"))
     return "sha256:" + hasher.hexdigest()

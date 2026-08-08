@@ -56,6 +56,15 @@ _WHITEOUT_MODE = 0
 #: the runner's memory, and the host-side collector must not be the thing that dies of it.
 _CHUNK_BYTES = 1 << 20
 
+#: Upper-directory entries beyond which the diff refuses to materialise a list in host
+#: memory. A skill that writes millions of tiny files to its workspace is a host-DoS against
+#: the collector — the same "observed process must not decide whether the observer finishes"
+#: concern as the FIFO hang (§10.0), reached through memory rather than blocking. The walk is
+#: counted as it goes and stops at the cap rather than allocating an unbounded ``rglob`` list.
+#: Set far above any real changed-path set: a repository run touching this many paths is
+#: pathological, and a hard stop with a stated reason (§10.7) is the honest response.
+_MAX_UPPER_ENTRIES = 200_000
+
 
 @dataclass(frozen=True)
 class PathChange:
@@ -149,14 +158,34 @@ def mount_overlay(lower: Path, upper: Path, work: Path, merged: Path) -> Overlay
     return OverlayMount(merged=merged, lower=lower, upper=upper, work=work)
 
 
-def read_overlay_diff(upper: Path, lower: Path | None = None) -> list[PathChange]:
+def read_overlay_diff(
+    upper: Path, lower: Path | None = None, *, max_entries: int = _MAX_UPPER_ENTRIES
+) -> list[PathChange]:
     """Read the changed-path set from an overlay upper directory.
 
     Sorted, so the same set of changes produces the same order on every machine (§24).
+
+    The walk is bounded: ``rglob`` is drained into a list that is refused once it passes
+    ``max_entries``, so a skill that floods its workspace with files cannot make the
+    host-side collector allocate an unbounded list and die (§10.7). The bound is a hard
+    stop rather than a silent truncation, which keeps the read deterministic — a set at or
+    under the cap always sorts to the same order, and one over it always raises, regardless
+    of the order ``rglob`` happened to yield.
     """
+    entries: list[Path] = []
+    for entry in upper.rglob("*"):
+        if len(entries) >= max_entries:
+            raise BellwetherError(
+                f"the overlay upper directory {upper} holds more than {max_entries} changed "
+                "paths; refusing to materialise the diff in host memory (§10.7). This is a "
+                "skill writing a pathological number of files, not an ordinary run — raise "
+                "the cap deliberately if a fixture legitimately produces this many changes."
+            )
+        entries.append(entry)
+
     changes: list[PathChange] = []
 
-    for absolute in sorted(upper.rglob("*"), key=lambda path: path.as_posix()):
+    for absolute in sorted(entries, key=lambda path: path.as_posix()):
         relative = absolute.relative_to(upper).as_posix()
         info = absolute.lstat()
 

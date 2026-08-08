@@ -1,0 +1,23 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+metadata:
+  owner: bellwether-selftest
+  criticality: low
+
+declared_scope:
+  tools:
+    deny: [fetch, bash]
+  filesystem:
+    read: ["${WORKSPACE}/changes/**"]
+    write: ["${WORKSPACE}/RELEASE_NOTES.md"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.5

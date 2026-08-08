@@ -29,6 +29,18 @@ from bellwether.sandbox.zones import Zone
 
 __all__ = ["ContainerResult", "DockerBackend"]
 
+#: Size cap on every fallback ``--tmpfs`` mount. An uncapped tmpfs is a host-DoS: it draws
+#: from host memory and a skill filling ``/tmp`` could exhaust it (§9.2 bounds the sandbox's
+#: resources for the same reason ``--memory`` does). A captured zone gets a host-side overlay
+#: instead; tmpfs is only the fallback for a declared-writable path with no zone overlay, so a
+#: fixed, sensible ceiling is enough — it need not track the memory limit.
+_TMPFS_SIZE = "256m"
+
+#: Where the pinned machine-id file is bound. Read-only, because pinning it is the whole point
+#: (§9.2): a container that could rewrite ``/etc/machine-id`` mid-run would reintroduce exactly
+#: the varying identifier the pin removes.
+_MACHINE_ID_TARGET = PurePosixPath("/etc/machine-id")
+
 
 @dataclass(frozen=True)
 class ContainerResult:
@@ -316,12 +328,21 @@ class DockerBackend:
             if zone is not None:
                 argv += ["-v", f"{zone.merged}:{target}:rw"]
             else:
-                argv += ["--tmpfs", str(target)]
+                # Bounded: an uncapped tmpfs draws unboundedly from host memory (§9.2).
+                argv += ["--tmpfs", f"{target}:size={_TMPFS_SIZE}"]
 
         argv += ["-v", f"{workspace_source}:{workspace_target}:rw"]
         # After the writable mounts, so the read-only payload sits on top of, rather than
         # underneath, a writable parent.
         argv += ["-v", f"{prepared.payload.root}:{prepared.payload.install_path}:ro"]
+
+        # The pinned machine-id (§9.2), bound read-only over /etc/machine-id. Emitted here
+        # rather than left to the caller's `extra_ro_binds` so it is applied to every path —
+        # one-shot `run`, persistent session, and the recorded `command_line` alike — and so
+        # the trace shows the pin that was actually in force. Absent only for a hand-built
+        # PreparedSandbox; prepare_sandbox always sets it.
+        if prepared.machine_id_file is not None:
+            argv += ["-v", f"{prepared.machine_id_file}:{_MACHINE_ID_TARGET}:ro"]
 
         if sink_bind is not None:
             host_fifo, container_fifo = sink_bind

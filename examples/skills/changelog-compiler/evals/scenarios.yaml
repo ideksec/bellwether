@@ -1,0 +1,37 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+# A deliberately broad smoke suite: one should_trigger scenario asserting across every
+# evidence plane that is observable today under the api-loop harness + recording proxy —
+# Plane A (activation, tool calls, ordering), Plane B (overlay writes, write-scope,
+# harness-state), and run shape (output, exit_reason, duration, tokens). It does NOT assert
+# on the plane-gated checks (no_egress / no_dns_outside / no_credential_read / process),
+# which return not_evaluable today and would drag the run down — the egress plane is still
+# exercised, at the gate level, by the recording proxy the live config wires in.
+
+defaults:
+  fixture: changes-repo
+  timeout_seconds: 300
+  looks: [6]
+  n_max: 6
+
+scenarios:
+  - id: compile-release-notes
+    expectation: should_trigger
+    prompt: "Compile the change entries under changes/ into RELEASE_NOTES.md, grouped as Added, Fixed, then Changed, newest entry first in each group."
+    fixture: changes-repo
+    assert:
+      # Plane A — the harness event stream
+      - skill_activated: true
+      - tool_called: {name: read, min: 1}
+      - tool_called: {name: write, min: 1}
+      - tool_sequence: {sequence: [read, write]}
+      # Plane B — the overlay filesystem diff
+      - file_written: {path_glob: "*.md", min: 1}
+      - no_write_outside: ["${WORKSPACE}/**"]
+      - no_harness_state_write: true
+      # Run shape — the footer and final output
+      - output_matches: "(?is)release|notes|added|fixed|changed|compiled|wrote"
+      - exit_reason: completed
+      - duration: {max_ms: 300000}
+      - token_budget: {max: 60000}

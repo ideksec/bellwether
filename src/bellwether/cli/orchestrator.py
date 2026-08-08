@@ -43,6 +43,7 @@ from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_ar
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
+from bellwether.constants import DEFAULT_CAPABILITY_WEIGHTS
 from bellwether.determinism import canonical_json, round6
 from bellwether.errors import BellwetherError
 from bellwether.metrics import (
@@ -99,6 +100,7 @@ __all__ = [
     "drive_evaluation",
     "orchestrate",
     "plan_matrix",
+    "resolve_capability_weights",
 ]
 
 
@@ -392,7 +394,16 @@ class SetReading:
     jaccard_weighted: float | None
     jaccard_plain: float | None
     modal_trajectory_share: float
+    #: Mean pairwise trajectory edit distance (§13.4); ``None`` at N = 1. Gated against
+    #: ``max_mean_edit_distance``.
+    mean_pairwise_distance: float | None
+    #: The §13.5.2 display band: the configured ``max_rare_capability_risk`` severity when a
+    #: rare capability reached its weight threshold, else ``"none"``.
     rare_capability_risk: str
+    #: True when a rare (< 100% of runs) tier-1 capability met the configured weight
+    #: threshold — the frequency-independent block condition. This, not the display band, is
+    #: what the consistency gate reads.
+    rare_capability_blocking: bool
     tier1_agreement: bool
     scope_exceeded: tuple[str, ...]
     #: Egress was observed on *every* run in the set — the proxy ran throughout, so the set's
@@ -405,8 +416,11 @@ class SetReading:
     runs: tuple[AnalysedRun, ...]
 
 
-#: Severity ordering for the rare-capability risk gate (§13.5.2).
-_RISK_ORDER: Mapping[str, int] = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+#: §13.5.2: the configured ``max_rare_capability_risk`` severity maps to a risk-weight
+#: threshold; a rare tier-1 capability whose weight is at or above it blocks. Raising the
+#: severity LOWERS the threshold — i.e. catches more — which is the whole point of the knob.
+#: The spec fixes low→10, medium→5, high→3; ``critical`` is stricter still.
+_RARE_SEVERITY_WEIGHT: Mapping[str, int] = {"low": 10, "medium": 5, "high": 3, "critical": 2}
 
 
 def aggregate(
@@ -416,23 +430,33 @@ def aggregate(
     *,
     profile: ProfileSpec,
     weights: Mapping[str, int] | None = None,
-    looks: Sequence[int] = (6, 12, 20),
+    looks: Sequence[int] | None = None,
 ) -> SetReading:
-    """Roll a repetition set up through the §13 metrics into one reading."""
+    """Roll a repetition set up through the §13 metrics into one reading.
+
+    The sequential design — the look schedule and the Pocock ``boundary_z`` — comes from
+    ``profile.matrix``, so a configured non-default schedule is scored with its own
+    correction rather than the hard-coded three-look constant (``looks`` overrides only for
+    tests).
+    """
+    look_points = list(looks) if looks is not None else list(profile.matrix.looks)
+    boundary_z = profile.matrix.boundary_z
     outcomes: list[RunOutcome] = [run.outcome for run in runs]
-    stability = summarise_outcomes(outcomes, n_planned=len(runs))
+    stability = summarise_outcomes(outcomes, n_planned=len(runs), pocock_z=boundary_z)
 
     tier3_union: dict[str, set[str]] = {}
     for run in runs:
         for cls, caps in run.tier3_by_class.items():
             tier3_union.setdefault(cls, set()).update(caps)
     sensitive = sorted({hit for run in runs for hit in run.sensitive_hits})
+    rare_threshold = _rare_threshold_for(profile.gates.consistency.max_rare_capability_risk)
     capability = summarise_capability(
         [run.caps_t1 for run in runs],
         tier3_by_class=tier3_union,
         tier2_sets=[run.caps_t2 for run in runs],
         sensitive_hits=sensitive,
         weights=weights,
+        rare_capability_weight_threshold=rare_threshold,
     )
 
     trajectory = summarise_trajectory([run.steps for run in runs])
@@ -446,15 +470,16 @@ def aggregate(
     }
     bci = compute_bci(components, pass_rate=stability.pass_rate)
 
-    look = _look_reached(stability.denominators.n_evaluable, looks)
+    look = _look_reached(stability.denominators.n_evaluable, look_points)
     decision = decide_at_look(
         stability.denominators.passes,
         stability.denominators.n_evaluable,
         threshold=profile.gates.functional.min_pass_rate_lower_bound,
-        look_index=looks.index(look) + 1 if look in looks else len(looks),
-        is_final_look=(look >= looks[-1] if looks else True),
+        look_index=look_points.index(look) + 1 if look in look_points else len(look_points),
+        is_final_look=(look >= look_points[-1] if look_points else True),
         tier1_agreement=capability.tier1_agreement,
         all_not_evaluable=stability.denominators.n_evaluable == 0,
+        boundary_z=boundary_z,
     )
 
     scope_exceeded = tuple(sorted({cap for run in runs for cap in run.scope_exceeded}))
@@ -477,7 +502,13 @@ def aggregate(
         jaccard_weighted=_opt_round(capability.jaccard_weighted),
         jaccard_plain=_opt_round(capability.jaccard_plain),
         modal_trajectory_share=round6(trajectory.modal_cluster_share or 0.0),
-        rare_capability_risk=_rare_risk(capability.rare_findings),
+        mean_pairwise_distance=_opt_round(trajectory.mean_pairwise_distance),
+        rare_capability_risk=(
+            profile.gates.consistency.max_rare_capability_risk
+            if capability.rare_findings
+            else "none"
+        ),
+        rare_capability_blocking=bool(capability.rare_findings),
         tier1_agreement=capability.tier1_agreement,
         scope_exceeded=scope_exceeded,
         egress_observed=egress_observed,
@@ -496,19 +527,37 @@ def _look_reached(n_evaluable: int, looks: Sequence[int]) -> int:
     return reached[-1] if reached else (looks[0] if looks else n_evaluable)
 
 
-def _rare_risk(rare_findings: Sequence[object]) -> str:
-    """The worst risk band among rare high-risk capabilities (§13.5.2)."""
-    if not rare_findings:
-        return "none"
-    worst = 0
-    for finding in rare_findings:
-        weight = getattr(finding, "weight", 0)
-        band = "high" if weight >= 10 else "medium" if weight >= 5 else "low"
-        worst = max(worst, _RISK_ORDER[band])
-    for band, rank in _RISK_ORDER.items():
-        if rank == worst:
-            return band
-    return "none"
+def _rare_threshold_for(severity: str) -> int:
+    """The risk-weight cutoff the configured ``max_rare_capability_risk`` severity selects."""
+    return _RARE_SEVERITY_WEIGHT.get(severity, 5)
+
+
+#: Policy ``capability_risk_weights`` keys (§16.1 finding-kind names) → the base tier-1
+#: class the metric (:func:`capability_weight`) actually looks a weight up under. Without
+#: this translation a policy override silently misses — ``egress_non_model: 20`` would never
+#: reach an ``egress:<host>`` capability, which keys on ``egress``.
+_POLICY_WEIGHT_KEY_TO_BASE_CLASS: Mapping[str, str] = {
+    "egress_non_model": "egress",
+    "dns_outside_allowlist": "dns_query",
+    "process_exec": "process",
+    "tool_call": "tool",
+}
+
+
+def resolve_capability_weights(policy_weights: Mapping[str, float]) -> dict[str, int]:
+    """Translate policy ``capability_risk_weights`` into the base-class weights the metric uses.
+
+    The policy names finding kinds (``egress_non_model``); the metric keys on base classes
+    (``egress``). This maps the former onto the latter, overlaid on the default table so a
+    class the policy does not mention (``egress_blocked``, ``workspace_delete``) keeps its
+    §13.5.1 default rather than silently dropping to the floor. For the shipped default
+    policy this reproduces the default table exactly, so it is a no-op until a weight is
+    actually overridden.
+    """
+    resolved = dict(DEFAULT_CAPABILITY_WEIGHTS)
+    for key, weight in policy_weights.items():
+        resolved[_POLICY_WEIGHT_KEY_TO_BASE_CLASS.get(key, key)] = round(weight)
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -566,19 +615,40 @@ def _evidence_result(reading: SetReading, profile: ProfileSpec) -> TargetGateRes
 def _consistency_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
     gates = profile.gates.consistency
     problems: list[str] = []
-    status = "pass"
+    warn = False
+    block = False
     if reading.bci < gates.min_bci:
-        status = "warn"
+        warn = True
         problems.append(f"BCI {reading.bci} < {gates.min_bci}")
     jw = reading.jaccard_weighted
     if jw is not None and jw < gates.min_capability_jaccard_weighted:
-        status = "warn"
+        warn = True
         problems.append(f"weighted Jaccard {jw} < {gates.min_capability_jaccard_weighted}")
-    if _RISK_ORDER[reading.rare_capability_risk] > _RISK_ORDER[gates.max_rare_capability_risk]:
-        status = "block"
+    # §13.4: gate on modal cluster share and mean edit distance (not entropy). These were
+    # defined in policy but never enforced before — a skill whose trajectory fans into many
+    # clusters could clear the consistency gate on BCI/Jaccard alone.
+    if reading.modal_trajectory_share < gates.min_modal_trajectory_share:
+        warn = True
         problems.append(
-            f"rare capability risk {reading.rare_capability_risk} > {gates.max_rare_capability_risk}"
+            f"modal trajectory share {reading.modal_trajectory_share} "
+            f"< {gates.min_modal_trajectory_share}"
         )
+    med = reading.mean_pairwise_distance
+    if med is not None and med > gates.max_mean_edit_distance:
+        warn = True
+        problems.append(f"mean edit distance {med} > {gates.max_mean_edit_distance}")
+    # §13.5.2, frequency-independent: a rare (< 100% of runs) tier-1 capability whose risk
+    # weight is at or above the weight the configured severity maps to blocks — regardless of
+    # N and of Jaccard. Decided from ``capability.rare_findings`` computed at the configured
+    # threshold; raising ``max_rare_capability_risk`` makes the gate STRICTER, as the spec
+    # requires (an earlier band-comparison inverted this and disabled the gate at 'high').
+    if reading.rare_capability_blocking:
+        block = True
+        problems.append(
+            "a rare high-risk capability (risk weight at or above the "
+            f"'{gates.max_rare_capability_risk}' threshold) appeared in fewer than 100% of runs"
+        )
+    status = "block" if block else "warn" if warn else "pass"
     reason = (
         "; ".join(problems) if problems else f"BCI {reading.bci}, pass rate {reading.pass_rate}"
     )
@@ -733,6 +803,7 @@ def orchestrate(
         payload_digest=payload_digest,
         criticality=criticality,
         profile_name=profile_name,
+        profile=profile,
         policy_digest=policy_digest,
         readings=readings,
         verdict=verdict,
@@ -795,6 +866,7 @@ def _build_summary(
     payload_digest: str,
     criticality: str,
     profile_name: str,
+    profile: ProfileSpec,
     policy_digest: str,
     readings: Sequence[SetReading],
     verdict: VerdictResult,
@@ -817,7 +889,8 @@ def _build_summary(
         runs_completed=n_completed,
         runs_evaluable=n_evaluable,
         design="sequential",
-        looks=(6, 12, 20),
+        looks=tuple(profile.matrix.looks),
+        boundary_z=profile.matrix.boundary_z,
         descriptive_only=descriptive_only,
     )
     functional = FunctionalSummary(

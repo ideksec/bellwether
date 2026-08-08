@@ -20,14 +20,17 @@ from bellwether.capture import (
 
 def test_the_mechanism_table_covers_the_runtimes_that_ignore_the_system_store() -> None:
     """§9.2: Node reads a bundled CA list and ignores the store, so its env var must be
-    present; certifi-based Python and curl likewise."""
+    present; certifi-based Python, curl, and git over HTTPS likewise. Asserted as the *exact*
+    required set — a subset check would let a dropped row (e.g. GIT_SSL_CAINFO) pass silently,
+    and a missing mechanism is a runtime whose egress the proxy never sees."""
     env_names = {m.name for m in CA_MECHANISMS if m.kind == "env"}
-    assert {
+    assert env_names == {
         "NODE_EXTRA_CA_CERTS",
         "REQUESTS_CA_BUNDLE",
         "SSL_CERT_FILE",
         "CURL_CA_BUNDLE",
-    } <= env_names
+        "GIT_SSL_CAINFO",
+    }
     assert any(m.kind == "store" for m in CA_MECHANISMS)
 
 
@@ -66,3 +69,13 @@ def test_interception_is_not_confirmed_when_the_probe_is_absent() -> None:
 
 def test_confirmation_normalises_host_casing_and_trailing_dot() -> None:
     assert interception_confirmed(["Example.Test."], "example.test")
+
+
+def test_confirmation_normalises_the_probe_host_too() -> None:
+    """BW-33: the probe host gets the same strip/lower/rstrip('.') as the recorded hosts, so a
+    probe reported as 'Example.Test' or 'example.test.' still matches a recorded 'example.test'.
+    Without this, a casing or trailing-dot mismatch reads as a failed interception — the most
+    dangerous false negative in the tool."""
+    assert interception_confirmed(["example.test"], "Example.Test")
+    assert interception_confirmed(["example.test"], "example.test.")
+    assert interception_confirmed(["example.test"], "  EXAMPLE.TEST  ")

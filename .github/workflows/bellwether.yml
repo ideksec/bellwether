@@ -142,7 +142,13 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bellwether-evidence
+          # `.bellwether-out` is a dotfile tree; upload-artifact defaults include-hidden-files
+          # to false, so without this the evidence uploads as an empty artifact — the ground
+          # truth the whole step exists to preserve, silently dropped.
+          include-hidden-files: true
           path: |
             .bellwether-out/**
             !.bellwether-out/**/runs/**
-          if-no-files-found: warn
+          # A run that produced no evidence tree is a regression (a failed capture, a moved
+          # output dir), not a warning to scroll past — fail the step so it is seen.
+          if-no-files-found: error

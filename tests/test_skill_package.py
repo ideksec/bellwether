@@ -8,11 +8,19 @@ orderings; ``payload_digest`` is unchanged by edits under ``evals/``;
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import shutil
 from pathlib import Path
 
 import pytest
 
+# NOTE: ``DIGEST_FORMAT`` was bumped to ``bellwether/skill-digest/3`` (BW-01: a per-record
+# type tag now discriminates a symlink from a regular file at the merkle leaf). This changes
+# every ``package_digest`` / ``payload_digest`` / ``attestation_digest`` VALUE. No test in
+# this file asserts a literal digest value (all comparisons are relational), so none needed
+# recomputing here — but the committed demo reports under ``examples/reports/`` embed real
+# digests and ``tests/test_demo.py`` byte-compares them, so they must be regenerated
+# (``bellwether demo``). The golden trace uses placeholder digests and is unaffected.
 from bellwether.errors import SkillError
 from bellwether.skill import (
     EVALS_DIR,
@@ -133,6 +141,53 @@ def test_a_skill_with_a_wrong_typed_field_still_loads(tmp_path: Path) -> None:
 def test_a_pinned_model_is_reported_as_a_problem() -> None:
     parsed = parse_skill_markdown("---\nname: x\ndescription: d\nmodel: some-model\n---\nbody\n")
     assert any("pins model" in problem for problem in parsed.problems)
+
+
+def test_deeply_nested_frontmatter_is_reported_not_raised() -> None:
+    """BW-21: hostile frontmatter must not crash the loader.
+
+    ``yaml.safe_load`` on a ~600-deep ``[[[…]]]`` value raises ``RecursionError``, which is
+    NOT a ``yaml.YAMLError`` — the old guard let it escape uncaught. An unparseable
+    frontmatter is a finding about the skill, not a failure of the tool.
+    """
+    hostile = "---\ndescription: " + "[" * 600 + "]" * 600 + "\n---\nbody\n"
+    parsed = parse_skill_markdown(hostile)  # must not raise
+    assert parsed.frontmatter is None
+    assert parsed.body == "body\n"
+    assert any("not valid YAML" in problem for problem in parsed.problems)
+
+
+def test_duplicate_frontmatter_keys_are_reported_not_silently_shadowed() -> None:
+    """BW-20: PyYAML keeps the last value silently; the shadowing itself is worth surfacing.
+
+    Which value wins is deliberately unchanged — only the fact of the shadowing is added.
+    """
+    parsed = parse_skill_markdown(
+        "---\nname: x\ndescription: first\ndescription: second\n---\nbody\n"
+    )
+    assert parsed.frontmatter is not None
+    assert parsed.frontmatter.description == "second"  # last-wins is unchanged
+    assert any(
+        "duplicate key" in problem and "description" in problem for problem in parsed.problems
+    )
+
+
+def test_yaml_aliases_are_refused_not_expanded() -> None:
+    """BW-44: a YAML alias DAG (billion laughs) is bounded in memory but expands unboundedly
+    when ``canonical_json`` walks it later (§24). Aliases are refused at ingest, so the
+    unbounded structure is never preserved."""
+    laugh = (
+        "---\n"
+        'lol: &a ["x","x","x","x","x","x","x","x","x"]\n'
+        "b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\n"
+        "c: [*b,*b,*b,*b,*b,*b,*b,*b,*b]\n"
+        "---\n"
+        "body\n"
+    )
+    parsed = parse_skill_markdown(laugh)
+    assert parsed.frontmatter is None
+    assert parsed.body == "body\n"
+    assert any("alias" in problem for problem in parsed.problems)
 
 
 def test_missing_frontmatter_is_recorded_not_fatal() -> None:
@@ -290,6 +345,73 @@ def test_a_symlink_is_hashed_not_followed(tmp_path: Path) -> None:
     assert link.symlink_target == "/etc/passwd"
 
 
+def test_a_symlink_does_not_collide_with_a_file_containing_its_target_text(
+    tmp_path: Path,
+) -> None:
+    """BW-01: a symlink's leaf hash is ``sha256("symlink:" + target)`` — byte-identical to
+    the leaf hash of a *regular file whose content is those bytes*. Without a per-record
+    type tag in the merkle preimage the two produce the same ``package_digest``, and a
+    forgeable package_digest is a forgeable review attestation (§6.3) and a poisonable
+    cache key (§19.2).
+    """
+    target = "helper.sh"
+
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "run.sh").symlink_to(target)
+
+    filed = tmp_path / "filed"
+    filed.mkdir()
+    (filed / "run.sh").write_text(f"symlink:{target}", encoding="utf-8")
+
+    link_records = read_file_records(linked)
+    file_records = read_file_records(filed)
+    # Same path, same leaf digest: this is exactly the collision the type tag must break.
+    assert link_records[0].path == file_records[0].path
+    assert link_records[0].sha256 == file_records[0].sha256
+    assert link_records[0].is_symlink and not file_records[0].is_symlink
+    assert merkle_digest(link_records) != merkle_digest(file_records)
+
+
+def test_large_files_are_hashed_in_bounded_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BW-22: a committed file can exceed the loader's memory, so hashing reads it in fixed
+    chunks rather than whole. Chunked SHA-256 equals the whole-file SHA-256, so the digest
+    is unchanged — only the memory ceiling is.
+    """
+    root = tmp_path / "biggish"
+    root.mkdir()
+    (root / "SKILL.md").write_text("---\nname: biggish\ndescription: d\n---\nbody\n", "utf-8")
+    blob = bytes(range(256)) * 9000  # ~2.2 MiB, spans several 1 MiB chunks
+    (root / "big.bin").write_bytes(blob)
+
+    def _no_whole_file_read(self: Path) -> bytes:
+        raise AssertionError("hashing read the file whole instead of in chunks")
+
+    monkeypatch.setattr(Path, "read_bytes", _no_whole_file_read)
+
+    records = read_file_records(root)
+    big = next(record for record in records if record.path == "big.bin")
+    assert big.sha256 == "sha256:" + hashlib.sha256(blob).hexdigest()
+    assert big.size_bytes == len(blob)
+
+
+def test_an_oversized_skill_md_is_refused_not_read_whole(tmp_path: Path) -> None:
+    """BW-22 (second half): the digest walk is chunked, but ``load_skill`` also read a few
+    files *whole* as text — ``SKILL.md``, the manifest, payload docs. A multi-GB ``SKILL.md``
+    therefore still OOM'd the loader before any sandbox. An oversized text file is now refused
+    at ingest with a clear error rather than read into memory."""
+    from bellwether.skill.package import _MAX_TEXT_BYTES
+
+    root = tmp_path / "huge"
+    root.mkdir()
+    body = "A" * (_MAX_TEXT_BYTES + 1024)
+    (root / "SKILL.md").write_text(f"---\nname: huge\ndescription: d\n---\n{body}", "utf-8")
+    with pytest.raises(SkillError, match=r"read whole during loading"):
+        load_skill(root, load_evals=False)
+
+
 # ---------------------------------------------------------------------------
 # Payload allowlist
 # ---------------------------------------------------------------------------
@@ -333,6 +455,18 @@ def test_a_bare_pattern_applies_at_the_root_only() -> None:
 def test_evals_is_excluded_even_if_a_pattern_would_match_it() -> None:
     allowlist = PayloadAllowlist(patterns=("**", "*.yaml"))
     assert not allowlist.matches("evals/manifest.yaml")
+
+
+def test_uppercase_evals_is_still_labelled_machinery() -> None:
+    """BW-45: exclusion of the ``evals/`` machinery must not depend on the directory's
+    letter case, or ``EVALS/manifest.yaml`` is mislabelled as an unmatched skill file
+    (it already fails closed via the allowlist; this fixes the label)."""
+    split = PayloadAllowlist().split(["SKILL.md", "EVALS/manifest.yaml", "Evals/helper.py"])
+    assert "EVALS/manifest.yaml" in split.excluded_machinery
+    assert "Evals/helper.py" in split.excluded_machinery
+    assert "EVALS/manifest.yaml" not in split.included
+    assert "EVALS/manifest.yaml" not in split.excluded_unmatched
+    assert not PayloadAllowlist().matches("EVALS/manifest.yaml")
 
 
 # ---------------------------------------------------------------------------

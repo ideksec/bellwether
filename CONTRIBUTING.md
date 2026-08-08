@@ -123,8 +123,11 @@ arguing against itself. So every supply-chain input is pinned to an immutable di
 - every third-party GitHub Action is pinned to a full 40-hex commit SHA, not a tag
   (`actions/checkout@fbc6f39… # v5`); the trailing `# vN` comment is what Dependabot reads
   to bump the pin;
-- every container image is pinned by `@sha256:` digest — in CI, in the test defaults, and
-  (enforced by config validation) for the production sandbox image;
+- every container image in the project's own plumbing is pinned by `@sha256:` digest — in CI
+  and in the test defaults; for the *runtime* sandbox/egress image, digest-pinning is a
+  non-blocking advisory rather than a config-validation refusal — a moving tag makes two
+  evaluations non-comparable, so it is reported, not rejected (`examples/live` intentionally
+  uses a moving tag);
 - Python dependencies are hash-pinned in `uv.lock`, and `uv sync --frozen` verifies every
   recorded hash on install;
 - `uv` itself and the Python version are pinned in CI.

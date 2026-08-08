@@ -51,7 +51,7 @@ _No trajectory clusters (single run, or trajectory not evaluable)._
 <details>
 <summary>Sequential design</summary>
 
-- Looks: 6, 12, 20 (boundary z = —)
+- Looks: 6, 12, 20 (boundary z = 2.289)
 - Sets stopped at each look: none recorded
 - Sets held open by the capability rule: 0
 

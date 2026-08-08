@@ -18,8 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bellwether.cli.execution import SandboxRunExecutor
+
+if TYPE_CHECKING:
+    from bellwether.sandbox import IsolationProfile, ZoneMap
 from bellwether.cli.orchestrator import (
     EvalResult,
     RunExecutor,
@@ -27,6 +31,7 @@ from bellwether.cli.orchestrator import (
     drive_evaluation,
     orchestrate,
     plan_matrix,
+    resolve_capability_weights,
 )
 from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import resolve_run
@@ -81,6 +86,21 @@ def run_evaluation(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
     )
 
+    # §21 / THREAT_MODEL: the settings that bound residual-channel exfiltration and the
+    # covert channels (model-API body scanning, the sidecar deployment, the controlled
+    # resolver, canary redaction and marker randomisation) MUST NOT be disable-able without
+    # a critical finding and a refusal to run above the 'low' profile. Detection lived only
+    # in `doctor`; enforce it here so the guarantee holds on the path a real run takes.
+    violations = config.enforced_setting_violations()
+    if violations and resolved.profile_name != "low":
+        rendered = "\n  - ".join(v.render() for v in violations)
+        raise BellwetherError(
+            f"refusing to run under profile '{resolved.profile_name}' with "
+            f"{len(violations)} enforced setting(s) disabled (§21); a result collected this "
+            f"way would not be earned. Correct them, or run under the 'low' profile:\n  - "
+            f"{rendered}"
+        )
+
     suite = package.scenarios
     if suite is None or not suite.scenarios:
         raise BellwetherError(
@@ -108,7 +128,10 @@ def run_evaluation(
     # not_evaluable, which would block the evidence gate for a benign skill. So the first-light driver
     # scores against the scenario assertions only, exactly as the checkpoint does; the declared scope
     # comes online with the egress plane in the executor.
-    readings = drive_evaluation(plans, executor, profile=resolved.profile, scope=None)
+    weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
+    readings = drive_evaluation(
+        plans, executor, profile=resolved.profile, scope=None, weights=weights
+    )
 
     criticality = (
         package.manifest.metadata.criticality if package.manifest is not None else "medium"
@@ -135,6 +158,10 @@ def sandbox_executor_factory(
     eval_id: str,
     limits: RunLimits | None = None,
     proxy: SidecarProxyProvider | None = None,
+    *,
+    isolation: IsolationProfile | None = None,
+    zones: ZoneMap | None = None,
+    randomize_identifiers: bool = True,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -143,6 +170,11 @@ def sandbox_executor_factory(
     ``limits`` bounds each repetition — most importantly ``max_total_tokens``, the hard ceiling on
     what one run can spend against a live provider; omitted, it takes the :class:`RunLimits`
     defaults.
+
+    ``isolation`` / ``zones`` / ``randomize_identifiers`` carry the config-derived sandbox profile
+    into the executor (``isolation_from_config`` / ``zone_map_from_config``); omitted, the executor's
+    hardened defaults apply. Threading these is what makes ``sandbox.memory`` / ``pids_limit`` /
+    ``timeout_seconds`` and the §3.5 identifier randomisation actually reach the container.
 
     ``proxy``, when supplied, stands a dual-homed recording-proxy sidecar up around each run so the
     egress plane is observed (§10.5). Omitted, the sandbox runs with no network, exactly as
@@ -155,7 +187,7 @@ def sandbox_executor_factory(
         fixture: Path,
         client_factory: Callable[[RunPlan], tuple[ModelClient, str]],
     ) -> RunExecutor:
-        from bellwether.sandbox import DockerBackend
+        from bellwether.sandbox import DockerBackend, IsolationProfile, ZoneMap
 
         return SandboxRunExecutor(
             backend=DockerBackend(image=backend_image),
@@ -166,6 +198,9 @@ def sandbox_executor_factory(
             run_root=run_root,
             limits=run_limits,
             proxy=proxy,
+            isolation=isolation if isolation is not None else IsolationProfile(),
+            zones=zones if zones is not None else ZoneMap(),
+            randomize_identifiers=randomize_identifiers,
         )
 
     return make

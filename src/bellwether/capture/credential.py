@@ -9,7 +9,7 @@ sees the scoped token; the provider sees the real key; the two never meet inside
 sandbox.
 
 This module is the host-side core of that exchange, and it is deliberately pure so the
-guarantee is unit-testable without a container:
+invariant is unit-testable without a container:
 
 - :func:`mint_sandbox_token` — a per-run, reproducible, opaque token;
 - :class:`CredentialBroker` — holds the scoped-token↔real-key mapping *on the host*, builds
@@ -41,8 +41,14 @@ __all__ = [
 #: real key.
 SANDBOX_TOKEN_PREFIX = "bw-sbx-"
 
-#: Request headers that may carry an API credential. Matched case-insensitively.
-_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "api-key", "anthropic-api-key"})
+#: Request headers that may carry an API credential. Matched case-insensitively. Provider-wide,
+#: not Anthropic-only: a provider that authenticates with ``x-goog-api-key`` (Google) must have
+#: its scoped token swapped too, or the container's token would reach that provider on the wire.
+#: Widening is safe — :func:`strip_and_inject` only rewrites a header that actually carries the
+#: scoped token, so naming a header no request uses is a no-op.
+_AUTH_HEADERS = frozenset(
+    {"authorization", "x-api-key", "api-key", "anthropic-api-key", "x-goog-api-key"}
+)
 
 
 def mint_sandbox_token(rng: SeededRng) -> str:

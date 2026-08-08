@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
@@ -208,10 +208,11 @@ class AnthropicClient:
 
     ``api_key`` is the real credential, supplied by the caller (resolved from the provider's
     ``api_key_env`` and the host environment) — this module never reads the environment itself, so
-    the credential path stays explicit and the client stays testable.
+    the credential path stays explicit and the client stays testable. It is ``repr=False`` so the
+    real key is never printed by an accidental ``repr(client)`` in a log, traceback, or REPL.
     """
 
-    api_key: str
+    api_key: str = field(repr=False)
     base_url: str = DEFAULT_ANTHROPIC_BASE_URL
     anthropic_version: str = DEFAULT_ANTHROPIC_VERSION
     max_tokens: int = DEFAULT_MAX_TOKENS

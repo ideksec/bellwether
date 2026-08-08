@@ -158,6 +158,15 @@ def test_a_non_json_body_is_a_clear_error() -> None:
         client.complete(_REQUEST)
 
 
+def test_the_repr_does_not_leak_the_api_key() -> None:
+    """BW-31: the client holds the *real* credential, so its repr must not expose it — an
+    accidental repr(client) in a log line or traceback would otherwise print the key."""
+    client = AnthropicClient(api_key="sk-super-secret-value")
+    assert "sk-super-secret-value" not in repr(client)
+    # The credential is still usable; only its display is redacted.
+    assert client.api_key == "sk-super-secret-value"
+
+
 # ---------------------------------------------------------------------------
 # the factory
 # ---------------------------------------------------------------------------

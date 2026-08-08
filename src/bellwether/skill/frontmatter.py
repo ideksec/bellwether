@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Hashable
 from typing import Any
 
 import yaml
@@ -22,6 +23,9 @@ from pydantic import (
     ValidationError,
     field_validator,
 )
+from yaml.constructor import ConstructorError
+from yaml.events import AliasEvent
+from yaml.nodes import MappingNode, Node
 
 __all__ = [
     "Frontmatter",
@@ -114,6 +118,79 @@ class ParsedSkillMarkdown(BaseModel):
         return self.frontmatter is not None
 
 
+class _AliasRefusedError(Exception):
+    """Frontmatter used a YAML anchor/alias, which Bellwether refuses (§24).
+
+    A small anchor/alias DAG (the "billion laughs" shape) is bounded in memory — PyYAML
+    returns the *same* object for each alias — but expands to an enormous tree the moment
+    anything walks it as a value graph. ``canonical_json`` does exactly that when the
+    frontmatter reaches a report, so the structure is refused at ingest rather than
+    preserved. Caught on its own so the problem names the cause, not "not valid YAML".
+    """
+
+
+class _SkillFrontmatterLoader(yaml.SafeLoader):
+    """A ``SafeLoader`` hardened for third-party, possibly hostile, frontmatter.
+
+    Two things a plain load hides are surfaced or refused:
+
+    * **Duplicate mapping keys.** PyYAML keeps the last value and drops the earlier ones
+      silently. This loader keeps the same value — which one wins is deliberately not
+      changed — but records every shadowed key so the report can name it.
+    * **YAML aliases.** Refused; see :class:`_AliasRefusedError`.
+    """
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        #: Keys seen more than once in a single mapping, in first-shadowed order.
+        self.duplicate_keys: list[str] = []
+
+    def compose_node(self, parent: Node | None, index: int) -> Node | None:
+        if self.check_event(AliasEvent):  # type: ignore[no-untyped-call]  # PyYAML stub is untyped
+            raise _AliasRefusedError
+        return super().compose_node(parent, index)
+
+    def construct_mapping(self, node: MappingNode, deep: bool = False) -> dict[Hashable, Any]:
+        seen: set[Hashable] = set()
+        for key_node, _value_node in node.value:
+            try:
+                key = self.construct_object(key_node, deep=deep)
+            except ConstructorError:
+                continue  # malformed key; super() raises its own well-formed error below
+            try:
+                if key in seen:
+                    self.duplicate_keys.append(str(key))
+                else:
+                    seen.add(key)
+            except TypeError:
+                continue  # unhashable key; super() surfaces it as its own problem
+        return super().construct_mapping(node, deep=deep)
+
+
+def _load_frontmatter_yaml(source: str) -> tuple[Any, list[str]]:
+    """``safe_load`` the frontmatter, returning ``(data, extra_problems)``.
+
+    Uses :class:`_SkillFrontmatterLoader`, so duplicate keys are reported and YAML aliases
+    are refused. Raises like ``yaml.safe_load`` on unparseable input — including the
+    ``RecursionError`` that deeply nested flow collections provoke, which is *not* a
+    ``yaml.YAMLError`` — and the caller converts every such raise into a reported problem.
+    """
+    loader = _SkillFrontmatterLoader(source)
+    try:
+        data = loader.get_single_data()
+        return data, _duplicate_key_problems(loader.duplicate_keys)
+    finally:
+        loader.dispose()  # type: ignore[no-untyped-call]  # PyYAML stub is untyped
+
+
+def _duplicate_key_problems(duplicate_keys: list[str]) -> list[str]:
+    return [
+        f"frontmatter has a duplicate key {key!r}; the last value wins and the earlier "
+        f"one(s) are shadowed"
+        for key in sorted(set(duplicate_keys))
+    ]
+
+
 def parse_skill_markdown(text: str) -> ParsedSkillMarkdown:
     """Split a ``SKILL.md`` into frontmatter and body."""
     match = _FRONTMATTER_RE.match(text)
@@ -126,8 +203,19 @@ def parse_skill_markdown(text: str) -> ParsedSkillMarkdown:
 
     body = text[match.end() :]
     try:
-        loaded = yaml.safe_load(match.group("body"))
-    except yaml.YAMLError as exc:
+        loaded, extra_problems = _load_frontmatter_yaml(match.group("body"))
+    except _AliasRefusedError:
+        return ParsedSkillMarkdown(
+            frontmatter=None,
+            body=body,
+            problems=(
+                "frontmatter uses YAML anchors/aliases, which are refused: an alias DAG "
+                "expands unboundedly when serialised (§24)",
+            ),
+        )
+    except (yaml.YAMLError, RecursionError, ValueError) as exc:
+        # A ``RecursionError`` from deeply nested flow collections is not a ``YAMLError``;
+        # an unparseable frontmatter is a finding about the skill, not a failure of the tool.
         return ParsedSkillMarkdown(
             frontmatter=None,
             body=body,
@@ -148,6 +236,7 @@ def parse_skill_markdown(text: str) -> ParsedSkillMarkdown:
         )
 
     frontmatter, unusable, problems = _validate_leniently(loaded)
+    problems = extra_problems + problems
     if not frontmatter.name:
         problems.append("frontmatter has no 'name'")
     if not frontmatter.description:

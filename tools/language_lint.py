@@ -43,12 +43,20 @@ from pathlib import Path
 RULE = "BW001"
 
 #: Words that claim more than a distribution over N runs can support (§16.3).
+#: ``guarantee`` / ``prove`` / ``ensure`` were documented as banned but not enforced, so a
+#: user-facing string could still say "this proves the skill is correct" and pass — they are
+#: added here. ``vouch`` is deliberately *not* banned: it appears only in the project's own
+#: negative framing ("it warns; it does not vouch"), which is the honest disclaimer the whole
+#: rule exists to protect, and banning it would forbid Bellwether's own thesis statement.
 BANNED_WORDS: tuple[str, ...] = (
     "safe",  # bw-lang-ok: this is the rule's own word list
     "secure",  # bw-lang-ok: this is the rule's own word list
     "verified",  # bw-lang-ok: this is the rule's own word list
     "approved",  # bw-lang-ok: this is the rule's own word list
     "certified",  # bw-lang-ok: this is the rule's own word list
+    "guarantee",  # bw-lang-ok: this is the rule's own word list
+    "prove",  # bw-lang-ok: this is the rule's own word list
+    "ensure",  # bw-lang-ok: this is the rule's own word list
 )
 
 _BANNED_RE = re.compile(r"\b(" + "|".join(BANNED_WORDS) + r")\b", re.IGNORECASE)

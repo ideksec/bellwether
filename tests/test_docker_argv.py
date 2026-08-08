@@ -13,8 +13,23 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from bellwether.cli import execution as execution_mod
+from bellwether.cli.execution import (
+    SandboxRunExecutor,
+    isolation_from_config,
+    zone_map_from_config,
+)
+from bellwether.cli.orchestrator import RunPlan, TargetInfo
+from bellwether.config.models.config import SandboxConfig, ZoneConfig
+from bellwether.config.models.scenarios import AssertionSpec, Scenario
 from bellwether.determinism import SeededRng
-from bellwether.sandbox import DockerBackend, prepare_sandbox
+from bellwether.sandbox import (
+    DockerBackend,
+    IsolationProfile,
+    ZoneMap,
+    derive_identifiers,
+    prepare_sandbox,
+)
 from bellwether.skill import load_skill
 
 _IMAGE = "sandbox@sha256:" + "a" * 64
@@ -86,3 +101,210 @@ def test_extra_ro_binds_render_read_only_after_the_payload(prepared) -> None:  #
     )
     # Read-only: the container never writes the CA.
     assert f"{ca_host}:{ca_container}:rw" not in joined
+
+
+# ---------------------------------------------------------------------------
+# BW-36: a fallback tmpfs is size-bounded (§9.2)
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_tmpfs_mounts_are_size_bounded(prepared) -> None:  # type: ignore[no-untyped-def]
+    """A declared writable path with no captured-zone overlay falls back to tmpfs, which draws
+    from host memory. An uncapped one is a host-DoS — a skill filling ``/tmp`` exhausts it — so
+    every fallback tmpfs must carry a ``size=`` bound, the same reason ``--memory`` is set."""
+    backend = DockerBackend(image=_IMAGE)
+    argv = backend.build_argv(prepared, ["true"])
+
+    tmpfs_specs = [value for flag, value in pairwise(argv) if flag == "--tmpfs"]
+    assert tmpfs_specs, "expected fallback tmpfs mounts for the declared writable paths"
+    for spec in tmpfs_specs:
+        assert "size=" in spec, f"an unbounded tmpfs is a host-DoS: {spec!r}"
+
+
+# ---------------------------------------------------------------------------
+# BW-18: the pinned machine-id is bound read-only at /etc/machine-id (§9.2 MUST)
+# ---------------------------------------------------------------------------
+
+
+def test_the_pinned_machine_id_is_bound_read_only(prepared) -> None:  # type: ignore[no-untyped-def]
+    """§9.2 requires ``/etc/machine-id`` pinned so no tool derives a varying identifier from it.
+    Under a ``--read-only`` root the container cannot write the file, so the pin is a read-only
+    bind of a host file — and the recorded command line must show it, not just the live run."""
+    backend = DockerBackend(image=_IMAGE)
+    argv = backend.build_argv(prepared, ["true"])
+
+    assert prepared.machine_id_file is not None
+    # A Docker bind-mount source must be absolute or the daemon reads it as a named volume.
+    assert prepared.machine_id_file.is_absolute()
+    assert f"{prepared.machine_id_file}:/etc/machine-id:ro" in argv
+    # The bound file holds the pinned value (§9.2), not a per-run-varying one.
+    assert prepared.machine_id_file.read_text().strip() == prepared.isolation.pinned.machine_id
+
+
+# ---------------------------------------------------------------------------
+# BW-08 / BW-09 / BW-37: config reaches the sandbox, per-eval identifiers, scenario env
+# ---------------------------------------------------------------------------
+
+
+def _target() -> TargetInfo:
+    return TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
+
+
+def _scenario(env: dict[str, str] | None = None) -> Scenario:
+    return Scenario(
+        id="s",
+        expectation="should_trigger",
+        prompt="p",
+        env=env or {},
+        assertions=[AssertionSpec(name="skill_activated", params=True)],
+    )
+
+
+def _executor(tmp_path: Path, **overrides):  # type: ignore[no-untyped-def]
+    eval_id = overrides.get("eval_id", "eval-1")
+    root = tmp_path / f"skill-{eval_id}"
+    (root / "evals").mkdir(parents=True, exist_ok=True)
+    (root / "SKILL.md").write_text(
+        "---\nname: exec-skill\ndescription: d\n---\nbody\n", encoding="utf-8"
+    )
+    fixture = tmp_path / f"fixture-{eval_id}"
+    fixture.mkdir(exist_ok=True)
+    (fixture / "README.md").write_text("# p\n", encoding="utf-8")
+    kwargs: dict[str, object] = {
+        "backend": DockerBackend(image=_IMAGE),
+        "package": load_skill(root, load_evals=False),
+        "fixture": fixture,
+        "client_factory": lambda _plan: (None, "model"),
+        "eval_id": eval_id,
+        "run_root": tmp_path / f"runs-{eval_id}",
+    }
+    kwargs.update(overrides)
+    return SandboxRunExecutor(**kwargs)  # type: ignore[arg-type]
+
+
+def test_sandbox_config_maps_onto_the_isolation_profile_flags() -> None:
+    """BW-08: a non-default ``sandbox.*`` must actually reach the flags the container runs
+    under, rather than being silently ignored in favour of the hardcoded baseline."""
+    cfg = SandboxConfig(
+        image=_IMAGE,
+        memory="1g",
+        cpus=3.0,
+        pids_limit=99,
+        timeout_seconds=123,
+        writable_paths=["/work", "/scratch"],
+    )
+    iso = isolation_from_config(cfg)
+
+    # timeout_seconds is enforced by the subprocess wait, not a docker flag, but must carry.
+    assert iso.timeout_seconds == 123
+    assert iso.writable_paths == ("/work", "/scratch")
+
+    flags = " ".join(iso.docker_flags())
+    assert "--memory 1g" in flags
+    assert "--cpus 3.0" in flags
+    assert "--pids-limit 99" in flags
+    # The §9.2 hardening is not user-overridable through this mapping and stays at baseline.
+    assert "--cap-drop ALL" in flags
+    assert iso.violations() == []
+
+
+def test_zone_config_maps_onto_the_zone_map() -> None:
+    """BW-08: ``capture.zones`` reaches the zone map the sandbox actually mounts by (§10.2)."""
+    zmap = zone_map_from_config(
+        ZoneConfig(workspace="/work", harness_state="/home/agent/.claude", scratch="/scr")
+    )
+    assert zmap.workspace == PurePosixPath("/work")
+    assert zmap.harness_state == PurePosixPath("/home/agent/.claude")
+    assert zmap.scratch == PurePosixPath("/scr")
+
+
+class _StopError(Exception):
+    """Sentinel so execute() unwinds at prepare_sandbox, before any daemon is touched."""
+
+
+def test_execute_forwards_config_derived_isolation_zones_and_eval_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BW-08 + BW-09: execute() must hand the configured profile and zone map to
+    prepare_sandbox — not run the hardcoded ``IsolationProfile()`` — and its RNG stream must be
+    namespaced by ``eval_id`` so identifiers differ per evaluation."""
+    iso = IsolationProfile(memory="1g", timeout_seconds=123)
+    zmap = ZoneMap.from_config(workspace="/w", harness_state="/w/.state", scratch="/scr")
+    executor = _executor(
+        tmp_path,
+        eval_id="eval-XYZ",
+        isolation=iso,
+        zones=zmap,
+        randomize_identifiers=False,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_prepare(package, fixture, root, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        raise _StopError
+
+    monkeypatch.setattr(execution_mod, "prepare_sandbox", fake_prepare)
+
+    plan = RunPlan(scenario=_scenario(), target=_target(), repetition=2)
+    with pytest.raises(_StopError):
+        executor.execute(plan)
+
+    assert captured["isolation"] is iso
+    assert captured["zones"] is zmap
+    assert captured["randomize_identifiers"] is False
+    # The RNG label carries eval_id first, so two evaluations draw different identifiers.
+    assert captured["rng"].label.startswith("eval-XYZ/")  # type: ignore[union-attr]
+
+
+def test_two_evaluations_get_different_container_names(tmp_path: Path) -> None:
+    """BW-09: the same (scenario, target, repetition) in two evaluations must not produce the
+    same container name — identical names collide on a concurrent matrix and are themselves a
+    §3.5 tell — while staying reproducible for a fixed eval_id."""
+    plan = RunPlan(scenario=_scenario(), target=_target(), repetition=1)
+
+    a = derive_identifiers(
+        _executor(tmp_path, eval_id="eval-A")._sandbox_rng(plan).derive("identifiers")
+    )
+    b = derive_identifiers(
+        _executor(tmp_path, eval_id="eval-B")._sandbox_rng(plan).derive("identifiers")
+    )
+    assert a.container_name != b.container_name
+    assert a.hostname != b.hostname
+
+    # Reproducible: the same eval_id and coordinate redraw the identical identifiers.
+    again = derive_identifiers(
+        _executor(tmp_path, eval_id="eval-A")._sandbox_rng(plan).derive("identifiers")
+    )
+    assert again.container_name == a.container_name
+
+
+def test_scenario_env_is_delivered_into_the_container(tmp_path: Path) -> None:
+    """BW-37: a scenario's ``env`` (values may be canaries, §7.2) has to actually reach the
+    container; execute() had no path for it. It flows through the ``extra_env`` seam, and the
+    proxy's own env is merged last so a scenario cannot unset the observed channel."""
+    executor = _executor(tmp_path)
+    plan = RunPlan(
+        scenario=_scenario(env={"CANARY_TOKEN": "bw-canary-abc123"}),
+        target=_target(),
+        repetition=1,
+    )
+
+    env = executor._extra_env(plan, None)
+    assert env["CANARY_TOKEN"] == "bw-canary-abc123"
+
+    # It reaches the real docker argv through the extra_env seam build_argv exposes.
+    prepared = prepare_sandbox(
+        executor.package, executor.fixture, tmp_path / "one-run", rng=SeededRng(1, "x")
+    )
+    argv = executor.backend.build_argv(prepared, ["true"], extra_env=env)
+    assert _env_pairs(argv)["CANARY_TOKEN"] == "bw-canary-abc123"
+
+    # The proxy's infrastructure env wins a collision, so a scenario cannot unset it.
+    class _StubProxy:
+        def sandbox_env(self) -> dict[str, str]:
+            return {"HTTPS_PROXY": "http://proxy:8080", "CANARY_TOKEN": "proxy-wins"}
+
+    merged = executor._extra_env(plan, _StubProxy())  # type: ignore[arg-type]
+    assert merged["HTTPS_PROXY"] == "http://proxy:8080"
+    assert merged["CANARY_TOKEN"] == "proxy-wins"

@@ -50,13 +50,14 @@ EgressClass = Literal["model_api", "harness_infrastructure", "skill_attributed"]
 #: An allowlist, not a denylist, because the failure mode to avoid is a *new* auth header
 #: (``x-goog-api-key``, ``anthropic-key``) leaking a real credential into an artifact — a
 #: denylist that has to enumerate every such header is one forgotten name from a leak.
+#: Only *structural* headers are kept: values that describe the request's shape, not
+#: attacker-controlled free text. ``user-agent`` and ``accept`` are skill/client free text —
+#: a skill can write a secret into either — so they are redacted like any other value.
 DEFAULT_HEADER_ALLOWLIST: frozenset[str] = frozenset(
     {
-        "accept",
         "accept-encoding",
         "content-type",
         "content-length",
-        "user-agent",
         "host",
         "anthropic-version",
         "x-stainless-lang",
@@ -67,11 +68,39 @@ _REDACTED = "<redacted>"
 
 
 def _norm_host(host: str) -> str:
-    """A host to compare on: lowercased, port and trailing dot stripped."""
-    host = host.strip().lower().rstrip(".")
-    if host.startswith("[") and "]" in host:  # bracketed IPv6 literal
-        return host[1 : host.index("]")]
-    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    """The host a real client routes to, normalised for comparison.
+
+    Parsed with :func:`urllib.parse.urlsplit` exactly as :func:`provider_hosts` parses a
+    ``base_url``, so an RFC-3986 authority is read the way a client reads it: a ``userinfo@``
+    prefix and the port are dropped, the hostname is lowercased, the trailing dot is stripped,
+    and a bracketed literal is unwrapped only when it is a valid IP. ``api.anthropic.com:443@evil.com``
+    is therefore ``evil.com`` — the host after the userinfo — never ``api.anthropic.com``, the
+    authority a naive ``rsplit(":")`` port-strip would have mistaken it for.
+
+    Returns ``""`` for anything a client could not route to a single host — an empty host, a
+    leading-dot (empty) first label, a non-numeric port, or a bracketed non-IP literal — so it
+    matches nothing in the allowlist rather than being coerced into a lookalike.
+    """
+    host = host.strip()
+    if not host:
+        return ""
+    # A bare IPv6 literal (e.g. re-normalising a hostname :func:`provider_hosts` already
+    # extracted) carries no brackets and would misparse as host:port; bracket it so urlsplit
+    # reads it as one host. A single-colon host:port and a userinfo authority are left alone.
+    if "[" not in host and "@" not in host and host.count(":") >= 2:
+        host = f"[{host}]"
+    try:
+        parsed = urlsplit(f"//{host}")
+        _ = parsed.port  # property access validates the port segment is numeric (else ValueError)
+        hostname = parsed.hostname
+    except ValueError:
+        return ""
+    if not hostname:
+        return ""
+    hostname = hostname.rstrip(".")
+    if not hostname or hostname.startswith("."):
+        return ""
+    return hostname
 
 
 def _host_matches(host: str, endpoint: str) -> bool:

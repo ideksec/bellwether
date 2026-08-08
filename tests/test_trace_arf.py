@@ -261,6 +261,22 @@ def test_overlay_diff_fidelity_is_usable() -> None:
     assert not PlaneCoverage(fidelity="unavailable").is_usable()
 
 
+def test_partial_fidelity_is_usable_for_presence_but_not_for_absence() -> None:
+    """BW-06/§10.8: `partial` observed only part of its domain, so it can confirm a
+    presence but cannot witness that something never happened. `full` and `overlay_diff`
+    carry both; `unavailable` carries neither."""
+    partial = PlaneCoverage(fidelity="partial")
+    assert partial.is_usable()
+    assert not partial.is_usable_for_absence()
+
+    for fidelity in ("full", "overlay_diff"):
+        cov = PlaneCoverage(fidelity=fidelity)  # type: ignore[arg-type]
+        assert cov.is_usable() and cov.is_usable_for_absence(), fidelity
+
+    unavailable = PlaneCoverage(fidelity="unavailable")
+    assert not unavailable.is_usable() and not unavailable.is_usable_for_absence()
+
+
 def test_actions_can_be_found_by_seq_plane_and_kind(trace_path: Path) -> None:
     trace = read_trace(trace_path)
     assert trace.by_seq(2).kind == "file_write"
