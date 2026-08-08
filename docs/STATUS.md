@@ -9,6 +9,19 @@ with egress observed**, and every run's evidence (per-run ARF traces + report) i
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
+A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
+48 findings, of which the two Critical and seven High and most of the rest were fixed on this
+branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
+merkle digest no longer collides a symlink with a file whose content is `symlink:<target>`
+(`DIGEST_FORMAT` → `/3`); `run` now refuses a §21-disabled setting above `low`; the
+`max_rare_capability_risk` gate is no longer inverted; the two trajectory gates and the configured
+Pocock `boundary_z` are actually enforced; `..`-traversal no longer bypasses `deny_read`/scope;
+Plane B no longer pollutes the trajectory metric; base32-split-across-DNS-labels canary evasion is
+closed; the config sandbox profile reaches the container; and the CI evidence upload works. Deferred
+(work packages, not quick fixes): applying declared **manifest scope** in `run` (BW-47 — needs the
+coverage matrix, the same reason `run.py` passes `scope=None`), the blocking static-scan gate
+(lands with the §15 scanner), and hash-pinning the full sidecar dependency closure.
+
 ---
 
 ## Where the build is
@@ -42,7 +55,7 @@ because it is trusted.
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-15 executor wiring · WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-714 tests: 669 offline, 45 under the `docker` mark. All green.
+779 tests: 733 offline, 46 under the `docker` mark (43 run, 3 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

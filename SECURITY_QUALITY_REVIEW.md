@@ -67,6 +67,22 @@ The single most important pattern is **"declared but not wired."** Many controls
 
 ---
 
+## Remediation status (this branch)
+
+**All findings above have been fixed on `claude/codebase-security-quality-review-2q75hv`, except the deliberate exceptions listed below.** After remediation: the six mechanical checks pass, **733 offline tests pass** (up from 669 — ~64 regression tests were added, each failing before its fix and passing after), **43 docker tests pass / 3 CI-only skip**, and the demo reports regenerate byte-stably with unchanged verdicts. Each fix carries a test that reproduces the defect. The two Critical items (BW-01 digest collision, BW-02 enforced-settings) and all seven High items are among those fixed.
+
+Deliberate exceptions, with reasons:
+
+- **BW-47 — deferred (work package, not a quick fix).** The live run demonstrated the gap (a manifest-denied `bash` reaching `ready`), but applying declared scope in `run` is the coverage-matrix work (§10.7/§10.8): naively passing `scope` adds plane-gated derived assertions that resolve `not_evaluable` and would tank every benign run's evidence gate — the exact regression the `run.py:scope=None` comment documents. The *assertion-path* half of the scope problem (BW-04, `..` traversal) **is** fixed; the manifest-scope application lands with the resolver/coverage bricks. Until then the report should not render a reassuring "within scope" — tracked as the next step.
+- **BW-19 — bounded fix.** The dishonest "Built in v0.1" docstring is corrected and `doctor` now warns when a policy requires a scan the (unbuilt, v0.2) scanner cannot run; a blocking static gate lands with the scanner itself.
+- **BW-17 — bounded fix.** A `constraints.txt` pins `typing-extensions` to satisfy mitmproxy so the observed build conflict cannot recur; both files document that hash-pinning the full sidecar closure (`uv export` → `pip --require-hashes`) is the complete fix, deferred because it is CI-only to verify.
+- **BW-28 — adjusted.** `guarantee`/`prove`/`ensure` are now banned; `vouch` is deliberately **not** — it appears only in the project's own negative framing ("it warns; it does not vouch"), which is the honest disclaimer the rule exists to protect. CLAUDE.md is aligned to the enforced set.
+- **BW-42, BW-43 — not code defects.** BW-42's single-linkage clustering is spec-mandated and its mitigation is the now-enforced BW-10 gate; BW-43 matches the documented `nest=1` bound.
+
+One architectural note for reviewers: BW-08's config→sandbox mapping could **not** live on `SandboxConfig` (it would break the `lint-imports` layering — `config` must not import `sandbox`, and `sandbox` must not import models), so `isolation_from_config`/`zone_map_from_config` live in the `cli` layer (`cli/execution.py`), wired from `run.py`. The merkle-digest change bumps `DIGEST_FORMAT` to `/3` (all package/payload digests change; the demo was regenerated, the golden trace uses placeholder digests and was unaffected).
+
+---
+
 # Critical
 
 ## BW-01 — `merkle_digest` collides a symlink with a file whose content is `symlink:<target>` (LIVE)

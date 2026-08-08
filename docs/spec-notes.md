@@ -1360,3 +1360,52 @@ shared evidence. Before this, the ground truth died with the ephemeral runner an
 comment survived, so a question like "why did run 3 fail?" could be answered only from the aggregate
 heatmap, never from the run's own trace. The bulky root-owned overlay working dirs under `runs/` are
 excluded from the upload; the canonical per-run traces in the artifact tree are the record.
+
+## §6.1 — The skill digest length-prefixes a leaf-*type* tag (`DIGEST_FORMAT` → /3)
+
+Revision 2 length-prefixed every field, which closed the newline-in-filename forgery. But it
+still fed only `(path, sha256)` per record, and a symlink's `sha256` is
+`stable_hash_bytes("symlink:" + target)` — identical to a regular file whose *content* is the
+literal bytes `symlink:<target>`. So a real symlink and a benign text file collided to the same
+`package_digest`/`payload_digest`, re-opening the forgeable-attestation / forgeable-cache-key hole
+one layer down (the leaf *type*, not the field boundary). `merkle_digest` now feeds a per-record
+`b"symlink"`/`b"file"` discriminator before the path, and `DIGEST_FORMAT` is `bellwether/skill-digest/3`
+so the change is a visible digest change rather than a silent comparison between two constructions.
+All package/payload/description digests move; the demo reports were regenerated, and the golden trace
+uses placeholder digests so it was unaffected.
+
+## §9.2, §8.1 — The config→sandbox profile mapping lives in `cli`, not on `SandboxConfig`
+
+`SandboxConfig` values (memory/cpus/pids/timeout/writable paths, the zone map, and §3.5 identifier
+randomisation) were never reaching the container — the executor built a hard-coded `IsolationProfile()`.
+The natural home for `to_isolation()` is `SandboxConfig`, but that would force `config` to import
+`sandbox` (or `sandbox` to import the config models), and both break the `.importlinter` layering
+(`config → … → sandbox`; `sandbox` must not know about models). So the mapping is two functions in
+the `cli` layer — `isolation_from_config` / `zone_map_from_config` in `cli/execution.py` — wired from
+`run.py`. This keeps the acyclic graph intact while making the knobs actually apply.
+
+## §13.5.2 — `max_rare_capability_risk` maps severity to a weight *threshold*, and `critical` is stricter than `high`
+
+The spec fixes `low → weight ≥ 10`, `medium → ≥ 5`, `high → ≥ 3`; raising the severity lowers the
+cutoff (catches more). An earlier implementation mapped the observed weight to a *band* and compared
+bands, which inverted the knob — at the shipped `medium` default it missed weight-5 capabilities, and
+at `high` it disabled the gate entirely. The gate now reads `capability.rare_findings` computed at the
+configured threshold. The spec does not define `critical` (a valid `Severity`); it maps to `2`, one
+stricter than `high`, so tightening past `high` still tightens.
+
+## §16.3 — `vouch` is deliberately not in the banned vocabulary
+
+The language lint gained `guarantee`/`prove`/`ensure` (documented as banned but not enforced). It does
+**not** ban `vouch`: the word appears in Bellwether only in the negative — "it warns; it does not
+vouch" — which is the honest disclaimer the rule exists to protect, and it is the project's own thesis
+statement (README, `__init__`, the CLI banner). Banning it would forbid Bellwether from stating what it
+is. CLAUDE.md lists the enforced set explicitly.
+
+## §15, §21 — `require_scan` is surfaced honestly; the §21 refusal now runs in `run`
+
+The static scanner (§15) is a v0.2 work package and this build has none. A policy `require_scan: true`
+was a silent no-op; `doctor` now warns that the required scan cannot run (a blocking static gate lands
+with the scanner). Separately, the §21 enforced-settings refusal (which the threat model advertises as
+active) previously lived only in `doctor`; it now runs inside `run_evaluation`, refusing above the
+`low` profile when a residual-channel control is disabled — so the guarantee holds on the path a real
+run and the CI workflow take, not just in the preflight.
