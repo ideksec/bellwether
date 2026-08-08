@@ -671,6 +671,9 @@ Two working rules follow:
 
 ## Reference
 
+- `CLAUDE.md` — **orientation for an agent picking this up.** The cadence, the six checks, the
+  non-negotiable disciplines, and the environment gotchas, all in one page. Read it first if you are
+  an agent; it points back here for state.
 - `docs/spec.md` — the specification, revision 3. Authoritative for *what*.
 - `docs/BUILDPLAN.md` — authoritative for *order*, and for what "done" means per package.
 - `docs/spec-notes.md` — every deliberate divergence from the spec, with reasoning.
