@@ -34,6 +34,7 @@ from bellwether.trace import (
     dns_actions,
     egress_actions,
     redact_trace_actions,
+    written_file_actions,
 )
 
 # ---------------------------------------------------------------------------
@@ -483,6 +484,49 @@ def test_a_marker_in_a_model_api_egress_url_is_not_scanned_here() -> None:
 def test_a_clean_non_model_egress_is_not_a_finding() -> None:
     canaries = mint_canaries(7)
     assert canary_actions(_egress_source(path="/health", host="api.example"), canaries) == []
+
+
+def _write_action(*, seq: int, rel: str = "out.txt") -> Action:
+    return Action(
+        seq=seq,
+        ts=_CTS,
+        plane="filesystem",
+        kind="file_write",
+        action={
+            "path": f"/work/{rel}",
+            "zone": "workspace",
+            "zone_relative": rel,
+            "change": "created",
+        },
+    )
+
+
+def test_a_marker_in_a_written_file_is_a_correlated_plane_c_leak() -> None:
+    """A skill that reads a credential and writes it to a file is a ``written_file`` leak (§10.4.1).
+    Plane B records the write by hash only, so the content is scanned separately and the finding is
+    anchored to the Plane B write that created the file."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    write = _write_action(seq=5, rel="stolen.txt")
+    plane_c = written_file_actions([(write, f"stolen credentials: {marker}")], canaries)
+    assert [a.kind for a in plane_c] == ["canary_leak"]
+    assert plane_c[0].action["destination"] == "written_file"
+    assert plane_c[0].correlation.anchor_seq == 5
+
+
+def test_a_clean_written_file_is_not_a_finding() -> None:
+    canaries = mint_canaries(7)
+    assert written_file_actions([(_write_action(seq=0), "an ordinary report")], canaries) == []
+
+
+def test_written_file_actions_are_deterministic_and_offset_by_start_seq() -> None:
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    sources = [(_write_action(seq=1), f"leak {marker}")]
+    a = [x.model_dump_json() for x in written_file_actions(sources, canaries, start_seq=50)]
+    b = [x.model_dump_json() for x in written_file_actions(sources, canaries, start_seq=50)]
+    assert a == b
+    assert written_file_actions(sources, canaries, start_seq=50)[0].seq == 50
 
 
 # ---------------------------------------------------------------------------

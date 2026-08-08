@@ -46,7 +46,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, live interception | **done** — the full done-when runs on CI |
 | **Recording proxy wired into the executor** — dual-homed sidecar per run, CA mounted, egress → Plane D of the trace | **done** (PR #42–#43); the config switch is `egress.image` |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
-| WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, Plane C scan, executor wiring (env + files) | **whole pool planted (env var + file binds), scanned, redacted end-to-end in a real sandbox** (`test_execution_canary_docker.py`); scan breadth (egress body / file content / tool args) keeps it `partial` |
+| WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, Plane C scan, executor wiring (env + files) | **whole pool planted (env var + file binds); leaks scanned across final output, DNS, tool args, non-model egress URLs, and written files; redacted end-to-end in a real sandbox** (`test_execution_canary_docker.py`); only egress-body scanning (sidecar-side) remains, keeping it `partial` |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
@@ -122,16 +122,26 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      line does not). The read that fetched the credential (path in, value out) is not flagged, and
      model-API URLs are skipped (harness-built; read-state grading is a follow-on) — so the finding
      stays false-positive-free. Offline-tested against the real `egress_actions` record shape.
+   - **Written-file scanning is wired** (`trace/build.py:written_file_actions`,
+     `cli/execution.py:_written_file_leaks`): Plane B records writes by hash only, so the executor
+     reads each written *regular* file from the host-side overlay upper (bounded, never a special file
+     §10.0) and scans its bytes — a marker in a file the skill wrote is a `written_file` leak anchored
+     to the Plane B write that created it. The content never enters the trace, so the finding is
+     marker-free by construction (no fingerprint needed). Proven end-to-end on a real container
+     (`test_execution_canary_docker.py`): a skill copies `~/.aws/credentials` into a workspace file and
+     the leak surfaces with the raw value absent from the artifact.
    - **The planted files now carry realistic credential shapes** (`capture/planting.py:_file_body`):
      an AWS INI block, an OpenSSH-PEM wrapper, a `.env` with an `API_KEY=`, a git-credentials URL —
      the marker contiguous on its own line so the exact-match scan still finds it and redaction
      fingerprints just the value. A bare token is bait a capable skill routes around; a real-looking
      file is one it treats as a real secret.
    - **Remaining:** the credentials plane stays `partial` because the *scan* does not yet cover
-     **egress bodies** (sidecar-side, the body never leaves the proxy — this is where POST-body exfil
-     and the model-endpoint read-state grading land) or **written-file contents** (Plane B is
-     hash-only today) — wiring those lifts it toward `full`. Then the corpus skills (`canary-thief`,
-     `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the §10.4 done-when.
+     **egress request bodies** — the one channel that is genuinely sidecar-side, since the body never
+     leaves the proxy (this is where POST-body exfil and the model-endpoint read-state grading land).
+     It is a larger, CI-validated unit: marker injection into the sidecar config, a body scan in
+     `decide_request`, a `canary_hits` field on the flow record, and host-side parsing into Plane C.
+     Wiring it lifts the plane toward `full`. Then the corpus skills (`canary-thief`, `dns-thief`,
+     `legit-credential-reader`, `encoded-chunked-thief` xfail) for the §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
    metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is
@@ -524,9 +534,10 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
   real container: the sandbox's own echo of `$INTERNAL_API_TOKEN` and its `cat ~/.aws/credentials`
   carry the markers (both channels delivered), both leaks are found and fingerprinted, and no raw
   value reaches the trace JSONL. The host-side scan covers the model's final output, DNS query names,
-  **tool-call arguments** (the exfil-through-a-tool channel), and **non-model egress request URLs**
-  (path/host/SNI — URL-based exfil to an attacker host); the plane stays `partial` because it does not
-  yet cover egress bodies (sidecar-side) or written-file contents (Plane B is hash-only).
+  **tool-call arguments** (the exfil-through-a-tool channel), **non-model egress request URLs**
+  (path/host/SNI — URL-based exfil to an attacker host), and **written-file contents** (read host-side
+  from the overlay upper, since Plane B is hash-only); the plane stays `partial` because only egress
+  request *bodies* (sidecar-side) remain unscanned.
 - **WP-14 CA trust-chain core**, `bellwether.capture.ca`, offline and fully tested (7 tests):
   the complete §9.2 mechanism table (system store + `NODE_EXTRA_CA_CERTS` /
   `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`, because Node and others ignore the

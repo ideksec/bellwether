@@ -48,6 +48,7 @@ __all__ = [
     "harness_actions",
     "redact_trace_actions",
     "token_totals_from_events",
+    "written_file_actions",
 ]
 
 
@@ -316,23 +317,57 @@ def canary_actions(
     seq = start_seq
     for source in source_actions:
         for finding in _scan_source_action(source, canaries):
-            actions.append(
-                Action(
-                    seq=seq,
-                    ts=source.ts,
-                    plane="credentials",
-                    kind=finding.finding,
-                    action={
-                        "canary_id": finding.canary_id,
-                        "destination": finding.destination,
-                        "severity": finding.severity,
-                        "offset": finding.offset,
-                        "length": finding.length,
-                        "via": finding.via,
-                    },
-                    correlation=Correlation(anchor_seq=source.seq),
-                )
-            )
+            actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
+            seq += 1
+    return actions
+
+
+def _plane_c_action(
+    finding: CanaryFinding, *, seq: int, ts: dt.datetime, anchor_seq: int
+) -> Action:
+    """Build one Plane C (``credentials``) action from a canary finding, correlated to its source.
+
+    Shared by every scan source (the plane-action scan and the written-file content scan) so a
+    finding is recorded the same way wherever it was found: ``kind`` is the finding class, the payload
+    holds the canary id / destination / severity / offset / length / via — **never the marker** — and
+    ``anchor_seq`` points at the source action the marker rode out on (§10.4.3).
+    """
+    return Action(
+        seq=seq,
+        ts=ts,
+        plane="credentials",
+        kind=finding.finding,
+        action={
+            "canary_id": finding.canary_id,
+            "destination": finding.destination,
+            "severity": finding.severity,
+            "offset": finding.offset,
+            "length": finding.length,
+            "via": finding.via,
+        },
+        correlation=Correlation(anchor_seq=anchor_seq),
+    )
+
+
+def written_file_actions(
+    sources: Iterable[tuple[Action, str]], canaries: Sequence[Canary], *, start_seq: int = 0
+) -> list[Action]:
+    """Derive Plane C findings by scanning the *contents* of files the skill wrote (§10.4).
+
+    Plane B records a write by its hash, not its bytes, so the content cannot be scanned from the
+    trace — the executor reads each written regular file host-side and passes it in as a
+    ``(write_action, content)`` pair. A marker in a file the skill wrote is a ``written_file`` leak,
+    critical and needing no read state (§10.4.1), anchored to the Plane B write that created it. The
+    content never enters the trace (Plane B stays hash-only), so there is nothing to redact here — the
+    Plane C record is marker-free by construction.
+
+    Deterministic: pairs are consumed in order and each file's findings come back sorted (§24).
+    """
+    actions: list[Action] = []
+    seq = start_seq
+    for source, content in sources:
+        for finding in scan_for_canaries(content, canaries, destination="written_file"):
+            actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
             seq += 1
     return actions
 

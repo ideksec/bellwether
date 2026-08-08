@@ -27,6 +27,7 @@ from bellwether.trace.build import (
     harness_actions,
     redact_trace_actions,
     token_totals_from_events,
+    written_file_actions,
 )
 from bellwether.trace.canonical import (
     CanonicalTrace,
@@ -102,4 +103,5 @@ __all__ = [
     "serialize_record",
     "token_totals_from_events",
     "write_trace",
+    "written_file_actions",
 ]

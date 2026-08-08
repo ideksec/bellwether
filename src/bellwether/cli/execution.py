@@ -58,6 +58,7 @@ from bellwether.sandbox import (
 )
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
+    Action,
     IdentityBlock,
     NormalizationContext,
     PlantedCanary,
@@ -77,6 +78,7 @@ from bellwether.trace import (
     redact_trace_actions,
     token_totals_from_events,
     write_trace,
+    written_file_actions,
 )
 
 __all__ = [
@@ -90,6 +92,12 @@ __all__ = [
 #: the ``api-loop`` adapter drives; the id travels into the trace's ``model_id_requested``
 #: so a divergence between requested and served is recorded (§9.4).
 ClientFactory = Callable[["RunPlan"], tuple[ModelClient, str]]
+
+#: How many bytes of a written file are read for the canary scan. Matches the scan's own
+#: ``MAX_SCAN_CHARS`` bound (§10.4.2): an unbounded read of a skill-written file is the same
+#: CPU/memory exhaustion vector the scan already guards, reached through the filesystem. A marker
+#: past this point in a single file is the documented limit, on the same footing as the scan's.
+_CANARY_FILE_SCAN_BYTES = 262_144
 
 
 def offered_skill(package: SkillPackage) -> OfferedSkill:
@@ -346,6 +354,16 @@ class SandboxRunExecutor:
                 canaries,
                 start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
             )
+            # And the contents of files the skill *wrote*: Plane B records writes by hash only, so the
+            # bytes are read host-side here and scanned — a marker in a written file is a written_file
+            # leak correlated to the Plane B write that created it (§10.4.1). The content never enters
+            # the trace, so there is nothing to redact for it.
+            plane_c += self._written_file_leaks(
+                prepared,
+                plane_b,
+                canaries,
+                start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e) + len(plane_c),
+            )
 
             header = RunHeader(
                 run_id=f"{self.eval_id}-{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}",
@@ -381,17 +399,17 @@ class SandboxRunExecutor:
                     # Same for the resolver's query log: a zero-query run is observed-clean DNS.
                     dns=PlaneStatus(fidelity="full") if run_resolver is not None else None,
                     # Canaries planted (env var + file slots) and scanned in the model output, DNS
-                    # query names, tool-call arguments, and non-model egress request URLs. Partial not
-                    # full: the scan does not yet cover egress bodies (sidecar-side) or written-file
-                    # contents (Plane B is hash-only).
+                    # query names, tool-call arguments, non-model egress URLs, and written-file
+                    # contents. Partial not full: the scan does not yet cover egress request *bodies*,
+                    # which are scanned sidecar-side (the body never leaves the proxy).
                     credentials=(
                         PlaneStatus(
                             fidelity="partial",
                             reason=(
                                 "canaries planted (environment variable and file slots) and scanned "
-                                "in the model output, DNS query names, tool-call arguments, and "
-                                "non-model egress URLs; egress-body and written-file scanning are "
-                                "not yet wired"
+                                "in the model output, DNS query names, tool-call arguments, non-model "
+                                "egress URLs, and written-file contents; egress-body scanning "
+                                "(sidecar-side) is not yet wired"
                             ),
                         )
                         if planting is not None
@@ -518,6 +536,47 @@ class SandboxRunExecutor:
                 )
             )
         return binds
+
+    def _written_file_leaks(
+        self,
+        prepared: PreparedSandbox,
+        plane_b: list[Action],
+        canaries: list[Canary],
+        *,
+        start_seq: int,
+    ) -> list[Action]:
+        """Scan the contents of files the skill wrote for planted markers (§10.4).
+
+        Plane B records writes by hash, not bytes, so the content is read here from the host-side
+        overlay upper directory — the same files the diff already hashed, so no *new* file is opened,
+        and only regular files are read (never a FIFO/socket/device the container made, §10.0). Each
+        read is bounded to :data:`_CANARY_FILE_SCAN_BYTES`. A marker found is a ``written_file`` leak
+        correlated to the Plane B write; the content itself never enters the trace.
+        """
+        if not canaries:
+            return []
+        zone_uppers: dict[str, Path] = {"workspace": prepared.upper_dir}
+        for zone in prepared.captured_zones:
+            zone_uppers[zone.zone] = zone.upper
+
+        sources: list[tuple[Action, str]] = []
+        for action in plane_b:
+            payload = action.action
+            if payload.get("change") not in ("created", "modified"):
+                continue  # a deletion or a mode change carries no new content to scan
+            if payload.get("special") or payload.get("file_type", "regular") != "regular":
+                continue  # directories, symlinks, and the special files §10.0 forbids opening
+            upper = zone_uppers.get(str(payload.get("zone")))
+            relative = payload.get("zone_relative")
+            if upper is None or not isinstance(relative, str):
+                continue
+            try:
+                with (upper / relative).open("rb") as handle:
+                    content = handle.read(_CANARY_FILE_SCAN_BYTES).decode("utf-8", "replace")
+            except OSError:
+                continue  # a race or permission error: skip rather than fail the whole run
+            sources.append((action, content))
+        return written_file_actions(sources, canaries, start_seq=start_seq)
 
     def _identity_block(
         self, planting: CanaryPlanting | None, planted: list[Canary]
