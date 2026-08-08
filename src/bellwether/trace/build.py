@@ -157,13 +157,16 @@ def filesystem_actions(
 def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Action]:
     """Turn classified proxy flows into Plane D action records (§10.5, §11.2).
 
-    A permitted request is ``kind: "egress"``; a default-deny block is ``kind:
+    A permitted request is ``kind: "egress_request"``; a default-deny block is ``kind:
     "egress_blocked"`` — the two are drawn apart deliberately, because a blocked attempt is
-    evidence of intent (§10.5.0) and must never read like an ordinary request. Every record
-    carries its ``egress_class`` so the ``no_egress`` assertion can count only
-    skill-attributed traffic without re-deriving the classification. The request body is
-    never here — only its digest and length (§10.5): the record ends up in an artifact, and
-    a body may hold a credential or a canary.
+    evidence of intent (§10.5.0) and must never read like an ordinary request. The kind is
+    ``egress_request`` (not ``egress``) because that is the §11.2/§1581 ARF action kind the
+    canonicalizer maps to an ``egress:<host>`` capability; emitting a bare ``egress`` here
+    left every *permitted* flow uncanonicalised — silently absent from the capability sets,
+    the scope table, and the rare-capability gate. Every record carries its ``egress_class``
+    so the ``no_egress`` assertion can count only skill-attributed traffic without re-deriving
+    the classification. The request body is never here — only its digest and length (§10.5):
+    the record ends up in an artifact, and a body may hold a credential or a canary.
 
     ``seq`` values follow the flows' given order from ``start_seq``; the caller owns the
     sequence space and WP-7's cross-plane merge places these relative to the other planes.
@@ -196,7 +199,7 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
                 seq=start_seq + offset,
                 ts=dt.datetime.fromisoformat(flow.ts),
                 plane="egress",
-                kind="egress_blocked" if flow.blocked else "egress",
+                kind="egress_blocked" if flow.blocked else "egress_request",
                 action=payload,
             )
         )

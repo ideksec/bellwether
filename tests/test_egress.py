@@ -317,9 +317,26 @@ def test_a_pass_is_never_flagged() -> None:
 def test_permitted_and_blocked_flows_get_distinct_kinds() -> None:
     flows = [_flow("api.anthropic.com"), _flow("evil.example.com")]
     actions = egress_actions(flows)
-    assert [a.kind for a in actions] == ["egress", "egress_blocked"]
+    # The §11.2/§1581 kinds: a permitted flow is "egress_request" (NOT a bare "egress"),
+    # which is the kind the canonicalizer maps to an egress:<host> capability. Emitting
+    # "egress" left every permitted flow silently uncanonicalised (unscored).
+    assert [a.kind for a in actions] == ["egress_request", "egress_blocked"]
     assert all(a.plane == "egress" for a in actions)
     assert [a.seq for a in actions] == [0, 1]
+
+
+def test_a_permitted_flow_canonicalises_to_an_egress_capability() -> None:
+    """The regression the kind-name bug hid: a permitted egress flow must reach the
+    capability sets as ``egress:<host>``. The prior test only checked the kind string, so a
+    permitted flow that canonicalised to *nothing* passed it — the exact 'test asserts the
+    wrong thing' shape the project warns about."""
+    from bellwether.trace import NormalizationContext
+    from bellwether.trace.canonical import capability_for
+
+    action = egress_actions([_flow("api.anthropic.com")])[0]
+    capability = capability_for(action, NormalizationContext(workspace_root="/work/x"))
+    assert capability is not None
+    assert capability.tier1 == "egress:api.anthropic.com"
 
 
 def test_the_record_carries_class_and_body_digest_but_not_the_body() -> None:
