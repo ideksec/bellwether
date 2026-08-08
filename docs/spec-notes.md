@@ -1308,3 +1308,18 @@ and system-curl case is a build-time concern deferred with the live-proof brick.
 **The broker is empty for `api-loop`.** The model runs host-side with the real key, so the sandbox is
 handed no credential at all: the strongest form of §3.3 invariant 1 holds trivially — there is nothing
 to steal. The proxy still records and allowlist-checks the skill's own traffic.
+
+## §10.5, §9.5 — `bellwether run` wires the proxy from config, off by default
+
+**Spec.** §10.5 routes egress through the recording proxy; §9.5 configures providers and infrastructure
+rather than hard-coding them.
+
+**Resolution.** `egress.image` (new, digest-pinned like `sandbox.image`) is the single switch.
+`build_proxy_provider` returns `None` when it is empty — the shipped default — so an ordinary `bellwether
+run` is unchanged: no sidecar, no network, egress `not_evaluable`. Set to the sidecar image, it builds a
+`SidecarProxyProvider` with a default-deny `EgressAllowlist` (the configured providers' hosts, which are
+`model_api` by construction, plus the operator's `egress.allowlist` as `extra`) and an **empty** broker.
+The empty broker is deliberate for `api-loop`: the model runs host-side with the real key, so the sandbox
+holds no credential and §3.3 invariant 1 is met in its strongest form. Keeping the switch in config, off
+by default, means the risky path (a container with a route out, however mediated) is opt-in and visible in
+the run's config digest, not a behaviour that changed under the user silently.

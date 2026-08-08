@@ -92,6 +92,11 @@ class EgressConfig(StrictModel):
     #: In-process couples mitmproxy's pinned transitive dependencies to Bellwether's
     #: resolved environment; the sidecar is the supported deployment (§10.5, §22).
     deployment: Literal["sidecar", "inprocess"] = "sidecar"
+    #: The recording-proxy sidecar image, digest-pinned like ``sandbox.image``. Empty leaves
+    #: the proxy unwired: the run has no egress plane and the sandbox runs with no network, the
+    #: first-light configuration. Set it (in a live config) to route the sandbox through the
+    #: proxy and observe egress (§10.5).
+    image: str = ""
     #: Default-deny. Model endpoints are added automatically from ``providers``.
     allowlist: list[str] = Field(default_factory=list)
     record_response_bodies: bool = True
@@ -336,6 +341,11 @@ class Config(Document):
             notes.append(
                 f"sandbox.image {self.sandbox.image!r} is not pinned by digest; "
                 "a moving tag makes two evaluations non-comparable"
+            )
+        if self.egress.image and "@sha256:" not in self.egress.image:
+            notes.append(
+                f"egress.image {self.egress.image!r} is not pinned by digest; "
+                "a moving proxy image makes two evaluations non-comparable"
             )
         for name, provider in sorted(self.providers.items()):
             unfilled = provider.unfilled_aliases()

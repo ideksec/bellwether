@@ -42,7 +42,15 @@ file that lags is worse than none, because it is trusted.
 | **Live `bellwether run` on CI** — a real model evaluation, PR-triggered, posting the verdict | **proven** (PR #39) |
 | WP-17 – WP-20 — Phase B | not started |
 
-708 tests: 664 offline, 44 under the `docker` mark. All green.
+712 tests: 668 offline, 44 under the `docker` mark. All green.
+
+**`bellwether run` can now turn the proxy on from config.** `build_proxy_provider` reads
+`egress.image` (a new digest-pinned field): empty — the shipped default — leaves the sandbox
+networkless exactly as first-light; set to the sidecar image, it assembles the dual-homed provider
+(default-deny allowlist from the configured providers plus `egress.allowlist`, an empty broker
+because the `api-loop` model runs host-side) and the `run` command hands it to the executor. So a
+live config now produces observed egress end to end from the CLI; only the CI workflow's image build
+and a labeled live PR remain to prove a benign run reaches `ready`.
 
 **The recording proxy is now wired into the live executor** (§10.5, §3.3). Both halves of the
 egress plane exist. The consumer half (PR #41) taught the gate to read observed egress:
