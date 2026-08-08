@@ -14,7 +14,7 @@ _met the blocking gates; see the warnings below._ Policy profile **low**; skill 
 | functional | 🟢 `pass` | 0.533831 | 0.5 | api-loop-scripted-frontier: pass-rate lower bound 0.533831 vs 0.5 (pass) |
 | consistency | 🟢 `pass` | 100.0 | 70.0 | api-loop-scripted-frontier: BCI 100.0, pass rate 1.0 |
 | scope | 🟢 `pass` | within scope | declared scope | api-loop-scripted-frontier: declared vs observed |
-| security_runtime.egress | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: egress capture plane not available in this build (recording proxy lands in WP-13); no egress gate can be evaluated |
+| security_runtime.egress | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: the recording proxy was not wired into this run, so egress is not observed and the gate cannot be decided (§10.7) |
 
 ### Repetition outcomes
 
