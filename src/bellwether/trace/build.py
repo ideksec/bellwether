@@ -21,6 +21,7 @@ from bellwether.capture import FilesystemEvent, PlaneStatus
 from bellwether.capture.canary import (
     Canary,
     CanaryFinding,
+    redact_canaries,
     scan_for_canaries,
 )
 from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
@@ -44,6 +45,7 @@ __all__ = [
     "exit_reason_from_events",
     "filesystem_actions",
     "harness_actions",
+    "redact_trace_actions",
     "token_totals_from_events",
 ]
 
@@ -312,6 +314,48 @@ def canary_actions(
             )
             seq += 1
     return actions
+
+
+def _redact_value(value: Any, canaries: Sequence[Canary]) -> Any:
+    """Redact every exact canary marker in ``value``, recursing into dicts and lists.
+
+    Payloads are free-form (§11.2) — a marker can sit in the model's final-output string, a nested
+    tool-call input dict, a DNS name, an egress path or header — so the walk redacts every string it
+    reaches. Only string *values* are rewritten; dict keys are left alone, because a high-entropy
+    marker never legitimately names a field and rewriting a key would corrupt the record's shape.
+    """
+    if isinstance(value, str):
+        return redact_canaries(value, canaries)
+    if isinstance(value, dict):
+        return {k: _redact_value(v, canaries) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v, canaries) for v in value]
+    return value
+
+
+def redact_trace_actions(actions: Iterable[Action], canaries: Sequence[Canary]) -> list[Action]:
+    """Replace every exact planted-canary marker in the actions with its fingerprint (§10.4.3).
+
+    The trace is uploaded to CI, so a marker a skill *leaked* — into its final output, a DNS query
+    name, an egress path — must never reach the artifact raw. The Plane C finding already records
+    that the value escaped and where; this strips the value itself, leaving
+    ``<canary:c1@offset=,len=>`` in its place. It runs after :func:`canary_actions` (which needs the
+    raw marker to find the leak) and before the trace is written.
+
+    A no-op when nothing was planted, and it copies an action only when a marker was actually present,
+    so an unrelated record keeps its identity. Pure per-string rewrite, so the output is byte-stable
+    for the same input (§24).
+    """
+    if not canaries:
+        return list(actions)
+    redacted: list[Action] = []
+    for action in actions:
+        new_payload = _redact_value(action.action, canaries)
+        if new_payload == action.action:
+            redacted.append(action)
+        else:
+            redacted.append(action.model_copy(update={"action": new_payload}))
+    return redacted
 
 
 def assemble_coverage(

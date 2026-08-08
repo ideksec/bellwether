@@ -46,7 +46,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | WP-13 — recording proxy: egress, credentials, decision core, addon, sidecar entry+image+launcher, internal-bridge isolation, live interception | **done** — the full done-when runs on CI |
 | **Recording proxy wired into the executor** — dual-homed sidecar per run, CA mounted, egress → Plane D of the trace | **done** (PR #42–#43); the config switch is `egress.image` |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
-| WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, host-side Plane C scan | **logic + planting planner + `canary_actions` (Plane C) done** — not yet planted/scanned in a live run |
+| WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, Plane C scan, executor wiring | **env-var canary planted, scanned, redacted end-to-end in a real sandbox** (`test_execution_canary_docker.py`); file-slot planting + egress-body scanning remain |
 | Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
@@ -95,17 +95,24 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    - **Landed:** the **planting planner** (`capture/planting.py:plan_canary_planting`) — turns a
      run's minted canaries into the env vars + files that carry the markers plus the marker-free
      `PlantedSlot`s the trace records (§10.4.3: the value reaches the container, never an artifact);
-     and the **host-side Plane C scan** (`trace/build.py:canary_actions`) — scans the already-built
+     the **host-side Plane C scan** (`trace/build.py:canary_actions`) — scans the already-built
      source actions (DNS query names + the model's final output) for markers and emits one Plane C
      finding per hit, its `kind` the finding class and its `correlation.anchor_seq` pointing at the
-     source action that carried it, holding only the canary id / offset / length — never the value.
-     `assemble_coverage` now flips `credentials` from unavailable to observed the moment a canary
-     status is supplied. Both pure and offline-tested.
-   - **Remaining:** stage the planting into the sandbox (env via `_extra_env`, files via writable
-     mounts) and record `PlantedCanary` refs in the trace; wire `canary_actions` into the executor
-     so the run's minted canaries are scanned against observed evidence and `credentials` coverage
-     is supplied (egress bodies still scanned sidecar-side at capture, where the body lives); verify
-     no raw marker in any artifact; then the corpus skills (`canary-thief`, `dns-thief`,
+     source action that carried it, holding only the canary id / offset / length — never the value;
+     the **trace-wide redaction pass** (`trace/build.py:redact_trace_actions`) — replaces every exact
+     leaked marker across all planes with its `<canary:…>` fingerprint before the trace is written,
+     so a leak the scan just recorded never reaches the uploaded artifact raw (§10.4.3); and the
+     **executor wiring** (`cli/execution.py`, `plant_canaries` from `config.canaries.enabled`) —
+     mints per-*evaluation* canaries, delivers the env-var canary into the container, scans the
+     observed host-side planes, redacts, records the plant by reference in the `IdentityBlock`, and
+     flips `credentials` coverage to `partial`. Proven end-to-end on a real container
+     (`test_execution_canary_docker.py`): the sandbox's own echo of `$INTERNAL_API_TOKEN` carries the
+     marker (delivery is real), a leaked marker surfaces as a Plane C `canary_leak`, and the raw value
+     is nowhere in the trace JSONL — only its fingerprint.
+   - **Remaining:** stage the **file** canaries into the sandbox (writable mounts / prepared home,
+     with `~`/relative/absolute path resolution) so the four file slots are actually planted, which
+     lifts `credentials` from `partial` to `full`; **egress-body scanning** sidecar-side (the body
+     never leaves the proxy); then the corpus skills (`canary-thief`, `dns-thief`,
      `legit-credential-reader`, `encoded-chunked-thief` xfail) for the §10.4 done-when.
 3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
    record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
@@ -489,6 +496,14 @@ and `build_argv` (4 docker tests, `test_network_docker.py`):
   (`trace/build.py:canary_actions`, in `tests/test_canary.py`) scans the built source actions
   (DNS query names + final output) and emits a Plane C finding per hit, correlated by
   `anchor_seq` to its source and carrying only the canary id / offset / length — never the value.
+  A **trace-wide redaction pass** (`trace/build.py:redact_trace_actions`) then replaces every exact
+  leaked marker across all planes with its fingerprint before the trace is written, and the
+  **executor** (`cli/execution.py`, `plant_canaries`) delivers the env-var canary into the sandbox,
+  runs scan-then-redact, records the plant by reference in the header `IdentityBlock`, and sets
+  `credentials` coverage to `partial`. `test_execution_canary_docker.py` proves the whole loop on a
+  real container: the sandbox's echo of `$INTERNAL_API_TOKEN` carries the marker (delivery is real),
+  a leaked marker is found and fingerprinted, and no raw value reaches the trace JSONL. File-slot
+  planting (the four file canaries) and egress-body scanning remain, so the plane is `partial`.
 - **WP-14 CA trust-chain core**, `bellwether.capture.ca`, offline and fully tested (7 tests):
   the complete §9.2 mechanism table (system store + `NODE_EXTRA_CA_CERTS` /
   `REQUESTS_CA_BUNDLE` / `SSL_CERT_FILE` / `CURL_CA_BUNDLE`, because Node and others ignore the

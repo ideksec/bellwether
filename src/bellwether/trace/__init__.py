@@ -25,6 +25,7 @@ from bellwether.trace.build import (
     exit_reason_from_events,
     filesystem_actions,
     harness_actions,
+    redact_trace_actions,
     token_totals_from_events,
 )
 from bellwether.trace.canonical import (
@@ -46,6 +47,7 @@ from bellwether.trace.models import (
     ExitReason,
     IdentityBlock,
     PlaneCoverage,
+    PlantedCanary,
     RunFooter,
     RunHeader,
     SandboxRef,
@@ -72,6 +74,7 @@ __all__ = [
     "IdentityBlock",
     "NormalizationContext",
     "PlaneCoverage",
+    "PlantedCanary",
     "RunFooter",
     "RunHeader",
     "SandboxRef",
@@ -95,6 +98,7 @@ __all__ = [
     "iter_actions",
     "parse_trace",
     "read_trace",
+    "redact_trace_actions",
     "serialize_record",
     "token_totals_from_events",
     "write_trace",

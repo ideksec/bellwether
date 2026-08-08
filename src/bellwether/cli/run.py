@@ -170,6 +170,7 @@ def sandbox_executor_factory(
     isolation: IsolationProfile | None = None,
     zones: ZoneMap | None = None,
     randomize_identifiers: bool = True,
+    plant_canaries: bool = False,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -187,6 +188,9 @@ def sandbox_executor_factory(
     ``proxy``, when supplied, stands a dual-homed recording-proxy sidecar up around each run so the
     egress plane is observed (§10.5). Omitted, the sandbox runs with no network, exactly as
     first-light — egress stays ``not_evaluable`` rather than being reported clean unobserved.
+
+    ``plant_canaries`` turns on canary planting and the host-side Plane C scan (§10.4); the lead
+    passes ``config.canaries.enabled``. Omitted, the credentials plane stays ``not_evaluable``.
     """
     run_limits = limits if limits is not None else RunLimits()
 
@@ -210,6 +214,7 @@ def sandbox_executor_factory(
             isolation=isolation if isolation is not None else IsolationProfile(),
             zones=zones if zones is not None else ZoneMap(),
             randomize_identifiers=randomize_identifiers,
+            plant_canaries=plant_canaries,
         )
 
     return make

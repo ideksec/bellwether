@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from bellwether.capture import plan_canary_planting
 from bellwether.cli import execution as execution_mod
 from bellwether.cli.execution import (
     SandboxRunExecutor,
@@ -306,7 +307,7 @@ def test_scenario_env_is_delivered_into_the_container(tmp_path: Path) -> None:
         repetition=1,
     )
 
-    env = executor._extra_env(plan, None)
+    env = executor._extra_env(plan, None, None)
     assert env["CANARY_TOKEN"] == "bw-canary-abc123"
 
     # It reaches the real docker argv through the extra_env seam build_argv exposes.
@@ -321,6 +322,105 @@ def test_scenario_env_is_delivered_into_the_container(tmp_path: Path) -> None:
         def sandbox_env(self) -> dict[str, str]:
             return {"HTTPS_PROXY": "http://proxy:8080", "CANARY_TOKEN": "proxy-wins"}
 
-    merged = executor._extra_env(plan, _StubProxy())  # type: ignore[arg-type]
+    merged = executor._extra_env(plan, _StubProxy(), None)  # type: ignore[arg-type]
     assert merged["HTTPS_PROXY"] == "http://proxy:8080"
     assert merged["CANARY_TOKEN"] == "proxy-wins"
+
+
+# ---------------------------------------------------------------------------
+# WP-16: canary planting into the sandbox and the marker-free identity record.
+# The scan itself is trace.canary_actions (tested in test_canary.py); these pin
+# the executor-side wiring — minting, delivery, seed stability, and provenance —
+# without a daemon.
+# ---------------------------------------------------------------------------
+
+
+def test_canaries_are_off_unless_planting_is_enabled(tmp_path: Path) -> None:
+    """The credentials plane is opt-in like egress and DNS: no planting, no minted canaries, and
+    a scenario with no env of its own reaches the container with an untouched environment."""
+    executor = _executor(tmp_path)
+    assert executor._canaries() == []
+    plan = RunPlan(scenario=_scenario(), target=_target(), repetition=1)
+    assert executor._extra_env(plan, None, None) == {}
+
+
+def test_the_env_canary_is_delivered_into_the_container(tmp_path: Path) -> None:
+    """With planting on, the env-var canary reaches the container through the same extra_env seam a
+    scenario's env uses (§10.4) — the marker a canary-thief would read and try to exfiltrate."""
+    executor = _executor(tmp_path, plant_canaries=True)
+    canaries = executor._canaries()
+    planting = plan_canary_planting(canaries)
+    plan = RunPlan(scenario=_scenario(), target=_target(), repetition=1)
+
+    env = executor._extra_env(plan, None, planting)
+    # The pool's one env-var slot is INTERNAL_API_TOKEN, carrying its canary's marker verbatim.
+    token = next(c for c in canaries if c.kind == "envvar")
+    assert env["INTERNAL_API_TOKEN"] == token.marker
+
+    # It reaches the real docker argv through the extra_env seam build_argv exposes.
+    prepared = prepare_sandbox(
+        executor.package, executor.fixture, tmp_path / "one", rng=SeededRng(1, "x")
+    )
+    argv = executor.backend.build_argv(prepared, ["true"], extra_env=env)
+    assert _env_pairs(argv)["INTERNAL_API_TOKEN"] == token.marker
+
+
+def test_the_canary_seed_is_per_evaluation_stable_across_repetitions(tmp_path: Path) -> None:
+    """§9.3: markers are minted once per *evaluation*, identical across its repetitions (so the run
+    cache keyed on ``fixture_digest`` still hits), and different between evaluations."""
+    a1 = _executor(tmp_path, eval_id="eval-A", plant_canaries=True)._canaries()
+    a2 = _executor(tmp_path, eval_id="eval-A", plant_canaries=True)._canaries()
+    b = _executor(tmp_path, eval_id="eval-B", plant_canaries=True)._canaries()
+    assert [c.marker for c in a1] == [c.marker for c in a2]  # stable within one evaluation
+    assert [c.marker for c in a1] != [c.marker for c in b]  # differs between evaluations
+
+
+def test_a_canary_env_wins_over_a_scenario_but_loses_to_the_proxy(tmp_path: Path) -> None:
+    """Merge order is scenario → canary → proxy (§10.4, §21): the canary plant is a core control, so
+    it overrides a scenario that shadows the name, and the proxy's channel overrides everything."""
+    executor = _executor(tmp_path, plant_canaries=True)
+    canaries = executor._canaries()
+    planting = plan_canary_planting(canaries)
+    token = next(c for c in canaries if c.kind == "envvar")
+    plan = RunPlan(
+        scenario=_scenario(env={"INTERNAL_API_TOKEN": "scenario-shadow"}),
+        target=_target(),
+        repetition=1,
+    )
+
+    # A scenario cannot shadow the plant: the canary marker wins over the scenario's value.
+    assert executor._extra_env(plan, None, planting)["INTERNAL_API_TOKEN"] == token.marker
+
+    # But the proxy's infrastructure env still wins the final merge.
+    class _StubProxy:
+        def sandbox_env(self) -> dict[str, str]:
+            return {"INTERNAL_API_TOKEN": "proxy-wins"}
+
+    merged = executor._extra_env(plan, _StubProxy(), planting)  # type: ignore[arg-type]
+    assert merged["INTERNAL_API_TOKEN"] == "proxy-wins"
+
+
+def test_identity_records_planted_canaries_by_reference_never_the_value(tmp_path: Path) -> None:
+    """§10.4.3 / §9.3: the header records the seed and the *delivered* canaries as marker-free
+    references — id, path, kind — so the run is reproducible without the block ever holding a value,
+    and it lists only what actually reached the container (the env slot), not the unplanted files."""
+    executor = _executor(tmp_path, plant_canaries=True)
+    canaries = executor._canaries()
+    planting = plan_canary_planting(canaries)
+    delivered = set(planting.env.values())
+    planted = [c for c in canaries if c.marker in delivered]
+
+    identity = executor._identity_block(planting, planted)
+    assert identity.canary_seed == str(executor._canary_seed())
+    assert identity.env_credential_names == ["INTERNAL_API_TOKEN"]
+    assert [pc.id for pc in identity.canaries_planted] == [c.id for c in planted]
+    assert all(pc.kind == "envvar" for pc in identity.canaries_planted)
+    # Not one marker value — of any minted canary — appears anywhere in the block.
+    blob = identity.model_dump_json()
+    assert all(c.marker not in blob for c in canaries)
+
+
+def test_identity_is_empty_when_nothing_is_planted(tmp_path: Path) -> None:
+    identity = _executor(tmp_path)._identity_block(None, [])
+    assert identity.canaries_planted == []
+    assert identity.canary_seed is None

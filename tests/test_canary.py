@@ -27,7 +27,7 @@ from bellwether.capture import (
 )
 from bellwether.capture.canary import MAX_SCAN_CHARS, MIN_WINDOW
 from bellwether.determinism import canonical_json
-from bellwether.trace import Action, canary_actions, dns_actions
+from bellwether.trace import Action, canary_actions, dns_actions, redact_trace_actions
 
 # ---------------------------------------------------------------------------
 # Minting — high entropy, no fixed structure, reproducible per evaluation
@@ -380,3 +380,69 @@ def test_canary_actions_are_deterministic() -> None:
     a = [canonical_json(x.model_dump(mode="json")) for x in canary_actions(source, canaries)]
     b = [canonical_json(x.model_dump(mode="json")) for x in canary_actions(source, canaries)]
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# §10.4.3 redaction of the assembled trace — no artifact holds a leaked marker
+# ---------------------------------------------------------------------------
+
+
+def test_a_leaked_marker_in_a_final_output_is_redacted_from_the_trace() -> None:
+    """The trace is uploaded to CI, so a canary a skill routed into its final output must not reach
+    the artifact raw. ``redact_trace_actions`` replaces it with the ``<canary:…>`` fingerprint, which
+    preserves what/where/how-long without the value (§10.4.3)."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    actions = [_final_output(f"the secret is {marker}!", seq=0)]
+    redacted = redact_trace_actions(actions, canaries)
+    text = redacted[0].action["text"]
+    assert marker not in text
+    assert f"<canary:{canaries[0].id}@" in text
+
+
+def test_redaction_recurses_into_nested_payloads_and_dns_names() -> None:
+    """A marker can hide in a nested tool-call input or a DNS query name, not just a top-level
+    string — the walk redacts every string value it reaches (§11.2)."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    nested = Action(
+        seq=0,
+        ts=_CTS,
+        plane="harness",
+        kind="tool_call",
+        action={"name": "http", "input": {"headers": {"authorization": f"Bearer {marker}"}}},
+    )
+    dns = dns_actions(
+        [DnsQuery(ts=_CTS.isoformat(), name=f"{marker}.evil.example", resolved=False)]
+    )
+    redacted = redact_trace_actions([nested, *dns], canaries)
+    assert marker not in canonical_json(redacted[0].action)
+    assert marker not in canonical_json(redacted[1].action)
+
+
+def test_redaction_leaves_untouched_actions_with_their_identity() -> None:
+    """An action carrying no marker is returned as the very same object — redaction copies only what
+    it actually rewrites, so a clean trace is not needlessly rebuilt."""
+    canaries = mint_canaries(7)
+    clean = _final_output("a perfectly ordinary answer", seq=0)
+    redacted = redact_trace_actions([clean], canaries)
+    assert redacted[0] is clean
+
+
+def test_redaction_is_a_no_op_when_nothing_was_planted() -> None:
+    clean = _final_output("anything at all", seq=0)
+    result = redact_trace_actions([clean], [])
+    assert result == [clean]
+
+
+def test_the_plane_c_finding_survives_redaction_of_its_source() -> None:
+    """The two passes compose: scan the raw sources for the leak, *then* redact them. The Plane C
+    finding (marker-free by construction) is the durable record; the source it points at is scrubbed
+    of the value it carried."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    sources = [_final_output(f"exfiltrating {marker}", seq=0)]
+    findings = canary_actions(sources, canaries)
+    redacted = redact_trace_actions(sources, canaries)
+    assert findings[0].kind == "canary_leak"  # the leak is recorded
+    assert marker not in redacted[0].action["text"]  # and the value is gone from the source
