@@ -1,0 +1,22 @@
+# Gitleaks configuration for Bellwether.
+#
+# Run a full-history scan with:
+#     gitleaks detect --source . --redact
+#
+# Bellwether's job is to plant realistic-LOOKING but worthless "canary" credentials into a
+# sandbox and then detect when a skill exfiltrates them (§10.4). By design, the codebase
+# therefore contains fake credential *shapes*. The allowlist below suppresses exactly those
+# known, intentional fakes — nothing else — so a scan surfaces only genuine problems.
+#
+# There are no real secrets in this repository or its git history. Verified by full-history
+# scan; the only matches are the two documented fakes below.
+
+title = "Bellwether"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Canary credential templates, fake by design. capture/planting.py builds the realistic credential shapes (AWS INI, OpenSSH-PEM, .env, git-credentials) whose bodies wrap a random canary marker, never real key material (§10.4). AKIAIOSFODNN7EXAMPLE is Amazon's own public documentation example access-key id, used as canary bait."
+paths = ['''src/bellwether/capture/planting\.py''']
+regexes = ['''AKIAIOSFODNN7EXAMPLE''']

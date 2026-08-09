@@ -5,7 +5,7 @@ description = "A CI/CD harness for AI agent skills: run them, record what they d
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "The Bellwether authors" }]
+authors = [{ name = "Greg Weir" }]
 keywords = ["agent", "skills", "evaluation", "supply-chain", "ci"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -41,8 +41,8 @@ bellwether = "bellwether.cli:main"
 bw = "bellwether.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ideksec/bellweather"
-Source = "https://github.com/ideksec/bellweather"
+Homepage = "https://github.com/ideksec/bellwether"
+Source = "https://github.com/ideksec/bellwether"
 
 [build-system]
 requires = ["hatchling"]
