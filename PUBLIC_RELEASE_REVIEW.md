@@ -311,9 +311,12 @@ These are pre-v0.1 realities, disclosed in the tool and docs, and are **not** re
 
 ## 9. Manual actions for the owner (outside this review's remit)
 
-1. **Rename the GitHub repository** from `ideksec/bellweather` to `ideksec/bellwether` (the intended
-   public spelling). The project-owned URLs already point at `bellwether`; the git remote and local
-   directory keep the old spelling until you rename. *(Not done here — repo administration is yours.)*
+1. ~~**Rename the GitHub repository** to `ideksec/bellwether`.~~ **Already done** — confirmed during
+   this review: a push returned *"This repository moved. Please use the new location:
+   https://github.com/ideksec/bellwether.git"*. The project-owned URLs in `pyproject.toml` already
+   match. GitHub's redirect keeps old clones and this session's remote working, so nothing is
+   broken; you may want to update the remote in any long-lived local clone
+   (`git remote set-url origin https://github.com/ideksec/bellwether.git`).
 2. **Change repository visibility to public** when ready. *(Not done here, by design.)*
 3. *(Optional)* Add a copyright/attribution line — a `NOTICE` file or the Apache appendix's
    `Copyright [year] Greg Weir` — if you want explicit attribution beyond the `pyproject` author field.
