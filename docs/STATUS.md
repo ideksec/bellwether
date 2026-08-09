@@ -704,12 +704,11 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Item | Where | Why it is still open |
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
-| §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | The execution driver and orchestrator have landed; `run` is not yet CLI-drivable (needs the WP-13 live client). Wire the refusal into `run` then. |
-| Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when `run` is CLI-drivable (WP-13). |
+| **§16.4 precondition check is never called** | `verdict/precondition.py` | **BW-51.** `check_preconditions` is built, exported and unit-tested, but has **no caller anywhere in `src/`** — not `run`, not `doctor`, not the orchestrator. §16.4 says the orchestrator MUST refuse to start an unsatisfiable policy/target combination *before* spending, and §20 says surface it in `doctor`. Neither happens, so an unsatisfiable profile is discovered only after a full matrix is paid for. Fails safe (the gates still block on `not_evaluable`) but violates a spec MUST. Same "built, tested, never wired" pattern as BW-47. |
+| Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
 | Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
 | The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
 | Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
-| `bellwether run` not yet CLI-drivable | `cli/app.py` | The live client exists now; wiring `run` (resolve provider + key → `build_model_client` → `SandboxRunExecutor`) is the next brick, after which `benign-stable` reaches `ready`. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 

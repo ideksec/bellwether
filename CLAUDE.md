@@ -26,9 +26,11 @@ inspectable evidence. The thesis is deliberately humble — a strong *regression
 Phase A and the recording-proxy spine of Phase B are done, and the live loop closes end to end: on a
 real PR, a changed skill is detected, run 6× in a sandbox behind a dual-homed recording proxy that
 observes its egress, scored, and posted back — a benign skill has reached **`ready` on CI against a
-live model**, with per-run evidence uploaded as an artifact. What remains is *breadth*: the other
-planes wired into the live path (DNS resolver into the executor is the next brick), live canaries,
-noise-floor calibration, the coverage matrix, the `claude-code` adapter, and the acceptance corpus.
+live model**, with per-run evidence uploaded as an artifact. The DNS resolver is wired into the
+executor and canaries are planted and scanned end to end. What remains is *breadth*: the captured
+planes turned into **scored** gates (today only egress is scored — see the README's "What the live
+verdict gates today"), the §16.4 precondition check wired into `run`/`doctor`, noise-floor
+calibration, the coverage matrix, the `claude-code` adapter, and the acceptance corpus.
 
 ## How we work — the cadence (one brick, one PR)
 
@@ -37,7 +39,9 @@ noise-floor calibration, the coverage matrix, the `claude-code` adapter, and the
    A silently-skipped check is how a red build looks green.
 3. Update docs: `docs/STATUS.md` always (state + "What's next"), `docs/spec-notes.md` on any
    divergence, `README.md` when a user-visible capability changes.
-4. Commit with a clear message ending in the co-author + session footer the harness expects.
+4. Commit with a clear message. Keep the `Co-Authored-By: Claude <noreply@anthropic.com>` trailer —
+   this project is openly built with agentic assistance and does not hide it — but do **not** append
+   session URLs or emoji; they are noise in a public history.
 5. Push to the feature branch this session is assigned. **Never push to `main`.**
 6. Open a PR, watch CI to green, fix anything red before moving on.
 7. **After the PR merges, restart the branch from the fresh main**

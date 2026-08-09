@@ -273,14 +273,36 @@ def doctor(
 
 
 #: Environment probes doctor must perform, and the package that implements each (§20).
+#: Probes `doctor` does not yet perform, each with *why it is still absent* — not the work package
+#: that introduced the surrounding feature. Naming a completed package here (this list previously
+#: said WP-5, WP-6 and WP-11, all of which are done) reads as "that work has not landed", which is
+#: both false and the wrong thing to act on: what is missing is the *probe*, not the capability.
 _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
-    ("sandbox image pullable by digest", "WP-20"),
-    ("proxy CA trusted by every mechanism in §9.2, checked by a real request", "WP-14"),
-    ("internal bridge blocks direct UDP/53 to a public resolver", "WP-15"),
-    ("fanotify markable; eBPF loadable by the host agent", "WP-5"),
-    ("provider keys resolve; model aliases map to live model ids", "WP-6"),
-    ("harness versions match version_pin", "WP-6"),
-    ("§16.4 precondition check passes for the configured profile", "WP-11"),
+    ("sandbox image pullable by digest", "needs a registry round-trip; lands with WP-20"),
+    (
+        "proxy CA trusted by every mechanism in §9.2, checked by a real request",
+        "the CA-in-the-loop probe is CI-only (WP-14's live half)",
+    ),
+    (
+        "internal bridge blocks direct UDP/53 to a public resolver",
+        "the §3.3 invariant-3 live probe is CI-only (WP-15's live half)",
+    ),
+    (
+        "fanotify markable; eBPF loadable by the host agent",
+        "read and process capture are v0.2/v0.3; neither plane is built yet",
+    ),
+    (
+        "provider keys resolve; model aliases map to live model ids",
+        "would spend a live API call; not run from doctor",
+    ),
+    (
+        "harness versions match version_pin",
+        "only the api-loop adapter ships; nothing to pin against",
+    ),
+    (
+        "§16.4 precondition check passes for the configured profile",
+        "check_preconditions is built and tested but not yet wired into doctor or run",
+    ),
 )
 
 
@@ -576,7 +598,9 @@ def scan(
     json_output: JsonFlag = False,
 ) -> None:
     """Static pre-flight scan only, no execution."""
-    _not_yet("scan", "WP-20 (v0.1 corpus cases)", "static analysis has not landed")
+    # v0.2, matching what `doctor` says about require_scan — these two must agree, or a user
+    # reading both is told the scanner lands in two different places.
+    _not_yet("scan", "v0.2 (the §15 static scanner)", "static analysis has not landed")
 
 
 @app.command()

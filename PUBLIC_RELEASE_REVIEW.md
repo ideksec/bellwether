@@ -10,6 +10,21 @@ tool and the docs rather than concealed.
 **Scope of this review:** technical architecture, security (repo as adversarial target), engineering
 quality including test realism, public-release hygiene, and career/portfolio optics.
 
+**Method.** Two passes. The first was targeted — parallel subsystem reviews with every reported issue
+reproduced by running code. The second read **every documentation file end to end** (8,400 lines
+across 14 documents, including the 3,790-line specification) rather than grepping for known risks,
+and exercised the live CLI path directly: `--help`, `init`, `doctor` on a fresh scaffold, the
+unimplemented-command refusals, and `bellwether run` itself. The systematic read is what found BW-51
+and BW-52 — neither was reachable from a targeted search, because both are *contradictions between
+documents* or *absences*, and you cannot grep for a caller that does not exist.
+
+**One limit, stated plainly:** no paid model run was executed. This environment holds no
+`ANTHROPIC_API_KEY` (Claude Code authenticates by OAuth token, which is not a key Bellwether can
+use), so the live-model half of `bellwether run` could not be exercised here. Everything below the
+model was: the real container suite, the sandbox, the CLI, and the full offline pipeline. The
+end-to-end live claim therefore rests on the prior CI evidence, not on a run performed during this
+review — which is why §4 reports it as CI-proven rather than reviewer-verified.
+
 **Baseline at review time:** commit on `claude/codebase-security-quality-review-2q75hv`, pre-v0.1,
 Apache-2.0. All six mechanical gates green; 834 offline tests pass; 45 docker tests pass, 6 CI-only
 skip; `PYTHONHASHSEED=12345` byte-stable; `bellwether demo` regenerates its committed reports with no
@@ -43,6 +58,15 @@ differential regression test. Two smaller reachable gaps were closed (an egress 
 miss; a family of policy dispositions that read as active controls but do not gate), the latter by
 making the tool disclose the boundary in `doctor` rather than by overclaiming enforcement it does not
 yet have.
+
+A second, systematic pass — reading every document end to end rather than searching for known risks —
+found the same pattern once more: **the §16.4 precondition check is built, exported, unit-tested, and
+called from nowhere** (BW-51). It fails safe, so it is a wasted-spend and spec-compliance problem
+rather than an unearned verdict, and it is disclosed rather than hastily wired. That pass also found
+four places where two project documents contradicted each other — including the live example telling
+a user the recording proxy "is not yet wired" while its own config turns it on (BW-52). Those are
+fixed. The recurrence is worth naming honestly: *built, tested, never wired* is this codebase's
+characteristic defect, and the review's main contribution is finding three more instances of it.
 
 **Recommendation: publish as an explicitly experimental, pre-v0.1 portfolio project.** It is credible
 precisely because it does not oversell — the remaining gaps are roadmap breadth, disclosed in three
@@ -92,6 +116,18 @@ unmediated route out) were exercised and hold.
   it High because it is a reachable false-green in the verdict itself.)*
 
 ### Medium
+- **BW-51 — the §16.4 precondition check is built, tested, and never called. [Disclosed, not fixed]**
+  `check_preconditions` is exported from `verdict/` and covered by `tests/test_verdict.py`, but a
+  grep for callers across the package returns the definition and the export and nothing else. The
+  spec's "MUST refuse to start" an unsatisfiable policy/target combination never executes, so an
+  unsatisfiable profile is discovered only after a full matrix has been paid for. Same
+  built-tested-never-wired pattern as BW-47. **Fails safe** — the gates still block correctly on
+  `not_evaluable`, so no unearned verdict is produced; the cost is wasted spend and a violated spec
+  MUST. Not fixed here because wiring it needs per-target capability declarations and the runner's
+  plane set threaded into `run`, and getting those wrong would make the check *refuse valid runs* —
+  a worse failure than the current one, and not something to attempt at the end of a hygiene pass.
+  README and STATUS previously read "verdict engine + precondition check — done"; both now
+  distinguish the finished engine from the absent wiring, and `doctor` says so directly.
 - **BW-49 — only `egress_outside_allowlist` drives the scored verdict. [Mitigated + Deferred]** The
   policy exposes 13 `security_runtime` dispositions and the scaffold sets most to `block`, but 12 of
   them (canary leaks, DNS-outside-allowlist, undeclared credential reads, sensitive-directory access,
@@ -108,7 +144,24 @@ unmediated route out) were exercised and hold.
   building the flow with an un-normalised host; it is replaced by one that records the host through
   `_norm_host` and fails `[] == ['canary_leak']` pre-fix.
 
+- **BW-52 — documentation drift, found by reading every doc end to end. [Fixed]** Four contradictions
+  where two project-owned documents disagreed, each of the kind that costs a reader trust in *both*:
+  (a) `examples/live/policy.yaml` and its README said "this executor does not yet wire the recording
+  proxy" while `examples/live/config.yaml` turns the proxy on and says egress *is* observed — in the
+  example a user copies; (b) `docs/ci-integration.md` said a live CI run "has not yet been exercised
+  end to end" while the README calls it proven; (c) `doctor` attributed missing probes to work
+  packages that are **done** (WP-5, WP-6, WP-11), reading as "that work has not landed" when what is
+  actually missing is the probe; (d) `bellwether scan` said the scanner lands in "WP-20 (v0.1)" while
+  `doctor` said v0.2. Also fixed: CONTRIBUTING's "the full check, as CI runs it" listed five of the
+  six gates (omitting `pin_lint`), `BUILDPLAN.md` referenced a `bellwether-spec.md` that does not
+  exist, `CLAUDE.md` called a wired resolver "the next brick", and STATUS's live outstanding-actions
+  table still said `bellwether run` was "not yet CLI-drivable".
+
 ### Info
+- **Docker SDK divergence now recorded. [Fixed]** §22 names the Docker SDK; the implementation
+  deliberately shells out to the `docker` CLI because the flags *are* the security boundary. The
+  reasoning existed only as a `pyproject.toml` comment; the project's own rule puts a deliberate
+  spec divergence in `spec-notes.md`, so it is now there.
 - **Repo hygiene. [Fixed]** Project author set to Greg Weir; project-owned URLs point to the intended
   `ideksec/bellwether`; `.gitignore` blocks secret-bearing patterns; `.gitleaks.toml` allowlists only
   the two intentional canary templates. No proof-vocabulary introduced (verified: language lint
@@ -141,10 +194,20 @@ scanner); hash-pinning the full sidecar dependency closure. All are stated in `S
 | Container suite | `sudo -E … pytest -m docker` | **45 passed, 6 skipped** (CI-only sidecar-image builds, with stated reasons) |
 | Determinism | `bellwether demo` re-run | **byte-identical** — `git diff examples/` empty |
 
-Total: **885 tests**. Every fix in this review carries a regression test that fails before the fix and
-passes after (each verified by reverting the fix inline and re-running). The 6 docker skips are
+Total: **885 tests**. Every code fix in this review carries a regression test that fails before the fix
+and passes after (each verified by reverting the fix inline and re-running). The 6 docker skips are
 sidecar-image builds that need open egress to `pip install mitmproxy`/`dnslib`; they run on CI and
 skip locally with an honest stated reason, never a silent pass.
+
+**Live CLI path, exercised directly.** `--help`, `init` into a clean directory, `doctor` against a
+fresh scaffold, every unimplemented-command refusal, and `bellwether run` itself. Findings worth
+recording: the missing-key path is genuinely good — exit 3 (the correct §20 infrastructure code), a
+message naming the exact environment variable, and an explanation of *why* the host holds the key and
+the sandbox does not. The unimplemented commands exit 3 and name where the work lands, rather than
+printing an empty result that would read as a clean run. `doctor` on a fresh scaffold surfaces the
+placeholder model ids, the unpinned sandbox image, the inert runtime dispositions, and the static-scan
+no-op — a good first-contact experience. Determinism re-verified this pass under `PYTHONHASHSEED`
+12345 and 999: `bellwether demo` regenerates the committed reports byte-identically under both.
 
 ---
 
@@ -231,6 +294,8 @@ These are pre-v0.1 realities, disclosed in the tool and docs, and are **not** re
 - Enforcement breadth: only egress (and now declared tool/filesystem scope) is *scored*; canary/DNS/
   credential/directory/anomaly findings are captured and shown but not yet gated (BW-49). `doctor`
   names the inert dispositions.
+- The §16.4 precondition check does not run (BW-51), so an unsatisfiable policy is discovered after
+  the matrix is paid for rather than before. Fails safe; disclosed in `doctor`, README and STATUS.
 - The network/write scope derivations are stubbed, so an undeclared-*egress* violation is not yet
   scored on the `run` path (the declared tool/read table is).
 - The residual model-API channel cannot be closed by a proxy that must pass model traffic; it is

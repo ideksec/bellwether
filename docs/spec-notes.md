@@ -1615,3 +1615,22 @@ extend it — and `doctor` reads it to warn, naming exactly which configured dis
 `dns_outside_allowlist` still gates *runnability* in the §16.4 precondition (bundled with egress), and
 is listed because it is not *scored*. The point is the discipline the project holds elsewhere: a
 control that does nothing must read as one that does nothing, never as one that works.
+
+## §22 — The sandbox shells out to the `docker` CLI; the Docker SDK is deliberately absent
+
+§22's technology table names the `docker` SDK for container work. The implementation does not use it,
+and the reason is a security one rather than a taste one: **the flags are the security boundary.**
+`--cap-drop=ALL`, `--read-only`, `--security-opt=no-new-privileges`, `--pids-limit`, `--network` on
+the internal bridge and `--dns` at the controlled resolver are the isolation profile of §9.2, and an
+SDK call that maps keyword arguments onto an API body puts one more translation between the profile a
+reviewer reads and the argv the kernel actually enforces. Shelling out means `build_argv` produces the
+exact command line, that command line is asserted in tests (`test_docker_argv.py`), and it is the same
+string a human can paste into a shell to reproduce a run. The `Sandbox` interface §22 asks for is kept
+so another backend (gVisor, Firecracker) can be swapped in.
+
+The cost is that argument construction is Bellwether's own responsibility, including quoting and the
+absolute-path rule for bind mounts (a relative source path is read by Docker as a *named volume* and
+fails at container start — this cost a live run once, and `execute()` now calls `.resolve()`). That
+trade is recorded here because the divergence is otherwise invisible: `pyproject.toml` carries a
+comment explaining it, but the project's own rule is that a deliberate divergence from the spec lives
+in this file.
