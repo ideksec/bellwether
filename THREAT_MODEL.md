@@ -105,6 +105,28 @@ token, and volume anomaly detection are all mandatory, and none of them close it
 configuration settings that implement them cannot be disabled without Bellwether
 emitting a `critical` configuration finding and refusing to run above the `low` profile.
 
+The canary URL/body scan deliberately exempts the model-API channel for the same reason,
+so a value routed to the provider endpoint is not treated as an exfiltration finding —
+that channel is the residual above, disclosed rather than falsely flagged or falsely
+cleared.
+
+## What the verdict gates today (enforcement boundary)
+
+The point of this section is that the enforcement boundary is *stated*, not implied. On
+the live `run` path the verdict is composed from five gates: **evidence**, **functional**
+(pass-rate lower bound), **consistency** (behavioural stability), **scope**
+(declared-vs-observed — a skill that uses a tool or reads a path outside its manifest is
+blocked, now on the live path and not only in the demo), and **security_runtime.egress**
+(egress outside the default-deny allowlist, from the recording proxy).
+
+Findings that are **captured as evidence but do not yet drive the scored verdict**: canary
+leaks (Plane C), DNS-outside-allowlist (Plane E), undeclared credential reads,
+sensitive-directory access, and the volume/anomaly checks. Their `block` dispositions in
+policy read like active controls but do not, on their own, make a verdict `not_ready` in
+this version; wiring each into a gate is per-plane roadmap work. `bellwether doctor` names
+exactly which configured dispositions are inert, so a control is never mistaken for one
+that gates. Treat their findings as advisory evidence until the matching gates land.
+
 ## Sandbox strength
 
 v0.1–0.2 uses Docker with a restrictive profile: non-root user, read-only root filesystem

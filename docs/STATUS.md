@@ -17,10 +17,26 @@ merkle digest no longer collides a symlink with a file whose content is `symlink
 `max_rare_capability_risk` gate is no longer inverted; the two trajectory gates and the configured
 Pocock `boundary_z` are actually enforced; `..`-traversal no longer bypasses `deny_read`/scope;
 Plane B no longer pollutes the trajectory metric; base32-split-across-DNS-labels canary evasion is
-closed; the config sandbox profile reaches the container; and the CI evidence upload works. Deferred
-(work packages, not quick fixes): applying declared **manifest scope** in `run` (BW-47 — needs the
-coverage matrix, the same reason `run.py` passes `scope=None`), the blocking static-scan gate
-(lands with the §15 scanner), and hash-pinning the full sidecar dependency closure.
+closed; the config sandbox profile reaches the container; and the CI evidence upload works.
+
+A **public-release review pass** (pre-v0.1, ahead of making the repo public) then ran the same
+adversarial way — four parallel subsystem reviews plus a hands-on pass, every issue reproduced by
+running code — hunting the project's signature failure mode: a control path that renders a clean
+result without running the check. It found the *live* verdict under-enforcing relative to the demo
+and the policy, and closed the two highest-value gaps with regression tests: **BW-47 is now fixed** —
+declared **manifest scope** applies on the live `run` path (`drive_evaluation` threads
+`declared_scope` as a declared-vs-observed table, decoupled from the still-stubbed network/write
+derivations, the split the demo already used), so a skill that uses a manifest-denied tool no longer
+reaches `ready`; and **BW-50** — the egress host/SNI canary scan now folds case, catching a
+subdomain-tunnel exfil the case-sensitive scan missed. It also disclosed **BW-49**: only
+`egress_outside_allowlist` drives the scored verdict, so `doctor` now names the other
+`security_runtime` dispositions as captured-but-not-gated rather than letting a `block` read as an
+active control. Details in `SECURITY_QUALITY_REVIEW.md` → "Public-release review pass".
+
+Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
+undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
+the canary/DNS/credential dispositions into scored gates, the blocking static-scan gate (lands with
+the §15 scanner), and hash-pinning the full sidecar dependency closure.
 
 ---
 
@@ -55,7 +71,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-839 tests: 790 offline, 49 under the `docker` mark (43 run, 6 CI-only skips). All green.
+885 tests: 834 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

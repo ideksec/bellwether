@@ -77,6 +77,29 @@ environment. [docs/BUILDPLAN.md](docs/BUILDPLAN.md) has the ordering.
 
 New here? [pitch.md](pitch.md) is the short version of what this is and why.
 
+### What the live verdict gates today
+
+Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
+composed from five gates, and these are the checks that can actually move a skill off `ready`:
+
+- **evidence** — enough of the repetitions produced evaluable traces;
+- **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
+- **consistency** — the behaviour is stable across runs (Wilson/BCI, risk-weighted capability
+  Jaccard, modal-trajectory share, mean edit distance, and a rare-high-risk-capability check);
+- **scope** — declared-vs-observed: a skill that calls a tool, or reads a path, outside its
+  `manifest.yaml` is flagged and blocked. *This now runs on the live path, not only in the demo* —
+  earlier builds deferred it and rendered a false "within scope" for every run;
+- **security_runtime.egress** — egress to a host outside the default-deny allowlist, from what the
+  recording proxy observed.
+
+What is **captured as evidence but does not yet gate** the scored verdict: canary leaks (Plane C),
+DNS-outside-allowlist (Plane E), undeclared credential reads, sensitive-directory access, and the
+volume/anomaly checks. Their findings appear in the report, but a `block` disposition on them will
+not, on its own, make a verdict `not_ready` in this version — wiring each into a gate is per-plane
+roadmap work. `bellwether doctor` names exactly which configured dispositions are inert, so a control
+is never mistaken for an active one. The residual model-API channel (§ THREAT_MODEL) is by design out
+of the egress scan, because that channel legitimately carries the skill's content to the provider.
+
 ## What it is for
 
 An agent skill is a directory containing a `SKILL.md` and optional supporting files. It
