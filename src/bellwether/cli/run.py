@@ -129,15 +129,22 @@ def run_evaluation(
 
     executor = make_executor(package, fixture, client_factory)
     plans = plan_matrix(scenarios, targets, repetitions=resolved.n_max)
-    # The declared scope is deliberately not applied yet. Its auto-derived assertions include egress
-    # checks (§10.5, "no undeclared network"), which are *not_evaluable* until the recording proxy is
-    # wired into the executor — and a not_evaluable derived assertion currently marks the whole run
-    # not_evaluable, which would block the evidence gate for a benign skill. So the first-light driver
-    # scores against the scenario assertions only, exactly as the checkpoint does; the declared scope
-    # comes online with the egress plane in the executor.
+    # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
+    # assertions: `scope=None` keeps the scenario assertions deciding each run's outcome (the
+    # scope's network/write *derivations* are still stubbed to not_evaluable — §10.5 — and would
+    # otherwise drag a clean run there), while `declared_scope` feeds the manifest's scope into the
+    # `scope` gate so a skill that reads or acts outside its manifest is caught and blocked. This is
+    # the same split the demo uses; passing `scope=None` alone (the old first-light shortcut) left the
+    # `scope` gate reporting a false "within scope" for every live run (BW-47).
+    declared_scope = package.manifest.declared_scope if package.manifest is not None else None
     weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
     readings = drive_evaluation(
-        plans, executor, profile=resolved.profile, scope=None, weights=weights
+        plans,
+        executor,
+        profile=resolved.profile,
+        scope=None,
+        declared_scope=declared_scope,
+        weights=weights,
     )
 
     criticality = (

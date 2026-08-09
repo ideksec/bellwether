@@ -27,7 +27,7 @@ configuration) surfaces the gap without blocking, exactly as §25 prescribes.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -202,12 +202,28 @@ def plan_matrix(
     ]
 
 
+def scope_exceeded_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str, ...]:
+    """The capabilities one run exercised outside its declared scope (§12.5).
+
+    Computed off the run *outcome*, so a declared-scope violation blocks the scope gate without the
+    scope's network/write *derivations* — which are still stubbed to ``not_evaluable`` (§10.5) —
+    dragging an otherwise-clean run to ``not_evaluable``. This is the same split the demo uses, now
+    shared so the live run path enforces declared scope identically rather than skipping it.
+    """
+    index = EvidenceIndex.from_trace(
+        executed.trace, executed.context, workspace=Path(executed.context.workspace_root)
+    )
+    table = evaluate_scope(declared, index)
+    return tuple(sorted(entry.subject for entry in table.exceeded()))
+
+
 def drive_evaluation(
     plans: Sequence[RunPlan],
     executor: RunExecutor,
     *,
     profile: ProfileSpec,
     scope: DeclaredScope | None = None,
+    declared_scope: DeclaredScope | None = None,
     platform_baseline_t3: frozenset[str] = frozenset(),
     weights: Mapping[str, int] | None = None,
 ) -> list[SetReading]:
@@ -218,6 +234,13 @@ def drive_evaluation(
     :class:`SetReading`. The executor is injected — the container-backed
     :class:`~bellwether.cli.execution.SandboxRunExecutor` in a real run, a replay executor in a
     test — so the whole driver is exercised offline, the same seam the analysis path already uses.
+
+    ``declared_scope`` enables the declared-vs-observed check (§12.5) on the live path: it is
+    evaluated separately from ``scope`` (which drives the outcome assertions) so a scope violation
+    blocks the ``scope`` gate without the still-stubbed network/write derivations turning a clean run
+    ``not_evaluable``. Passing it is what makes ``bellwether run`` catch a skill that reads outside
+    its manifest — the same enforcement the demo path already applies. Absent it, the ``scope`` gate
+    reflects only what the outcome assertions saw, and reports ``pass`` only when nothing violated.
 
     Readings come back in first-seen ``(scenario, target)`` order, matching :func:`plan_matrix`, so
     the verdict and the artifact tree are deterministic regardless of how the plans interleave.
@@ -236,9 +259,10 @@ def drive_evaluation(
             analysed_by_set[set_key] = []
             order.append((plan.scenario.id, plan.target.slug, plan.target))
         executed = executor.execute(plan)
-        analysed_by_set[set_key].append(
-            analyse_run(plan, executed, scope=scope, platform_baseline_t3=platform_baseline_t3)
-        )
+        run = analyse_run(plan, executed, scope=scope, platform_baseline_t3=platform_baseline_t3)
+        if declared_scope is not None:
+            run = replace(run, scope_exceeded=scope_exceeded_of(executed, declared_scope))
+        analysed_by_set[set_key].append(run)
     for scenario_id, slug, _target in order:
         count = len(analysed_by_set[(scenario_id, slug)])
         if count < first_look:
