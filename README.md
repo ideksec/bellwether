@@ -13,7 +13,7 @@ flock is about to move. It warns; it does not vouch.
 
 ## Where this came from
 
-This started as an argument at Black Hat. A few of us were kicking around the idea of
+This started as an argument at Black Hat. A few of us were debating (arguing) about the idea of enforcing
 shared, installable agent skills — a plugin repository, basically — and the obvious tension
 that comes with it: the same thing that makes a skill marketplace useful (grab someone
 else's skill, drop it in, done) is exactly what makes it dangerous (you just handed an
