@@ -153,6 +153,38 @@ def test_doctor_refuses_a_disabled_enforced_setting(tmp_path: Path) -> None:
     assert "UDP/53" in result.output
 
 
+def test_doctor_warns_that_most_runtime_dispositions_do_not_gate_yet(tmp_path: Path) -> None:
+    """§16.2 / BW-49: only `egress_outside_allowlist` drives the scored verdict in this version. The
+    scaffold policy sets `canary_leak: block`, `dns_outside_allowlist: block`, and more — controls
+    that read as active but do not gate. Doctor must surface exactly which are inert, the same way it
+    surfaces require_scan, so a `block` there is never mistaken for enforcement (a silent no-op is how
+    a control that does nothing looks like one that works)."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(tmp_path / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    checks = {check["check"]: check for check in json.loads(result.output)["checks"]}
+    assert "runtime security dispositions (§16.2)" in checks
+    runtime = checks["runtime security dispositions (§16.2)"]
+    assert runtime["status"] == "warn"
+    # The comma-separated list of inert dispositions sits between "not_ready: " and ". Treat".
+    inert_list = runtime["detail"].split("not_ready: ", 1)[1].split(". ", 1)[0]
+    for inert in ("canary_leak", "dns_outside_allowlist", "credential_read_undeclared"):
+        assert inert in inert_list
+    # The one disposition that *does* gate is not listed as inert.
+    assert "egress_outside_allowlist" not in inert_list
+    # It is advisory, not a blocking problem — the gap is disclosed, not treated as a failure.
+    assert json.loads(result.output)["blocking_problems"] == 0
+
+
 def test_doctor_reports_a_bad_config_as_an_infrastructure_error(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("apiVersion: bellwether/v1\nkind: Config\n", encoding="utf-8")

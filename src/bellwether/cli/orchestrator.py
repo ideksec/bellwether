@@ -711,6 +711,16 @@ _PLANE_DEPENDENT_CHECKS: Mapping[str, str] = {
     "credential_read_undeclared": "credentials",
 }
 
+#: The ``SecurityRuntimeGate`` dispositions this version turns into a *scored* gate. Today that is
+#: only ``egress_outside_allowlist``, via the ``security_runtime.egress`` gate assembled below. Every
+#: other field on the model is captured as evidence where its plane exists (canaries in Plane C, DNS
+#: in Plane E, …) and shown in the report, but does not yet drive the verdict — a ``block`` on one
+#: will not, on its own, make a verdict ``not_ready``. ``dns_outside_allowlist`` additionally gates
+#: *runnability* in the §16.4 precondition (bundled with egress), but is still not *scored*. ``doctor``
+#: reads this set to warn when a configured disposition is inert, so a control is never mistaken for
+#: an active one; a new gate wiring another disposition must add it here (see spec-notes, BW-49).
+ENFORCED_SECURITY_RUNTIME_DISPOSITIONS: frozenset[str] = frozenset({"egress_outside_allowlist"})
+
 
 def _security_runtime_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
     """The egress gate (§10.5, §16.2), decided from what the recording proxy observed.

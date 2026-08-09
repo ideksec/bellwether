@@ -23,6 +23,7 @@ from typing import Annotated, Any
 import typer
 
 from bellwether import __version__
+from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS
 from bellwether.config import (
     CONFIG_FILE,
     POLICY_FILE,
@@ -198,6 +199,35 @@ def doctor(
                     "policy sets gates.static.require_scan, but the static scanner is not built "
                     "in this version (v0.2 work package); it will not run — set require_scan: "
                     "false until it lands, or treat scan findings as unavailable"
+                ),
+            }
+        )
+
+    # §16.2: only `egress_outside_allowlist` is turned into a scored gate in this version. A policy
+    # that sets any other security_runtime disposition to block/warn reads like an active control but
+    # does not yet drive the verdict — the same silent-no-op trap as require_scan. Surface exactly
+    # which configured dispositions are inert so a `block` there is never mistaken for enforcement.
+    _inert_dispositions = sorted(
+        {
+            field
+            for profile in _static_profiles
+            for field in type(profile.gates.security_runtime).model_fields
+            if field not in ENFORCED_SECURITY_RUNTIME_DISPOSITIONS
+            and getattr(profile.gates.security_runtime, field) != "ignore"
+        }
+    )
+    if _inert_dispositions:
+        checks.append(
+            {
+                "check": "runtime security dispositions (§16.2)",
+                "status": "warn",
+                "detail": (
+                    "only security_runtime.egress_outside_allowlist drives the scored verdict in "
+                    "this version; these configured dispositions are captured as evidence where "
+                    "their plane exists and shown in the report, but do not yet gate the verdict, "
+                    "so a 'block' on them will not by itself make a verdict not_ready: "
+                    f"{', '.join(_inert_dispositions)}. Treat their findings as advisory until the "
+                    "matching gates land, or set them to 'ignore' to record that intent"
                 ),
             }
         )
