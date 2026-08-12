@@ -25,8 +25,12 @@ uv run ruff format --check .
 uv run mypy
 uv run lint-imports
 uv run python tools/language_lint.py
+uv run python tools/pin_lint.py
 uv run pytest -m "not docker"
 ```
+
+All six checks plus the offline suite, in the order CI runs them. Run each explicitly and read the
+output — a silently-skipped check is how a red build looks green.
 
 ## The container integration tests
 

@@ -29,6 +29,20 @@ htmlcov/
 # expands them, so the expanded form must never be committed.
 tests/corpus/**/_materialized/
 
+# Secrets — never commit real credentials. Bellwether plants *fake* canary credentials
+# at runtime (see capture/planting.py) and mints scoped tokens onto the shared proxy
+# volume; none of that is committed, and neither should any real key be. `.env.example`
+# is the one intentional exception (a committed template with placeholder values).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+.local-secrets/
+
 # Editors / OS
 .idea/
 .vscode/

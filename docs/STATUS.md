@@ -17,10 +17,26 @@ merkle digest no longer collides a symlink with a file whose content is `symlink
 `max_rare_capability_risk` gate is no longer inverted; the two trajectory gates and the configured
 Pocock `boundary_z` are actually enforced; `..`-traversal no longer bypasses `deny_read`/scope;
 Plane B no longer pollutes the trajectory metric; base32-split-across-DNS-labels canary evasion is
-closed; the config sandbox profile reaches the container; and the CI evidence upload works. Deferred
-(work packages, not quick fixes): applying declared **manifest scope** in `run` (BW-47 — needs the
-coverage matrix, the same reason `run.py` passes `scope=None`), the blocking static-scan gate
-(lands with the §15 scanner), and hash-pinning the full sidecar dependency closure.
+closed; the config sandbox profile reaches the container; and the CI evidence upload works.
+
+A **public-release review pass** (pre-v0.1, ahead of making the repo public) then ran the same
+adversarial way — four parallel subsystem reviews plus a hands-on pass, every issue reproduced by
+running code — hunting the project's signature failure mode: a control path that renders a clean
+result without running the check. It found the *live* verdict under-enforcing relative to the demo
+and the policy, and closed the two highest-value gaps with regression tests: **BW-47 is now fixed** —
+declared **manifest scope** applies on the live `run` path (`drive_evaluation` threads
+`declared_scope` as a declared-vs-observed table, decoupled from the still-stubbed network/write
+derivations, the split the demo already used), so a skill that uses a manifest-denied tool no longer
+reaches `ready`; and **BW-50** — the egress host/SNI canary scan now folds case, catching a
+subdomain-tunnel exfil the case-sensitive scan missed. It also disclosed **BW-49**: only
+`egress_outside_allowlist` drives the scored verdict, so `doctor` now names the other
+`security_runtime` dispositions as captured-but-not-gated rather than letting a `block` read as an
+active control. Details in `SECURITY_QUALITY_REVIEW.md` → "Public-release review pass".
+
+Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
+undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
+the canary/DNS/credential dispositions into scored gates, the blocking static-scan gate (lands with
+the §15 scanner), and hash-pinning the full sidecar dependency closure.
 
 ---
 
@@ -55,7 +71,7 @@ coverage matrix, the same reason `run.py` passes `scope=None`), the blocking sta
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-839 tests: 790 offline, 49 under the `docker` mark (43 run, 6 CI-only skips). All green.
+885 tests: 834 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -688,12 +704,11 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Item | Where | Why it is still open |
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
-| §21 enforced-settings refusal exists only in `doctor` | `cli/app.py`, `config/models/config.py` | The execution driver and orchestrator have landed; `run` is not yet CLI-drivable (needs the WP-13 live client). Wire the refusal into `run` then. |
-| Precondition check and weight validation not yet wired to `doctor`/`run` | `verdict/precondition.py`, `verdict/validation.py` | Built and tested; §16.4 says surface in `doctor` too. Wire when `run` is CLI-drivable (WP-13). |
+| **§16.4 precondition check is never called** | `verdict/precondition.py` | **BW-51.** `check_preconditions` is built, exported and unit-tested, but has **no caller anywhere in `src/`** — not `run`, not `doctor`, not the orchestrator. §16.4 says the orchestrator MUST refuse to start an unsatisfiable policy/target combination *before* spending, and §20 says surface it in `doctor`. Neither happens, so an unsatisfiable profile is discovered only after a full matrix is paid for. Fails safe (the gates still block on `not_evaluable`) but violates a spec MUST. Same "built, tested, never wired" pattern as BW-47. |
+| Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
 | Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
 | The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
 | Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
-| `bellwether run` not yet CLI-drivable | `cli/app.py` | The live client exists now; wiring `run` (resolve provider + key → `build_model_client` → `SandboxRunExecutor`) is the next brick, after which `benign-stable` reaches `ready`. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 

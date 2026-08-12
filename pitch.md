@@ -145,18 +145,26 @@ implying otherwise.
 
 ## Where it is
 
-Pre-v0.1, under active construction. The scaffolding, configuration layer, skill parser,
-trace format and sandbox are built and tested — 248 tests, of which 18 drive a real
-container and assert from *inside* it that capabilities are zero, the root filesystem is
-read-only, and no test machinery is visible anywhere in the filesystem.
+Pre-v0.1, under active construction — but the loop closes end to end. On a real pull
+request, a changed skill is detected, run six times in a hardened sandbox behind a
+recording proxy that observes its egress, scored across the gates, and posted back as a
+verdict; a benign skill has reached `ready` this way on CI, against a live model, with
+every run's evidence uploaded as an artifact. The offline analysis path — parser, trace
+format, sandbox, harness, capture planes, metrics, verdict engine, and report — is built
+and tested: **885 tests, of which 45 drive a real container** and assert from *inside* it
+that capabilities are zero, the root filesystem is read-only, and no test machinery is
+visible anywhere in the filesystem.
 
-The capture planes, metrics, and verdict engine are next.
+What remains is breadth, not a missing spine: the other evidence planes wired into the
+live scored path, the `claude-code` adapter, and the acceptance corpus.
 
-Eleven defects have been found so far, across two self-reviews and one independent
-adversarial review. Every one of them was something that *looked* like it worked: a random
-generator that returned the same value every call, so five canaries would have been five
-identical markers; a digest that could be forged by putting a newline in a filename; a
-named pipe in a workspace that hung the evidence collector forever.
+**Roughly fifty defects have been found and fixed so far**, across several self-reviews and
+independent adversarial passes — including the pre-release pass that made the repository
+public. Almost every one was something that *looked* like it worked: a random generator
+that returned the same value every call, so five canaries would have been five identical
+markers; a digest that could be forged by putting a newline in a filename; a named pipe in
+a workspace that hung the evidence collector forever; a scope gate that rendered "within
+scope" for every live run without ever running the check.
 
 That is the entire reason the project exists. A security tool whose clean results are not
 earned is worse than no tool, because someone acts on them.

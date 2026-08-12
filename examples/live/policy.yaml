@@ -6,10 +6,13 @@ kind: Policy
 #
 #   1. The matrix is one api-loop/anthropic/haiku target at a single look of 6 — the cheapest
 #      useful evidence, ~$0.20-0.40 of Haiku per skill.
-#   2. The egress and DNS gates are demoted to `warn`. This executor does not yet wire the
-#      recording proxy, so egress is unobservable here (§25); a benign skill would otherwise
-#      be held `not_ready` for a plane the run cannot exercise. This mirrors the first-light
-#      stance the demo takes — advisory-not_evaluable, never a silent pass.
+#   2. The egress and DNS gates are demoted to `warn`. The recording proxy *is* wired into this
+#      executor (`egress.image` in config.yaml turns it on), so egress is observed — but the run
+#      only reaches the proxy when the workflow has built the sidecar image, and the controlled
+#      DNS resolver is not turned on in this config at all. Demoting both to `warn` keeps a
+#      benign skill from being held `not_ready` for a plane a given invocation may not have
+#      exercised, while the finding is still recorded. Advisory-not_evaluable, never a silent
+#      pass — the same stance the demo takes.
 
 defaults: &defaults
   matrix:
@@ -32,8 +35,8 @@ defaults: &defaults
     security_runtime:
       canary_leak: block
       canary_without_read: block
-      egress_outside_allowlist: warn      # unobservable in this executor — advisory (§25)
-      dns_outside_allowlist: warn         # unobservable in this executor — advisory (§25)
+      egress_outside_allowlist: warn      # observed when the sidecar is built — advisory here (§25)
+      dns_outside_allowlist: warn         # controlled resolver not enabled in this config (§25)
       credential_read_undeclared: block
       sensitive_directory_access: block
       unexpected_provider_endpoint: block

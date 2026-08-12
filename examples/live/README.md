@@ -7,8 +7,11 @@ a real model end to end, without spending much.
   and never placed in the sandbox), the smallest model (`haiku`), and a small digest-pinned
   sandbox image.
 - **`policy.yaml`** — one `api-loop`/`anthropic`/`haiku` target at a single look of 6 (~$0.20–0.40
-  of Haiku per skill), with the egress/DNS gates demoted to advisory because this executor does
-  not yet wire the recording proxy (§25).
+  of Haiku per skill), with the egress/DNS gates demoted to advisory. The recording proxy *is*
+  wired into the executor (`egress.image` above turns it on), but it only intercepts once the
+  workflow has built the sidecar image, and the controlled DNS resolver is not enabled in this
+  config — so both gates warn rather than block on a plane a given invocation may not have
+  exercised (§25).
 
 ## Running it
 

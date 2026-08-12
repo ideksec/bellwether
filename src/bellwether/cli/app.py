@@ -23,6 +23,7 @@ from typing import Annotated, Any
 import typer
 
 from bellwether import __version__
+from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS
 from bellwether.config import (
     CONFIG_FILE,
     POLICY_FILE,
@@ -202,6 +203,35 @@ def doctor(
             }
         )
 
+    # §16.2: only `egress_outside_allowlist` is turned into a scored gate in this version. A policy
+    # that sets any other security_runtime disposition to block/warn reads like an active control but
+    # does not yet drive the verdict — the same silent-no-op trap as require_scan. Surface exactly
+    # which configured dispositions are inert so a `block` there is never mistaken for enforcement.
+    _inert_dispositions = sorted(
+        {
+            field
+            for profile in _static_profiles
+            for field in type(profile.gates.security_runtime).model_fields
+            if field not in ENFORCED_SECURITY_RUNTIME_DISPOSITIONS
+            and getattr(profile.gates.security_runtime, field) != "ignore"
+        }
+    )
+    if _inert_dispositions:
+        checks.append(
+            {
+                "check": "runtime security dispositions (§16.2)",
+                "status": "warn",
+                "detail": (
+                    "only security_runtime.egress_outside_allowlist drives the scored verdict in "
+                    "this version; these configured dispositions are captured as evidence where "
+                    "their plane exists and shown in the report, but do not yet gate the verdict, "
+                    "so a 'block' on them will not by itself make a verdict not_ready: "
+                    f"{', '.join(_inert_dispositions)}. Treat their findings as advisory until the "
+                    "matching gates land, or set them to 'ignore' to record that intent"
+                ),
+            }
+        )
+
     for advisory in loaded_config.advisories():
         checks.append({"check": "advisory", "status": "warn", "detail": advisory})
 
@@ -243,14 +273,36 @@ def doctor(
 
 
 #: Environment probes doctor must perform, and the package that implements each (§20).
+#: Probes `doctor` does not yet perform, each with *why it is still absent* — not the work package
+#: that introduced the surrounding feature. Naming a completed package here (this list previously
+#: said WP-5, WP-6 and WP-11, all of which are done) reads as "that work has not landed", which is
+#: both false and the wrong thing to act on: what is missing is the *probe*, not the capability.
 _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
-    ("sandbox image pullable by digest", "WP-20"),
-    ("proxy CA trusted by every mechanism in §9.2, checked by a real request", "WP-14"),
-    ("internal bridge blocks direct UDP/53 to a public resolver", "WP-15"),
-    ("fanotify markable; eBPF loadable by the host agent", "WP-5"),
-    ("provider keys resolve; model aliases map to live model ids", "WP-6"),
-    ("harness versions match version_pin", "WP-6"),
-    ("§16.4 precondition check passes for the configured profile", "WP-11"),
+    ("sandbox image pullable by digest", "needs a registry round-trip; lands with WP-20"),
+    (
+        "proxy CA trusted by every mechanism in §9.2, checked by a real request",
+        "the CA-in-the-loop probe is CI-only (WP-14's live half)",
+    ),
+    (
+        "internal bridge blocks direct UDP/53 to a public resolver",
+        "the §3.3 invariant-3 live probe is CI-only (WP-15's live half)",
+    ),
+    (
+        "fanotify markable; eBPF loadable by the host agent",
+        "read and process capture are v0.2/v0.3; neither plane is built yet",
+    ),
+    (
+        "provider keys resolve; model aliases map to live model ids",
+        "would spend a live API call; not run from doctor",
+    ),
+    (
+        "harness versions match version_pin",
+        "only the api-loop adapter ships; nothing to pin against",
+    ),
+    (
+        "§16.4 precondition check passes for the configured profile",
+        "check_preconditions is built and tested but not yet wired into doctor or run",
+    ),
 )
 
 
@@ -546,7 +598,9 @@ def scan(
     json_output: JsonFlag = False,
 ) -> None:
     """Static pre-flight scan only, no execution."""
-    _not_yet("scan", "WP-20 (v0.1 corpus cases)", "static analysis has not landed")
+    # v0.2, matching what `doctor` says about require_scan — these two must agree, or a user
+    # reading both is told the scanner lands in two different places.
+    _not_yet("scan", "v0.2 (the §15 static scanner)", "static analysis has not landed")
 
 
 @app.command()

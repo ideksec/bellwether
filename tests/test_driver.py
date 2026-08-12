@@ -21,6 +21,7 @@ from bellwether.cli.orchestrator import (
     plan_matrix,
 )
 from bellwether.config import template_path
+from bellwether.config.models.manifest import DeclaredScope, ToolScope
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
 from bellwether.config.policy_loader import parse_policy
 from bellwether.errors import BellwetherError
@@ -61,6 +62,22 @@ _TRANSCRIPT = [
     ),
     ModelTurn(text="done", usage=TurnUsage(input=90, output=10)),
 ]
+# Activates the skill, then reads a file with the `read` tool. A manifest that declares only the
+# `skill` tool leaves `read` undeclared, so §12.5 scope evaluation marks it exceeded — the material
+# the BW-47 regression test drives through the live path.
+_SCOPE_VIOLATION_TRANSCRIPT = [
+    ModelTurn(
+        stop_reason="tool_use",
+        usage=TurnUsage(input=120, output=40),
+        tool_calls=(ToolCallRequest(id="t1", name="skill", input={"name": "security-review"}),),
+    ),
+    ModelTurn(
+        stop_reason="tool_use",
+        usage=TurnUsage(input=100, output=30),
+        tool_calls=(ToolCallRequest(id="t2", name="read", input={"path": "/etc/hostname"}),),
+    ),
+    ModelTurn(text="done", usage=TurnUsage(input=90, output=10)),
+]
 
 
 class _InProcessExec:
@@ -80,11 +97,13 @@ def _fixed_clock():  # type: ignore[no-untyped-def]
     return read
 
 
-def _executed_run(plan: RunPlan, tmp_path: Path, index: int) -> ExecutedRun:
+def _executed_run(
+    plan: RunPlan, tmp_path: Path, index: int, transcript: list[ModelTurn] | None = None
+) -> ExecutedRun:
     """A scripted run whose trace header is stamped from the plan — as the real executor builds it,
     so `analyse_run`'s trace-to-plan binding is satisfied. Each plan gets its own trace file."""
     adapter = ApiLoopAdapter(
-        ScriptedClient(_TRANSCRIPT, model_id_reported="model-as-served"),
+        ScriptedClient(transcript or _TRANSCRIPT, model_id_reported="model-as-served"),
         SandboxToolset(_InProcessExec()),
         skills=(_SKILL,),
         clock=_fixed_clock(),
@@ -157,14 +176,23 @@ class _ReplayExecutor:
     """Builds a per-plan trace whose header matches the plan (as the real executor does), counting
     the calls. ``stamp`` lets a test deliberately return a *mismatched* trace to exercise the bind."""
 
-    def __init__(self, tmp_path: Path, *, stamp: RunPlan | None = None) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        stamp: RunPlan | None = None,
+        transcript: list[ModelTurn] | None = None,
+    ) -> None:
         self.tmp_path = tmp_path
         self.stamp = stamp
+        self.transcript = transcript
         self.plans: list[RunPlan] = []
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         self.plans.append(plan)
-        return _executed_run(self.stamp or plan, self.tmp_path, len(self.plans))
+        return _executed_run(
+            self.stamp or plan, self.tmp_path, len(self.plans), transcript=self.transcript
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -266,3 +294,33 @@ def test_a_misrouted_trace_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(BellwetherError, match="does not match the run plan"):
         drive_evaluation(plans, executor, profile=_firstlight_profile())
+
+
+def test_drive_evaluation_enforces_declared_scope_on_the_live_path(tmp_path: Path) -> None:
+    """§12.5 / BW-47: a skill that uses a tool outside its declared scope must reach the ``scope``
+    gate as a violation on the *live* run path — not only in the demo.
+
+    The manifest here declares the ``skill`` tool only; the transcript also calls ``read``, which is
+    therefore undeclared. Threading the manifest's declared scope into ``drive_evaluation`` makes
+    every run's ``scope_exceeded`` name the undeclared tool. Omitting it — the old first-light
+    shortcut that passed ``scope=None`` and nothing else — leaves the field empty, which is exactly
+    the false ``within scope`` the fix closes: without the ``declared_scope`` argument this test
+    would see an empty tuple where a violation occurred.
+    """
+    declared = DeclaredScope(tools=ToolScope(allow=["skill"]))
+    plans = plan_matrix(
+        [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=6
+    )
+
+    enforced = _ReplayExecutor(tmp_path / "enforced", transcript=_SCOPE_VIOLATION_TRANSCRIPT)
+    (reading,) = drive_evaluation(
+        plans, enforced, profile=_firstlight_profile(), declared_scope=declared
+    )
+    assert reading.scope_exceeded == ("read",)
+    assert all("read" in run.scope_exceeded for run in reading.runs)
+
+    # Without the declared scope the live path is blind to the same violation — the pre-fix behaviour
+    # this regression pins against, so a future revert of the driver change fails here.
+    blind = _ReplayExecutor(tmp_path / "blind", transcript=_SCOPE_VIOLATION_TRANSCRIPT)
+    (unenforced,) = drive_evaluation(plans, blind, profile=_firstlight_profile())
+    assert unenforced.scope_exceeded == ()

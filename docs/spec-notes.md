@@ -1547,3 +1547,90 @@ git-credential file, and an env-var token) at sandbox setup and scan every evide
   the Plane C finding already records that it escaped. `test_execution_canary_docker.py` proves the
   invariant on the real artifact — a skill reads `$INTERNAL_API_TOKEN` and leaks it, yet the trace
   JSONL holds only the fingerprint.
+
+## §12.5, §16.2 — Declared manifest scope is enforced on the live `run` path, decoupled from the stubbed network derivations
+
+The first-light `run` scored each run against the scenario assertions and passed `scope=None` into
+the driver, deferring declared-scope enforcement "until the egress plane lands in the executor." But
+the `scope` gate still rendered a disposition from an always-empty `scope_exceeded`, so every live run
+reported a reassuring `pass / within scope` no matter what the skill did — a control path that
+produced a clean-looking result without running the check. A skill could call a tool its own manifest
+denies and still reach `ready` (the BW-47 finding, observed live).
+
+The reason `scope=None` was load-bearing is real and worth recording: the declared scope's
+auto-derived assertions include network/write checks (§10.5, "no undeclared network") that are
+`not_evaluable` while their derivations are stubbed, and a `not_evaluable` derived assertion marks the
+whole run `not_evaluable`, which would block the evidence gate for a benign skill. So the fix does not
+simply pass the scope into `analyse_run`. It threads the manifest's `declared_scope` through
+`drive_evaluation` as a *separate* declared-vs-observed table (`scope_exceeded_of`), evaluated off the
+run outcome — exactly the split `cli/demo.py` already used to keep the exfiltrator's clean planes from
+being dragged to `not_evaluable`. `scope=None` still decides each run's outcome; `declared_scope`
+feeds the observed-capability table into the `scope` gate. This is why the demo and the live path now
+enforce declared scope identically, and why the network/write scope derivations remaining stubbed
+(the honest gap, still disclosed) does not re-open the false green.
+
+Undeclared scope *dimensions* stay allow-all: `evaluate_scope`'s `_tool_rows`/`_filesystem_read_rows`
+each `return []` on an empty allow-list, so a skill that declares nothing is never falsely blocked —
+only a capability observed outside a *declared* allow-list is flagged `exceeded`. The regression is
+differential: a transcript that calls an undeclared `read` surfaces `scope_exceeded=("read",)` with
+the declared scope threaded in and an empty tuple without it, so a revert of the driver change fails
+the test (`() == ('read',)`).
+
+## §10.4.2, §12.6 — The egress canary scan folds case on the host/SNI, matching how the host is recorded
+
+The non-model egress scan joined the request's path, host, and SNI into one line and scanned it
+case-sensitively. But a canary marker is mixed-case (the mint alphabet is `a–zA–Z0–9`) and
+`_norm_host` records the host lowercased — `urlsplit().hostname` is lowercased so the allowlist
+comparison is case-insensitive, as a hostname must be. So a marker tunnelled through a subdomain
+(`<marker>.attacker.com`, the classic covert channel) was recorded lowercased and slipped past the
+case-sensitive scan: the URL scan reported nothing while the secret plainly rode out. The DNS plane
+already folded case for exactly this reason (`scan_query_for_canaries` passes `is_dns=True`); the
+egress URL scan did not.
+
+The fix scans the two field kinds by their nature rather than as one string: the path
+case-sensitively and decode-aware (a URL path can carry a case-exact base64 marker, and folding it
+would break base64's alphabet), the host and SNI the way a DNS name is scanned — case-folded,
+label-split, base32-aware — since a hostname is case-insensitive and a marker chunked across
+dot-labels must read as contiguous. A canary is de-duplicated to one finding per request even if it
+lands in more than one field, preserving the prior "≤1 finding per canary per source" invariant.
+Path-marker offsets are unchanged because the path was already the first field in the joined line, so
+its offsets started at 0 either way; no committed golden shifts. The prior test built the `EgressFlow`
+directly with a raw, un-normalised host, so it asserted host markers are found while never exercising
+the lowercasing the real recording path applies — green while production missed; it is replaced by a
+regression that records the host through `_norm_host` exactly as the sidecar does.
+
+## §16.2 — `doctor` names the security-runtime dispositions that do not yet drive the scored verdict
+
+Only `egress_outside_allowlist` is turned into a scored gate today (`security_runtime.egress`), yet
+`SecurityRuntimeGate` carries thirteen disposition fields and the scaffold policy sets most to
+`block` (`canary_leak`, `dns_outside_allowlist`, `credential_read_undeclared`, …). Those findings are
+captured as evidence where their plane exists and shown in the report, but none of them reaches a
+gate, so a `block` there reads as an active control while a leaking skill would still reach `ready` —
+the same silent-no-op trap already surfaced for `require_scan` (§15). Wiring each disposition into a
+gate is per-plane roadmap work; what ships now is legibility, not enforcement.
+
+`ENFORCED_SECURITY_RUNTIME_DISPOSITIONS` (in `cli/orchestrator.py`, next to the gate assembly) is the
+single authoritative list of what actually gates — a future gate wiring another disposition must
+extend it — and `doctor` reads it to warn, naming exactly which configured dispositions are inert.
+`dns_outside_allowlist` still gates *runnability* in the §16.4 precondition (bundled with egress), and
+is listed because it is not *scored*. The point is the discipline the project holds elsewhere: a
+control that does nothing must read as one that does nothing, never as one that works.
+
+## §22 — The sandbox shells out to the `docker` CLI; the Docker SDK is deliberately absent
+
+§22's technology table names the `docker` SDK for container work. The implementation does not use it,
+and the reason is a security one rather than a taste one: **the flags are the security boundary.**
+`--cap-drop=ALL`, `--read-only`, `--security-opt=no-new-privileges`, `--pids-limit`, `--network` on
+the internal bridge and `--dns` at the controlled resolver are the isolation profile of §9.2, and an
+SDK call that maps keyword arguments onto an API body puts one more translation between the profile a
+reviewer reads and the argv the kernel actually enforces. Shelling out means `build_argv` produces the
+exact command line, that command line is asserted in tests (`test_docker_argv.py`), and it is the same
+string a human can paste into a shell to reproduce a run. The `Sandbox` interface §22 asks for is kept
+so another backend (gVisor, Firecracker) can be swapped in.
+
+The cost is that argument construction is Bellwether's own responsibility, including quoting and the
+absolute-path rule for bind mounts (a relative source path is read by Docker as a *named volume* and
+fails at container start — this cost a live run once, and `execute()` now calls `.resolve()`). That
+trade is recorded here because the divergence is otherwise invisible: `pyproject.toml` carries a
+comment explaining it, but the project's own rule is that a deliberate divergence from the spec lives
+in this file.

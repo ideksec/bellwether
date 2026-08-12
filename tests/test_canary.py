@@ -27,6 +27,7 @@ from bellwether.capture import (
     strip_dns_labels,
 )
 from bellwether.capture.canary import MAX_SCAN_CHARS, MIN_WINDOW
+from bellwether.capture.egress import _norm_host
 from bellwether.determinism import canonical_json
 from bellwether.trace import (
     Action,
@@ -461,13 +462,42 @@ def test_a_marker_in_a_non_model_egress_url_is_a_leak() -> None:
     assert plane_c[0].correlation.anchor_seq == 2
 
 
-def test_a_marker_in_the_egress_host_or_sni_is_found() -> None:
+def test_a_marker_tunnelled_through_a_lowercased_subdomain_is_found() -> None:
+    """A canary marker is mixed-case; the recording path lowercases the host (`_norm_host` via
+    urlsplit) while leaving the SNI as sent. So the host must be scanned case-folded — the way a DNS
+    name is — or a subdomain-tunnel exfil (`<marker>.attacker.com`) evades the URL scan even though
+    the marker plainly rode out (§10.4.1). Records the host exactly as the real path does, so the
+    test cannot pass by skipping normalization."""
     canaries = mint_canaries(7)
     marker = canaries[0].marker
-    assert canary_actions(_egress_source(path="/", host=f"{marker}.evil.example"), canaries)
+
+    # Host: recorded lowercased, as _norm_host produces it — the case-folded scan still finds it.
+    recorded_host = _norm_host(f"{marker}.evil.example")
+    assert (
+        recorded_host == f"{marker.lower()}.evil.example"
+    )  # the normalization the scan must survive
+    host_leak = canary_actions(_egress_source(path="/", host=recorded_host), canaries)
+    assert [a.kind for a in host_leak] == ["canary_leak"]
+    assert host_leak[0].action["destination"] == "other_host"
+
+    # A marker chunked across dot-labels reads as contiguous once labels are stripped.
+    split = ".".join((marker[:20], marker[20:], "evil.example"))
+    assert canary_actions(_egress_source(path="/", host=_norm_host(split)), canaries)
+
+    # SNI is recorded as sent (not lowercased), so a marker there is found case-exact.
     assert canary_actions(
         _egress_source(path="/", host="evil.example", sni=f"{marker}.evil.example"), canaries
     )
+
+
+def test_a_canary_in_both_path_and_host_is_reported_once() -> None:
+    """The path and hostname fields are scanned separately (case-sensitive vs case-folded), so a
+    marker landing in both must still be a single Plane C finding — not double-counted (§10.4.1)."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    source = _egress_source(path=f"/exfil?d={marker}", host=_norm_host(f"{marker.lower()}.evil.x"))
+    plane_c = canary_actions(source, canaries)
+    assert [a.action["canary_id"] for a in plane_c] == [canaries[0].id]
 
 
 def test_a_marker_in_a_model_api_egress_url_is_not_scanned_here() -> None:

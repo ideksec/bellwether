@@ -1,6 +1,6 @@
 # Bellwether — v0.1 Build Plan
 
-Companion to `bellwether-spec.md` (revision 3, merged). The spec is the source of truth for
+Companion to [`spec.md`](spec.md) (revision 3, merged). The spec is the source of truth for
 *what*; this document is the source of truth for *order*, and for what "done" means at each step.
 
 Hand this file and the spec to Claude Code together. Work packages are numbered in dependency

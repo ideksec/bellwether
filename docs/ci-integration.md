@@ -3,8 +3,8 @@
 A skill changes in a pull request, Bellwether evaluates it, and the verdict both lands as a
 comment and gates the merge. The workflow that does this ships in this repository at
 [`.github/workflows/bellwether.yml`](../.github/workflows/bellwether.yml); copy it into a
-skill repository and adapt it. Some pieces are built and tested; one is not yet proven end to
-end, and that is called out below.
+skill repository and adapt it. What is proven and what is still narrow is called out under
+**Status** below.
 
 ## The flow
 
@@ -61,8 +61,11 @@ same job holds it — which is the property the `sneaky-exfiltrator` example is 
   (the latter through an injected transport; the idempotent upsert and the
   token-only-in-the-auth-header guard are pinned by unit tests).
 - **The workflow** — ships and is wired for real, but its live-evaluation branch only runs when
-  a key is present.
-- **`bellwether run` on a live container** — wired and tested offline, but a real run against a
-  live model in a container has not yet been exercised end to end on CI. Until it is, treat the
-  live branch of the workflow as the target shape rather than a proven pipeline. See
-  `docs/STATUS.md`.
+  a key is present *and* the PR carries the `bellwether-run` label.
+- **`bellwether run` on a live container** — **proven end to end on CI.** A benign skill has
+  reached `ready` on a real labelled pull request against a live model, in a sandbox behind the
+  recording proxy with egress observed, and every run's evidence was uploaded as an artifact.
+- **What is still narrow.** That proof covers one skill, one target (`api-loop` + Haiku), at a
+  single look of 6. The `claude-code` adapter, the controlled DNS resolver in the live path, and
+  the acceptance corpus are not part of it. See `docs/STATUS.md` for the current boundary, and
+  the README's "What the live verdict gates today" for which gates are actually scored.
