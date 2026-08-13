@@ -118,7 +118,7 @@ ALL_PLANES = frozenset(
 
 
 def api_loop_target(
-    provider: str = "anthropic", *, egress: bool = True, structured: bool = True
+    provider: str = "anthropic", *, egress: bool = True, dns: bool = True, structured: bool = True
 ) -> TargetDeclaration:
     return TargetDeclaration(
         label=f"api-loop/{provider}/frontier",
@@ -126,6 +126,7 @@ def api_loop_target(
         capabilities={
             "structured_tool_events": structured,
             "egress_observable": egress,
+            "dns_observable": dns,
             "controls_skill_presentation": True,
         },
     )
@@ -178,15 +179,32 @@ def test_min_distinct_providers_two_is_refused_for_a_single_provider_matrix() ->
     assert any(f.gate == "matrix.min_distinct_providers" for f in failures)
 
 
-def test_an_egress_blind_harness_under_an_egress_gate_is_refused() -> None:
-    """§16.4 combo 4: egress_observable: false cannot satisfy any blocking egress gate."""
+def test_an_egress_blind_composition_under_a_blocking_egress_gate_is_refused() -> None:
+    """§16.4 combo 4, egress half: a composition with no recording proxy cannot satisfy a
+    blocking egress gate — refused with the remedy naming the config switch."""
     profile = default_policy("medium")
     blind = api_loop_target(egress=False)
     failures = check_preconditions(profile, [blind], available_planes=ALL_PLANES)  # type: ignore[arg-type]
 
-    egress_failures = [f for f in failures if "egress" in f.gate]
+    egress_failures = [f for f in failures if f.gate == "security_runtime.egress_outside_allowlist"]
     assert egress_failures
-    assert "egress_observable: false" in egress_failures[0].remedy
+    assert "egress.image" in egress_failures[0].remedy
+
+
+def test_a_dns_blind_composition_under_a_blocking_dns_gate_is_refused() -> None:
+    """§16.4 combo 4, DNS half — checked independently of egress: the proxy and the
+    resolver are wired by different config switches, so a wired proxy must not vouch for
+    an unwired resolver. Pre-split, one `egress_observable` bit covered both gates and a
+    proxy-only composition under `dns_outside_allowlist: block` sailed through."""
+    profile = default_policy("medium")
+    proxy_only = api_loop_target(egress=True, dns=False)
+    failures = check_preconditions(profile, [proxy_only], available_planes=ALL_PLANES)  # type: ignore[arg-type]
+
+    dns_failures = [f for f in failures if f.gate == "security_runtime.dns_outside_allowlist"]
+    assert dns_failures
+    assert "dns.image" in dns_failures[0].remedy
+    # And the egress half stays satisfied — the two channels are judged separately.
+    assert not any(f.gate == "security_runtime.egress_outside_allowlist" for f in failures)
 
 
 def test_a_satisfiable_matrix_produces_no_failures() -> None:

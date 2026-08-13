@@ -84,17 +84,22 @@ class ApiLoopAdapter:
     def version(self) -> str:
         return "0.1"
 
-    def capabilities(self) -> HarnessCapabilities:
+    @staticmethod
+    def capabilities() -> HarnessCapabilities:
+        """The adapter's own declaration — static, so the §16.4 preflight can read it
+        without constructing an adapter (which needs a client and a toolset)."""
         return HarnessCapabilities(
             structured_tool_events=True,
             supports_hooks=False,
             token_accounting=True,
             multi_turn=True,
             multiple_skills=True,
-            # The model call is made by Bellwether itself and the container has no
-            # egress path at all until WP-13; there is no capture point this adapter's
-            # traffic traverses yet. False keeps `no_egress` at `not_evaluable` rather
-            # than letting it pass vacuously (§9.4).
+            # False is the *adapter-alone* truth: this adapter provides no capture point
+            # of its own. Egress becomes observed when the executor stands a recording
+            # proxy beside the sandbox — a property of the composition, which the §16.4
+            # preflight overlays from config (`cli/preflight.py`). Keeping the static bit
+            # False keeps `no_egress` at `not_evaluable` rather than vacuously passing
+            # where the composition wires no proxy (§9.4).
             egress_observable=False,
             # The critical limitation: Bellwether writes the prompt, so trigger metrics
             # describe Bellwether, and `trigger_metrics_portable` derives False.

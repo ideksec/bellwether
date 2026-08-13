@@ -23,7 +23,8 @@ from typing import Annotated, Any
 import typer
 
 from bellwether import __version__
-from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS
+from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS, TargetInfo
+from bellwether.cli.preflight import available_planes, preflight_failures
 from bellwether.config import (
     CONFIG_FILE,
     POLICY_FILE,
@@ -232,6 +233,39 @@ def doctor(
             }
         )
 
+    # §16.4 / BW-51: the precondition check, evaluated for real — per profile, against that
+    # profile's own matrix targets and the planes this config actually wires. Reported as
+    # `warn`, not `critical`: an unsatisfiable profile is a fact about policy-vs-composition,
+    # and `run` refuses it with the same failures before spending; doctor's job is to say it
+    # earlier. A fresh scaffold warns truthfully here — its policy names claude-code targets
+    # (WP-17) and blocks on egress while no proxy image is configured.
+    _planes = available_planes(loaded_config)
+    for _profile_name in sorted(loaded_policy.profiles):
+        _profile = loaded_policy.profile(_profile_name)
+        _targets = [
+            TargetInfo(spec.harness, spec.provider, spec.model_alias)
+            for spec in _profile.matrix.required_targets
+        ]
+        _failures = preflight_failures(loaded_config, _profile, _targets)
+        if _failures:
+            detail = "; ".join(
+                f"{failure.gate} [{failure.target}]: {failure.remedy}" for failure in _failures
+            )
+            status = "warn"
+        else:
+            detail = (
+                f"satisfiable: {len(_targets)} target(s) against available planes "
+                f"({', '.join(sorted(_planes))})"
+            )
+            status = "ok"
+        checks.append(
+            {
+                "check": f"precondition check (§16.4) — profile '{_profile_name}'",
+                "status": status,
+                "detail": detail,
+            }
+        )
+
     for advisory in loaded_config.advisories():
         checks.append({"check": "advisory", "status": "warn", "detail": advisory})
 
@@ -298,10 +332,6 @@ _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
     (
         "harness versions match version_pin",
         "only the api-loop adapter ships; nothing to pin against",
-    ),
-    (
-        "§16.4 precondition check passes for the configured profile",
-        "check_preconditions is built and tested but not yet wired into doctor or run",
     ),
 )
 

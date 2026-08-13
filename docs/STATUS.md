@@ -33,10 +33,21 @@ subdomain-tunnel exfil the case-sensitive scan missed. It also disclosed **BW-49
 `security_runtime` dispositions as captured-but-not-gated rather than letting a `block` read as an
 active control. Details in `SECURITY_QUALITY_REVIEW.md` → "Public-release review pass".
 
+The brick after the release pass closed its one disclosed-not-fixed finding: **BW-51 — the §16.4
+precondition check is wired** (`cli/preflight.py`). `run` now refuses an unsatisfiable
+policy/target/composition combination *before* the executor is built — a blocking egress/DNS gate
+with no proxy/resolver wired, a profile requiring planes this version has not built, a target
+naming a harness with no shipped adapter (which previously ran the whole sandbox under api-loop and
+died on the trace-to-plan binding) — and `doctor` evaluates the same check per profile instead of
+listing it as pending. Observability is composition-derived (`egress.image` → proxy, `dns.image` →
+resolver), which is what keeps the preflight from refusing the proven live configuration; the
+egress and DNS clauses are checked independently, since the two components are wired independently.
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the canary/DNS/credential dispositions into scored gates, the blocking static-scan gate (lands with
-the §15 scanner), and hash-pinning the full sidecar dependency closure.
+the §15 scanner), `requires.min_bellwether_version` in the preflight, and hash-pinning the full
+sidecar dependency closure.
 
 ---
 
@@ -71,7 +82,7 @@ the §15 scanner), and hash-pinning the full sidecar dependency closure.
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-885 tests: 834 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
+890 tests: 839 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -704,7 +715,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Item | Where | Why it is still open |
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
-| **§16.4 precondition check is never called** | `verdict/precondition.py` | **BW-51.** `check_preconditions` is built, exported and unit-tested, but has **no caller anywhere in `src/`** — not `run`, not `doctor`, not the orchestrator. §16.4 says the orchestrator MUST refuse to start an unsatisfiable policy/target combination *before* spending, and §20 says surface it in `doctor`. Neither happens, so an unsatisfiable profile is discovered only after a full matrix is paid for. Fails safe (the gates still block on `not_evaluable`) but violates a spec MUST. Same "built, tested, never wired" pattern as BW-47. |
+| `requires.min_bellwether_version` is not checked by the §16.4 preflight | `cli/preflight.py` | The rest of BW-51 is closed — `run` refuses an unsatisfiable policy before spending and `doctor` evaluates the check per profile — but version comparison needs an ordering rule the project has not committed to, and the one profile that sets it (`high`) already refuses on its missing capture planes, so skipping it cannot produce a false start today. |
 | Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
 | Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
 | The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |

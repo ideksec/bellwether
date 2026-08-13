@@ -128,6 +128,8 @@ unmediated route out) were exercised and hold.
   a worse failure than the current one, and not something to attempt at the end of a hygiene pass.
   README and STATUS previously read "verdict engine + precondition check — done"; both now
   distinguish the finished engine from the absent wiring, and `doctor` says so directly.
+  *(Closed in the brick after this review merged: `cli/preflight.py` wires the check into `run` and
+  `doctor` with composition-derived observability — see SECURITY_QUALITY_REVIEW.md → BW-51.)*
 - **BW-49 — only `egress_outside_allowlist` drives the scored verdict. [Mitigated + Deferred]** The
   policy exposes 13 `security_runtime` dispositions and the scaffold sets most to `block`, but 12 of
   them (canary leaks, DNS-outside-allowlist, undeclared credential reads, sensitive-directory access,
@@ -294,8 +296,9 @@ These are pre-v0.1 realities, disclosed in the tool and docs, and are **not** re
 - Enforcement breadth: only egress (and now declared tool/filesystem scope) is *scored*; canary/DNS/
   credential/directory/anomaly findings are captured and shown but not yet gated (BW-49). `doctor`
   names the inert dispositions.
-- The §16.4 precondition check does not run (BW-51), so an unsatisfiable policy is discovered after
-  the matrix is paid for rather than before. Fails safe; disclosed in `doctor`, README and STATUS.
+- ~~The §16.4 precondition check does not run (BW-51)~~ — *closed in the follow-up brick:* `run`
+  now refuses an unsatisfiable policy before the executor is built, and `doctor` evaluates the
+  check per profile.
 - The network/write scope derivations are stubbed, so an undeclared-*egress* violation is not yet
   scored on the `run` path (the declared tool/read table is).
 - The residual model-API channel cannot be closed by a proxy that must pass model traffic; it is
