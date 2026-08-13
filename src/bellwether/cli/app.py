@@ -204,10 +204,12 @@ def doctor(
             }
         )
 
-    # §16.2: only `egress_outside_allowlist` is turned into a scored gate in this version. A policy
-    # that sets any other security_runtime disposition to block/warn reads like an active control but
-    # does not yet drive the verdict — the same silent-no-op trap as require_scan. Surface exactly
-    # which configured dispositions are inert so a `block` there is never mistaken for enforcement.
+    # §16.2: only the dispositions in ENFORCED_SECURITY_RUNTIME_DISPOSITIONS are turned into
+    # scored gates in this version. A policy that sets any other security_runtime disposition to
+    # block/warn reads like an active control but does not yet drive the verdict — the same
+    # silent-no-op trap as require_scan. Surface exactly which configured dispositions are inert
+    # so a `block` there is never mistaken for enforcement. Both lists derive from the one
+    # constant next to the gate assembly, so this message cannot drift from what actually gates.
     _inert_dispositions = sorted(
         {
             field
@@ -218,15 +220,16 @@ def doctor(
         }
     )
     if _inert_dispositions:
+        _enforced = ", ".join(sorted(ENFORCED_SECURITY_RUNTIME_DISPOSITIONS))
         checks.append(
             {
                 "check": "runtime security dispositions (§16.2)",
                 "status": "warn",
                 "detail": (
-                    "only security_runtime.egress_outside_allowlist drives the scored verdict in "
-                    "this version; these configured dispositions are captured as evidence where "
-                    "their plane exists and shown in the report, but do not yet gate the verdict, "
-                    "so a 'block' on them will not by itself make a verdict not_ready: "
+                    f"only these security_runtime dispositions drive the scored verdict in this "
+                    f"version: {_enforced}. These configured dispositions are captured as evidence "
+                    "where their plane exists and shown in the report, but do not yet gate the "
+                    "verdict, so a 'block' on them will not by itself make a verdict not_ready: "
                     f"{', '.join(_inert_dispositions)}. Treat their findings as advisory until the "
                     "matching gates land, or set them to 'ignore' to record that intent"
                 ),

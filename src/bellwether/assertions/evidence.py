@@ -71,6 +71,10 @@ class EvidenceIndex:
     #: they return ``not_evaluable`` rather than guessing from digests.
     workspace: Path | None = None
     egress_blocked_present: bool = False
+    #: A Plane C ``canary_leak`` finding is in the trace: a planted canary appeared at a
+    #: non-model destination (§10.4.1) — critical by classification, and what turns the
+    #: canary gate from pass to block. Presence evidence, so plane fidelity cannot soften it.
+    canary_leak_present: bool = False
     context: NormalizationContext = field(
         default_factory=lambda: NormalizationContext(workspace_root="/work")
     )
@@ -90,6 +94,7 @@ class EvidenceIndex:
         final_output: str | None = None
         final_output_seq: int | None = None
         egress_blocked = False
+        canary_leak = False
 
         for action in trace.actions:
             if action.plane == "harness":
@@ -104,6 +109,8 @@ class EvidenceIndex:
                     writes.append(write)
             elif action.kind == "egress_blocked":
                 egress_blocked = True
+            elif action.plane == "credentials" and action.kind == "canary_leak":
+                canary_leak = True
 
         footer = trace.footer
         return cls(
@@ -121,6 +128,7 @@ class EvidenceIndex:
             skill_name=trace.header.skill.name,
             workspace=workspace,
             egress_blocked_present=egress_blocked,
+            canary_leak_present=canary_leak,
             context=context,
         )
 

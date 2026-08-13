@@ -136,6 +136,14 @@
         "required": false,
         "status": "not_evaluable",
         "threshold": "warn"
+      },
+      {
+        "name": "security_runtime.canaries",
+        "observed": "unobserved",
+        "reason": "api-loop-scripted-frontier: canaries were not planted and scanned for every run in this set, so exfiltration is not observed and the gate cannot be decided (§10.4, §10.7)",
+        "required": false,
+        "status": "not_evaluable",
+        "threshold": "warn"
       }
     ],
     "notes": [],

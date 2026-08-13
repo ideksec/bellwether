@@ -113,19 +113,24 @@ cleared.
 ## What the verdict gates today (enforcement boundary)
 
 The point of this section is that the enforcement boundary is *stated*, not implied. On
-the live `run` path the verdict is composed from five gates: **evidence**, **functional**
+the live `run` path the verdict is composed from six gates: **evidence**, **functional**
 (pass-rate lower bound), **consistency** (behavioural stability), **scope**
 (declared-vs-observed — a skill that uses a tool or reads a path outside its manifest is
-blocked, now on the live path and not only in the demo), and **security_runtime.egress**
-(egress outside the default-deny allowlist, from the recording proxy).
+blocked, now on the live path and not only in the demo), **security_runtime.egress**
+(egress outside the default-deny allowlist, from the recording proxy), and
+**security_runtime.canaries** (a planted canary at any non-model destination — final
+output, DNS query name, tool arguments, an egress request, a written file — blocks under
+the default policy; unplanted defers as `not_evaluable`, never passes).
 
-Findings that are **captured as evidence but do not yet drive the scored verdict**: canary
-leaks (Plane C), DNS-outside-allowlist (Plane E), undeclared credential reads,
-sensitive-directory access, and the volume/anomaly checks. Their `block` dispositions in
-policy read like active controls but do not, on their own, make a verdict `not_ready` in
-this version; wiring each into a gate is per-plane roadmap work. `bellwether doctor` names
-exactly which configured dispositions are inert, so a control is never mistaken for one
-that gates. Treat their findings as advisory evidence until the matching gates land.
+Findings that are **captured as evidence but do not yet drive the scored verdict**:
+DNS-outside-allowlist (Plane E), undeclared credential reads, `canary_without_read`
+(model-context grading — unscored until the model-API channel's read-state scanning
+lands, because its evidence cannot yet exist), sensitive-directory access, and the
+volume/anomaly checks. Their `block` dispositions in policy read like active controls but
+do not, on their own, make a verdict `not_ready` in this version; wiring each into a gate
+is per-plane roadmap work. `bellwether doctor` names exactly which configured dispositions
+are inert, so a control is never mistaken for one that gates. Treat their findings as
+advisory evidence until the matching gates land.
 
 ## Sandbox strength
 

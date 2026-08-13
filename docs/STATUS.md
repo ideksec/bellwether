@@ -43,11 +43,24 @@ listing it as pending. Observability is composition-derived (`egress.image` → 
 resolver), which is what keeps the preflight from refusing the proven live configuration; the
 egress and DNS clauses are checked independently, since the two components are wired independently.
 
+The brick after that opened BW-49's real fix: **canary leaks now gate the verdict** — the
+`security_runtime.canaries` gate, scored from Plane C findings. A skill that exfiltrates a planted
+canary to any non-model destination blocks under the shipped `canary_leak: block`; unplanted runs
+defer as `not_evaluable` (an unwatched channel is never called clean); and an observed-clean set
+earns its pass even at the live path's `partial` fidelity, because that fidelity's gap — the
+model-API channel — feeds a *different* finding class (`canary_without_read`), which stays
+deliberately unscored until its evidence can exist. The §16.4 preflight gained the matching clause
+(`canary_leak: block` with canaries disabled refuses before spending), and `doctor`'s
+enforced-vs-inert message now derives both lists from the one constant next to the gate assembly.
+The demo/first-light paths demote `canary_leak` to warn (nothing is planted there), so their
+verdicts stay honest at `conditional` on two advisory-unobserved planes.
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
-the canary/DNS/credential dispositions into scored gates, the blocking static-scan gate (lands with
-the §15 scanner), `requires.min_bellwether_version` in the preflight, and hash-pinning the full
-sidecar dependency closure.
+the DNS and credential-read dispositions into scored gates (`canary_without_read` waits on the
+model-API read-state scanning), the blocking static-scan gate (lands with the §15 scanner),
+`requires.min_bellwether_version` in the preflight, and hash-pinning the full sidecar dependency
+closure.
 
 ---
 
@@ -82,7 +95,7 @@ sidecar dependency closure.
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-890 tests: 839 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
+899 tests: 848 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

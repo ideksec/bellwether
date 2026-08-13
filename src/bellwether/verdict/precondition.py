@@ -147,6 +147,23 @@ def check_preconditions(
                 )
             )
 
+    # (5) a blocking canary gate with no credentials plane in the composition. The canary
+    # gate is scored from Plane C findings (§10.4, §16.2); with canaries disabled no leak
+    # evidence can ever exist, so the gate would sit not_evaluable and block after the
+    # matrix was paid for. Runner-level, not per-target: planting is a composition property.
+    if gates.security_runtime.canary_leak == "block" and "credentials" not in available_planes:
+        failures.append(
+            PreconditionFailure(
+                gate="security_runtime.canary_leak",
+                target="(runner)",
+                remedy=(
+                    "canaries are not planted in this composition (canaries.enabled: false), "
+                    "so no leak evidence can exist and the canary gate would be not_evaluable; "
+                    "enable canaries, or set canary_leak to 'warn'"
+                ),
+            )
+        )
+
     # (2) Required capture planes the runner cannot provide.
     if profile.requires is not None:
         missing = [p for p in profile.requires.capture_planes if p not in available_planes]

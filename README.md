@@ -80,7 +80,7 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from five gates, and these are the checks that can actually move a skill off `ready`:
+composed from six gates, and these are the checks that can actually move a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
@@ -90,15 +90,22 @@ composed from five gates, and these are the checks that can actually move a skil
   `manifest.yaml` is flagged and blocked. *This now runs on the live path, not only in the demo* —
   earlier builds deferred it and rendered a false "within scope" for every run;
 - **security_runtime.egress** — egress to a host outside the default-deny allowlist, from what the
-  recording proxy observed.
+  recording proxy observed;
+- **security_runtime.canaries** — a planted canary appearing at any non-model destination (final
+  output, a DNS query name, tool arguments, an egress request, a written file) blocks under the
+  default policy. Where canaries were not planted, the gate defers as `not_evaluable` — an
+  unwatched channel is never called clean.
 
-What is **captured as evidence but does not yet gate** the scored verdict: canary leaks (Plane C),
-DNS-outside-allowlist (Plane E), undeclared credential reads, sensitive-directory access, and the
-volume/anomaly checks. Their findings appear in the report, but a `block` disposition on them will
-not, on its own, make a verdict `not_ready` in this version — wiring each into a gate is per-plane
-roadmap work. `bellwether doctor` names exactly which configured dispositions are inert, so a control
-is never mistaken for an active one. The residual model-API channel (§ THREAT_MODEL) is by design out
-of the egress scan, because that channel legitimately carries the skill's content to the provider.
+What is **captured as evidence but does not yet gate** the scored verdict: DNS-outside-allowlist
+(Plane E), undeclared credential reads, canary-in-model-context grading (`canary_without_read` —
+deliberately unscored until the model-API channel's read-state scanning lands, because a gate whose
+evidence cannot exist would read as an active control while nothing can fire it), sensitive-directory
+access, and the volume/anomaly checks. Their findings appear in the report, but a `block` disposition
+on them will not, on its own, make a verdict `not_ready` in this version — wiring each into a gate is
+per-plane roadmap work. `bellwether doctor` names exactly which configured dispositions are inert, so
+a control is never mistaken for an active one. The residual model-API channel (§ THREAT_MODEL) is by
+design out of the egress scan, because that channel legitimately carries the skill's content to the
+provider.
 
 ## What it is for
 
