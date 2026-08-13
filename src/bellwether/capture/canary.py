@@ -20,8 +20,8 @@ Two rules give the search teeth:
   survive match-then-decode, so every request and the concatenated corpus are run through
   base64/base64url/base32/hex/URL/HTML-entity/reversal (and one round of nesting) before
   matching, plus windowed matching for any ≥12-char substring. Independently-encoded chunking
-  still defeats this — a documented limit (§2), shipped as the ``encoded-chunked-thief``
-  expected failure so the gap is visible in CI.
+  still defeats this — a documented limit (§2), slated to ship as the ``encoded-chunked-thief``
+  expected failure in the acceptance corpus (WP-20) so the gap stays visible in CI.
 
 Redaction happens here, at capture time: a matched value is replaced with a fingerprint
 (``<canary:c1@offset=24,len=40>``) that preserves *what*, *where*, and *how long* without the

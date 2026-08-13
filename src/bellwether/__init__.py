@@ -1,9 +1,10 @@
 """Bellwether — a CI/CD harness for AI agent skills.
 
-Bellwether executes a candidate skill many times, across multiple models and vendors,
-inside an instrumented sandbox; captures a deterministic record of everything the agent
-actually did; measures how much that behaviour varies between runs; and renders a
-release verdict against a policy the repository owner controls.
+Bellwether executes a candidate skill many times, across multiple models, inside an
+instrumented sandbox; captures a deterministic record of everything the agent actually
+did; measures how much that behaviour varies between runs; and renders a release verdict
+against a policy the repository owner controls. The matrix is designed for multiple
+providers; the shipped live client speaks to Anthropic's API.
 
 It warns; it does not vouch. See ``docs/spec.md`` §2 for the limitations that MUST
 accompany every report, and §16.3 for the verdict vocabulary.

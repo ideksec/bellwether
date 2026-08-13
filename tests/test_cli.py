@@ -229,6 +229,25 @@ def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> N
     assert payload["blocking_problems"] == 0
 
 
+def test_changed_skills_exits_zero_when_nothing_matches(tmp_path: Path) -> None:
+    """The CI workflow pipes `git diff` into `changed-skills` under `set -o pipefail` with no
+    error suppression, so this exit-code contract is load-bearing: empty output with exit 0 is
+    the *legitimate* "no skills changed" result, and any non-zero exit is a real detection
+    failure that must fail the step visibly. If this command ever starts exiting non-zero on a
+    quiet diff, the workflow starts failing honest PRs — and if the workflow re-grows `|| true`
+    to cope, a broken detection reads as a clean run again."""
+    # Empty diff: nothing on stdin.
+    result = runner.invoke(app, ["changed-skills", "--root", str(tmp_path)], input="")
+    assert result.exit_code == 0
+    assert result.output.strip() == ""
+    # A diff that touches files but no skill directory.
+    result = runner.invoke(
+        app, ["changed-skills", "--root", str(tmp_path)], input="README.md\ndocs/spec.md\n"
+    )
+    assert result.exit_code == 0
+    assert result.output.strip() == ""
+
+
 def test_doctor_reports_a_bad_config_as_an_infrastructure_error(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("apiVersion: bellwether/v1\nkind: Config\n", encoding="utf-8")
