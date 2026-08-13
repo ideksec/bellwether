@@ -58,9 +58,10 @@ Four consequences shape everything:
 
 For a candidate skill: pass/fail per scenario per model with confidence intervals; a
 **Behavioural Consistency Index** quantifying run-to-run variance; a capability profile at
-three granularities; a security finding set from both static scanning and runtime
-observation; a cross-model divergence report; and a verdict — `ready`, `conditional`, or
-`not_ready` — computed from a policy the repository owner controls.
+three granularities; a security finding set from runtime observation; and a verdict —
+`ready`, `conditional`, or `not_ready` — computed from a policy the repository owner
+controls. (Static scanning and a cross-model divergence report are specified and land in
+v0.2; today's findings are behavioural.)
 
 It runs in CI. It comments on your pull request. It blocks the merge or it doesn't.
 
@@ -136,10 +137,10 @@ about to move: it warns, it does not vouch.
 The README states the limitations rather than burying them. N runs produce a distribution,
 not a proof. Measured variance is a *lower bound*, because repeated near-identical prompts
 are the best case for prompt caching and nothing like real deployment. Exfiltration
-detection has documented holes — one of them ships as a deliberately-failing test, so the
-gap appears in CI output instead of being assumed closed. The allowlisted model endpoint
-is a residual channel that a proxy cannot close, and saying so is more useful than
-implying otherwise.
+detection has documented holes — one of them is slated to ship as a deliberately-failing
+test in the acceptance corpus, so the gap stays in CI output instead of being assumed
+closed. The allowlisted model endpoint is a residual channel that a proxy cannot close,
+and saying so is more useful than implying otherwise.
 
 ---
 
@@ -151,12 +152,13 @@ recording proxy that observes its egress, scored across the gates, and posted ba
 verdict; a benign skill has reached `ready` this way on CI, against a live model, with
 every run's evidence uploaded as an artifact. The offline analysis path — parser, trace
 format, sandbox, harness, capture planes, metrics, verdict engine, and report — is built
-and tested: **885 tests, of which 45 drive a real container** and assert from *inside* it
+and tested: **899 tests, of which 45 drive a real container** and assert from *inside* it
 that capabilities are zero, the root filesystem is read-only, and no test machinery is
-visible anywhere in the filesystem.
+visible anywhere in the filesystem. The live client speaks to Anthropic's API; other
+providers are designed for but not yet implemented.
 
-What remains is breadth, not a missing spine: the other evidence planes wired into the
-live scored path, the `claude-code` adapter, and the acceptance corpus.
+What remains is breadth, not a missing spine: the still-unscored planes, the static
+scanner, the `claude-code` adapter, and the acceptance corpus.
 
 **Roughly fifty defects have been found and fixed so far**, across several self-reviews and
 independent adversarial passes — including the pre-release pass that made the repository

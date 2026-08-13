@@ -50,8 +50,14 @@ jobs:
       - name: Detect changed skills
         id: detect
         run: |
+          # pipefail matters: without it a git-diff failure upstream of the pipe is
+          # swallowed and the step emits an empty "no skills changed" — a detection
+          # failure dressed as a clean result, the exact false green this tool exists
+          # to distrust. `changed-skills` itself exits 0 with empty output when the
+          # diff genuinely touches no skill, so a legitimate quiet PR still passes.
+          set -euo pipefail
           git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
-            | uv run bellwether changed-skills > changed-skills.txt || true
+            | uv run bellwether changed-skills > changed-skills.txt
           echo "Changed skills:"; cat changed-skills.txt
           {
             echo "skills<<EOF"

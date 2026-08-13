@@ -3,10 +3,12 @@
 A CI/CD harness for AI agent skills — run them, watch what they actually do, and decide
 whether to ship them.
 
-Bellwether executes a candidate skill many times, across multiple models and vendors,
-inside an instrumented sandbox; captures a deterministic record of everything the agent
-actually *did*; measures how much that behaviour varies between runs; and renders a
-release verdict against a policy the repository owner controls.
+Bellwether executes a candidate skill many times, across multiple models, inside an
+instrumented sandbox; captures a deterministic record of everything the agent actually
+*did*; measures how much that behaviour varies between runs; and renders a release
+verdict against a policy the repository owner controls. The matrix is designed for
+multiple providers; the current live client supports Anthropic, so a multi-model
+evaluation today means several Anthropic models.
 
 **The name is the thesis.** A bellwether is the lead sheep whose bell signals that the
 flock is about to move. It warns; it does not vouch.
@@ -39,19 +41,21 @@ has reached **`ready`** this way, on CI, against a live model, with every run's 
 as a downloadable artifact. That is the whole thesis walking on its own legs.
 
 Under it, the entire offline analysis path is built and tested — the skill parser, the trace
-format, the sandbox, the first two capture planes (harness events, filesystem by zone), the
-`api-loop` harness, canonicalization, the platform baseline, the assertion engine, the metrics,
-the verdict engine, and the report layer. The **recording proxy is done and wired into the live
-run**: credential isolation (the real key reaches the provider but never the container), a
-default-deny egress allowlist, and a dual-homed sidecar on an internal bridge that is the
-sandbox's only route out — so egress is *observed*, not assumed. The **live model client**, the
-`bellwether run` CLI, and the shipped GitHub Action round out a working pipeline.
+format, the sandbox, the capture planes, the `api-loop` harness, canonicalization, the platform
+baseline, the assertion engine, the metrics, the verdict engine, and the report layer. The
+**recording proxy is wired into the live run**: credential isolation (the real key reaches the
+provider but never the container), a default-deny egress allowlist, and a dual-homed sidecar on
+an internal bridge that is the sandbox's only route out — so egress is *observed*, not assumed.
+**Canaries are planted and scanned in live runs, and a leak gates the verdict.** The controlled
+DNS resolver runs as a second sidecar with its queries recorded as Plane E. The **live model
+client** (Anthropic), the `bellwether run` CLI, and the shipped GitHub Action round out the
+pipeline.
 
-What remains is **breadth, not a missing spine**: the other evidence planes wired into the live
-path (the controlled DNS resolver's host core is built; the resolver sidecar, live canaries, and
-process capture are next), the `claude-code` harness adapter, the coverage-honesty and
-noise-floor calibration proofs, and the v0.1 acceptance corpus. See
-[docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan.
+What remains is **breadth, not a missing spine**: turning the captured-but-unscored planes into
+gates (DNS, credential reads), the static scanner, process/read capture, the `claude-code`
+harness adapter, the noise-floor calibration proof, and the v0.1 acceptance corpus. See
+[docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan, and the table below
+for exactly what is implemented versus refused-with-exit-3.
 
 ### See it
 
@@ -153,8 +157,9 @@ credibility depends on not overselling.
 - **Exfiltration detection has documented holes.** Canary matching defeats naive copying.
   It does not defeat independently-encoded chunking, interleaving across sessions, or a
   skill that instructs the model to *describe* a secret rather than reproduce it. The
-  first ships as a deliberately-failing corpus test so the gap is visible in CI output
-  rather than assumed closed; the last is out of scope.
+  first is slated to ship as a deliberately-failing test in the acceptance corpus
+  (pre-v0.1 roadmap) so the gap stays visible in CI output rather than assumed closed;
+  the last is out of scope.
 - **The allowlisted model channel is a residual exfiltration path.** A skill wanting to
   exfiltrate does not need `evil.com`; it puts the value in a prompt. The mitigations are
   mandatory and none of them close it. See [THREAT_MODEL.md](THREAT_MODEL.md).
@@ -245,10 +250,11 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | **`bellwether run` from the CLI** — resolve → live client → matrix → verdict → artifact tree | done |
 | **CI integration** — `bellwether changed-skills`, `bellwether pr-comment`, the shipped GitHub Action (only changed skills, paid run label-gated), per-run evidence uploaded as an artifact | done |
 | **Live verdict on CI** — a benign skill reaching `ready` against a real model, egress observed | proven |
-| Canaries — mint, decode-then-match, destination classification, redaction (logic) | done (WP-16); live planting/scanning pending |
+| **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files; a leak gates the verdict (`security_runtime.canaries`) | done (WP-16); model-API read-state grading is a follow-on |
 | CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |
-| Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan (host core) | done (WP-15 core); resolver sidecar + executor wiring next |
-| Live canaries · plane-coverage matrix (WP-18) · noise-floor calibration (WP-19) | remaining |
+| Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace | done (WP-15); DNS-outside-allowlist *scoring* pending |
+| Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline diffing (§17.5) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
+| Plane-coverage matrix (WP-18) · noise-floor calibration (WP-19) | remaining |
 | `claude-code` harness adapter (WP-17) · corpus & acceptance (WP-20, the v0.1 line) | remaining |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
