@@ -1634,3 +1634,38 @@ fails at container start — this cost a live run once, and `execute()` now call
 trade is recorded here because the divergence is otherwise invisible: `pyproject.toml` carries a
 comment explaining it, but the project's own rule is that a deliberate divergence from the spec lives
 in this file.
+
+## §16.4, §20 — The precondition check is wired composition-first, and its egress/DNS clause is split
+
+`check_preconditions` sat unwired from WP-11 until the public-release review named it BW-51: built,
+exported, unit-tested, called from nowhere, so the spec's "MUST refuse to start" never ran and an
+unsatisfiable profile was discovered only after the matrix was paid for. The wiring lives in
+`cli/preflight.py`, and the design decision worth recording is *where the truth comes from*.
+
+The check needs to know what each target can observe, and the adapter's static declaration is the
+wrong source alone: `ApiLoopAdapter` truthfully declares `egress_observable: False` — the adapter
+provides no capture point of its own — but the executor standing a recording proxy beside the
+sandbox makes egress observed. A preflight reading the static bit would refuse the proven live
+configuration; one assuming the proxy would wave the scaffold default through to a
+paid-then-blocked matrix. So observability is derived from the composition, by the same predicates
+that wire the components: `egress.image` → the egress plane and the `egress_observable` bit,
+`dns.image` → the DNS plane and a new `dns_observable` bit, `canaries.enabled` → the credentials
+plane; the read and process planes are never available in this version (fanotify is v0.2, eBPF
+v0.3), which is exactly what makes the `high` profile's `requires.capture_planes` refuse today, as
+§16.4's own example intends.
+
+Two amendments to the check itself, both in the spec's spirit rather than its letter. First, the
+spec's combo 4 bundled the egress and DNS gates behind one `egress_observable` capability; the two
+components are configured independently, so the clause is split — a wired proxy must not vouch for
+an unwired resolver. Second, a target naming a harness with no shipped adapter is reported as a
+precondition failure: before this, a `claude-code` target (which the scaffold policy ships!) ran
+the entire sandbox under the api-loop adapter and then failed the trace-to-plan binding with "does
+not match the run plan" — money spent, wrong error. `doctor` evaluates the check per profile
+against that profile's own matrix targets, replacing the pending row; rows are `warn`, never
+`critical`, because an unsatisfiable profile is a fact about policy-vs-composition and `run`
+refuses it with the same failures.
+
+Known bound, disclosed: `requires.min_bellwether_version` is not checked. Version comparison needs
+an ordering rule the project has not committed to, and the one profile that sets it already
+refuses on its missing capture planes, so the skip cannot produce a false start today. Tracked in
+STATUS → Outstanding actions.

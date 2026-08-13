@@ -229,7 +229,7 @@ A worked example is in [`examples/skills/security-review/`](examples/skills/secu
 | **Capture** — host-owned event sink (Plane A), per-zone filesystem overlay (Plane B), the coverage block | done (WP-5) |
 | **Harness** — `api-loop` adapter: agent loop, sandboxed tools, scripted provider, golden trace | done (WP-6) |
 | **Analysis** — canonicalization + epoch anchoring, platform baseline, assertions + Declared-vs-Observed, metrics (Wilson/Pocock, risk-weighted Jaccard, trajectory clustering, BCI), verdict engine | done (WP-7–11) |
-| §16.4 precondition check (refuse an unsatisfiable policy *before* spending) | built + tested, **not yet wired** into `run`/`doctor` (BW-51) |
+| §16.4 precondition check (refuse an unsatisfiable policy *before* spending) | done — wired into `run` (refuses before the executor is built) and `doctor` (per-profile rows) |
 | **Reporting** — schema-versioned `summary.json`, the §13.8 figures, the Markdown PR comment, a self-contained theme-aware HTML report | done (WP-12, §17.4) |
 | **Orchestration** — analysis orchestrator (trace → metrics → gates → verdict → artifact tree) and the container execution driver; first-light checkpoint reached | done |
 | **Recording proxy** (WP-13) — egress classification + default-deny allowlist + per-run caps; credential isolation (scoped token, proxy-side injection, leak guard); mitmproxy sidecar; internal-bridge isolation with no route out but the proxy; live interception proven on CI | done |

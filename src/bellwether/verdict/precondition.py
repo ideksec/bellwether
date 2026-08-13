@@ -16,7 +16,16 @@ The four cases the spec enumerates, each caught here:
    process capture, which ships in v0.3 and needs eBPF most managed runners deny;
 3. ``min_distinct_providers: 2`` where the target matrix spans one provider — §14 forbids
    cross-harness divergence, so only a multi-provider matrix satisfies it;
-4. a harness declaring ``egress_observable: false`` under any blocking egress gate.
+4. a blocking egress or DNS gate against a target whose composition cannot observe that
+   channel — checked per channel, because the recording proxy (``egress.image``) and the
+   controlled resolver (``dns.image``) are wired independently.
+
+Observability is a property of the *composition*, not the harness alone: an ``api-loop``
+adapter provides no capture point itself, but the executor standing a recording proxy
+beside the sandbox makes egress observed. The ``cli`` layer builds each
+:class:`TargetDeclaration` from the adapter's static declaration overlaid with what the
+config actually wires (`cli/preflight.py`), so this check reads the truth of the run
+about to happen, not a stale static bit.
 
 The same check is surfaced in ``bellwether doctor`` (§20), so a user learns before the run
 rather than after it.
@@ -102,20 +111,38 @@ def check_preconditions(
                     ),
                 )
             )
-        # (4) egress gate against an egress-blind harness.
-        egress_blocks = any(
-            getattr(gates.security_runtime, kind) == "block"
-            for kind in ("egress_outside_allowlist", "dns_outside_allowlist")
-        )
-        if egress_blocks and not target.observes("egress_observable"):
+        # (4) a blocking egress/DNS gate against a target that cannot observe that channel.
+        # Split per channel rather than bundled: egress is observable when the recording proxy
+        # is in the composition, DNS when the controlled resolver is — and they are configured
+        # independently (`egress.image` / `dns.image`), so one being wired must not vouch for
+        # the other. The composition layer sets both bits (`cli/preflight.py`); a harness alone
+        # provides neither capture point.
+        if gates.security_runtime.egress_outside_allowlist == "block" and not target.observes(
+            "egress_observable"
+        ):
             failures.append(
                 PreconditionFailure(
                     gate="security_runtime.egress_outside_allowlist",
                     target=target.label,
                     remedy=(
-                        "this harness declares egress_observable: false, so no egress gate "
-                        "can be evaluated; use a harness whose egress is interceptable, or "
-                        "set the egress gates to 'warn'"
+                        "egress is not observable for this target (no recording proxy in the "
+                        "composition), so the egress gate would be not_evaluable and block after "
+                        "the matrix was paid for; configure egress.image to wire the proxy, or "
+                        "set egress_outside_allowlist to 'warn'"
+                    ),
+                )
+            )
+        if gates.security_runtime.dns_outside_allowlist == "block" and not target.observes(
+            "dns_observable"
+        ):
+            failures.append(
+                PreconditionFailure(
+                    gate="security_runtime.dns_outside_allowlist",
+                    target=target.label,
+                    remedy=(
+                        "DNS is not observable for this target (no controlled resolver in the "
+                        "composition); configure dns.image to wire the resolver, or set "
+                        "dns_outside_allowlist to 'warn'"
                     ),
                 )
             )

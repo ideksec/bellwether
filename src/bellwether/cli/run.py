@@ -34,6 +34,7 @@ from bellwether.cli.orchestrator import (
     plan_matrix,
     resolve_capability_weights,
 )
+from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import resolve_run
 from bellwether.config.models.config import Config
@@ -116,6 +117,15 @@ def run_evaluation(
         )
     scenarios = list(suite.scenarios)
     targets = [rt.target for rt in resolved.targets]
+
+    # §16.4 / BW-51: refuse an unsatisfiable policy/target/composition combination *now*,
+    # before the executor is built and a container is paid for. Observability is read from
+    # the same config fields that wire the components (egress.image → proxy, dns.image →
+    # resolver), so this refuses exactly the runs that would end not_evaluable-and-blocked
+    # after the matrix — and no others.
+    refuse_on_preflight_failures(
+        config, resolved.profile, targets, profile_name=resolved.profile_name
+    )
 
     model_id_by_slug = {rt.target.slug: rt.model_id for rt in resolved.targets}
     provider_by_slug = {rt.target.slug: rt.target.provider for rt in resolved.targets}

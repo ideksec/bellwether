@@ -185,6 +185,46 @@ def test_doctor_warns_that_most_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert json.loads(result.output)["blocking_problems"] == 0
 
 
+def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> None:
+    """§16.4 / BW-51: doctor evaluates the precondition check for real — one row per profile,
+    against that profile's own matrix targets and the planes the config wires — instead of
+    listing it as pending. A fresh scaffold warns truthfully: its policy names claude-code
+    targets (the WP-17 adapter does not ship), and the high profile requires planes that are
+    not built. `run` refuses these same combinations; doctor's job is to say so earlier."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(tmp_path / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    payload = json.loads(result.output)
+    checks = {check["check"]: check for check in payload["checks"]}
+
+    # One real row per profile; the old pending row is gone.
+    for profile in ("low", "medium", "high"):
+        name = f"precondition check (§16.4) — profile '{profile}'"
+        assert name in checks, f"missing precondition row for {profile}"
+        assert checks[name]["status"] in ("ok", "warn")
+    assert not any("§16.4 precondition check passes" in name for name in checks)
+
+    # The scaffold policy names claude-code targets → warn, naming the missing adapter.
+    low = checks["precondition check (§16.4) — profile 'low'"]
+    assert low["status"] == "warn"
+    assert "no adapter for harness 'claude-code'" in low["detail"]
+    # The high profile additionally requires planes this version has not built.
+    high = checks["precondition check (§16.4) — profile 'high'"]
+    assert "capture_planes[process]" in high["detail"]
+    # Advisory, not blocking: an unsatisfiable profile is a policy fact, and `run` refuses it
+    # with the same failures — doctor stays exit 0 on a fresh scaffold.
+    assert payload["blocking_problems"] == 0
+
+
 def test_doctor_reports_a_bad_config_as_an_infrastructure_error(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("apiVersion: bellwether/v1\nkind: Config\n", encoding="utf-8")

@@ -311,6 +311,140 @@ def test_run_allows_a_disabled_enforced_setting_at_low(
     assert result.verdict.verdict in {"ready", "conditional", "not_ready"}
 
 
+def _policy_keeping_block_dispositions() -> Policy:
+    """The shipped 'low' profile with the run target injected but the egress/DNS `block`
+    dispositions LEFT AS SHIPPED — the scaffold-default configuration a new user runs with."""
+    import yaml
+
+    from bellwether.config import template_path
+    from bellwether.config.policy_loader import parse_policy
+
+    shipped = parse_policy(yaml.safe_load(template_path("policy.yaml").read_text(encoding="utf-8")))
+    low = shipped.profile("low")
+    matrix = low.matrix.model_copy(
+        update={
+            "required_targets": [
+                Target(harness="api-loop", provider="anthropic", model_alias="frontier")
+            ]
+        }
+    )
+    profile = low.model_copy(update={"matrix": matrix})
+    return shipped.model_copy(update={"profiles": {**shipped.profiles, "low": profile}})
+
+
+def test_run_refuses_a_blocking_egress_gate_with_no_proxy_wired(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """§16.4 / BW-51: the scaffold default blocks on egress, and a config with no
+    `egress.image` wires no proxy — that matrix would run to completion and then block on an
+    unobserved plane, spending the whole budget to learn the policy could never pass. The
+    preflight must refuse it before the executor is even built."""
+    built: list[str] = []
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        built.append("built")
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    with pytest.raises(BellwetherError, match=r"egress\.image") as excinfo:
+        run_evaluation(
+            config=_config(),
+            policy=_policy_keeping_block_dispositions(),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id="firstlight",
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+        )
+    assert "Cannot start" in str(excinfo.value)
+    # Both unobservable blocking channels are named in one refusal, not one per attempt.
+    assert "dns.image" in str(excinfo.value)
+    assert built == []  # refused before anything was constructed, let alone paid for
+
+
+def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """§16.4 combo 2 on the real path: the high profile requires the process and read planes,
+    which are not built in this version — refuse up front, naming each missing plane."""
+    import yaml
+
+    from bellwether.config import template_path
+    from bellwether.config.policy_loader import parse_policy
+
+    shipped = parse_policy(yaml.safe_load(template_path("policy.yaml").read_text(encoding="utf-8")))
+    high = shipped.profile("high")
+    matrix = high.matrix.model_copy(
+        update={
+            "required_targets": [
+                Target(harness="api-loop", provider="anthropic", model_alias="frontier")
+            ]
+        }
+    )
+    security = high.gates.security_runtime.model_copy(
+        update={"egress_outside_allowlist": "warn", "dns_outside_allowlist": "warn"}
+    )
+    gates = high.gates.model_copy(update={"security_runtime": security})
+    profile = high.model_copy(update={"matrix": matrix, "gates": gates})
+    policy = shipped.model_copy(update={"profiles": {**shipped.profiles, "high": profile}})
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        raise AssertionError("the executor must never be built for an unsatisfiable profile")
+
+    with pytest.raises(BellwetherError, match=r"capture_planes\[process\]"):
+        run_evaluation(
+            config=_config(),
+            policy=policy,
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id="firstlight",
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            profile_override="high",
+        )
+
+
+def test_run_refuses_a_target_with_no_shipped_adapter(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """A `claude-code` target has no adapter in this build. Pre-preflight it ran the whole
+    sandbox under the api-loop adapter and then died on the trace-to-plan binding ("does not
+    match the run plan") — money spent, wrong error. Now it refuses up front, naming WP-17."""
+    pol = _policy()
+    low = pol.profile("low")
+    matrix = low.matrix.model_copy(
+        update={
+            "required_targets": [
+                Target(harness="claude-code", provider="anthropic", model_alias="frontier")
+            ]
+        }
+    )
+    profile = low.model_copy(update={"matrix": matrix})
+    policy = pol.model_copy(update={"profiles": {**pol.profiles, "low": profile}})
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        raise AssertionError("the executor must never be built for a target with no adapter")
+
+    with pytest.raises(BellwetherError, match="no adapter for harness 'claude-code'"):
+        run_evaluation(
+            config=_config(),
+            policy=policy,
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id="firstlight",
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+        )
+
+
 def test_run_evaluation_produces_a_verdict_and_an_artifact_tree(
     package: SkillPackage, tmp_path: Path
 ) -> None:
