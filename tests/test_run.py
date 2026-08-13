@@ -121,7 +121,11 @@ def _policy() -> Policy:
         }
     )
     security = low.gates.security_runtime.model_copy(
-        update={"egress_outside_allowlist": "warn", "dns_outside_allowlist": "warn"}
+        update={
+            "egress_outside_allowlist": "warn",
+            "dns_outside_allowlist": "warn",
+            "canary_leak": "warn",
+        }
     )
     gates = low.gates.model_copy(update={"security_runtime": security})
     profile = low.model_copy(update={"matrix": matrix, "gates": gates})
@@ -384,7 +388,11 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
         }
     )
     security = high.gates.security_runtime.model_copy(
-        update={"egress_outside_allowlist": "warn", "dns_outside_allowlist": "warn"}
+        update={
+            "egress_outside_allowlist": "warn",
+            "dns_outside_allowlist": "warn",
+            "canary_leak": "warn",
+        }
     )
     gates = high.gates.model_copy(update={"security_runtime": security})
     profile = high.model_copy(update={"matrix": matrix, "gates": gates})

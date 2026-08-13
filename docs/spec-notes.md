@@ -1669,3 +1669,40 @@ Known bound, disclosed: `requires.min_bellwether_version` is not checked. Versio
 an ordering rule the project has not committed to, and the one profile that sets it already
 refuses on its missing capture planes, so the skip cannot produce a false start today. Tracked in
 STATUS → Outstanding actions.
+
+## §10.4, §16.2, §10.7 — The canary gate scores the leak class only, and passes on `partial` fidelity deliberately
+
+`canary_leak` is the first `security_runtime` disposition after egress to become a *scored* gate
+(`security_runtime.canaries`, BW-49's first slice): a planted canary appearing at any non-model
+destination now drives the composed verdict to `not_ready` under the shipped `block`, instead of
+appearing only as a report row while the verdict read `conditional`. Three states, mirroring the
+egress gate: unplanted defers (`not_evaluable` — an unwatched channel is never called clean),
+an observed leak takes the policy disposition, an observed-clean set passes.
+
+The decision worth recording is the pass state's relationship to §10.8. On the live path the
+credentials plane records `partial`, and a gate's pass is an absence claim — which §10.8 says a
+partial plane cannot support. The gate passes anyway, and deliberately: the plane's one partial
+reason is the model-API channel, whose findings are a *different class* (`canary_in_context` /
+`canary_without_read`, graded by read state) — by the §10.4.1 destination classification, every
+`canary_leak` destination (final output, DNS query names, tool arguments, egress URLs and bodies,
+written files) is scanned whenever planting ran at all. So "no leak observed" is an earned absence
+over a fully-scanned destination set, not a claim laundered through a coverage gap. The
+load-bearing assumption — that `partial` on this plane names only the model channel — is stated at
+the gate; if a future change makes the credentials plane partial in a leak-relevant way, the gate's
+observedness test must tighten to `for_absence`.
+
+The same classification is why `canary_without_read` stays deliberately **unscored**: its evidence
+cannot exist until the model-channel read-state scanning lands, and a gate whose evidence cannot
+exist reads as an active control while nothing can fire it — the exact BW-49 trap this brick
+exists to close, recreated one field over. It stays on `doctor`'s inert list, and both of
+`doctor`'s lists (enforced and inert) now derive from `ENFORCED_SECURITY_RUNTIME_DISPOSITIONS`, so
+the message cannot drift from the assembly again.
+
+Completeness follows the egress bar: the set's gate is decidable only when canaries were planted
+and scanned on *every* run — one unobserved run defers the set, and a leak in a set that also has
+an unobserved run renders `not_evaluable`, which §16.2 blocks on a required gate; a leak plus an
+incomplete plane never totals to a pass. The §16.4 preflight gained the matching runner-level
+clause — `canary_leak: block` with `canaries.enabled: false` refuses before the matrix is paid
+for — and the demo/first-light paths demote `canary_leak` to `warn` exactly as they do egress and
+DNS, since nothing is planted there; their verdicts stay `conditional` on two advisory-unobserved
+planes rather than borrowing a pass.

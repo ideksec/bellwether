@@ -27,10 +27,11 @@ Phase A and the recording-proxy spine of Phase B are done, and the live loop clo
 real PR, a changed skill is detected, run 6× in a sandbox behind a dual-homed recording proxy that
 observes its egress, scored, and posted back — a benign skill has reached **`ready` on CI against a
 live model**, with per-run evidence uploaded as an artifact. The DNS resolver is wired into the
-executor, canaries are planted and scanned end to end, and the §16.4 precondition check is wired
-into `run`/`doctor` (an unsatisfiable policy refuses before spending). What remains is *breadth*:
-the captured planes turned into **scored** gates (today only egress is scored — see the README's
-"What the live verdict gates today"), noise-floor calibration, the coverage matrix, the
+executor, canaries are planted and scanned end to end, the §16.4 precondition check is wired into
+`run`/`doctor` (an unsatisfiable policy refuses before spending), and **canary leaks now gate the
+verdict** (`security_runtime.canaries` — a skill that exfiltrates a planted canary cannot reach
+`ready`). What remains is *breadth*: the still-unscored planes (DNS, credential reads — see the
+README's "What the live verdict gates today"), noise-floor calibration, the coverage matrix, the
 `claude-code` adapter, and the acceptance corpus.
 
 ## How we work — the cadence (one brick, one PR)

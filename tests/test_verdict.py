@@ -191,6 +191,22 @@ def test_an_egress_blind_composition_under_a_blocking_egress_gate_is_refused() -
     assert "egress.image" in egress_failures[0].remedy
 
 
+def test_a_blocking_canary_gate_with_no_credentials_plane_is_refused() -> None:
+    """§16.4 combo 5: `canary_leak: block` with canaries disabled means no leak evidence can
+    ever exist — the gate would sit not_evaluable and block only after the matrix was paid
+    for. Runner-level, since planting is a composition property, not a target one."""
+    profile = default_policy("medium")
+    planes = ALL_PLANES - {"credentials"}
+    failures = check_preconditions(profile, [api_loop_target()], available_planes=planes)  # type: ignore[arg-type]
+
+    canary_failures = [f for f in failures if f.gate == "security_runtime.canary_leak"]
+    assert canary_failures
+    assert "canaries.enabled" in canary_failures[0].remedy
+    # With the plane available the clause is satisfied.
+    clean = check_preconditions(profile, [api_loop_target()], available_planes=ALL_PLANES)  # type: ignore[arg-type]
+    assert not any(f.gate == "security_runtime.canary_leak" for f in clean)
+
+
 def test_a_dns_blind_composition_under_a_blocking_dns_gate_is_refused() -> None:
     """§16.4 combo 4, DNS half — checked independently of egress: the proxy and the
     resolver are wired by different config switches, so a wired proxy must not vouch for

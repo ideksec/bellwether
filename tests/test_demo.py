@@ -37,13 +37,14 @@ def _run(tmp_path: Path) -> dict[str, DemoOutput]:
 
 
 def test_benign_is_conditional_and_consistent(tmp_path: Path) -> None:
-    """The clean skill: every evaluable gate passes and the BCI is high; only the
-    unobservable egress plane keeps it from ``ready``, exactly as first-light `run` does."""
+    """The clean skill: every evaluable gate passes and the BCI is high; the two planes this
+    offline demo cannot observe (egress — no proxy; canaries — nothing planted) hold it at
+    ``conditional`` as advisory not_evaluable, exactly as first-light `run` does."""
     result = _run(tmp_path)["benign-note-taker"].result
     assert result.verdict.verdict == "conditional"
     assert result.summary.consistency.bci >= 90
     non_pass = [gate.name for gate in result.verdict.gates if gate.status != "pass"]
-    assert non_pass == ["security_runtime.egress"]
+    assert non_pass == ["security_runtime.egress", "security_runtime.canaries"]
 
 
 def test_exfiltrator_is_not_ready_on_scope_though_it_passes_functionally(tmp_path: Path) -> None:

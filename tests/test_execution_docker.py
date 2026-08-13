@@ -102,7 +102,11 @@ def _firstlight_profile() -> object:
     data = parse_policy(yaml.safe_load(template_path("policy.yaml").read_text(encoding="utf-8")))
     profile = data.profile("low")
     security = profile.gates.security_runtime.model_copy(
-        update={"egress_outside_allowlist": "warn", "dns_outside_allowlist": "warn"}
+        update={
+            "egress_outside_allowlist": "warn",
+            "dns_outside_allowlist": "warn",
+            "canary_leak": "warn",
+        }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})
     return profile.model_copy(update={"gates": gates})

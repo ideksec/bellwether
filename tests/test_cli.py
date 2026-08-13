@@ -177,10 +177,14 @@ def test_doctor_warns_that_most_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert runtime["status"] == "warn"
     # The comma-separated list of inert dispositions sits between "not_ready: " and ". Treat".
     inert_list = runtime["detail"].split("not_ready: ", 1)[1].split(". ", 1)[0]
-    for inert in ("canary_leak", "dns_outside_allowlist", "credential_read_undeclared"):
+    # canary_without_read stays honestly inert: its evidence (model-API read-state grading)
+    # cannot exist until that channel's scanning lands.
+    for inert in ("canary_without_read", "dns_outside_allowlist", "credential_read_undeclared"):
         assert inert in inert_list
-    # The one disposition that *does* gate is not listed as inert.
+    # The dispositions that *do* gate are not listed as inert: egress since the proxy landed,
+    # canary_leak since the Plane C scan became a scored gate (BW-49, first slice).
     assert "egress_outside_allowlist" not in inert_list
+    assert "canary_leak," not in inert_list and not inert_list.startswith("canary_leak")
     # It is advisory, not a blocking problem — the gap is disclosed, not treated as a failure.
     assert json.loads(result.output)["blocking_problems"] == 0
 
