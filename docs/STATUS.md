@@ -55,6 +55,17 @@ enforced-vs-inert message now derives both lists from the one constant next to t
 The demo/first-light paths demote `canary_leak` to warn (nothing is planted there), so their
 verdicts stay honest at `conditional` on two advisory-unobserved planes.
 
+An **Agent Plugin compatibility** brick then landed: skills packaged in an
+[agent-plugins.org](https://agent-plugins.org) bundle (a `plugin.json` root with skills under
+`skills/`) are first-class inputs. `bellwether run <plugin-dir>` expands to the bundled skills
+(`skill/plugin.py`, lenient manifest validation on the frontmatter's reasoning);
+`changed-skills` attributes a plugin-level change — the manifest, `mcp.json`, an extension
+directory — to every skill the plugin carries, instead of printing "no skills changed" for a PR
+that rewrote the bundle; and a bundled `mcp.json` is reported as unobserved on every expanded
+skill rather than silently ignored, since this version never starts plugin MCP servers. The unit
+of evaluation stays the skill; the bundle is located and described, never staged whole —
+plugin-layout staging folds into WP-17 (see spec-notes §5/§6/§18).
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the DNS and credential-read dispositions into scored gates (`canary_without_read` waits on the
@@ -91,11 +102,12 @@ closure.
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
 | HTML report, worked demo (`bellwether demo`), PR-comment posting, changed-skills detection + GitHub Action | **done** |
+| Agent Plugin bundles (agent-plugins.org) — `run` expands a plugin root to its skills, plugin-level changes fan out in `changed-skills`, `mcp.json` reported as unobserved | **done** |
 | Evidence preserved from CI — per-run ARF traces + report uploaded as an artifact, report echoed to the log | **done** (PR #45) |
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-899 tests: 848 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
+925 tests: 874 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -209,7 +221,10 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    asserts each verdict. This is the v0.1 "done" line and depends on everything above.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
-the DNS/canary work), and `openai_compatible` provider support (a follow-on to the live client).
+the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client), and
+**plugin-layout staging** — installing an Agent Plugin bundle whole, in the layout a real client
+uses, rather than each skill as a bare directory — which folds into WP-17's `claude-code` adapter
+(spec-notes §5/§6/§18).
 
 **The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
 `egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a

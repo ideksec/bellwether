@@ -231,6 +231,21 @@ can see the test machinery can behave only while observed.
 
 A worked example is in [`examples/skills/security-review/`](examples/skills/security-review/).
 
+### Skills packaged in an Agent Plugin
+
+Bellwether also reads skills packaged in an [Agent Plugin](https://agent-plugins.org) bundle
+(spec 1.0.0): a directory with a `plugin.json` manifest, carrying skills under `skills/`, one
+per immediate child directory with a `SKILL.md`. `bellwether run <plugin-dir>` expands to the
+bundled skills, each evaluated exactly as if named directly, and `bellwether changed-skills`
+attributes a plugin-level change (the manifest, `mcp.json`, a client extension directory) to
+every skill the plugin carries — so a PR that only rewrites the bundle's manifest still
+re-evaluates what the bundle ships.
+
+What a plugin carries beyond skills is **not evaluated** in this version. In particular a
+bundled `mcp.json` declares MCP servers Bellwether never starts; every skill expanded from
+such a plugin carries a problem line saying so, because the verdict covers the skill files
+alone and an unmentioned component would read as one that ran clean.
+
 ## What is built
 
 | Area | State |
