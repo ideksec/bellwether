@@ -342,7 +342,8 @@ _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
 @app.command()
 def run(
     skills: Annotated[
-        list[str] | None, typer.Argument(help="Skill directories to evaluate.")
+        list[str] | None,
+        typer.Argument(help="Skill directories (or Agent Plugin roots) to evaluate."),
     ] = None,
     config: Annotated[Path, typer.Option("--config", help="Path to config.yaml.")] = CONFIG_FILE,
     policy_path: Annotated[
@@ -365,11 +366,14 @@ def run(
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
 
-    Each skill argument is the directory of a skill to evaluate (the one containing ``SKILL.md``).
-    The verdict's exit code is the worst across the skills run: 0 for ``ready``/``conditional``, 2
-    if any target failed a blocking gate; a configuration or environment problem is exit 3.
+    Each skill argument is the directory of a skill to evaluate (the one containing ``SKILL.md``)
+    — or an Agent Plugin root (a directory containing ``plugin.json``, agent-plugins.org), which
+    expands to every skill under its ``skills/``. The verdict's exit code is the worst across the
+    skills run: 0 for ``ready``/``conditional``, 2 if any target failed a blocking gate; a
+    configuration or environment problem is exit 3.
     """
     import datetime as dt
+    from dataclasses import replace
 
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
     from bellwether.cli.run import (
@@ -386,6 +390,12 @@ def run(
         raise typer.Exit(ExitCode.INFRASTRUCTURE)
 
     try:
+        work = _expand_skill_args(skills)
+    except BellwetherError as error:
+        typer.echo(f"bellwether run: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    try:
         loaded_config = load_config(config)
         loaded_policy = load_policy(policy_path)
     except (BellwetherError, ConfigurationError, OSError) as error:
@@ -399,11 +409,19 @@ def run(
 
     worst = ExitCode.OK
     results: list[dict[str, Any]] = []
-    for skill_arg in skills:
+    for skill_dir, bundle_notes in work:
         try:
-            package = load_skill(Path(skill_arg))
+            package = load_skill(skill_dir)
+            if bundle_notes:
+                # Observations about the *bundle* the skill arrived in (a manifest defect,
+                # MCP servers this version never stands up) travel with each skill it
+                # expanded to, and are said out loud — an unevaluated component that goes
+                # unmentioned reads as one that ran clean.
+                package = replace(package, problems=package.problems + bundle_notes)
+                for note in bundle_notes:
+                    typer.echo(f"bellwether run [{skill_dir}]: {note}", err=True)
             eval_id = f"{package.name}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}"
-            fixture = _run_fixture(Path(skill_arg))
+            fixture = _run_fixture(skill_dir)
             result = run_evaluation(
                 config=loaded_config,
                 policy=loaded_policy,
@@ -439,7 +457,7 @@ def run(
                 profile_override=profile,
             )
         except (BellwetherError, ConfigurationError) as error:
-            typer.echo(f"bellwether run [{skill_arg}]: {error}", err=True)
+            typer.echo(f"bellwether run [{skill_dir}]: {error}", err=True)
             raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
 
         if result.exit_code == 2:
@@ -524,9 +542,10 @@ def changed_skills_command(
 
     Feed it a diff — ``git diff --name-only origin/main...HEAD | bellwether changed-skills`` —
     and it prints one skill directory per line (a skill is a directory with a ``SKILL.md``;
-    a changed file is attributed to its nearest such ancestor). Empty output means the change
-    touched no skill, so nothing needs evaluating. Always exits 0: "no skills changed" is a
-    normal result, not an error.
+    a changed file is attributed to its nearest such ancestor). A plugin-level change inside
+    an Agent Plugin bundle (a directory with a ``plugin.json``) is attributed to every skill
+    the plugin carries. Empty output means the change touched no skill, so nothing needs
+    evaluating. Always exits 0: "no skills changed" is a normal result, not an error.
     """
     import sys
 
@@ -608,6 +627,43 @@ def pr_comment(
         as_json=json_output,
         lines=[f"{action} comment on {context.slug}#{context.number}"],
     )
+
+
+def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...]]]:
+    """Resolve each ``run`` argument to the skill directories it names.
+
+    A plain skill directory passes through unchanged. A directory holding a
+    ``plugin.json`` and no ``SKILL.md`` of its own is an Agent Plugin root
+    (agent-plugins.org): it expands to the skills under its ``skills/``, each evaluated
+    exactly as if named directly. The bundle-level observations — a manifest defect, an
+    ``mcp.json`` whose servers this version never stands up — are returned alongside every
+    expanded skill, so what was not evaluated travels with the skills that were. A plugin
+    carrying no skills is a refusal, not an empty clean run.
+    """
+    from bellwether.skill import SKILL_FILE, is_plugin_root, load_plugin
+
+    expanded: list[tuple[Path, tuple[str, ...]]] = []
+    for arg in args:
+        directory = Path(arg)
+        if not is_plugin_root(directory) or (directory / SKILL_FILE).is_file():
+            expanded.append((directory, ()))
+            continue
+        bundle = load_plugin(directory)
+        if not bundle.skill_dirs:
+            raise BellwetherError(
+                f"{arg} is an Agent Plugin carrying no skills under 'skills/'; there is "
+                "nothing for a skill evaluation to run"
+            )
+        notes = list(bundle.problems)
+        if bundle.has_mcp_servers:
+            notes.append(
+                f"plugin '{bundle.name}' declares MCP servers in mcp.json; this version "
+                "does not stand plugin MCP servers up in the sandbox, so their behaviour "
+                "is unobserved and outside this verdict — the evaluation covers the "
+                "skill files alone"
+            )
+        expanded.extend((skill_dir, tuple(notes)) for skill_dir in bundle.skill_dirs)
+    return expanded
 
 
 def _run_fixture(skill_dir: Path) -> Path:

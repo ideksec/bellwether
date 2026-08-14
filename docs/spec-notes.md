@@ -1706,3 +1706,50 @@ clause — `canary_leak: block` with `canaries.enabled: false` refuses before th
 for — and the demo/first-light paths demote `canary_leak` to `warn` exactly as they do egress and
 DNS, since nothing is planted there; their verdicts stay `conditional` on two advisory-unobserved
 planes rather than borrowing a pass.
+
+## §5, §6, §18 — Agent Plugin bundles (agent-plugins.org) are containers of skills, not a new evaluated unit
+
+Spec revision 3 predates the Agent Plugins 1.0.0 specification (agent-plugins.org): its only
+package shape is the bare skill directory of §5. Skills are now commonly distributed *inside* a
+plugin — a directory with a `plugin.json` manifest, skills one per immediate child of `skills/`,
+optionally an `mcp.json` declaring MCP servers and client extension directories. This note records
+how Bellwether reads that shape, and the deliberate bounds.
+
+**The unit of evaluation stays the skill.** A plugin-nested skill directory is exactly the
+directory `load_skill` already reads, so `skill/plugin.py` only locates and describes: it parses
+the manifest, enumerates `skills/*/SKILL.md` per the spec's discovery rule (immediate children
+only, sorted by name for §24), and records what else the bundle carries. `bellwether run
+<plugin-dir>` expands to the bundled skills; each gets its own evaluation, digests, and verdict,
+unchanged. No plugin-level verdict exists — a bundle verdict would be an aggregate the metrics
+were never designed to compose, claiming more than N runs of each skill support.
+
+**Manifest validation is lenient, on the frontmatter's reasoning.** A plugin is attacker-authored
+in external mode, so a `plugin.json` that does not parse, breaks the spec's name rule, or omits
+`$schema` becomes a reported problem attached to every skill the bundle ships — never an abort
+that lets a bundle dodge evaluation, and never silently ignored. Only "no directory" and "no
+`plugin.json`" raise, matching `load_skill`'s own two hard refusals.
+
+**A plugin-level change fans out to every bundled skill** in `changed-skills` (§18). A change
+inside one skill keeps its precise attribution (skill-first, so a one-skill edit in a ten-skill
+plugin does not pay for ten evaluations); a change with no `SKILL.md` ancestor but a
+`plugin.json` ancestor — the manifest, `mcp.json`, an extension directory, a file under a
+skill deleted from the bundle — re-evaluates all the plugin's current skills. The alternative,
+attributing it to nothing, prints "no skills changed" for a PR that rewrote the bundle's
+manifest: the exact silent false-green the detection exists to avoid. The BW-34 containment rule
+(no absolute or `..`-escaping path is ever attributed) applies to the plugin walk identically.
+
+**`mcp.json` is recorded, reported, and never started.** MCP servers are executable behaviour —
+their own processes, their own egress — squarely what this tool exists to observe, and this
+version does not stand them up in the sandbox. Observation beats declaration: every skill
+expanded from a plugin carrying an `mcp.json` gets a problem line stating the servers are
+unobserved and outside the verdict, so the omission is a recorded bound rather than a component
+that reads as clean. Evaluating plugin MCP servers is follow-on work on the scale of a harness
+adapter, not a loader flag.
+
+**The bundle is not staged into the sandbox.** Staging still installs exactly one skill
+directory at `~/.claude/skills/<slug>` (§9.1); plugin-shared files outside the skill's own
+directory are not installed, and nothing under the plugin root is hashed into the skill's
+digests. A skill that depends on sibling files or a plugin-root path at runtime would need
+plural staging and a plugin-shaped install layout — that lands with the `claude-code` adapter
+(WP-17), which is also where a real client would install the bundle as a plugin rather than a
+bare skill.

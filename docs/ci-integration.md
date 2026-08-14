@@ -30,6 +30,13 @@ scope lives beside its `SKILL.md`. A change outside every skill (the harness, a 
 nothing; a skill whose `SKILL.md` was deleted is not returned. Two changes in one skill
 collapse to one entry, so each affected skill runs exactly once.
 
+Skills packaged in an [Agent Plugin](https://agent-plugins.org) bundle (a directory with a
+`plugin.json`, skills under `skills/`) are attributed the same way where the change is inside
+one skill — and a *plugin-level* change (the manifest, `mcp.json`, a client extension
+directory) is attributed to **every** skill the plugin carries, because there is no per-skill
+attribution for it and mapping it to nothing would read as "no skills changed" on a PR that
+rewrote the bundle.
+
 ```bash
 git diff --name-only origin/main...HEAD | bellwether changed-skills
 ```

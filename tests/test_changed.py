@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 
-from bellwether.cli.changed import changed_skills, skill_dir_for
+from bellwether.cli.changed import changed_skills, plugin_root_for, skill_dir_for
 
 
 def _make_skill(root: Path, rel: str) -> None:
@@ -109,3 +109,71 @@ def test_a_path_that_escapes_the_repo_root_is_ignored(tmp_path: Path) -> None:
     # And directly: neither a relative escape nor an absolute path names a skill dir.
     assert skill_dir_for("../outside/evil.py", root=root) is None
     assert skill_dir_for(str(outside / "evil.py"), root=root) is None
+
+
+def _make_plugin(root: Path, rel: str, skills: tuple[str, ...]) -> None:
+    plugin = root / rel
+    plugin.mkdir(parents=True, exist_ok=True)
+    (plugin / "plugin.json").write_text('{"name": "p"}', encoding="utf-8")
+    for name in skills:
+        _make_skill(root, f"{rel}/skills/{name}")
+
+
+def test_a_plugin_level_change_fans_out_to_every_bundled_skill(tmp_path: Path) -> None:
+    """A change to plugin.json (or mcp.json, or an extension directory) has no per-skill
+    attribution but can change what every bundled skill does when installed. Attributing
+    it to nothing would print "no skills changed" for a PR that rewrote the bundle's
+    manifest — the silent false-green this detection exists to avoid."""
+    _make_plugin(tmp_path, "plugins/deploy", ("alpha", "beta"))
+    for plugin_file in (
+        "plugins/deploy/plugin.json",
+        "plugins/deploy/mcp.json",
+        "plugins/deploy/com.example.client/hooks.json",
+    ):
+        assert changed_skills([plugin_file], root=tmp_path) == [
+            PurePosixPath("plugins/deploy/skills/alpha"),
+            PurePosixPath("plugins/deploy/skills/beta"),
+        ], plugin_file
+
+
+def test_a_change_inside_a_plugin_skill_counts_only_as_that_skill(tmp_path: Path) -> None:
+    """Attribution is skill-first: the precise attribution wins where it exists, so a
+    one-skill edit in a ten-skill plugin does not pay for ten evaluations."""
+    _make_plugin(tmp_path, "plugins/deploy", ("alpha", "beta"))
+    assert changed_skills(["plugins/deploy/skills/alpha/SKILL.md"], root=tmp_path) == [
+        PurePosixPath("plugins/deploy/skills/alpha")
+    ]
+
+
+def test_a_skill_deleted_from_a_plugin_reevaluates_the_survivors(tmp_path: Path) -> None:
+    """The diff names files under the removed skill, which no longer has a SKILL.md — but
+    they are still inside the plugin, whose composition just changed. The deleted skill
+    itself is never returned (nothing left to evaluate); the surviving skills are."""
+    _make_plugin(tmp_path, "plugins/deploy", ("alpha",))
+    assert changed_skills(["plugins/deploy/skills/gone/SKILL.md"], root=tmp_path) == [
+        PurePosixPath("plugins/deploy/skills/alpha")
+    ]
+
+
+def test_a_deleted_plugin_is_not_returned(tmp_path: Path) -> None:
+    """The plugin.json is gone on disk: like a deleted skill, there is nothing left to
+    evaluate, and nothing comes back as work."""
+    assert changed_skills(["plugins/gone/plugin.json"], root=tmp_path) == []
+    assert plugin_root_for("plugins/gone/plugin.json", root=tmp_path) is None
+
+
+def test_a_plugin_change_with_no_skills_yields_nothing(tmp_path: Path) -> None:
+    """A plugin carrying no skills (e.g. only MCP servers) has nothing Bellwether runs;
+    empty output stays the honest result."""
+    _make_plugin(tmp_path, "plugins/serversonly", ())
+    assert changed_skills(["plugins/serversonly/mcp.json"], root=tmp_path) == []
+
+
+def test_a_plugin_path_that_escapes_the_repo_root_is_ignored(tmp_path: Path) -> None:
+    """The BW-34 containment rule applies to the plugin walk exactly as to the skill walk:
+    a path climbing out of the checkout is never attributed to a plugin.json outside it."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _make_plugin(tmp_path, "outside-plugin", ("alpha",))
+    assert plugin_root_for("../outside-plugin/mcp.json", root=root) is None
+    assert changed_skills(["../outside-plugin/mcp.json"], root=root) == []

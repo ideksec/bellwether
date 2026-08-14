@@ -283,6 +283,95 @@ def test_run_without_a_skill_refuses(tmp_path: Path) -> None:
     assert "at least one skill" in result.output
 
 
+def _make_plugin(root: Path, skills: tuple[str, ...], *, mcp: bool = False) -> Path:
+    plugin = root / "a-plugin"
+    plugin.mkdir(parents=True, exist_ok=True)
+    (plugin / "plugin.json").write_text(
+        json.dumps(
+            {
+                "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+                "name": "a-plugin",
+            }
+        ),
+        encoding="utf-8",
+    )
+    if mcp:
+        (plugin / "mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+    for name in skills:
+        skill = plugin / "skills" / name
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: d\n---\nb\n", encoding="utf-8"
+        )
+    return plugin
+
+
+def test_expand_skill_args_passes_a_plain_skill_directory_through(tmp_path: Path) -> None:
+    from bellwether.cli.app import _expand_skill_args
+
+    skill = tmp_path / "a-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: s\ndescription: d\n---\nb\n", encoding="utf-8")
+    assert _expand_skill_args([str(skill)]) == [(skill, ())]
+
+
+def test_expand_skill_args_expands_a_plugin_to_its_skills(tmp_path: Path) -> None:
+    """`bellwether run <plugin>/` evaluates each bundled skill exactly as if it had been
+    named directly — the plugin is a container, not a new unit of evaluation."""
+    from bellwether.cli.app import _expand_skill_args
+
+    plugin = _make_plugin(tmp_path, ("zeta", "alpha"))
+    expanded = _expand_skill_args([str(plugin)])
+    assert [d.name for d, _ in expanded] == ["alpha", "zeta"]
+    assert all(notes == () for _, notes in expanded)
+
+
+def test_expand_skill_args_reports_mcp_servers_as_unevaluated(tmp_path: Path) -> None:
+    """A bundled mcp.json declares executable behaviour this version never starts. Every
+    expanded skill carries the note, so the omission is recorded rather than reading as a
+    component that ran clean."""
+    from bellwether.cli.app import _expand_skill_args
+
+    plugin = _make_plugin(tmp_path, ("alpha",), mcp=True)
+    ((_, notes),) = _expand_skill_args([str(plugin)])
+    assert any("mcp.json" in note and "unobserved" in note for note in notes)
+
+
+def test_expand_skill_args_prefers_the_skill_reading_of_a_hybrid(tmp_path: Path) -> None:
+    """A directory with both a SKILL.md and a plugin.json is read as the skill it is —
+    the precise unit wins over the container reading."""
+    from bellwether.cli.app import _expand_skill_args
+
+    hybrid = tmp_path / "hybrid"
+    hybrid.mkdir()
+    (hybrid / "SKILL.md").write_text("---\nname: h\ndescription: d\n---\nb\n", encoding="utf-8")
+    (hybrid / "plugin.json").write_text('{"name": "h"}', encoding="utf-8")
+    assert _expand_skill_args([str(hybrid)]) == [(hybrid, ())]
+
+
+def test_run_refuses_a_plugin_with_no_skills(tmp_path: Path) -> None:
+    """An Agent Plugin carrying no skills (e.g. only MCP servers) is an infrastructure
+    refusal — an empty loop would exit 0 and read as a clean evaluation of nothing."""
+    plugin = _make_plugin(tmp_path, ())
+    result = runner.invoke(app, ["run", str(plugin)])
+    assert result.exit_code == ExitCode.INFRASTRUCTURE
+    assert "no skills" in result.output
+
+
+def test_changed_skills_command_fans_a_plugin_level_change_out(tmp_path: Path) -> None:
+    """The CI pipe `git diff | bellwether changed-skills` must attribute a plugin-manifest
+    change to the bundled skills; printing nothing there is the silent false-green."""
+    _make_plugin(tmp_path, ("alpha", "beta"))
+    result = runner.invoke(
+        app, ["changed-skills", "--root", str(tmp_path)], input="a-plugin/plugin.json\n"
+    )
+    assert result.exit_code == 0
+    assert result.output.splitlines() == [
+        "a-plugin/skills/alpha",
+        "a-plugin/skills/beta",
+    ]
+
+
 def test_run_with_a_missing_config_refuses(tmp_path: Path) -> None:
     """A run whose config.yaml is absent fails loudly before any container starts."""
     skill = tmp_path / "a-skill"
