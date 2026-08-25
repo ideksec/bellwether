@@ -36,7 +36,7 @@ defaults: &defaults
       canary_leak: block
       canary_without_read: block
       egress_outside_allowlist: warn      # observed when the sidecar is built — advisory here (§25)
-      dns_outside_allowlist: warn         # controlled resolver not enabled in this config (§25)
+      dns_outside_allowlist: warn         # observed when the resolver sidecar is built — advisory for the same shakeout reasoning as egress (§25)
       credential_read_undeclared: block
       sensitive_directory_access: block
       unexpected_provider_endpoint: block

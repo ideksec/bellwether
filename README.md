@@ -51,9 +51,9 @@ DNS resolver runs as a second sidecar with its queries recorded as Plane E. The 
 client** (Anthropic), the `bellwether run` CLI, and the shipped GitHub Action round out the
 pipeline.
 
-What remains is **breadth, not a missing spine**: turning the captured-but-unscored planes into
-gates (DNS, credential reads), the static scanner, process/read capture, the `claude-code`
-harness adapter, the noise-floor calibration proof, and the v0.1 acceptance corpus. See
+What remains is **breadth, not a missing spine**: turning the captured-but-unscored
+credential-read plane into a gate, the static scanner, process/read capture, the `claude-code`
+harness adapter, and the v0.1 acceptance corpus. See
 [docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan, and the table below
 for exactly what is implemented versus refused-with-exit-3.
 
@@ -84,7 +84,7 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from six gates, and these are the checks that can actually move a skill off `ready`:
+composed from seven gates, and these are the checks that can actually move a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
@@ -98,10 +98,14 @@ composed from six gates, and these are the checks that can actually move a skill
 - **security_runtime.canaries** — a planted canary appearing at any non-model destination (final
   output, a DNS query name, tool arguments, an egress request, a written file) blocks under the
   default policy. Where canaries were not planted, the gate defers as `not_evaluable` — an
-  unwatched channel is never called clean.
+  unwatched channel is never called clean;
+- **security_runtime.dns** — a lookup of a name outside the allowlist, from what the controlled
+  resolver logged (Plane E). An HTTP proxy never sees UDP/53, so this is the gate on the covert
+  channel that routes around the egress plane. Where the resolver was not wired, the gate defers
+  as `not_evaluable`, same rule as the other two.
 
-What is **captured as evidence but does not yet gate** the scored verdict: DNS-outside-allowlist
-(Plane E), undeclared credential reads, canary-in-model-context grading (`canary_without_read` —
+What is **captured as evidence but does not yet gate** the scored verdict: undeclared
+credential reads, canary-in-model-context grading (`canary_without_read` —
 deliberately unscored until the model-API channel's read-state scanning lands, because a gate whose
 evidence cannot exist would read as an active control while nothing can fire it), sensitive-directory
 access, and the volume/anomaly checks. Their findings appear in the report, but a `block` disposition
@@ -267,9 +271,10 @@ alone and an unmentioned component would read as one that ran clean.
 | **Live verdict on CI** — a benign skill reaching `ready` against a real model, egress observed | proven |
 | **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files; a leak gates the verdict (`security_runtime.canaries`) | done (WP-16); model-API read-state grading is a follow-on |
 | CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |
-| Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace | done (WP-15); DNS-outside-allowlist *scoring* pending |
+| Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace; a lookup outside the allowlist gates the verdict (`security_runtime.dns`) | done (WP-15) |
 | Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline diffing (§17.5) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
-| Plane-coverage matrix (WP-18) · noise-floor calibration (WP-19) | remaining |
+| **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
+| Plane-coverage matrix (WP-18) | remaining |
 | `claude-code` harness adapter (WP-17) · corpus & acceptance (WP-20, the v0.1 line) | remaining |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification

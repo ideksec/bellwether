@@ -1753,3 +1753,72 @@ digests. A skill that depends on sibling files or a plugin-root path at runtime 
 plural staging and a plugin-shaped install layout — that lands with the `claude-code` adapter
 (WP-17), which is also where a real client would install the bundle as a plugin rather than a
 bare skill.
+
+## §10.6, §16.2, §10.8 — The DNS disposition becomes a scored gate, and the live smoke wires the resolver to keep `ready` earned
+
+`dns_outside_allowlist` is the third `security_runtime` disposition to become a scored gate
+(`security_runtime.dns`), completing the trio the shipped `block` defaults imply: a name the
+controlled resolver refused (`dns_blocked`, Plane E) now drives the composed verdict, instead of
+appearing only as a capability row. Three states, exactly the egress/canary decision table: no
+resolver on every run defers (`not_evaluable` — an HTTP proxy never sees UDP/53, so an
+unresolvered run's lookups are an unwatched channel), an observed refusal takes the policy
+disposition, an observed-clean set passes.
+
+Two decisions worth recording. First, the observedness test uses §10.8's **absence** bar
+(`plane_reason("dns", for_absence=True)`), unlike the egress and canary gates' presence bar. The
+gate's pass state claims "no lookup outside the allowlist happened", and the plane's fidelity is
+`full` when the resolver runs — §3.3 invariant 3 leaves UDP/53 no route around it — so the two
+tests coincide today and the stricter one costs nothing. It is chosen anyway because the canary
+gate's spec-note already had to *document* the promise that a future `partial` fidelity must
+tighten its test; here the tightening is done in advance rather than promised.
+
+Second, scoring the gate forced the live smoke to actually observe the plane. `compose_verdict`
+renders an advisory `not_evaluable` gate as `conditional`, so adding the gate with the resolver
+unwired would have regressed the proven live `ready` (PR #45) to `conditional` on the next
+labelled run — an unannounced downgrade of the project's own headline proof. So the same brick
+sets `dns.image` in `examples/live/config.yaml`, builds the resolver sidecar image in the
+workflow exactly as the proxy's is built, and guards it with a rot test mirroring the proxy's
+(`test_the_live_config_turns_the_controlled_resolver_on`). The smoke policy keeps
+`dns_outside_allowlist` at `warn` for the same shakeout reasoning as egress: a clean benign run
+passes either way, and a surprise lookup warns rather than reddening the run before the resolver
+pipeline is trusted live; promoting both to `block` is the same deliberate follow-up.
+
+The demo and first-light paths change shape but not verdict: they gain a third advisory
+`not_evaluable` row (`security_runtime.dns` — no resolver in an offline path), and their
+committed reports are regenerated; `conditional` stays `conditional`, held now by three named
+unobserved planes instead of two.
+
+## §24, §13.4 — The noise floor is a committed measurement, and `at_noise_floor` is encoded in the data, not the renderer
+
+WP-19's calibration closed with all three §24 assertions *measured on real containers*, not
+assumed. Three decisions worth recording.
+
+**The committed constant is a measurement with the schema-drift reflex applied to a number.**
+`NOISE_FLOOR_TRAJECTORY` (0.0) and `NOISE_FLOOR_CALIBRATED_AT` live in `constants.py` and ride
+into every `summary.json` as the §17.2 `noise_floor` block. `test_noise_floor_docker.py`
+re-takes the measurement — six real sandbox runs of the `benign-stable` shape, Plane-A-only
+dispersion asserted **exactly 0.0**, cross-plane residual asserted equal to the committed
+constant, repeated under concurrent load (four sandboxes at once) — so a drift between the
+published number and reality fails CI the same way a stale `summary.schema.json` does. The
+spec's example floor (0.04) is illustrative; ours measured 0.0 because at the current coverage
+composition every trajectory-contributing plane is either deterministic under the scripted
+model (A) or empty on a networkless benign run (C, D, E). The floor is expected to move — and
+the calibration date with it — when live-model transcripts or cross-plane events start
+contributing steps; the docker test is what forces that recalibration to be deliberate.
+
+**Plane-A-zero is asserted as an invariant, not recorded as a result.** Per the WP-19 done-when,
+a nonzero Plane-A floor means §11.5 epoch anchoring admits jitter, so the test's failure mode is
+"go fix the anchoring", never "update the constant". The offline half (`test_noise_floor.py`)
+pins the same zero on the scripted path, so the invariant is watched by the fast suite too.
+
+**§13.4's MUST lives in the summary, not in each renderer.** "A skill whose measured dispersion
+is at or below the noise floor MUST be reported as `at_noise_floor`, never as a precise small
+number" is enforced by construction: at or below the floor, `ConsistencySummary` carries
+`trajectory_at_noise_floor: true` and `trajectory_dispersion: null` — the precise figure is
+*withheld from the data*, so a renderer cannot print a number it does not have, the same
+teeth-in-Python reflex as the BCI-never-without-pass-rate rule. Above the floor the precise
+figure is present and rendered against the floor and its calibration date in both the PR
+comment and the HTML report — the qualitative label must never blur a real signal. The two new
+`ConsistencySummary` fields are additive and optional, so the summary schema is regenerated
+without a version bump; the gate inputs (`SetReading.mean_pairwise_distance`) keep the raw
+number regardless, because gates compute and reports render.

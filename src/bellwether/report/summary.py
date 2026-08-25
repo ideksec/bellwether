@@ -158,6 +158,14 @@ class ConsistencySummary(ReportModel):
     components_excluded: tuple[ComponentExclusion, ...] = ()
     weights_normalised_over: float | None = None
     per_scenario: Mapping[str, object] = Field(default_factory=dict)
+    #: §13.4: mean pairwise trajectory edit distance — present **only** when it is above
+    #: the calibrated §24 noise floor. At or below the floor the number is withheld here
+    #: (``None``) and ``trajectory_at_noise_floor`` is set instead: the instrument produces
+    #: that dispersion on identical input, so rendering it as a measurement of the skill
+    #: would be a fabrication. Encoding the rule in the data keeps every surface honest at
+    #: once — a renderer cannot print a number the summary does not carry.
+    trajectory_dispersion: float | None = None
+    trajectory_at_noise_floor: bool = False
 
 
 class CapabilityProfileSummary(ReportModel):

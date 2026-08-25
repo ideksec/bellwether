@@ -56,6 +56,21 @@ def test_the_live_config_turns_the_recording_proxy_on() -> None:
     assert provider.broker.ready_providers() == []
 
 
+def test_the_live_config_turns_the_controlled_resolver_on() -> None:
+    """The DNS disposition is a scored gate now, and an advisory `not_evaluable` gate caps the
+    verdict at `conditional` — so the live smoke must *observe* DNS to keep its proven `ready`.
+    `dns.image` is set, so `build_resolver_provider` yields a real provider: the sandbox is
+    pointed at the resolver via --dns and every lookup is logged as Plane E (§10.6). If this
+    config rots back to resolver-off, this fails rather than the next labelled live run quietly
+    regressing to `conditional`."""
+    from bellwether.cli.run import build_resolver_provider
+
+    config = load_config(_LIVE / "config.yaml")
+    assert config.dns.image, "the live config must set dns.image to observe DNS"
+    provider = build_resolver_provider(config)
+    assert provider is not None
+
+
 def test_egress_stays_advisory_for_the_first_live_proof() -> None:
     """The proxy is wired now, so egress is observed — but the smoke policy keeps
     `egress_outside_allowlist` at `warn` rather than `block` for the first live proof: a benign
@@ -65,3 +80,7 @@ def test_egress_stays_advisory_for_the_first_live_proof() -> None:
     policy = load_policy(_LIVE / "policy.yaml")
     profile = policy.profile("low")
     assert profile.gates.security_runtime.egress_outside_allowlist == "warn"
+    # DNS is observed too now, and stays advisory for the same shakeout reasoning: a benign
+    # run is clean either way (an observed-clean plane passes), and `warn` keeps a surprise
+    # lookup from reddening the run before the resolver pipeline is trusted live.
+    assert profile.gates.security_runtime.dns_outside_allowlist == "warn"

@@ -185,6 +185,23 @@ DEFAULT_CAPABILITY_WEIGHTS: Final[dict[str, int]] = {
 #: class the table did not foresee still counts, so it cannot vanish from the risk sum.
 DEFAULT_CAPABILITY_WEIGHT: Final[int] = 1
 
+#: The calibrated §24 trajectory noise floor: the residual mean pairwise step-sequence
+#: distance the instrument itself produces on identical input, measured over the real-container
+#: ``benign-stable`` repetition set with all cross-plane events present (WP-19). A skill whose
+#: measured dispersion is at or below this MUST be reported as ``at_noise_floor``, never as a
+#: precise small number (§13.4) — a distinct-cluster count the instrument produces on identical
+#: input is a fabrication. The committed value is the *measurement*, not an aspiration:
+#: ``test_noise_floor_docker.py`` re-measures it against real containers (sequentially and under
+#: concurrent load) and fails when the committed number no longer matches, the same
+#: regenerate-and-diff reflex as the summary schema. Plane-A-only dispersion being exactly zero
+#: — the assertion that validates §11.5 epoch anchoring — is asserted in the same test; a
+#: nonzero value there means the anchoring is admitting jitter and must be fixed, not recorded.
+NOISE_FLOOR_TRAJECTORY: Final[float] = 0.0
+
+#: When the committed noise floor was last measured. Update it together with the value —
+#: a floor without its measurement date cannot be judged stale (§17.2, ``noise_floor``).
+NOISE_FLOOR_CALIBRATED_AT: Final[str] = "2026-08-25"
+
 #: The §2 honest-limitations footer, in the exact words the spec requires ("These MUST be
 #: stated in the README and in the generated report footer"). Every report §17 renders
 #: this verbatim and complete — a footer that drops one of these oversells by omission, so

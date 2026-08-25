@@ -144,7 +144,34 @@ def _headline_stats(summary: Summary) -> str:
             f"&times; {matrix.targets} target(s) &middot; {_esc(matrix.design)} design",
         ),
     ]
+    trajectory_card = _trajectory_card(summary)
+    if trajectory_card is not None:
+        cards.append(trajectory_card)
     return '<section class="stats">\n' + "\n".join(cards) + "\n</section>"
+
+
+def _trajectory_card(summary: Summary) -> str | None:
+    """The §13.4 trajectory dispersion against the calibrated noise floor.
+
+    At or below the floor the summary withholds the precise figure by construction, so
+    this card renders the qualitative label — a number the instrument produces on
+    identical input is not a measurement of the skill. ``None`` (no card) only where no
+    dispersion was measured at all.
+    """
+    consistency = summary.consistency
+    floor = summary.noise_floor
+    detail = (
+        f"noise floor {format_float(floor.trajectory)}, calibrated {_esc(floor.calibrated_at)}"
+        if floor is not None
+        else "no calibrated noise floor recorded"
+    )
+    if consistency.trajectory_at_noise_floor:
+        return _stat_card("Trajectory dispersion", "at noise floor", detail)
+    if consistency.trajectory_dispersion is None:
+        return None
+    return _stat_card(
+        "Trajectory dispersion", format_float(consistency.trajectory_dispersion), detail
+    )
 
 
 def _stat_card(label: str, value: str, detail: str) -> str:

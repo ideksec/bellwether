@@ -75,6 +75,10 @@ class EvidenceIndex:
     #: non-model destination (§10.4.1) — critical by classification, and what turns the
     #: canary gate from pass to block. Presence evidence, so plane fidelity cannot soften it.
     canary_leak_present: bool = False
+    #: A Plane E ``dns_blocked`` action is in the trace: the controlled resolver refused a
+    #: name outside the allowlist (§10.6) — evidence of intent, exactly like a default-deny
+    #: egress block, and what turns the DNS gate from pass to block.
+    dns_blocked_present: bool = False
     context: NormalizationContext = field(
         default_factory=lambda: NormalizationContext(workspace_root="/work")
     )
@@ -95,6 +99,7 @@ class EvidenceIndex:
         final_output_seq: int | None = None
         egress_blocked = False
         canary_leak = False
+        dns_blocked = False
 
         for action in trace.actions:
             if action.plane == "harness":
@@ -109,6 +114,8 @@ class EvidenceIndex:
                     writes.append(write)
             elif action.kind == "egress_blocked":
                 egress_blocked = True
+            elif action.kind == "dns_blocked":
+                dns_blocked = True
             elif action.plane == "credentials" and action.kind == "canary_leak":
                 canary_leak = True
 
@@ -129,6 +136,7 @@ class EvidenceIndex:
             workspace=workspace,
             egress_blocked_present=egress_blocked,
             canary_leak_present=canary_leak,
+            dns_blocked_present=dns_blocked,
             context=context,
         )
 
