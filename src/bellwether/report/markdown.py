@@ -118,6 +118,31 @@ def _bci_line(summary: Summary) -> str:
     )
 
 
+def _trajectory_line(summary: Summary) -> str | None:
+    """The §13.4 trajectory dispersion, reported against the calibrated noise floor.
+
+    At or below the floor the precise figure is absent from the summary by construction,
+    so this renders the qualitative label instead — the instrument produces that dispersion
+    on identical input, and printing it as a measurement of the skill would fabricate a
+    precision the tool does not have. ``None`` (nothing to render) only where no dispersion
+    was measured at all.
+    """
+    consistency = summary.consistency
+    floor = summary.noise_floor
+    floor_note = (
+        f" (floor {format_float(floor.trajectory)}, calibrated {floor.calibrated_at})"
+        if floor is not None
+        else ""
+    )
+    if consistency.trajectory_at_noise_floor:
+        return f"**Trajectory dispersion:** at noise floor{floor_note}."
+    if consistency.trajectory_dispersion is None:
+        return None
+    return (
+        f"**Trajectory dispersion:** {format_float(consistency.trajectory_dispersion)}{floor_note}."
+    )
+
+
 def _gate_tally(summary: Summary) -> str:
     """A compact count of gates by disposition — the at-a-glance line under the verdict."""
     counts: dict[str, int] = {}
@@ -150,6 +175,9 @@ def _verdict_header(summary: Summary) -> str:
         f"vs threshold {format_float(functional.threshold)} → `{functional.decision}` "
         f"(n={functional.n_evaluable})."
     )
+    trajectory = _trajectory_line(summary)
+    if trajectory is not None:
+        lines.append(trajectory)
     if summary.matrix.descriptive_only:
         lines.append(
             "> Fixed-N run (`descriptive_only`): the verdict ceiling is `conditional`, "

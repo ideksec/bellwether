@@ -43,7 +43,11 @@ from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_ar
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
-from bellwether.constants import DEFAULT_CAPABILITY_WEIGHTS
+from bellwether.constants import (
+    DEFAULT_CAPABILITY_WEIGHTS,
+    NOISE_FLOOR_CALIBRATED_AT,
+    NOISE_FLOOR_TRAJECTORY,
+)
 from bellwether.determinism import canonical_json, round6
 from bellwether.errors import BellwetherError
 from bellwether.metrics import (
@@ -60,6 +64,7 @@ from bellwether.report import (
     FunctionalSummary,
     GateSummary,
     MatrixSummary,
+    NoiseFloor,
     PolicyRef,
     ScopeRow,
     SecuritySummary,
@@ -484,6 +489,10 @@ class SetReading:
     #: At least one run recorded a Plane E ``dns_blocked`` — a lookup outside the allowlist
     #: somewhere in the set (§10.6).
     dns_blocked: bool = False
+    #: The measured dispersion is at or below the calibrated §24 noise floor — the
+    #: instrument cannot distinguish this set from identical input, so the report renders
+    #: the qualitative label and withholds the precise figure (§13.4).
+    trajectory_at_noise_floor: bool = False
 
 
 #: §13.5.2: the configured ``max_rare_capability_risk`` severity maps to a risk-weight
@@ -529,7 +538,11 @@ def aggregate(
         rare_capability_weight_threshold=rare_threshold,
     )
 
-    trajectory = summarise_trajectory([run.steps for run in runs])
+    # The calibrated floor rides in so the metric itself decides `at_noise_floor` (§13.4):
+    # the decision lives beside the number it qualifies, not in a renderer.
+    trajectory = summarise_trajectory(
+        [run.steps for run in runs], noise_floor_distance=NOISE_FLOOR_TRAJECTORY
+    )
 
     components: dict[str, float | None] = {
         "outcome": stability.outcome_consistency,
@@ -573,6 +586,7 @@ def aggregate(
         jaccard_plain=_opt_round(capability.jaccard_plain),
         modal_trajectory_share=round6(trajectory.modal_cluster_share or 0.0),
         mean_pairwise_distance=_opt_round(trajectory.mean_pairwise_distance),
+        trajectory_at_noise_floor=trajectory.at_noise_floor,
         rare_capability_risk=(
             profile.gates.consistency.max_rare_capability_risk
             if capability.rare_findings
@@ -1102,6 +1116,13 @@ def _build_summary(
         capability_jaccard_plain=primary.jaccard_plain,
         weights_digest=primary.weights_digest,
         components_used=("outcome", "capability", "trajectory"),
+        # §13.4: at or below the calibrated floor the precise figure is withheld — the
+        # summary carries the qualitative flag instead, so no surface can render a number
+        # the instrument produces on identical input.
+        trajectory_dispersion=(
+            None if primary.trajectory_at_noise_floor else primary.mean_pairwise_distance
+        ),
+        trajectory_at_noise_floor=primary.trajectory_at_noise_floor,
     )
     capability_profile = CapabilityProfileSummary(
         tier1={
@@ -1126,6 +1147,11 @@ def _build_summary(
         capability_profile=capability_profile,
         security=SecuritySummary(),
         limitations=default_limitations(),
+        # §24: the calibrated floor travels in every summary, with its measurement date, so
+        # a reader can judge the trajectory figures against the instrument's own jitter.
+        noise_floor=NoiseFloor(
+            trajectory=NOISE_FLOOR_TRAJECTORY, calibrated_at=NOISE_FLOOR_CALIBRATED_AT
+        ),
     )
 
 

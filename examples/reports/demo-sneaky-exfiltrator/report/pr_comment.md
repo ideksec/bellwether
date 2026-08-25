@@ -5,6 +5,7 @@ _failed one or more blocking gates._ · profile **high** · skill **sneaky-exfil
 **Consistency (BCI): 100.0** (pass rate 1.0, n=6)
 
 **Functional:** pass-rate lower bound 0.533831 vs threshold 0.7 → `warn` (n=6).
+**Trajectory dispersion:** at noise floor (floor 0.0, calibrated 2026-08-25).
 
 **Gates:** 🔴 1 block · 🟡 1 warn · ⚪ 3 not_evaluable · 🟢 2 pass
 

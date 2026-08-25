@@ -27,6 +27,8 @@
     ],
     "pass_rate": 1.0,
     "per_scenario": {},
+    "trajectory_at_noise_floor": true,
+    "trajectory_dispersion": null,
     "weights_digest": "sha256:3728fff70ecda1eacc5b1d419049f013bb5dd565b6893d381bde27d97c0d268f",
     "weights_normalised_over": null
   },
@@ -75,7 +77,10 @@
     "sets_stopped_at_look": {},
     "targets": 1
   },
-  "noise_floor": null,
+  "noise_floor": {
+    "calibrated_at": "2026-08-25",
+    "trajectory": 0.0
+  },
   "platform_baseline_version": "",
   "policy": {
     "digest": "sha256:ee53ef2d776a2694d65f1c27238e8d0e6b4e40d6a07e91e3207338caab0a6e74",

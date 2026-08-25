@@ -78,6 +78,20 @@ policy keeps `dns_outside_allowlist` at `warn` for the same shakeout reasoning a
 demo/first-light paths gain a third advisory `not_evaluable` row and their committed reports are
 regenerated; their verdicts are unchanged (see spec-notes §10.6/§16.2/§10.8).
 
+**WP-19 (noise-floor calibration) then closed** — the proof that validates the variance metric
+itself. All three §24 assertions hold *measured on real containers*
+(`test_noise_floor_docker.py`): trajectory dispersion over **Plane A alone is exactly 0** across
+six sandbox runs (a nonzero value would have meant §11.5 epoch anchoring admits jitter); the
+cross-plane residual equals the committed `NOISE_FLOOR_TRAJECTORY = 0.0`
+(`constants.py` — the constant is a *measurement* the docker test re-takes, the schema-drift
+reflex applied to a number); and the floor does not move under concurrent load (four sandboxes
+at once) — with a floor of exactly zero, "not materially" tightens to "not at all". The floor is
+published in every `summary.json` (`noise_floor: {trajectory, calibrated_at}`), and §13.4's
+`at_noise_floor` rule is encoded in the data: at or below the floor the summary *withholds* the
+precise dispersion and sets `trajectory_at_noise_floor`, so no renderer can print a number the
+instrument produces on identical input; above it, the PR comment and HTML report show the
+precise figure against the floor (see spec-notes §24/§13.4).
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the credential-read disposition into a scored gate (`canary_without_read` waits on the
@@ -118,9 +132,10 @@ closure.
 | **DNS gate scored** (`security_runtime.dns`) — a resolver-refused lookup drives the verdict; live smoke wires the resolver (`dns.image` + workflow image build) so the labelled run keeps `ready` on observed evidence | **done** |
 | Evidence preserved from CI — per-run ARF traces + report uploaded as an artifact, report echoed to the log | **done** (PR #45) |
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
-| WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
+| WP-19 — noise-floor calibration: Plane-A dispersion exactly 0 on real containers (sequential + concurrent load), residual published as `noise_floor`, `at_noise_floor` reporting | **done** |
+| WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-20 corpus | **remaining** — see "What's next" |
 
-934 tests: 883 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
+940 tests: 887 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -218,19 +233,15 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      body-scan logic is offline-proven and the sidecar composition is CI-proven. Then the corpus skills
      (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
      §10.4 done-when.
-3. **Noise-floor calibration (WP-19).** Prove trajectory dispersion on Plane A alone is exactly 0 and
-   record the cross-plane residual as `noise_floor`. This is the test that *validates the variance
-   metric itself* — do it before leaning harder on that metric. A nonzero Plane-A floor means WP-7 is
-   wrong.
-4. **Plane precedence & coverage matrix (WP-18).** With several planes now observed, implement the
+3. **Plane precedence & coverage matrix (WP-18).** With several planes now observed, implement the
    §10.7/10.8 precedence — `trace_inconsistency` only where two planes are both in-domain — and the
    per-plane coverage/fidelity reasons. Done-when: a benign run at overlay-diff fidelity yields zero
    spurious `trace_inconsistency`.
-5. **`claude-code` adapter (WP-17).** The second harness, so a skill is evaluated under the real CLI
+4. **`claude-code` adapter (WP-17).** The second harness, so a skill is evaluated under the real CLI
    and its hooks, cross-checked against the host sink. Largely independent — can move earlier if a
    real-harness signal is wanted sooner; flagged late only because it is a big chunk with an
    external-docs dependency.
-6. **Corpus & acceptance (WP-20).** The eleven §25 corpus skills with expected-verdict fixtures; CI
+5. **Corpus & acceptance (WP-20).** The eleven §25 corpus skills with expected-verdict fixtures; CI
    asserts each verdict. This is the v0.1 "done" line and depends on everything above.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with

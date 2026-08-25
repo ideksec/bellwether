@@ -5,6 +5,7 @@ _met the blocking gates; see the warnings below._ · profile **low** · skill **
 **Consistency (BCI): 100.0** (pass rate 1.0, n=6)
 
 **Functional:** pass-rate lower bound 0.533831 vs threshold 0.5 → `pass` (n=6).
+**Trajectory dispersion:** at noise floor (floor 0.0, calibrated 2026-08-25).
 
 **Gates:** ⚪ 3 not_evaluable · 🟢 4 pass
 

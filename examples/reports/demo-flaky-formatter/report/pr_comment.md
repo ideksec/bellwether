@@ -5,6 +5,7 @@ _failed one or more blocking gates._ · profile **medium** · skill **flaky-form
 **Consistency (BCI): 61.15788** (pass rate 0.3, n=20) — **consistently failing**
 
 **Functional:** pass-rate lower bound 0.128638 vs threshold 0.6 → `block` (n=20).
+**Trajectory dispersion:** 0.102024 (floor 0.0, calibrated 2026-08-25).
 
 **Gates:** 🔴 1 block · 🟡 1 warn · ⚪ 3 not_evaluable · 🟢 2 pass
 

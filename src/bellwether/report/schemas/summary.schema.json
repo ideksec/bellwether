@@ -127,6 +127,23 @@
           "title": "Per Scenario",
           "type": "object"
         },
+        "trajectory_at_noise_floor": {
+          "default": false,
+          "title": "Trajectory At Noise Floor",
+          "type": "boolean"
+        },
+        "trajectory_dispersion": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trajectory Dispersion"
+        },
         "weights_digest": {
           "default": "",
           "title": "Weights Digest",

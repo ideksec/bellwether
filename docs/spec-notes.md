@@ -1787,3 +1787,38 @@ The demo and first-light paths change shape but not verdict: they gain a third a
 `not_evaluable` row (`security_runtime.dns` — no resolver in an offline path), and their
 committed reports are regenerated; `conditional` stays `conditional`, held now by three named
 unobserved planes instead of two.
+
+## §24, §13.4 — The noise floor is a committed measurement, and `at_noise_floor` is encoded in the data, not the renderer
+
+WP-19's calibration closed with all three §24 assertions *measured on real containers*, not
+assumed. Three decisions worth recording.
+
+**The committed constant is a measurement with the schema-drift reflex applied to a number.**
+`NOISE_FLOOR_TRAJECTORY` (0.0) and `NOISE_FLOOR_CALIBRATED_AT` live in `constants.py` and ride
+into every `summary.json` as the §17.2 `noise_floor` block. `test_noise_floor_docker.py`
+re-takes the measurement — six real sandbox runs of the `benign-stable` shape, Plane-A-only
+dispersion asserted **exactly 0.0**, cross-plane residual asserted equal to the committed
+constant, repeated under concurrent load (four sandboxes at once) — so a drift between the
+published number and reality fails CI the same way a stale `summary.schema.json` does. The
+spec's example floor (0.04) is illustrative; ours measured 0.0 because at the current coverage
+composition every trajectory-contributing plane is either deterministic under the scripted
+model (A) or empty on a networkless benign run (C, D, E). The floor is expected to move — and
+the calibration date with it — when live-model transcripts or cross-plane events start
+contributing steps; the docker test is what forces that recalibration to be deliberate.
+
+**Plane-A-zero is asserted as an invariant, not recorded as a result.** Per the WP-19 done-when,
+a nonzero Plane-A floor means §11.5 epoch anchoring admits jitter, so the test's failure mode is
+"go fix the anchoring", never "update the constant". The offline half (`test_noise_floor.py`)
+pins the same zero on the scripted path, so the invariant is watched by the fast suite too.
+
+**§13.4's MUST lives in the summary, not in each renderer.** "A skill whose measured dispersion
+is at or below the noise floor MUST be reported as `at_noise_floor`, never as a precise small
+number" is enforced by construction: at or below the floor, `ConsistencySummary` carries
+`trajectory_at_noise_floor: true` and `trajectory_dispersion: null` — the precise figure is
+*withheld from the data*, so a renderer cannot print a number it does not have, the same
+teeth-in-Python reflex as the BCI-never-without-pass-rate rule. Above the floor the precise
+figure is present and rendered against the floor and its calibration date in both the PR
+comment and the HTML report — the qualitative label must never blur a real signal. The two new
+`ConsistencySummary` fields are additive and optional, so the summary schema is regenerated
+without a version bump; the gate inputs (`SetReading.mean_pairwise_distance`) keep the raw
+number regardless, because gates compute and reports render.
