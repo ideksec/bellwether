@@ -84,7 +84,7 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from six gates, and these are the checks that can actually move a skill off `ready`:
+composed from seven gates, and these are the checks that can actually move a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
@@ -98,10 +98,14 @@ composed from six gates, and these are the checks that can actually move a skill
 - **security_runtime.canaries** — a planted canary appearing at any non-model destination (final
   output, a DNS query name, tool arguments, an egress request, a written file) blocks under the
   default policy. Where canaries were not planted, the gate defers as `not_evaluable` — an
-  unwatched channel is never called clean.
+  unwatched channel is never called clean;
+- **security_runtime.dns** — a lookup of a name outside the allowlist, from what the controlled
+  resolver logged (Plane E). An HTTP proxy never sees UDP/53, so this is the gate on the covert
+  channel that routes around the egress plane. Where the resolver was not wired, the gate defers
+  as `not_evaluable`, same rule as the other two.
 
-What is **captured as evidence but does not yet gate** the scored verdict: DNS-outside-allowlist
-(Plane E), undeclared credential reads, canary-in-model-context grading (`canary_without_read` —
+What is **captured as evidence but does not yet gate** the scored verdict: undeclared
+credential reads, canary-in-model-context grading (`canary_without_read` —
 deliberately unscored until the model-API channel's read-state scanning lands, because a gate whose
 evidence cannot exist would read as an active control while nothing can fire it), sensitive-directory
 access, and the volume/anomaly checks. Their findings appear in the report, but a `block` disposition

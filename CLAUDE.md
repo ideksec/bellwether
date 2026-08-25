@@ -30,9 +30,11 @@ live model**, with per-run evidence uploaded as an artifact. The DNS resolver is
 executor, canaries are planted and scanned end to end, the §16.4 precondition check is wired into
 `run`/`doctor` (an unsatisfiable policy refuses before spending), and **canary leaks now gate the
 verdict** (`security_runtime.canaries` — a skill that exfiltrates a planted canary cannot reach
-`ready`). What remains is *breadth*: the still-unscored planes (DNS, credential reads — see the
-README's "What the live verdict gates today"), noise-floor calibration, the coverage matrix, the
-`claude-code` adapter, and the acceptance corpus.
+`ready`), and the **DNS gate is scored** (`security_runtime.dns`, with the live smoke wiring the
+resolver so the labelled run keeps `ready` on observed evidence). What remains is *breadth*: the
+still-unscored credential-read plane (see the README's "What the live verdict gates today"),
+noise-floor calibration, the coverage matrix, the `claude-code` adapter, and the acceptance
+corpus.
 
 ## How we work — the cadence (one brick, one PR)
 

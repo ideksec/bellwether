@@ -45,6 +45,15 @@ egress:
   # plane. The api-loop model runs host-side, so the sandbox is handed no credential.
   image: bw-proxy-sidecar:live
 
+dns:
+  # Turn the controlled resolver on — the second sidecar, built by the workflow exactly like
+  # the proxy's (same moving-tag reasoning). With it set, the sandbox is pointed at the
+  # resolver via --dns, every lookup is logged as Plane E, and the DNS gate is decided from
+  # observed evidence (§10.6) instead of deferring — which is what keeps the benign run at
+  # `ready` now that the DNS disposition is a scored gate. An HTTP proxy never sees UDP/53;
+  # this is the plane that watches the covert channel routing around it.
+  image: bw-resolver-sidecar:live
+
 capture:
   filesystem_writes: overlay
   filesystem_reads: fanotify

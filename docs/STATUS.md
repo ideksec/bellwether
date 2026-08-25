@@ -66,9 +66,21 @@ skill rather than silently ignored, since this version never starts plugin MCP s
 of evaluation stays the skill; the bundle is located and described, never staged whole —
 plugin-layout staging folds into WP-17 (see spec-notes §5/§6/§18).
 
+The brick after that made **the DNS disposition a scored gate** (`security_runtime.dns`): a name
+the controlled resolver refused now drives the composed verdict, with the same three-state table
+as egress and canaries — unresolvered defers (`not_evaluable`), an observed refusal takes the
+policy disposition, observed-clean passes (at §10.8's *absence* bar, chosen in advance since the
+plane records `full`). Scoring it forced the live smoke to observe the plane: `dns.image` is now
+set in `examples/live/config.yaml`, the workflow builds the resolver sidecar image beside the
+proxy's, and a rot test guards the config — without this, the next labelled live run would have
+silently regressed the proven `ready` to `conditional` on an advisory unobserved gate. The smoke
+policy keeps `dns_outside_allowlist` at `warn` for the same shakeout reasoning as egress. The
+demo/first-light paths gain a third advisory `not_evaluable` row and their committed reports are
+regenerated; their verdicts are unchanged (see spec-notes §10.6/§16.2/§10.8).
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
-the DNS and credential-read dispositions into scored gates (`canary_without_read` waits on the
+the credential-read disposition into a scored gate (`canary_without_read` waits on the
 model-API read-state scanning), the blocking static-scan gate (lands with the §15 scanner),
 `requires.min_bellwether_version` in the preflight, and hash-pinning the full sidecar dependency
 closure.
@@ -103,11 +115,12 @@ closure.
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
 | HTML report, worked demo (`bellwether demo`), PR-comment posting, changed-skills detection + GitHub Action | **done** |
 | Agent Plugin bundles (agent-plugins.org) — `run` expands a plugin root to its skills, plugin-level changes fan out in `changed-skills`, `mcp.json` reported as unobserved | **done** |
+| **DNS gate scored** (`security_runtime.dns`) — a resolver-refused lookup drives the verdict; live smoke wires the resolver (`dns.image` + workflow image build) so the labelled run keeps `ready` on observed evidence | **done** |
 | Evidence preserved from CI — per-run ARF traces + report uploaded as an artifact, report echoed to the log | **done** (PR #45) |
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-19 noise floor · WP-20 corpus | **remaining** — see "What's next" |
 
-925 tests: 874 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
+934 tests: 883 offline, 51 under the `docker` mark (45 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

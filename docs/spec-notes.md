@@ -1753,3 +1753,37 @@ digests. A skill that depends on sibling files or a plugin-root path at runtime 
 plural staging and a plugin-shaped install layout — that lands with the `claude-code` adapter
 (WP-17), which is also where a real client would install the bundle as a plugin rather than a
 bare skill.
+
+## §10.6, §16.2, §10.8 — The DNS disposition becomes a scored gate, and the live smoke wires the resolver to keep `ready` earned
+
+`dns_outside_allowlist` is the third `security_runtime` disposition to become a scored gate
+(`security_runtime.dns`), completing the trio the shipped `block` defaults imply: a name the
+controlled resolver refused (`dns_blocked`, Plane E) now drives the composed verdict, instead of
+appearing only as a capability row. Three states, exactly the egress/canary decision table: no
+resolver on every run defers (`not_evaluable` — an HTTP proxy never sees UDP/53, so an
+unresolvered run's lookups are an unwatched channel), an observed refusal takes the policy
+disposition, an observed-clean set passes.
+
+Two decisions worth recording. First, the observedness test uses §10.8's **absence** bar
+(`plane_reason("dns", for_absence=True)`), unlike the egress and canary gates' presence bar. The
+gate's pass state claims "no lookup outside the allowlist happened", and the plane's fidelity is
+`full` when the resolver runs — §3.3 invariant 3 leaves UDP/53 no route around it — so the two
+tests coincide today and the stricter one costs nothing. It is chosen anyway because the canary
+gate's spec-note already had to *document* the promise that a future `partial` fidelity must
+tighten its test; here the tightening is done in advance rather than promised.
+
+Second, scoring the gate forced the live smoke to actually observe the plane. `compose_verdict`
+renders an advisory `not_evaluable` gate as `conditional`, so adding the gate with the resolver
+unwired would have regressed the proven live `ready` (PR #45) to `conditional` on the next
+labelled run — an unannounced downgrade of the project's own headline proof. So the same brick
+sets `dns.image` in `examples/live/config.yaml`, builds the resolver sidecar image in the
+workflow exactly as the proxy's is built, and guards it with a rot test mirroring the proxy's
+(`test_the_live_config_turns_the_controlled_resolver_on`). The smoke policy keeps
+`dns_outside_allowlist` at `warn` for the same shakeout reasoning as egress: a clean benign run
+passes either way, and a surprise lookup warns rather than reddening the run before the resolver
+pipeline is trusted live; promoting both to `block` is the same deliberate follow-up.
+
+The demo and first-light paths change shape but not verdict: they gain a third advisory
+`not_evaluable` row (`security_runtime.dns` — no resolver in an offline path), and their
+committed reports are regenerated; `conditional` stays `conditional`, held now by three named
+unobserved planes instead of two.

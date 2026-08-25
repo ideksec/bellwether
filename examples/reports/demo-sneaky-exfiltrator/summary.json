@@ -144,6 +144,14 @@
         "required": false,
         "status": "not_evaluable",
         "threshold": "warn"
+      },
+      {
+        "name": "security_runtime.dns",
+        "observed": "unobserved",
+        "reason": "api-loop-scripted-frontier: the controlled resolver was not wired into every run in this set, so DNS is not observed and the gate cannot be decided (§10.6, §10.7)",
+        "required": false,
+        "status": "not_evaluable",
+        "threshold": "warn"
       }
     ],
     "notes": [],

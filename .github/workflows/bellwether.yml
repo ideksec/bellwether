@@ -87,6 +87,16 @@ jobs:
           contains(github.event.pull_request.labels.*.name, 'bellwether-run')
         run: docker build -f sidecar/proxy/Dockerfile -t bw-proxy-sidecar:live .
 
+      - name: Build the controlled-resolver sidecar image
+        # The second sidecar, same reasoning as the proxy's: the live config's dns.image points
+        # at this tag, so each repetition's sandbox is pointed at the resolver via --dns and the
+        # DNS plane is observed (§10.6) — required for the scored DNS gate to pass rather than
+        # defer on the labelled live run.
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        run: docker build -f sidecar/resolver/Dockerfile -t bw-resolver-sidecar:live .
+
       - name: Evaluate and comment
         if: >-
           steps.detect.outputs.skills != '' &&
