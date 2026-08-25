@@ -81,6 +81,7 @@ def render_html_report(summary: Summary, figures: Figures) -> str:
         _banner(summary),
         _headline_stats(summary),
         _gate_table(summary),
+        *_trace_inconsistency_section(summary),
         _strip_section(figures),
         _heatmap_section(figures),
         _declared_vs_observed(figures),
@@ -112,6 +113,25 @@ def _banner(summary: Summary) -> str:
         f"  </div>\n"
         f"</header>"
     )
+
+
+def _trace_inconsistency_section(summary: Summary) -> list[str]:
+    """The §10.8 disagreements, rendered only where any exist — mirrors the PR comment.
+
+    Absent entirely on a consistent run: an empty section would imply the comparison ran
+    across every §10.8 row, when several rows are never comparable in this version.
+    """
+    raw = summary.security.runtime.get("trace_inconsistency")
+    findings = [str(entry) for entry in raw] if isinstance(raw, list) else []
+    if not findings:
+        return []
+    items = "\n".join(f"<li>{_esc(finding)}</li>" for finding in findings)
+    return [
+        "<section>\n<h2>Cross-plane disagreements (§10.8)</h2>\n"
+        f"<ul>\n{items}\n</ul>\n"
+        "<p><em>Advisory in this version: recorded and shown, not scored into the "
+        "verdict.</em></p>\n</section>"
+    ]
 
 
 def _headline_stats(summary: Summary) -> str:

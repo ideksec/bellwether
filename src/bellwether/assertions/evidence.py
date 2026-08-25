@@ -24,7 +24,7 @@ from bellwether.trace import (
     Trace,
 )
 
-__all__ = ["EvidenceIndex", "ToolCallEvidence", "WriteEvidence"]
+__all__ = ["EgressEvidence", "EvidenceIndex", "ToolCallEvidence", "WriteEvidence"]
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,18 @@ class WriteEvidence:
     #: Normalized (``${WORKSPACE}/...``) absolute path.
     path: str
     deleted: bool
+
+
+@dataclass(frozen=True)
+class EgressEvidence:
+    """One permitted egress flow the recording proxy observed, from Plane D (§10.5)."""
+
+    seq: int
+    host: str
+    #: ``model_api`` / ``harness_infrastructure`` / ``skill_attributed`` (§10.5.0). Only
+    #: the last is the skill's own traffic; the precedence check (§10.8) compares only
+    #: that class against Plane A claims, because harness traffic has no A-side claim.
+    egress_class: str
 
 
 @dataclass(frozen=True)
@@ -71,6 +83,9 @@ class EvidenceIndex:
     #: they return ``not_evaluable`` rather than guessing from digests.
     workspace: Path | None = None
     egress_blocked_present: bool = False
+    #: Every permitted Plane D flow, with its §10.5.0 class — what the §10.8 precedence
+    #: check compares against Plane A tool-call claims.
+    egress_requests: tuple[EgressEvidence, ...] = ()
     #: A Plane C ``canary_leak`` finding is in the trace: a planted canary appeared at a
     #: non-model destination (§10.4.1) — critical by classification, and what turns the
     #: canary gate from pass to block. Presence evidence, so plane fidelity cannot soften it.
@@ -98,6 +113,7 @@ class EvidenceIndex:
         final_output: str | None = None
         final_output_seq: int | None = None
         egress_blocked = False
+        egress_requests: list[EgressEvidence] = []
         canary_leak = False
         dns_blocked = False
 
@@ -114,6 +130,13 @@ class EvidenceIndex:
                     writes.append(write)
             elif action.kind == "egress_blocked":
                 egress_blocked = True
+            elif action.kind == "egress_request":
+                host = action.action.get("host")
+                egress_class = action.action.get("egress_class")
+                if isinstance(host, str) and isinstance(egress_class, str):
+                    egress_requests.append(
+                        EgressEvidence(seq=action.seq, host=host, egress_class=egress_class)
+                    )
             elif action.kind == "dns_blocked":
                 dns_blocked = True
             elif action.plane == "credentials" and action.kind == "canary_leak":
@@ -135,6 +158,7 @@ class EvidenceIndex:
             skill_name=trace.header.skill.name,
             workspace=workspace,
             egress_blocked_present=egress_blocked,
+            egress_requests=tuple(egress_requests),
             canary_leak_present=canary_leak,
             dns_blocked_present=dns_blocked,
             context=context,
