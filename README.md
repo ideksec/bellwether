@@ -274,7 +274,7 @@ alone and an unmentioned component would read as one that ran clean.
 | Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace; a lookup outside the allowlist gates the verdict (`security_runtime.dns`) | done (WP-15) |
 | Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline diffing (§17.5) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
-| Plane-coverage matrix (WP-18) | remaining |
+| **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
 | `claude-code` harness adapter (WP-17) · corpus & acceptance (WP-20, the v0.1 line) | remaining |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification

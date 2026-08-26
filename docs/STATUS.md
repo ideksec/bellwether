@@ -92,6 +92,20 @@ precise dispersion and sets `trajectory_at_noise_floor`, so no renderer can prin
 instrument produces on identical input; above it, the PR comment and HTML report show the
 precise figure against the floor (see spec-notes §24/§13.4).
 
+**WP-18 (plane precedence & coverage) then closed.** `trace_inconsistency` is now *produced*
+(`assertions/precedence.py`), and the implementation is the §10.8 warning taken seriously: only
+the two rows the captured planes can support are comparable — a persisted workspace write Plane B
+shows that no Plane A tool call claimed, and a skill-attributed egress flow whose host no tool
+call mentions — each gated on Plane A supporting the absence claim being read, with a
+deliberately generous claim test (a match can only suppress a finding, never fabricate one).
+Every other row is *never raised*, by design, documented per-row in the module. Findings surface
+in `summary.security.runtime` and render in both reports only when any exist, labelled advisory —
+the disposition stays unscored and `doctor` says so. The done-when holds on real evidence: the
+first-light container run at overlay-diff fidelity produces **zero** findings
+(`test_execution_docker.py`), the false-positive direction (an A claim without B corroboration)
+is pinned never to fire, and the §10.7 coverage-with-reasons half was already in place
+(see spec-notes §10.8/§10.7).
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the credential-read disposition into a scored gate (`canary_without_read` waits on the
@@ -133,16 +147,17 @@ closure.
 | Evidence preserved from CI — per-run ARF traces + report uploaded as an artifact, report echoed to the log | **done** (PR #45) |
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-19 — noise-floor calibration: Plane-A dispersion exactly 0 on real containers (sequential + concurrent load), residual published as `noise_floor`, `at_noise_floor` reporting | **done** |
-| WP-16 live canaries · WP-17 `claude-code` adapter · WP-18 coverage matrix · WP-20 corpus | **remaining** — see "What's next" |
+| WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
+| WP-16 live canaries · WP-17 `claude-code` adapter · WP-20 corpus | **remaining** — see "What's next" |
 
-940 tests: 887 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
+953 tests: 900 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
-Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. What
-remains is **breadth, not a missing spine**: the other evidence planes wired into the live path, the
-second harness, the coverage-honesty and calibration proofs, and the acceptance corpus. The order
-below reflects dependencies and reuses momentum from the proxy work — it is not the raw WP numbering,
+Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. The
+coverage-honesty (WP-18) and calibration (WP-19) proofs are in. What remains is **breadth, not a
+missing spine**: the model-API canary channel, the second harness, and the acceptance corpus. The
+order below reflects dependencies and reuses momentum — it is not the raw WP numbering,
 because the build deliberately inserted the executor-integration + live-proof work (unnumbered) that
 made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
 
@@ -159,8 +174,9 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    in `build_argv`, Plane E into the trace, `dns: full` coverage); and the **resolver sidecar image**
    (`sidecar/resolver/` — digest-pinned base + dnslib). Two CI-gated docker done-when tests exist
    (`test_resolver_docker`, `test_execution_resolver_docker`), mirroring the proxy's.
-   - **Left for CI / follow-on:** the image build + live standup run on CI (both need open egress, so
-     they skip locally, exactly like the proxy's docker tests) — push to a branch to validate. The
+   - **Left for CI / follow-on:** the image build + live standup run on CI — **validated on
+     PR #58** (`test_resolver_docker` and `test_execution_resolver_docker` passed in the
+     `container` job, zero skips). The
      §3.3-invariant-3 live-probe (a direct public-resolver query from the container fails) and the
      `dns-thief` corpus assertion land with WP-20's corpus; the covert-channel *detection* is already
      unit-tested offline (canary-in-labels, the capability mapping, the query records).
@@ -233,15 +249,11 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      body-scan logic is offline-proven and the sidecar composition is CI-proven. Then the corpus skills
      (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
      §10.4 done-when.
-3. **Plane precedence & coverage matrix (WP-18).** With several planes now observed, implement the
-   §10.7/10.8 precedence — `trace_inconsistency` only where two planes are both in-domain — and the
-   per-plane coverage/fidelity reasons. Done-when: a benign run at overlay-diff fidelity yields zero
-   spurious `trace_inconsistency`.
-4. **`claude-code` adapter (WP-17).** The second harness, so a skill is evaluated under the real CLI
+3. **`claude-code` adapter (WP-17).** The second harness, so a skill is evaluated under the real CLI
    and its hooks, cross-checked against the host sink. Largely independent — can move earlier if a
    real-harness signal is wanted sooner; flagged late only because it is a big chunk with an
    external-docs dependency.
-5. **Corpus & acceptance (WP-20).** The eleven §25 corpus skills with expected-verdict fixtures; CI
+4. **Corpus & acceptance (WP-20).** The eleven §25 corpus skills with expected-verdict fixtures; CI
    asserts each verdict. This is the v0.1 "done" line and depends on everything above.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with

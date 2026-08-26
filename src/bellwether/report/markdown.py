@@ -235,6 +235,26 @@ def _limitations_body(summary: Summary) -> str:
     return "\n".join(f"- {line}" for line in summary.limitations)
 
 
+def _trace_inconsistency_section(summary: Summary) -> list[str]:
+    """The §10.8 disagreements, rendered only where any exist.
+
+    Absent entirely on a consistent run — an empty "no inconsistencies" section would
+    imply the comparison ran across every row, when several §10.8 rows are never
+    comparable in this version. Advisory in this version: the disposition is not scored,
+    and saying so beside the finding stops a reader mistaking it for a gate.
+    """
+    raw = summary.security.runtime.get("trace_inconsistency")
+    findings = [str(entry) for entry in raw] if isinstance(raw, list) else []
+    if not findings:
+        return []
+    lines = "\n".join(f"- {finding}" for finding in findings)
+    return [
+        "### Cross-plane disagreements (§10.8)\n\n"
+        + lines
+        + "\n\n_Advisory in this version: recorded and shown, not scored into the verdict._"
+    ]
+
+
 def render_pr_comment(summary: Summary, figures: Figures) -> str:
     """Render the full PR comment (§17.4, §18.2).
 
@@ -245,6 +265,7 @@ def render_pr_comment(summary: Summary, figures: Figures) -> str:
     sections = [
         _verdict_header(summary),
         _gate_table(summary),
+        *_trace_inconsistency_section(summary),
         "### Repetition outcomes\n\n" + render_strip_chart(figures.strip),
         "### Capability heatmap\n\n"
         + render_capability_heatmap(figures.heatmap, figures.run_labels),

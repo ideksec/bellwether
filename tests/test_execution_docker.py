@@ -180,6 +180,13 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
     egress = [g for g in result.verdict.gates if "egress" in g.name]
     assert egress and egress[0].status == "not_evaluable"
 
+    # WP-18's done-when: a full benign-stable run at overlay-diff fidelity produces ZERO
+    # trace_inconsistency findings (§10.8). Every real workspace write here is claimed by
+    # the write tool call that made it, and the check must not manufacture findings out of
+    # the overlay's fidelity gaps — the naive any-disagreement rule would fire on this run.
+    assert reading.trace_inconsistencies == ()
+    assert result.summary.security.runtime == {}
+
     # The artifact tree is on disk, with six real traces filed under the scenario/target.
     assert result.artifacts.summary_json.exists()
     assert len(result.artifacts.traces) == 6

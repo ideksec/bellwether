@@ -33,7 +33,13 @@ from bellwether.assertions.derive import (
     evaluate_scope,
 )
 from bellwether.assertions.engine import evaluate, evaluate_all
-from bellwether.assertions.evidence import EvidenceIndex, ToolCallEvidence, WriteEvidence
+from bellwether.assertions.evidence import (
+    EgressEvidence,
+    EvidenceIndex,
+    ToolCallEvidence,
+    WriteEvidence,
+)
+from bellwether.assertions.precedence import TraceInconsistency, trace_inconsistencies
 from bellwether.assertions.results import (
     AssertionResult,
     AssertionStatus,
@@ -45,6 +51,7 @@ __all__ = [
     "AssertionResult",
     "AssertionStatus",
     "BaselineApplication",
+    "EgressEvidence",
     "EvidenceIndex",
     "NearMiss",
     "ObservedPath",
@@ -54,6 +61,7 @@ __all__ = [
     "ScopeEntry",
     "ScopeTable",
     "ToolCallEvidence",
+    "TraceInconsistency",
     "WriteEvidence",
     "apply_path_baseline",
     "attribute_process",
@@ -63,4 +71,5 @@ __all__ = [
     "evaluate_scope",
     "glob_to_regex",
     "run_outcome",
+    "trace_inconsistencies",
 ]

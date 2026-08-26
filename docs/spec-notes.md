@@ -1822,3 +1822,41 @@ comment and the HTML report — the qualitative label must never blur a real sig
 `ConsistencySummary` fields are additive and optional, so the summary schema is regenerated
 without a version bump; the gate inputs (`SetReading.mean_pairwise_distance`) keep the raw
 number regardless, because gates compute and reports render.
+
+## §10.8, §10.7 — The precedence matrix ships two rows; every other row is *never raised*, and that is the implementation
+
+WP-18's `trace_inconsistency` is produced by `assertions/precedence.py`, and the §10.8 warning is
+the design driver: the naive any-disagreement rule fires on nearly every run while the `high`
+profile blocks on the disposition. So the module encodes the matrix as *gates on comparability*,
+and only two rows are comparable with the planes this version captures:
+
+- **File write (persisted)** — B authoritative, A corroborating. A workspace-zone file the
+  overlay shows persisted with no Plane A tool call claiming it is a finding. B's *positive*
+  observation is trustworthy even at overlay-diff (the file is really on disk); the absence
+  being read is Plane A's, so the row is gated on A supporting an absence claim (§10.8's
+  stricter fidelity test — applied to the corroborating plane, which is the one whose silence
+  is interpreted). Deletes and non-workspace zones are out of the row: the shipped harness has
+  no delete tool, and harness-state/tmp writes are the harness's own machinery, so neither has
+  an A-side claim channel and raising on them could only ever be a false positive.
+- **Egress request** — D authoritative, A corroborating. A *skill-attributed* flow whose host no
+  Plane A tool call mentions is a finding; `model_api` and `harness_infrastructure` flows have
+  no A-side claim by construction and are never compared. A blocked flow is not re-raised here —
+  it is already first-class evidence with its own scored gate.
+
+The claim test is deliberately generous: a path or host anywhere in *any* tool call's arguments
+counts as claimed (a `write` path, a `bash` redirect, a `fetch` URL). A generous match can only
+suppress a finding, never fabricate one — the correct failure direction for this check. Every
+other §10.8 row (activation and DNS: single-source; transient writes and reads: need
+`filesystem_reads`; process: needs the eBPF/ptrace plane; A-stdout vs A-hooks: `api-loop` has one
+A source) is **never raised**, each documented in the module; a row becomes implementable when its
+plane does, and none may be approximated from a plane that cannot support it.
+
+Surfacing: findings ride `analyse_run → SetReading → summary.security.runtime
+["trace_inconsistency"]` and render in the PR comment and HTML report **only when any exist**,
+labelled advisory — an empty "no inconsistencies" section would imply every row was comparable
+when several never are, and the disposition stays advisory-unscored (`doctor` lists it as inert;
+wiring it into a scored gate is deliberate future work, not this brick). The §10.7 half of WP-18
+— the coverage block with per-plane fidelity *and reason strings*, and `not_evaluable`-with-reason
+for assertions on unavailable planes — was already implemented (`Coverage`/`PlaneCoverage`,
+`plane_reason`); the done-when (a real `benign-stable` container run at overlay-diff fidelity
+yields **zero** findings) is asserted in `test_execution_docker.py` on real overlay evidence.

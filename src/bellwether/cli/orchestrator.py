@@ -38,6 +38,7 @@ from bellwether.assertions import (
     evaluate_all,
     evaluate_scope,
     run_outcome,
+    trace_inconsistencies,
 )
 from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_artifact_tree
 from bellwether.config.models.manifest import DeclaredScope
@@ -195,6 +196,11 @@ class AnalysedRun:
     #: allowlist (§10.6). Evidence of intent — the covert channel that routes around the HTTP
     #: proxy — and what turns the DNS gate from pass to block.
     dns_blocked: bool = False
+    #: The §10.8 precedence check's disagreements for this run: an authoritative plane
+    #: observed something Plane A never claimed, at a fidelity where that silence is
+    #: meaningful. Empty on a consistent run — and on any run whose planes cannot support
+    #: the comparison, because a fidelity gap is never manufactured into a finding.
+    trace_inconsistencies: tuple[str, ...] = ()
 
 
 def plan_matrix(
@@ -400,6 +406,9 @@ def analyse_run(
         canary_leaked=index.canary_leak_present,
         dns_observed=dns_observed,
         dns_blocked=index.dns_blocked_present,
+        # §10.8: raised only where both planes are in-domain and the plane whose silence
+        # is read supports an absence claim — a fidelity gap never becomes a finding.
+        trace_inconsistencies=tuple(f.reason for f in trace_inconsistencies(index)),
     )
 
 
@@ -493,6 +502,11 @@ class SetReading:
     #: instrument cannot distinguish this set from identical input, so the report renders
     #: the qualitative label and withholds the precise figure (§13.4).
     trajectory_at_noise_floor: bool = False
+    #: §10.8 disagreements across the set: reasons from every run's precedence check,
+    #: de-duplicated and sorted. Surfaced in the report (`security.runtime`); the
+    #: ``trace_inconsistency`` disposition stays advisory-unscored in this version, and
+    #: ``doctor`` says so.
+    trace_inconsistencies: tuple[str, ...] = ()
 
 
 #: §13.5.2: the configured ``max_rare_capability_risk`` severity maps to a risk-weight
@@ -603,6 +617,9 @@ def aggregate(
         canary_leaked=any(run.canary_leaked for run in runs),
         dns_observed=len(runs) > 0 and all(run.dns_observed for run in runs),
         dns_blocked=any(run.dns_blocked for run in runs),
+        trace_inconsistencies=tuple(
+            sorted({reason for run in runs for reason in run.trace_inconsistencies})
+        ),
     )
 
 
@@ -1129,6 +1146,15 @@ def _build_summary(
             "core": sorted({cap for r in readings for run in r.runs for cap in run.caps_t1}),
         }
     )
+    # §10.8 disagreements across every set, into the machine-readable summary. The
+    # disposition is advisory-unscored in this version (doctor lists it as inert), so the
+    # finding's surface is the report — absent entirely on a consistent run.
+    inconsistencies = sorted(
+        {reason for reading in readings for reason in reading.trace_inconsistencies}
+    )
+    security = SecuritySummary(
+        runtime={"trace_inconsistency": inconsistencies} if inconsistencies else {}
+    )
     return Summary(
         eval_id=eval_id,
         created_at=created_at,
@@ -1145,7 +1171,7 @@ def _build_summary(
         functional=functional,
         consistency=consistency,
         capability_profile=capability_profile,
-        security=SecuritySummary(),
+        security=security,
         limitations=default_limitations(),
         # §24: the calibrated floor travels in every summary, with its measurement date, so
         # a reader can judge the trajectory figures against the instrument's own jitter.
