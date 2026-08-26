@@ -163,6 +163,24 @@ def check_preconditions(
                 ),
             )
         )
+    # The canary-reads gate (§10.4.1) has the same composition dependency: with no canaries
+    # planted, the model-channel scan has nothing to find and the gate would sit
+    # not_evaluable after the matrix was paid for.
+    if (
+        gates.security_runtime.canary_without_read == "block"
+        and "credentials" not in available_planes
+    ):
+        failures.append(
+            PreconditionFailure(
+                gate="security_runtime.canary_without_read",
+                target="(runner)",
+                remedy=(
+                    "canaries are not planted in this composition (canaries.enabled: false), "
+                    "so no unread-canary evidence can exist and the canary-reads gate would "
+                    "be not_evaluable; enable canaries, or set canary_without_read to 'warn'"
+                ),
+            )
+        )
 
     # (2) Required capture planes the runner cannot provide.
     if profile.requires is not None:

@@ -29,6 +29,7 @@ from pathlib import Path, PurePosixPath
 from bellwether.capture import (
     Canary,
     CanaryPlanting,
+    ModelChannelScanner,
     PlaneStatus,
     collect_filesystem_events,
     filesystem_writes_status,
@@ -75,6 +76,7 @@ from bellwether.trace import (
     exit_reason_from_events,
     filesystem_actions,
     harness_actions,
+    model_channel_actions,
     read_trace,
     redact_trace_actions,
     token_totals_from_events,
@@ -317,8 +319,14 @@ class SandboxRunExecutor:
                 extra_ro_binds=extra_ro_binds,
             )
             client, model_id = self.client_factory(plan)
+            # The model-API channel scan (§10.4.1): every request the loop composes is
+            # scanned host-side for the run's canaries before it leaves, graded by whether
+            # a tool-result block carried the marker into context (the recorded read).
+            # This is the residual channel §2 names — it cannot be blocked, so it is
+            # observed; wiring it is what lifts the credentials plane to `full`.
+            scanner = ModelChannelScanner(client, tuple(canaries)) if canaries else None
             adapter = ApiLoopAdapter(
-                client,
+                scanner if scanner is not None else client,
                 SandboxToolset(docker_exec_runner(self.backend, prepared)),
                 skills=(offered_skill(self.package),),
             )
@@ -369,6 +377,14 @@ class SandboxRunExecutor:
                 list(zip(plane_d, (flow.canary_hits for flow in egress_flows), strict=True)),
                 start_seq=plane_c_base + len(plane_c),
             )
+            # And the model-API channel: what the host-side scanner found in each composed
+            # request, graded by read state and anchored to the model turn the request
+            # produced (§10.4.1). This is the channel whose absence kept the plane partial.
+            plane_c += model_channel_actions(
+                scanner.scans if scanner is not None else [],
+                plane_a,
+                start_seq=plane_c_base + len(plane_c),
+            )
 
             header = RunHeader(
                 run_id=f"{self.eval_id}-{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}",
@@ -403,24 +419,13 @@ class SandboxRunExecutor:
                     egress=PlaneStatus(fidelity="full") if run_proxy is not None else None,
                     # Same for the resolver's query log: a zero-query run is observed-clean DNS.
                     dns=PlaneStatus(fidelity="full") if run_resolver is not None else None,
-                    # Canaries planted (env var + file slots) and scanned for leaks across the model
-                    # output, DNS query names, tool-call arguments, non-model egress URLs *and bodies*
-                    # (bodies sidecar-side), and written-file contents. Partial not full: the model-API
-                    # channel — a canary sent to the model, graded canary_in_context vs
-                    # canary_without_read by the per-request read state — is a follow-on.
-                    credentials=(
-                        PlaneStatus(
-                            fidelity="partial",
-                            reason=(
-                                "canaries planted (environment variable and file slots) and scanned "
-                                "for leaks in the model output, DNS query names, tool-call arguments, "
-                                "non-model egress URLs and bodies, and written-file contents; the "
-                                "model-API channel and its read-state grading are a follow-on"
-                            ),
-                        )
-                        if planting is not None
-                        else None
-                    ),
+                    # Canaries planted (env var + file slots) and scanned across every channel a
+                    # value can move on: the model output, DNS query names, tool-call arguments,
+                    # non-model egress URLs *and bodies* (bodies sidecar-side), written-file
+                    # contents, and — since the model-channel scan landed — every composed model
+                    # request, graded canary_in_context vs canary_without_read by the per-request
+                    # read state (§10.4.1). With that last channel observed, the plane is `full`.
+                    credentials=(PlaneStatus(fidelity="full") if planting is not None else None),
                 ),
                 started_at=started_at,
             )

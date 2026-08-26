@@ -255,6 +255,7 @@ def _firstlight_profile() -> object:
             "egress_outside_allowlist": "warn",
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
+            "canary_without_read": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})
@@ -330,6 +331,7 @@ def test_benign_stable_is_conditional_because_egress_cannot_be_evaluated_yet(
         "security_runtime.egress",
         "security_runtime.canaries",
         "security_runtime.dns",
+        "security_runtime.canary_reads",
     ]
     assert all(g.status == "not_evaluable" for g in non_pass)
 
@@ -406,10 +408,16 @@ def test_an_observed_clean_canary_plane_passes_under_block(tmp_path: Path) -> No
     )
     canary_gates = [g for g in result.verdict.gates if g.name == "security_runtime.canaries"]
     assert canary_gates and canary_gates[0].status == "pass"
-    # Only the still-unobserved planes in this scripted path (egress, DNS) hold the verdict
-    # at conditional.
+    # Only the still-unobserved planes in this scripted path hold the verdict at
+    # conditional: egress and DNS, plus the canary-reads gate — this fabricated header is
+    # `partial`, the pre-model-channel fidelity, which cannot support the reads gate's
+    # absence claim (§10.8) and so defers rather than borrowing a pass.
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
-    assert [g.name for g in non_pass] == ["security_runtime.egress", "security_runtime.dns"]
+    assert [g.name for g in non_pass] == [
+        "security_runtime.egress",
+        "security_runtime.dns",
+        "security_runtime.canary_reads",
+    ]
 
 
 def _blocking_dns_profile() -> object:
@@ -456,11 +464,13 @@ def test_an_observed_clean_dns_plane_passes_under_block(tmp_path: Path) -> None:
     result = _run_pipeline(tmp_path, tmp_path / "out", dns="clean", profile=_blocking_dns_profile())
     dns_gates = [g for g in result.verdict.gates if g.name == "security_runtime.dns"]
     assert dns_gates and dns_gates[0].status == "pass"
-    # Only egress and canaries (still unobserved in this scripted path) hold it conditional.
+    # Only egress, canaries, and the model-channel scan (all unobserved in this scripted
+    # path) hold it conditional.
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
     assert [g.name for g in non_pass] == [
         "security_runtime.egress",
         "security_runtime.canaries",
+        "security_runtime.canary_reads",
     ]
 
 
