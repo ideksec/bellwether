@@ -34,7 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 # Kept optional deliberately: the metrics module hand-rolls Wilson, BCa bootstrap, and
 # single-linkage clustering (§22) so contributors need no scientific stack.
-stats = ["scipy>=1.13"]
+stats = ["scipy>=1.18.1"]
 
 [project.scripts]
 bellwether = "bellwether.cli:main"
@@ -55,9 +55,9 @@ packages = ["src/bellwether"]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
-    "hypothesis>=6.100",
-    "ruff>=0.6",
-    "mypy>=1.11",
+    "hypothesis>=6.165.10",
+    "ruff>=0.16.4",
+    "mypy>=2.3.1",
     "import-linter>=2.0",
     "types-PyYAML>=6.0",
 ]
