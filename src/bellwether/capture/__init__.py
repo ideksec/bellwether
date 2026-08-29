@@ -90,6 +90,11 @@ from bellwether.capture.filesystem import (
     collect_filesystem_events,
     filesystem_writes_status,
 )
+from bellwether.capture.model_channel import (
+    ModelChannelScanner,
+    ModelRequestScan,
+    scan_model_request,
+)
 from bellwether.capture.planting import CanaryPlanting, PlantedSlot, plan_canary_planting
 from bellwether.capture.proxy_addon import (
     BlockResponse,
@@ -135,6 +140,8 @@ __all__ = [
     "FilesystemEvent",
     "HostEventSink",
     "MitmproxySidecar",
+    "ModelChannelScanner",
+    "ModelRequestScan",
     "PlaneStatus",
     "PlantedSlot",
     "ProxyAddon",
@@ -176,6 +183,7 @@ __all__ = [
     "redact_canaries",
     "redact_headers",
     "scan_for_canaries",
+    "scan_model_request",
     "scan_query_for_canaries",
     "strip_and_inject",
     "strip_dns_labels",

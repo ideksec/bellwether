@@ -31,9 +31,10 @@ executor, canaries are planted and scanned end to end, the §16.4 precondition c
 `run`/`doctor` (an unsatisfiable policy refuses before spending), and **canary leaks now gate the
 verdict** (`security_runtime.canaries` — a skill that exfiltrates a planted canary cannot reach
 `ready`), and the **DNS gate is scored** (`security_runtime.dns`, with the live smoke wiring the
-resolver so the labelled run keeps `ready` on observed evidence). What remains is *breadth*: the
-still-unscored credential-read plane (see the README's "What the live verdict gates today"),
-the `claude-code` adapter, and the acceptance corpus. The noise floor is calibrated (WP-19):
+resolver so the labelled run keeps `ready` on observed evidence). The model-API canary
+channel is scanned and scored (`security_runtime.canary_reads`; credentials plane `full`). What
+remains is *breadth*: the `claude-code` adapter and the acceptance corpus (the
+`credential_read_undeclared` disposition waits on the read-capture plane). The noise floor is calibrated (WP-19):
 Plane-A dispersion is proven exactly 0 on real containers and the residual is published in every
 `summary.json`. The §10.8 precedence matrix is implemented (WP-18): `trace_inconsistency` is
 raised only where two planes are in-domain at supporting fidelity, and a benign overlay-diff run

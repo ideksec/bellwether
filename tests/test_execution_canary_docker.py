@@ -152,12 +152,26 @@ def test_canary_planted_scanned_and_redacted_end_to_end(
     fingerprinted_ids = {frag.split("@")[0] for frag in preview.split("<canary:")[1:]}
     assert len(fingerprinted_ids) == 2  # the env canary and the file canary, both read
 
-    # Both leaks are found: two Plane C canary_leaks, each anchored to the final output that carried it.
-    leaks = trace.actions_on_plane("credentials")
-    assert [a.kind for a in leaks] == ["canary_leak", "canary_leak"]
+    # Both leaks are found: two Plane C canary_leaks anchored to the final output that carried
+    # them — and, now that the model-API channel is scanned (§10.4.1), two canary_in_context
+    # records: the second composed request carried both markers inside the turn-1 tool result,
+    # which is the recorded read, so each grades info. Crucially NO canary_without_read: a
+    # read-then-send must never read as the value arriving by an unaccounted path.
+    plane_c = trace.actions_on_plane("credentials")
+    leaks = [a for a in plane_c if a.kind == "canary_leak"]
+    in_context = [a for a in plane_c if a.kind == "canary_in_context"]
+    assert len(leaks) == 2
+    assert len(in_context) == 2
+    assert not [a for a in plane_c if a.kind == "canary_without_read"]
     final_output = trace.actions_of_kind("final_output")[0]
     assert all(a.correlation.anchor_seq == final_output.seq for a in leaks)
     assert {a.action["destination"] for a in leaks} == {"final_output"}
+    # The in-context records anchor to the model turn whose request first carried the markers
+    # (the second turn — the first request had no tool results yet).
+    turns = trace.actions_of_kind("model_turn")
+    assert all(a.correlation.anchor_seq == turns[1].seq for a in in_context)
+    assert {a.action["destination"] for a in in_context} == {"model_endpoint"}
+    assert {a.action["severity"] for a in in_context} == {"info"}
 
     # The header records the *whole pool* planted, by reference — id, path, kind — never a value.
     identity = trace.header.identity
@@ -173,9 +187,10 @@ def test_canary_planted_scanned_and_redacted_end_to_end(
     assert env_marker not in identity.model_dump_json()
     assert aws_marker not in identity.model_dump_json()
 
-    # Coverage: observed but partial — egress-body scanning (sidecar-side) is not yet wired.
+    # Coverage: `full` — every channel a value can move on is scanned, the model-API
+    # channel included now that composed requests are scanned and graded by read state.
     assert trace.header.coverage.credentials is not None
-    assert trace.header.coverage.credentials.fidelity == "partial"
+    assert trace.header.coverage.credentials.fidelity == "full"
 
     # §10.4.3, on the real artifact: neither raw marker is anywhere in the trace, only fingerprints —
     # even though a real skill read them from two channels and a real skill leaked them.

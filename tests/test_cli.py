@@ -154,11 +154,11 @@ def test_doctor_refuses_a_disabled_enforced_setting(tmp_path: Path) -> None:
 
 
 def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: Path) -> None:
-    """§16.2 / BW-49: only the egress, canary, and DNS dispositions drive the scored verdict in
-    this version. The scaffold policy sets `credential_read_undeclared` and more — controls that
-    read as active but do not gate. Doctor must surface exactly which are inert, the same way it
-    surfaces require_scan, so a `block` there is never mistaken for enforcement (a silent no-op is
-    how a control that does nothing looks like one that works)."""
+    """§16.2 / BW-49: only the egress, canary-leak, DNS, and canary-reads dispositions drive the
+    scored verdict in this version. The scaffold policy sets `credential_read_undeclared` and more
+    — controls that read as active but do not gate. Doctor must surface exactly which are inert,
+    the same way it surfaces require_scan, so a `block` there is never mistaken for enforcement (a
+    silent no-op is how a control that does nothing looks like one that works)."""
     runner.invoke(app, ["init", str(tmp_path)])
     result = runner.invoke(
         app,
@@ -177,15 +177,15 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert runtime["status"] == "warn"
     # The comma-separated list of inert dispositions sits between "not_ready: " and ". Treat".
     inert_list = runtime["detail"].split("not_ready: ", 1)[1].split(". ", 1)[0]
-    # canary_without_read stays honestly inert: its evidence (model-API read-state grading)
-    # cannot exist until that channel's scanning lands.
-    for inert in ("canary_without_read", "credential_read_undeclared"):
+    for inert in ("credential_read_undeclared", "sensitive_directory_access"):
         assert inert in inert_list
     # The dispositions that *do* gate are not listed as inert: egress since the proxy landed,
-    # canary_leak since the Plane C scan became a scored gate (BW-49, first slice), and
-    # dns_outside_allowlist since Plane E became a scored gate.
+    # canary_leak since the Plane C scan became a scored gate (BW-49, first slice),
+    # dns_outside_allowlist since Plane E became a scored gate, and canary_without_read since
+    # the model-channel scan gave its evidence a way to exist.
     assert "egress_outside_allowlist" not in inert_list
     assert "dns_outside_allowlist" not in inert_list
+    assert "canary_without_read" not in inert_list
     assert "canary_leak," not in inert_list and not inert_list.startswith("canary_leak")
     # It is advisory, not a blocking problem — the gap is disclosed, not treated as a failure.
     assert json.loads(result.output)["blocking_problems"] == 0

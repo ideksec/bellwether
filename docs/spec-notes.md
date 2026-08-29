@@ -1860,3 +1860,49 @@ wiring it into a scored gate is deliberate future work, not this brick). The §1
 for assertions on unavailable planes — was already implemented (`Coverage`/`PlaneCoverage`,
 `plane_reason`); the done-when (a real `benign-stable` container run at overlay-diff fidelity
 yields **zero** findings) is asserted in `test_execution_docker.py` on real overlay evidence.
+
+## §10.4.1, §2, §16.2 — The model-API channel is scanned host-side, read state is per-request and per-canary, and `canary_without_read` becomes the fourth scored gate
+
+WP-16's last channel closed. The residual exfiltration path §2 names — a skill wanting a value
+out does not need `evil.com`, it puts the value in a prompt — cannot be blocked without breaking
+the evaluation, so it is now *observed*: `capture/model_channel.py` wraps the `ModelClient` seam
+and scans every request the `api-loop` harness composes, host-side, on the request object, before
+the wire. Three decisions worth recording.
+
+**The read state is defined by where the marker sits in the request, per request and per
+canary.** §10.4.1's "preceding `canary_read`" is made observable for this loop as: a marker
+inside a **tool-result block** entered context through a tool call the trace already records —
+that is the read (`canary_in_context`, info, the `legit-credential-reader` shape); a marker
+present anywhere else with no tool-result block carrying it arrived by a path Plane A cannot
+account for (`canary_without_read`, high). The per-request definition is exact because the loop
+resends the whole conversation each turn — read evidence and marker travel together — and the
+per-canary grading (`read_canary_ids`) means one legitimately-read canary never launders a
+co-located, never-read one. Requests being cumulative, findings de-duplicate to the first request
+where each `(canary, class)` pair appeared: one fact, one record, anchored to the `model_turn`
+whose request carried it. Request bodies never enter the trace, so nothing new needs redaction;
+findings are by-reference (§10.4.3).
+
+**The credentials plane is `full` now, and the reads gate demands it.** With the model channel
+scanned, the one reason the plane sat `partial` is gone, and `execution.py` records `full` when
+planting ran. The new gate (`security_runtime.canary_reads`, scored from `canary_without_read`
+under the shipped `block`) takes §10.8's *absence* bar for observedness — deliberately stricter
+than the leak gate's presence bar, because a `partial` plane from before this scan is precisely a
+plane that did not watch this channel, and it must defer rather than pass on it. The leak gate's
+own spec-note contract ("partial names only the model channel") is retired rather than tightened:
+new traces are `full`, and old `partial` traces defer the reads gate exactly as that note
+demanded.
+
+**Scoring lands with the evidence, not before and not after.** `canary_without_read` stayed
+deliberately unscored while its evidence could not exist (the BW-49 trap: a control that reads
+active while nothing can fire it); the same principle cuts the other way once the scan lands — a
+`block` disposition whose evidence now exists but did not gate would be the trap re-created. So
+this brick wires evidence and gate together: the §16.4 preflight gains the matching
+composition clause (`canary_without_read: block` with canaries disabled refuses before spending),
+`doctor`'s enforced list picks the disposition up from the shared constant, and the demo,
+first-light, and scripted paths demote it to `warn` (nothing is planted there), gaining a fourth
+advisory `not_evaluable` row with verdicts unchanged. The live smoke needs no change: canaries
+are enabled, the preflight stays satisfiable, and a benign run's requests carry no markers — the
+required gate passes on observed evidence and the labelled run keeps `ready`. Proven on a real
+container (`test_execution_canary_docker.py`): the sandbox's own tool result carries both planted
+markers into the second composed request, both grade `canary_in_context` at info, none grade
+`canary_without_read`, and coverage reads `full`.

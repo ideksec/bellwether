@@ -106,10 +106,27 @@ first-light container run at overlay-diff fidelity produces **zero** findings
 is pinned never to fire, and the §10.7 coverage-with-reasons half was already in place
 (see spec-notes §10.8/§10.7).
 
+**The model-API canary channel then closed (finishes WP-16's capture story).** The residual path
+§2 names — a value in a prompt rides the allowlisted model channel out — cannot be blocked, so it
+is observed: `capture/model_channel.py` wraps the `ModelClient` seam and scans every composed
+request host-side, grading each hit per-request and per-canary by §10.4.1 read state (a marker in
+a tool-result block is the recorded read → `canary_in_context`, info; a marker no tool result
+carried → `canary_without_read`, high — one read canary never launders a co-located unread one).
+With the last channel watched, the **credentials plane records `full`**, and
+`canary_without_read` becomes the **fourth scored gate** (`security_runtime.canary_reads`) — the
+evidence and the gate land together, since a `block` whose evidence exists but does not gate
+would recreate the BW-49 trap this list exists to close. The gate's observedness takes §10.8's
+absence bar, so a pre-scan `partial` trace defers rather than passing on the channel it never
+watched. The §16.4 preflight gained the matching composition clause; demo/first-light demote to
+`warn` (fourth advisory row, verdicts unchanged); the live smoke needs no change (canaries on,
+preflight satisfiable, benign requests carry no markers — `ready` preserved). Proven on a real
+container: both planted markers ride the tool result into the second composed request, both grade
+`canary_in_context`, none `canary_without_read`, coverage `full` (spec-notes §10.4.1/§2/§16.2).
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
-the credential-read disposition into a scored gate (`canary_without_read` waits on the
-model-API read-state scanning), the blocking static-scan gate (lands with the §15 scanner),
+the `credential_read_undeclared` disposition into a scored gate (needs the read-capture plane),
+the blocking static-scan gate (lands with the §15 scanner),
 `requires.min_bellwether_version` in the preflight, and hash-pinning the full sidecar dependency
 closure.
 
@@ -148,9 +165,10 @@ closure.
 | **Live `bellwether run` on CI reaching `ready`** — real Haiku eval, proxy observing egress, verdict posted | **proven** (PR #45) |
 | WP-19 — noise-floor calibration: Plane-A dispersion exactly 0 on real containers (sequential + concurrent load), residual published as `noise_floor`, `at_noise_floor` reporting | **done** |
 | WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
-| WP-16 live canaries · WP-17 `claude-code` adapter · WP-20 corpus | **remaining** — see "What's next" |
+| **Model-API canary channel** — every composed request scanned host-side, §10.4.1 read-state grading per-request/per-canary, credentials plane `full`, `canary_without_read` scored (`security_runtime.canary_reads`) | **done** — finishes WP-16's capture story; corpus skills land with WP-20 |
+| WP-17 `claude-code` adapter · WP-20 corpus | **remaining** — see "What's next" |
 
-953 tests: 900 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
+965 tests: 912 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -242,9 +260,10 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      model-API URLs. Every logic step is offline-tested (`make_flow` body scan, flow round-trip,
      `build_config` markers, `build_addon` reconstruct-and-scan, `egress_body_actions`); the real
      sidecar's compose-and-record path is covered by the existing proxy CI test.
-   - **Remaining (finishes WP-16):** `credentials` stays `partial` for one reason only now — the
-     **model-API channel** (a canary sent to the model, graded `canary_in_context` vs
-     `canary_without_read` by the per-request read state) is a follow-on. A real-POST sidecar-body CI
+   - **The model-API channel is closed** (`capture/model_channel.py`): every composed request is
+     scanned host-side and graded per-request/per-canary by read state; `credentials` records
+     `full` and `canary_without_read` is a scored gate (`security_runtime.canary_reads`). What
+     remains of WP-16 is corpus-shaped. A real-POST sidecar-body CI
      test is deferred: it needs an HTTP client in the sandbox image the minimal test image lacks; the
      body-scan logic is offline-proven and the sidecar composition is CI-proven. Then the corpus skills
      (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the

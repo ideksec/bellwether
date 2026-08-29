@@ -84,7 +84,7 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from seven gates, and these are the checks that can actually move a skill off `ready`:
+composed from eight gates, and these are the checks that can actually move a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
@@ -102,18 +102,22 @@ composed from seven gates, and these are the checks that can actually move a ski
 - **security_runtime.dns** — a lookup of a name outside the allowlist, from what the controlled
   resolver logged (Plane E). An HTTP proxy never sees UDP/53, so this is the gate on the covert
   channel that routes around the egress plane. Where the resolver was not wired, the gate defers
-  as `not_evaluable`, same rule as the other two.
+  as `not_evaluable`, same rule as the other two;
+- **security_runtime.canary_reads** — a planted canary appearing in the model's context with no
+  recorded read carrying it there (`canary_without_read`, §10.4.1). Every composed model request
+  is scanned host-side; a marker that entered through a tool result grades `canary_in_context`
+  (info — read-then-send is the legitimate shape), and the gate fires only on the value arriving
+  by a path the trace cannot account for. This observes the residual channel the threat model
+  names — the allowlisted model API — which cannot be blocked without breaking the evaluation.
 
 What is **captured as evidence but does not yet gate** the scored verdict: undeclared
-credential reads, canary-in-model-context grading (`canary_without_read` —
-deliberately unscored until the model-API channel's read-state scanning lands, because a gate whose
-evidence cannot exist would read as an active control while nothing can fire it), sensitive-directory
+credential reads (`credential_read_undeclared` — needs the read-capture plane), sensitive-directory
 access, and the volume/anomaly checks. Their findings appear in the report, but a `block` disposition
 on them will not, on its own, make a verdict `not_ready` in this version — wiring each into a gate is
 per-plane roadmap work. `bellwether doctor` names exactly which configured dispositions are inert, so
-a control is never mistaken for an active one. The residual model-API channel (§ THREAT_MODEL) is by
-design out of the egress scan, because that channel legitimately carries the skill's content to the
-provider.
+a control is never mistaken for an active one. The model-API channel is by design out of the egress *scan* — it legitimately carries the skill's
+content to the provider — which is exactly why it gets its own read-state gate above
+(§ THREAT_MODEL).
 
 ## What it is for
 
@@ -269,7 +273,7 @@ alone and an unmentioned component would read as one that ran clean.
 | **`bellwether run` from the CLI** — resolve → live client → matrix → verdict → artifact tree | done |
 | **CI integration** — `bellwether changed-skills`, `bellwether pr-comment`, the shipped GitHub Action (only changed skills, paid run label-gated), per-run evidence uploaded as an artifact | done |
 | **Live verdict on CI** — a benign skill reaching `ready` against a real model, egress observed | proven |
-| **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files; a leak gates the verdict (`security_runtime.canaries`) | done (WP-16); model-API read-state grading is a follow-on |
+| **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files, **and every composed model request** (§10.4.1 read-state grading); a leak gates the verdict (`security_runtime.canaries`), an unread canary in model context gates it too (`security_runtime.canary_reads`); credentials plane `full` | done (WP-16 capture story; corpus skills land with WP-20) |
 | CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |
 | Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace; a lookup outside the allowlist gates the verdict (`security_runtime.dns`) | done (WP-15) |
 | Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline diffing (§17.5) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |

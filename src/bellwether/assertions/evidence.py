@@ -90,6 +90,11 @@ class EvidenceIndex:
     #: non-model destination (§10.4.1) — critical by classification, and what turns the
     #: canary gate from pass to block. Presence evidence, so plane fidelity cannot soften it.
     canary_leak_present: bool = False
+    #: A Plane C ``canary_without_read`` finding is in the trace: a planted canary reached
+    #: the model's context with no recorded read carrying it there (§10.4.1, high) — the
+    #: value arrived by some path Plane A cannot account for. What turns the canary-reads
+    #: gate from pass to block.
+    canary_without_read_present: bool = False
     #: A Plane E ``dns_blocked`` action is in the trace: the controlled resolver refused a
     #: name outside the allowlist (§10.6) — evidence of intent, exactly like a default-deny
     #: egress block, and what turns the DNS gate from pass to block.
@@ -115,6 +120,7 @@ class EvidenceIndex:
         egress_blocked = False
         egress_requests: list[EgressEvidence] = []
         canary_leak = False
+        canary_without_read = False
         dns_blocked = False
 
         for action in trace.actions:
@@ -141,6 +147,8 @@ class EvidenceIndex:
                 dns_blocked = True
             elif action.plane == "credentials" and action.kind == "canary_leak":
                 canary_leak = True
+            elif action.plane == "credentials" and action.kind == "canary_without_read":
+                canary_without_read = True
 
         footer = trace.footer
         return cls(
@@ -160,6 +168,7 @@ class EvidenceIndex:
             egress_blocked_present=egress_blocked,
             egress_requests=tuple(egress_requests),
             canary_leak_present=canary_leak,
+            canary_without_read_present=canary_without_read,
             dns_blocked_present=dns_blocked,
             context=context,
         )

@@ -377,6 +377,7 @@ def _demo_profile(profile_name: str) -> ProfileSpec:
             "egress_outside_allowlist": "warn",
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
+            "canary_without_read": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})

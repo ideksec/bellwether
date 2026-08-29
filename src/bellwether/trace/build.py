@@ -27,6 +27,7 @@ from bellwether.capture.canary import (
 )
 from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
 from bellwether.capture.egress import EgressCanaryHit, EgressFlow
+from bellwether.capture.model_channel import ModelRequestScan
 from bellwether.determinism import canonical_json
 from bellwether.harness import RawHarnessEvent
 from bellwether.trace.models import (
@@ -48,6 +49,7 @@ __all__ = [
     "exit_reason_from_events",
     "filesystem_actions",
     "harness_actions",
+    "model_channel_actions",
     "redact_trace_actions",
     "token_totals_from_events",
     "written_file_actions",
@@ -421,6 +423,49 @@ def egress_body_actions(
                 via=hit.via,
             )
             actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
+            seq += 1
+    return actions
+
+
+def model_channel_actions(
+    scans: Sequence[ModelRequestScan], source_actions: Iterable[Action], *, start_seq: int = 0
+) -> list[Action]:
+    """Derive Plane C findings from canaries scanned in the model requests (§10.4.1).
+
+    The host-side scanner graded each request already (``canary_in_context`` where a
+    tool-result block carried the marker into context — the recorded read — else
+    ``canary_without_read``); this anchors each finding to the ``model_turn`` action the
+    request produced, so a reviewer can follow the finding to the exact turn whose request
+    carried the marker. Requests are cumulative in this loop — a marker that entered
+    context once is present in every later request — so findings are de-duplicated to the
+    **first** request where each ``(canary, finding class)`` pair appeared: one fact, one
+    record, not one per turn. A canary that first appears without a read and is later also
+    seen with one keeps both records, because those are different facts (the value moved
+    twice, by different paths). No marker value is in any record (§10.4.3).
+
+    Deterministic: scans are consumed in request order and each scan's findings arrive
+    sorted by canary id (§24).
+    """
+    turns = [action for action in source_actions if action.kind == "model_turn"]
+    actions: list[Action] = []
+    seen: set[tuple[str, str]] = set()
+    seq = start_seq
+    for scan in scans:
+        if scan.request_index >= len(turns):
+            # A request whose turn never made it into the trace (the run died mid-call)
+            # still anchors to the last recorded turn rather than being dropped: the scan
+            # happened, and a finding with an imperfect anchor beats a finding erased.
+            anchor = turns[-1] if turns else None
+        else:
+            anchor = turns[scan.request_index]
+        if anchor is None:
+            continue
+        for finding in scan.findings:
+            key = (finding.canary_id, finding.finding)
+            if key in seen:
+                continue
+            seen.add(key)
+            actions.append(_plane_c_action(finding, seq=seq, ts=anchor.ts, anchor_seq=anchor.seq))
             seq += 1
     return actions
 
