@@ -33,8 +33,9 @@ verdict** (`security_runtime.canaries` — a skill that exfiltrates a planted ca
 `ready`), and the **DNS gate is scored** (`security_runtime.dns`, with the live smoke wiring the
 resolver so the labelled run keeps `ready` on observed evidence). The model-API canary
 channel is scanned and scored (`security_runtime.canary_reads`; credentials plane `full`). What
-remains is *breadth*: the `claude-code` adapter and the acceptance corpus (the
-`credential_read_undeclared` disposition waits on the read-capture plane). The noise floor is calibrated (WP-19):
+remains is *breadth*: the `claude-code` adapter and the rest of the acceptance corpus — its
+security slice (`canary-thief`, `dns-thief`, `legit-credential-reader`) is CI-asserted, and the
+`credential_read_undeclared` disposition waits on the read-capture plane. The noise floor is calibrated (WP-19):
 Plane-A dispersion is proven exactly 0 on real containers and the residual is published in every
 `summary.json`. The §10.8 precedence matrix is implemented (WP-18): `trace_inconsistency` is
 raised only where two planes are in-domain at supporting fidelity, and a benign overlay-diff run

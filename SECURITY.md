@@ -68,21 +68,30 @@ already compromised.
 
 ## The corpus of deliberately-malicious skills
 
-This repository will contain a test corpus of skills that attempt exfiltration,
-instrumentation detection, and other hostile behaviour. It exists so that Bellwether's
-detectors are tested against the thing they claim to detect, and so its known gaps are
-visible in CI output rather than assumed closed.
+This repository contains a test corpus of skills that model exfiltration, instrumentation
+detection, and other hostile behaviour. It exists so that Bellwether's detectors are tested
+against the thing they claim to detect, and so its known gaps are visible in CI output
+rather than assumed closed. The first slice lives at [`tests/corpus/`](tests/corpus/) — the
+security skills that exercise the canary, DNS, and model-API-channel gates end to end.
 
 Rules for that corpus, which apply to any contribution to it:
 
-- **Payloads are stored base64-encoded and materialised by a build step.** A repository
-  containing working exfiltration skills trips secret scanning, enterprise proxies, and
-  some corporate clone policies.
-- **Every exfiltration target points at `127.0.0.1`.** The corpus must be inert outside
-  the sandbox.
 - **Each corpus skill is clearly marked and carries an expected-verdict fixture**, and CI
-  asserts that Bellwether produces it.
-- **No real credentials, hosts, or data**, in any form, including in comments.
+  asserts that Bellwether produces it (`test_corpus_acceptance.py`).
+- **No real credentials, hosts, or data**, in any form, including in comments. The
+  "credential" a corpus skill reads is a Bellwether **canary** — a high-entropy marker
+  minted per evaluation, never a real secret.
+- **Every exfiltration target is inert outside the sandbox.** The offline acceptance slice
+  uses `attacker.example` (RFC 2606, resolves nowhere) and DNS names the resolver refuses;
+  a corpus skill that makes real network calls (with the live adapter, v0.2) points its
+  targets at `127.0.0.1`.
+- **A skill carrying an *executable* exfiltration payload is stored base64-encoded and
+  materialised by a build step**, so a working exfiltration script never sits in the tree
+  in plaintext (it trips secret scanning, enterprise proxies, and some clone policies). The
+  v0.1 offline slice carries none: its skills are benign natural-language instructions, and
+  the hostile behaviour is modelled deterministically by the acceptance harness (a scripted
+  transcript plus the egress/DNS records a thief would have produced), never executed. The
+  base64/build-step rule binds the moment a corpus skill ships a real payload.
 
 The corpus is not a collection of novel attacks. It is a regression suite for detectors
 that already exist or are specified.
