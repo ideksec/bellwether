@@ -123,6 +123,20 @@ preflight satisfiable, benign requests carry no markers — `ready` preserved). 
 container: both planted markers ride the tool result into the second composed request, both grade
 `canary_in_context`, none `canary_without_read`, coverage `full` (spec-notes §10.4.1/§2/§16.2).
 
+**WP-20's acceptance-corpus security slice then landed** — the three skills the §24 table names as
+the WP-16 §10.4 done-when. `tests/corpus/{canary-thief,dns-thief,legit-credential-reader}` are real
+skill packages (SKILL.md + manifest + scenarios) driven through the *real* analysis pipeline by
+`test_corpus_acceptance.py`, which asserts each §25 verdict: canary-thief and dns-thief block with
+the leak redacted to a fingerprint and linked to a trace record; **legit-credential-reader reaches
+`ready` with no leak finding** — the §10.4.1 false-positive guard the whole destination
+classification exists to protect, and the regression test a "any canary hit is a leak" change would
+break. Every scan is the real one and the policy is the shipped profile with security gates at
+`block`; only the transport is synthetic (the offline harness constructs the egress flow / DNS query
+a thief would send and scans it for real). Two storage divergences from §24 are documented
+(prose-only skills — nothing executable to base64-encode; `attacker.example` targets, inert because
+never dialled), and `SECURITY.md` keeps the base64/`127.0.0.1` rules binding for any future skill
+that ships a real payload (see spec-notes §24/§25).
+
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the `credential_read_undeclared` disposition into a scored gate (needs the read-capture plane),
@@ -166,15 +180,17 @@ closure.
 | WP-19 — noise-floor calibration: Plane-A dispersion exactly 0 on real containers (sequential + concurrent load), residual published as `noise_floor`, `at_noise_floor` reporting | **done** |
 | WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
 | **Model-API canary channel** — every composed request scanned host-side, §10.4.1 read-state grading per-request/per-canary, credentials plane `full`, `canary_without_read` scored (`security_runtime.canary_reads`) | **done** — finishes WP-16's capture story; corpus skills land with WP-20 |
-| WP-17 `claude-code` adapter · WP-20 corpus | **remaining** — see "What's next" |
+| **WP-20 corpus — security slice** (`canary-thief`, `dns-thief`, `legit-credential-reader`): real skills, real pipeline, §25 verdicts asserted in CI; the §10.4.1 false-positive guard proven | **done** — the other eight §25 skills remain |
+| WP-17 `claude-code` adapter · WP-20 corpus (remaining eight skills) | **remaining** — see "What's next" |
 
-965 tests: 912 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
+968 tests: 915 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
 Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. The
 coverage-honesty (WP-18) and calibration (WP-19) proofs are in. What remains is **breadth, not a
-missing spine**: the model-API canary channel, the second harness, and the acceptance corpus. The
+missing spine**: the second harness, and the rest of the acceptance corpus (its security slice is
+in). The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,
 because the build deliberately inserted the executor-integration + live-proof work (unnumbered) that
 made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
@@ -272,8 +288,11 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    and its hooks, cross-checked against the host sink. Largely independent — can move earlier if a
    real-harness signal is wanted sooner; flagged late only because it is a big chunk with an
    external-docs dependency.
-4. **Corpus & acceptance (WP-20).** The eleven §25 corpus skills with expected-verdict fixtures; CI
-   asserts each verdict. This is the v0.1 "done" line and depends on everything above.
+4. **Corpus & acceptance (WP-20) — the remaining eight skills.** The security slice
+   (`canary-thief`, `dns-thief`, `legit-credential-reader`) is done and CI-asserted; what remains is
+   `benign-stable`, `benign-chaotic`, `file-selective`, `scope-creeper`, `rare-canary-reader`,
+   `slow`, `over-declared`, `always-fails` — each asserting one more facet of the metric or gate
+   stack. This is the v0.1 "done" line.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
 the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client), and

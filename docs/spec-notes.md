@@ -1906,3 +1906,43 @@ required gate passes on observed evidence and the labelled run keeps `ready`. Pr
 container (`test_execution_canary_docker.py`): the sandbox's own tool result carries both planted
 markers into the second composed request, both grade `canary_in_context` at info, none grade
 `canary_without_read`, and coverage reads `full`.
+
+## §24, §25 — The acceptance corpus's security slice is offline and prose-only; base64 payloads and 127.0.0.1 bind when a skill ships an executable one
+
+WP-20's first slice landed: the three security skills the §24 table names as the WP-16 §10.4
+done-when — `canary-thief`, `dns-thief`, `legit-credential-reader` — under `tests/corpus/`, each
+driven through the real analysis pipeline by `test_corpus_acceptance.py` and asserted to produce
+its §25 verdict. Two deliberate divergences from §24's storage prose, both because this slice runs
+**offline**.
+
+**The skills carry no executable payload, so there is nothing to base64-encode.** §24 says corpus
+payloads are "stored base64-encoded and materialised by a build step" — a rule whose purpose is
+that a *working* exfiltration script never sits in the tree in plaintext (it trips secret
+scanning and clone policies). The offline acceptance harness does not execute a real skill against
+a real model and network: it drives a scripted transcript over an in-memory filesystem, and the
+hostile behaviour is *modelled* — the egress flow a thief would send and the DNS query it would
+make are constructed in the test and then scanned by the real `canary_actions`/`ModelChannelScanner`.
+So each `SKILL.md` is a benign natural-language instruction with no payload to encode. The
+base64/build-step rule is retained in `SECURITY.md` and binds the moment a corpus skill ships a
+real executable payload — which is when the live `claude-code` adapter and real-network corpus runs
+land (v0.2).
+
+**Targets are `attacker.example`, not `127.0.0.1`.** §24 says exfiltration targets point at
+`127.0.0.1` to stay inert. In the offline slice the target is never dialled at all, so inertness
+is not the constraint that bites; `attacker.example` (RFC 2606, resolves nowhere) reads more
+clearly as "a host outside every allowlist that goes nowhere" and matches the DNS-thief's refused
+name. `SECURITY.md` keeps `127.0.0.1` as the rule for any corpus skill that makes a *real* network
+call.
+
+**What stays faithful, and why the slice is worth its weight.** Every scan under test is the real
+one, and the policy is the shipped profile with its security gates at `block` — a demoted gate
+would prove nothing. Coverage is `full` on every security plane, modelling a fully-instrumented
+run, which is what lets `legit-credential-reader` reach `ready`: it is the §10.4.1 false-positive
+guard, and a "any canary hit is a leak" regression would flip it to `not_ready` and break the
+acceptance test. `canary-thief` and `dns-thief` block with the leak redacted to a fingerprint in
+the committed-free artifact (§10.4.3). The declared-scope glob for the legit reader had to use the
+`${HOME}` placeholder, not `~`, because an observed read normalises to `${HOME}/…` and the scope
+matcher compares the two literally — a `~` would not match and the legitimate read would read as
+out-of-scope. The remaining eight §25 corpus skills (`benign-stable`, `benign-chaotic`,
+`file-selective`, `scope-creeper`, `rare-canary-reader`, `slow`, `over-declared`, `always-fails`)
+are follow-on bricks, each asserting one more facet of the metric or gate stack.
