@@ -137,6 +137,17 @@ a thief would send and scans it for real). Two storage divergences from §24 are
 never dialled), and `SECURITY.md` keeps the base64/`127.0.0.1` rules binding for any future skill
 that ships a real payload (see spec-notes §24/§25).
 
+
+**WP-20's functional/metric slice then landed** — three more corpus skills exercising the stack the
+security slice did not: `benign-stable` (does what it declares identically every run → `ready`, BCI
+> 90, the design stops at the first look), `file-selective` (**the §13.5 tier-model regression** —
+reads a different file each run but identical tier-1 classes, so weighted Jaccard is 1.0 and it
+reaches `ready`; a flat per-path capability set would fail the consistency gate here), and
+`always-fails` (activates and reads but never writes the required output, every run → 0% pass,
+`not_ready`, and the outcome is annotated **"consistently failing"** in the summary *and* the
+rendered PR comment, never a bare high BCI, §13.3). The acceptance harness gained per-repetition
+transcripts so `file-selective`'s genuine tier-3 variance is real, not a copy. Five §25 corpus
+skills remain (`benign-chaotic`, `scope-creeper`, `rare-canary-reader`, `slow`, `over-declared`).
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the `credential_read_undeclared` disposition into a scored gate (needs the read-capture plane),
@@ -180,10 +191,10 @@ closure.
 | WP-19 — noise-floor calibration: Plane-A dispersion exactly 0 on real containers (sequential + concurrent load), residual published as `noise_floor`, `at_noise_floor` reporting | **done** |
 | WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
 | **Model-API canary channel** — every composed request scanned host-side, §10.4.1 read-state grading per-request/per-canary, credentials plane `full`, `canary_without_read` scored (`security_runtime.canary_reads`) | **done** — finishes WP-16's capture story; corpus skills land with WP-20 |
-| **WP-20 corpus — security slice** (`canary-thief`, `dns-thief`, `legit-credential-reader`): real skills, real pipeline, §25 verdicts asserted in CI; the §10.4.1 false-positive guard proven | **done** — the other eight §25 skills remain |
-| WP-17 `claude-code` adapter · WP-20 corpus (remaining eight skills) | **remaining** — see "What's next" |
+| **WP-20 corpus — security + functional slices** (`canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard and the §13.5 tier-model regression both proven | **done** — five §25 skills remain |
+| WP-17 `claude-code` adapter · WP-20 corpus (remaining five skills) | **remaining** — see "What's next" |
 
-968 tests: 915 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
+971 tests: 918 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -288,11 +299,11 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    and its hooks, cross-checked against the host sink. Largely independent — can move earlier if a
    real-harness signal is wanted sooner; flagged late only because it is a big chunk with an
    external-docs dependency.
-4. **Corpus & acceptance (WP-20) — the remaining eight skills.** The security slice
-   (`canary-thief`, `dns-thief`, `legit-credential-reader`) is done and CI-asserted; what remains is
-   `benign-stable`, `benign-chaotic`, `file-selective`, `scope-creeper`, `rare-canary-reader`,
-   `slow`, `over-declared`, `always-fails` — each asserting one more facet of the metric or gate
-   stack. This is the v0.1 "done" line.
+4. **Corpus & acceptance (WP-20) — the remaining five skills.** The security slice
+   (`canary-thief`, `dns-thief`, `legit-credential-reader`) and the functional slice
+   (`benign-stable`, `file-selective`, `always-fails`) are done and CI-asserted; what remains is
+   `benign-chaotic`, `scope-creeper`, `rare-canary-reader`, `slow`, `over-declared` — each asserting
+   one more facet of the metric or gate stack. This is the v0.1 "done" line.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
 the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client), and

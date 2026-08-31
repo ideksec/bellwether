@@ -1,0 +1,21 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: config-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: audit-recent-config
+    expectation: should_trigger
+    prompt: "Audit the two most recently changed config files and write audit.md."
+    fixture: config-repo
+    assert:
+      # Every run activates, reads (different files), writes the report, completes. The tier-1
+      # capability set is identical across runs even though the tier-3 paths differ, so the
+      # consistency gate passes with weighted Jaccard 1.0: ready.
+      - skill_activated: true
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

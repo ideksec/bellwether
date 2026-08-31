@@ -53,7 +53,7 @@ pipeline.
 
 What remains is **breadth, not a missing spine**: turning the captured-but-unscored
 credential-read plane into a gate, the static scanner, process/read capture, the `claude-code`
-harness adapter, and the rest of the v0.1 acceptance corpus (its security slice is in). See
+harness adapter, and the rest of the v0.1 acceptance corpus (its security and functional slices are in). See
 [docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan, and the table below
 for exactly what is implemented versus refused-with-exit-3.
 
@@ -279,8 +279,8 @@ alone and an unmentioned component would read as one that ran clean.
 | Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline diffing (§17.5) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
 | **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
-| **Acceptance corpus — security slice** — `canary-thief`, `dns-thief`, `legit-credential-reader` under `tests/corpus/`, driven through the real pipeline with §25 verdicts asserted in CI; the §10.4.1 false-positive guard proven | done (WP-20 security slice) |
-| `claude-code` harness adapter (WP-17) · corpus & acceptance (WP-20, the remaining eight skills) | remaining |
+| **Acceptance corpus — security + functional slices** — six `tests/corpus/` skills driven through the real pipeline with §25 verdicts asserted in CI: the §10.4.1 false-positive guard (`legit-credential-reader`) and the §13.5 tier-model regression (`file-selective`) both proven | done (WP-20, six skills) |
+| `claude-code` harness adapter (WP-17) · corpus & acceptance (WP-20, the remaining five skills) | remaining |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
 they implement is [docs/spec.md](docs/spec.md). Where the implementation had to resolve

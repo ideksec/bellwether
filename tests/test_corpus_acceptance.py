@@ -1,11 +1,17 @@
-"""The acceptance corpus — security slice (§24, §25).
+"""The acceptance corpus (§24, §25).
 
-A tool that judges reliability must be demonstrably reliable itself. These drive three
+A tool that judges reliability must be demonstrably reliable itself. These drive
 deliberately-crafted skills (`tests/corpus/`) through the *real* analysis pipeline and
-assert Bellwether produces the §24 verdict each requires: `canary-thief` and `dns-thief`
-blocked with the leak linked to a specific trace record, and `legit-credential-reader`
-passing **without** a leak finding — the false-positive guard the whole §10.4.1 destination
-classification exists to protect.
+assert Bellwether produces the §24 verdict each requires. Two slices so far:
+
+- **Security** — `canary-thief` and `dns-thief` blocked with the leak linked to a trace
+  record; `legit-credential-reader` passing **without** a leak finding (the §10.4.1
+  false-positive guard the whole destination classification exists to protect).
+- **Functional / metric** — `benign-stable` (ready, BCI > 90, the design stops at the first
+  look), `file-selective` (the §13.5 tier-model regression: reads a different file each run
+  but identical tier-1 classes, so weighted Jaccard is 1.0 and it MUST reach ready), and
+  `always-fails` (0% pass → not_ready, and the outcome is annotated "consistently failing"
+  in the summary and the PR comment rather than read as quality, §13.3).
 
 Faithfulness over mocking. Every scan is the real one: `ApiLoopAdapter` builds Plane A from
 a scripted transcript over an in-memory filesystem; `ModelChannelScanner` scans the real
@@ -120,18 +126,23 @@ def _profile(name: str) -> object:
 
 def _run_corpus_skill(
     skill_dir: str,
-    transcript: Sequence[ModelTurn],
+    transcript: Sequence[ModelTurn] | None = None,
     *,
     files: dict[str, str],
+    transcripts: Sequence[Sequence[ModelTurn]] | None = None,
     egress_flows: Sequence[EgressFlow] = (),
     dns_queries: Sequence[DnsQuery] = (),
+    repetitions: int = 6,
     tmp_path: Path,
 ) -> object:
-    """Drive one corpus skill six identical times through the real pipeline → EvalResult.
+    """Drive one corpus skill ``repetitions`` times through the real pipeline → EvalResult.
 
-    Plane A is real (the adapter over the in-memory FS); the model-API channel is scanned by
-    the real `ModelChannelScanner`; the injected egress/DNS actions are scanned by the real
-    `canary_actions`. Coverage is `full` on every security plane — a fully-instrumented run.
+    Pass ``transcript`` for a skill whose behaviour is identical every run (the thieves,
+    ``benign-stable``), or ``transcripts`` — one per repetition — for a skill whose behaviour
+    varies (``file-selective`` reads different files each run). Plane A is real (the adapter
+    over the in-memory FS); the model-API channel is scanned by the real `ModelChannelScanner`;
+    the injected egress/DNS actions are scanned by the real `canary_actions`. Coverage is
+    `full` on every security plane — a fully-instrumented run.
     """
     package = load_skill(_CORPUS / skill_dir, load_evals=True)
     assert package.scenarios is not None
@@ -139,9 +150,14 @@ def _run_corpus_skill(
     prompt = scenario.prompt if isinstance(scenario.prompt, str) else scenario.prompt[0]
     workspace = f"/work/{skill_dir}"
 
+    if transcripts is None:
+        assert transcript is not None, "pass exactly one of transcript / transcripts"
+        transcripts = [transcript] * repetitions
+    assert len(transcripts) == repetitions
+
     analysed = []
-    for repetition in range(1, 7):
-        scanner = ModelChannelScanner(ScriptedClient(list(transcript)), _CANARIES)
+    for repetition in range(1, repetitions + 1):
+        scanner = ModelChannelScanner(ScriptedClient(list(transcripts[repetition - 1])), _CANARIES)
         adapter = ApiLoopAdapter(
             scanner,
             SandboxToolset(_InMemoryExec(files)),
@@ -250,6 +266,10 @@ def _skill(name: str) -> ToolCallRequest:
 
 def _read(seq: int, path: str) -> ToolCallRequest:
     return ToolCallRequest(id=f"r{seq}", name="read", input={"path": path})
+
+
+def _write(seq: int, path: str, content: str) -> ToolCallRequest:
+    return ToolCallRequest(id=f"w{seq}", name="write", input={"path": path, "content": content})
 
 
 def _turn(*calls: ToolCallRequest) -> ModelTurn:
@@ -381,3 +401,115 @@ def test_legit_credential_reader_is_ready_with_no_leak(tmp_path: Path) -> None:
     assert "canary_leak" not in record
     assert "canary_without_read" not in record
     assert _CREDENTIAL.marker not in record  # redacted (§10.4.3)
+
+
+# ---------------------------------------------------------------------------
+# The functional / metric slice — non-security corpus skills (§24, §25)
+# ---------------------------------------------------------------------------
+#
+# These exercise the metric stack the security slice does not: the sequential design and
+# BCI (benign-stable), the three-tier capability model (file-selective), and the
+# consistently-failing annotation (always-fails). No security-plane injection — coverage is
+# clean and full, so the security gates pass and the *functional* stack decides the verdict.
+
+
+def test_benign_stable_is_ready_with_a_high_bci(tmp_path: Path) -> None:
+    """§24: the reference clean skill — does what it declares, identically every run →
+    ready, BCI > 90, the design stops at the first look (N=6)."""
+    transcript = (
+        _turn(_skill("benign-stable"), _read(1, "notes/2026-01-02.md")),
+        _turn(_read(2, "notes/2026-01-01.md")),
+        _turn(_write(3, "summary.md", "# Summary\n- shipped\n")),
+        _final("Wrote summary.md from the standup notes."),
+    )
+    result = _run_corpus_skill(
+        "benign-stable",
+        transcript,
+        files={"notes/2026-01-02.md": "day two\n", "notes/2026-01-01.md": "day one\n"},
+        tmp_path=tmp_path,
+    )
+    assert result.verdict.verdict == "ready"  # type: ignore[attr-defined]
+    assert result.summary.consistency.bci > 90  # type: ignore[attr-defined]
+    assert result.summary.consistency.annotation is None  # type: ignore[attr-defined]
+    # Every gate passed — the fully-instrumented clean run has nothing to hold it back.
+    assert all(g.status == "pass" for g in result.verdict.gates)  # type: ignore[attr-defined]
+
+
+def test_file_selective_is_ready_despite_reading_different_files(tmp_path: Path) -> None:
+    """§24, the §13.5 tier-model regression: reads different files each run but identical
+    tier-1 classes, so weighted capability Jaccard is 1.0 and it MUST reach ready. Under a
+    flat per-path capability set it would look inconsistent and fail the consistency gate."""
+    # Six runs, each reading a *different pair* of config files — genuinely different tier-3
+    # paths, so the reading is real variance at tier 3, not a copy.
+    transcripts = tuple(
+        (
+            _turn(_skill("file-selective"), _read(1, f"conf/{a}.ini")),
+            _turn(_read(2, f"conf/{b}.ini")),
+            _turn(_write(3, "audit.md", f"# Audit of {a}, {b}\n")),
+            _final(f"Audited {a}.ini and {b}.ini."),
+        )
+        for a, b in (
+            ("alpha", "bravo"),
+            ("charlie", "delta"),
+            ("echo", "foxtrot"),
+            ("golf", "hotel"),
+            ("india", "juliet"),
+            ("kilo", "lima"),
+        )
+    )
+    files = {
+        f"conf/{n}.ini": f"[{n}]\nx = 1\n"
+        for n in (
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo",
+            "foxtrot",
+            "golf",
+            "hotel",
+            "india",
+            "juliet",
+            "kilo",
+            "lima",
+        )
+    }
+    result = _run_corpus_skill(
+        "file-selective", files=files, transcripts=transcripts, tmp_path=tmp_path
+    )
+    assert result.verdict.verdict == "ready"  # type: ignore[attr-defined]
+    consistency = result.summary.consistency  # type: ignore[attr-defined]
+    # The tier-1 capability set is identical across runs even though the tier-3 paths differ:
+    # weighted Jaccard is 1.0. This is the assertion §13.5 exists to protect.
+    assert consistency.capability_jaccard_weighted == 1.0
+    assert result.summary.consistency.bci > 90  # type: ignore[attr-defined]
+    con_gate = _skill_gate(result, "consistency")
+    assert con_gate.status == "pass"  # type: ignore[attr-defined]
+
+
+def test_always_fails_is_not_ready_and_annotated_consistently_failing(tmp_path: Path) -> None:
+    """§24, §13.3: the skill activates and reads but never writes the required output, every
+    run → 0% pass, functional gate blocks (not_ready). The unanimous failure drives a high
+    outcome-consistency component, which MUST be annotated "consistently failing" rather than
+    read as quality — a high BCI on a skill that fails every run is consistency of failure."""
+    transcript = (
+        _turn(_skill("always-fails"), _read(1, "config.ini")),
+        # It bails without ever writing the reformatted output the scenario requires.
+        _final("I could not determine the house style, so I left the config unchanged."),
+    )
+    result = _run_corpus_skill(
+        "always-fails",
+        transcript,
+        files={"config.ini": "[core]\nName=demo\n"},
+        tmp_path=tmp_path,
+    )
+    assert result.verdict.verdict == "not_ready"  # type: ignore[attr-defined]
+    functional = _skill_gate(result, "functional")
+    assert functional.status == "block"  # type: ignore[attr-defined]
+    # 0% pass, and the annotation is present in the summary the surfaces render from (§13.3).
+    assert result.summary.consistency.pass_rate == 0.0  # type: ignore[attr-defined]
+    assert result.summary.consistency.annotation == "consistently failing"  # type: ignore[attr-defined]
+    # And in the rendered PR comment on disk — the §13.3 rule is that no surface renders a
+    # bare high BCI on a failing skill; the annotation must be visible where a human reads it.
+    comment = result.artifacts.pr_comment.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert "consistently failing" in comment

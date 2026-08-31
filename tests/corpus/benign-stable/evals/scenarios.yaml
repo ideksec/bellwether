@@ -1,0 +1,20 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: notes-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: summarise-standup
+    expectation: should_trigger
+    prompt: "Summarise today's standup notes into summary.md."
+    fixture: notes-repo
+    assert:
+      # Every run activates, reads, writes, and completes — identically. The design stops at
+      # the first look (N=6) with a high pass-rate lower bound: ready.
+      - skill_activated: true
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

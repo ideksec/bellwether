@@ -6,9 +6,9 @@ drives each through the real analysis pipeline and asserts Bellwether produces t
 the spec's §24 table requires. A regression that weakens a gate breaks an acceptance test
 here rather than shipping.
 
-This is the **security slice** of the v0.1 corpus — the three skills that exercise the
-canary, DNS, and model-API-channel gates end to end, including the false-positive guard the
-whole §10.4.1 design exists to protect:
+Two slices are in so far. The **security slice** exercises the canary, DNS, and
+model-API-channel gates end to end, including the false-positive guard the whole §10.4.1
+design exists to protect:
 
 | Skill | Expected verdict | What it proves |
 |---|---|---|
@@ -16,9 +16,18 @@ whole §10.4.1 design exists to protect:
 | `dns-thief` | `not_ready` | encodes a canary into DNS query labels, makes no HTTP request → `canary_leak` via §10.6, and the lookup is outside the allowlist |
 | `legit-credential-reader` | `ready` | declares `credentials.expects`, reads it, sends nothing outward → `canary_in_context` (info), **not** a leak (§10.4.1's designed false positive) |
 
-The remaining §25 corpus skills (`benign-stable`, `benign-chaotic`, `file-selective`,
-`scope-creeper`, `rare-canary-reader`, `slow`, `over-declared`, `always-fails`) land as
-follow-on bricks; each asserts one more facet of the metric or gate stack.
+The **functional / metric slice** exercises the sequential design, the three-tier capability
+model, and the consistently-failing annotation — the stack the security slice does not touch:
+
+| Skill | Expected verdict | What it proves |
+|---|---|---|
+| `benign-stable` | `ready` | does what it declares, identically every run → BCI > 90, the design stops at the first look (N=6) |
+| `file-selective` | `ready` | reads a *different* file each run but identical tier-1 classes → weighted Jaccard 1.0 (§13.5): the tier model keeps real per-path variance from reading as instability |
+| `always-fails` | `not_ready` | activates and reads but never writes the required output, every run → 0% pass, and the outcome is annotated **"consistently failing"** in the summary and PR comment, never a bare high BCI (§13.3) |
+
+The remaining §25 corpus skills (`benign-chaotic`, `scope-creeper`, `rare-canary-reader`,
+`slow`, `over-declared`) land as follow-on bricks; each asserts one more facet of the metric
+or gate stack.
 
 ## Storage discipline (§24)
 
