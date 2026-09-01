@@ -90,6 +90,10 @@ class MatrixSummary(ReportModel):
     runs_not_evaluable: int = 0
     runs_excluded_quality: int = 0
     runs_errored: int = 0
+    #: Runs whose exit reason was ``timeout``. §12.7 scores a timeout as a failed run, but
+    #: §24 requires it counted as a *distinct* state — a skill that never finished is not a
+    #: skill that finished wrong — so it is never blended into the assertion-failure count.
+    runs_timed_out: int = 0
     design: Literal["sequential", "fixed"] = "sequential"
     looks: tuple[int, ...] = ()
     boundary_z: float | None = None
@@ -166,6 +170,9 @@ class ConsistencySummary(ReportModel):
     #: once — a renderer cannot print a number the summary does not carry.
     trajectory_dispersion: float | None = None
     trajectory_at_noise_floor: bool = False
+    #: The number of §13.4 trajectory clusters in the primary set — "many clusters, stable
+    #: tier-1 capabilities" is the §24 signature of a benign-but-chaotic skill.
+    trajectory_clusters: int = 0
 
 
 class CapabilityProfileSummary(ReportModel):

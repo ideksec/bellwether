@@ -42,6 +42,12 @@ core/
 ```
 _6 run(s); columns are runs left-to-right. `!` marks a high-risk capability._
 
+### Peripheral capabilities
+
+_What the skill **sometimes** does — a class absent from at least one run. Invisible to a reviewer who ran it once._
+
+- **Sensitive directory reached (§13.5.4):** `outside_workspace_read:${HOME}/.aws/` — on at least one run; frequency is irrelevant to this finding
+
 ### Declared vs observed
 
 | Capability | Declared | Observed | Disposition |
@@ -51,7 +57,8 @@ _6 run(s); columns are runs left-to-right. `!` marks a high-risk capability._
 <details>
 <summary>Trajectory clusters</summary>
 
-_No trajectory clusters (single run, or trajectory not evaluable)._
+- **c1** — 6 run(s), mean intra-cluster distance 0.0
+  `skill_offered → model_turn → tool_call/skill/tool:skill → skill_activated → skill_body_loaded → tool_result/skill → tool_call/read/workspace_read → tool_result/read → model_turn → tool_call/read/outside_workspace_read → tool_result/read → model_turn → tool_call/write/workspace_write → tool_result/write → model_turn → final_output`
 
 </details>
 
@@ -59,7 +66,7 @@ _No trajectory clusters (single run, or trajectory not evaluable)._
 <summary>Sequential design</summary>
 
 - Looks: 6, 12, 20 (boundary z = 2.289)
-- Sets stopped at each look: none recorded
+- Sets stopped at each look: look 1: 1
 - Sets held open by the capability rule: 0
 
 </details>

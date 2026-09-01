@@ -71,8 +71,9 @@ already compromised.
 This repository contains a test corpus of skills that model exfiltration, instrumentation
 detection, and other hostile behaviour. It exists so that Bellwether's detectors are tested
 against the thing they claim to detect, and so its known gaps are visible in CI output
-rather than assumed closed. The first slice lives at [`tests/corpus/`](tests/corpus/) — the
-security skills that exercise the canary, DNS, and model-API-channel gates end to end.
+rather than assumed closed. It lives at [`tests/corpus/`](tests/corpus/): the security
+skills that exercise the canary, DNS, and model-API-channel gates end to end, and the
+functional, metric, and frequency-independence skills beside them.
 
 Rules for that corpus, which apply to any contribution to it:
 

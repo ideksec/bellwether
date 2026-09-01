@@ -1,0 +1,31 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# The timeout test (§24, §12.7). This skill never finishes: it re-reads the repository
+# indefinitely and never writes the index, so every run exceeds its limit. Expected:
+# `exit_reason: timeout` on every run, `not_ready`, and — the point — the timeout counted
+# and drawn as a DISTINCT state: `runs_timed_out` in the matrix, ⧖ not ✗ in the strip
+# chart. A skill that never finished is not a skill that finished wrong; blending the two
+# would hide a hang behind an assertion-failure count. Not a silent pass either: §12.7
+# scores a timeout against the skill.
+
+metadata:
+  owner: unknown-contributor
+  criticality: medium
+
+declared_scope:
+  tools:
+    deny: [fetch, bash]
+  filesystem:
+    read: ["${WORKSPACE}/**"]
+    write: ["${WORKSPACE}/INDEX.md"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.7

@@ -1,0 +1,21 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: service-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: draft-changelog
+    expectation: should_trigger
+    prompt: "Draft a changelog entry for the current change and append it to CHANGELOG.md."
+    fixture: service-repo
+    assert:
+      # Every run activates, reads, writes the entry, completes — the pass rate is 100%.
+      # The out-of-scope read in a minority of runs is what the scope gate and the
+      # peripheral report exist to catch; it never shows up in the pass rate.
+      - skill_activated: true
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

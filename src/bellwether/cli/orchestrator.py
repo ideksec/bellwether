@@ -34,6 +34,7 @@ from typing import Protocol
 from bellwether.assertions import (
     EvidenceIndex,
     RunOutcome,
+    ScopeTable,
     derive_assertions,
     evaluate_all,
     evaluate_scope,
@@ -52,6 +53,9 @@ from bellwether.constants import (
 from bellwether.determinism import canonical_json, round6
 from bellwether.errors import BellwetherError
 from bellwether.metrics import (
+    PeripheralCapability,
+    RareCapabilityFinding,
+    TrajectoryCluster,
     compute_bci,
     decide_at_look,
     summarise_capability,
@@ -79,10 +83,12 @@ from bellwether.report import (
     render_summary_json,
 )
 from bellwether.trace import (
+    Action,
     NormalizationContext,
     StepSignature,
     Trace,
     canonicalize,
+    capability_for,
 )
 from bellwether.verdict import (
     GateResult,
@@ -107,6 +113,9 @@ __all__ = [
     "orchestrate",
     "plan_matrix",
     "resolve_capability_weights",
+    "scope_exceeded_of",
+    "scope_table_of",
+    "scope_unused_of",
 ]
 
 
@@ -210,6 +219,15 @@ class AnalysedRun:
     #: A Plane C ``canary_without_read`` finding was recorded: a planted canary reached the
     #: model's context with no recorded read carrying it there (§10.4.1, high).
     canary_without_read: bool = False
+    #: The trace footer's exit reason. §12.7 folds a ``timeout`` into the ``fail`` outcome
+    #: for the pass-rate arithmetic, but §24 requires it counted and drawn as a *distinct*
+    #: state — a skill that never finishes is not a skill that finished wrong — so the
+    #: reason travels beside the outcome for the strip chart and the matrix counts.
+    exit_reason: str | None = None
+    #: Declared capabilities this run never exercised (§12.5 ``unused``): a tool on the
+    #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
+    #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
+    scope_unused: tuple[str, ...] = ()
 
 
 def plan_matrix(
@@ -248,11 +266,26 @@ def scope_exceeded_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[s
     dragging an otherwise-clean run to ``not_evaluable``. This is the same split the demo uses, now
     shared so the live run path enforces declared scope identically rather than skipping it.
     """
+    return tuple(sorted(entry.subject for entry in scope_table_of(executed, declared).exceeded()))
+
+
+def scope_unused_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str, ...]:
+    """The declared capabilities one run never exercised (§12.5 ``unused``).
+
+    The other half of the Declared-vs-Observed table: a tool on the ``allow`` list never
+    called, a declared glob no read or write matched. A claim about absence, so the table
+    only says ``unused`` where the plane that would have seen the use was watching — an
+    unobservable glob reads ``not_evaluable`` and is not returned here.
+    """
+    return tuple(sorted(entry.subject for entry in scope_table_of(executed, declared).unused()))
+
+
+def scope_table_of(executed: ExecutedRun, declared: DeclaredScope) -> ScopeTable:
+    """The full Declared-vs-Observed table for one run against a declared scope (§12.5)."""
     index = EvidenceIndex.from_trace(
         executed.trace, executed.context, workspace=Path(executed.context.workspace_root)
     )
-    table = evaluate_scope(declared, index)
-    return tuple(sorted(entry.subject for entry in table.exceeded()))
+    return evaluate_scope(declared, index)
 
 
 def drive_evaluation(
@@ -299,7 +332,12 @@ def drive_evaluation(
         executed = executor.execute(plan)
         run = analyse_run(plan, executed, scope=scope, platform_baseline_t3=platform_baseline_t3)
         if declared_scope is not None:
-            run = replace(run, scope_exceeded=scope_exceeded_of(executed, declared_scope))
+            table = scope_table_of(executed, declared_scope)
+            run = replace(
+                run,
+                scope_exceeded=tuple(sorted(entry.subject for entry in table.exceeded())),
+                scope_unused=tuple(sorted(entry.subject for entry in table.unused())),
+            )
         analysed_by_set[set_key].append(run)
     for scenario_id, slug, _target in order:
         count = len(analysed_by_set[(scenario_id, slug)])
@@ -373,12 +411,14 @@ def analyse_run(
     outcome = run_outcome(results, exit_reason=trace.exit_reason, trace_complete=trace.is_complete)
 
     canon = canonicalize(trace.actions, context, platform_baseline_t3=platform_baseline_t3)
-    tier3_by_class = _tier3_by_class(canon.caps_t3)
+    tier3_by_class = _tier3_by_class(trace.actions, context, platform_baseline_t3)
 
     scope_exceeded: tuple[str, ...] = ()
+    scope_unused: tuple[str, ...] = ()
     if scope is not None:
         table = evaluate_scope(scope, index)
         scope_exceeded = tuple(sorted(entry.subject for entry in table.exceeded()))
+        scope_unused = tuple(sorted(entry.subject for entry in table.unused()))
 
     key = RunKey(plan.scenario.id, plan.target.slug, plan.repetition)
     canonical_json = canonical_json_of(
@@ -423,20 +463,31 @@ def analyse_run(
         # scan defers rather than passing on the channel it never watched.
         canary_reads_observed=index.plane_reason("credentials", for_absence=True) is None,
         canary_without_read=index.canary_without_read_present,
+        exit_reason=trace.exit_reason,
+        scope_unused=scope_unused,
     )
 
 
-def _tier3_by_class(caps_t3: Sequence[str]) -> dict[str, frozenset[str]]:
-    """Group tier-3 capabilities under their tier-1 class prefix (best-effort).
+def _tier3_by_class(
+    actions: Sequence[Action], context: NormalizationContext, platform_baseline_t3: frozenset[str]
+) -> dict[str, frozenset[str]]:
+    """Group each run's tier-3 targets under the tier-1 class they were computed with.
 
-    A tier-3 capability is spelled ``<tier1>:<detail>`` where it carries one; those without
-    a prefix are grouped under ``"other"`` so the heatmap still shows them.
+    The §13.5.2 dual-tier rule — the class beside the exact thing — needs the real
+    class→target pairing, which only the per-action capability carries: a filesystem tier-3
+    is a bare normalised path with no class prefix to parse back out. So this re-asks
+    :func:`capability_for` per action, the same function the canonicaliser used, and skips
+    what the platform baseline absorbed, so the pairing is exactly the one the sets hold.
     """
     grouped: dict[str, set[str]] = {}
-    for cap in caps_t3:
-        head = cap.split(":", 1)[0] if ":" in cap else "other"
-        grouped.setdefault(head, set()).add(cap)
-    return {key: frozenset(value) for key, value in grouped.items()}
+    for action in actions:
+        capability = capability_for(action, context)
+        if capability is None or capability.tier3 is None:
+            continue
+        if capability.tier3 in platform_baseline_t3:
+            continue
+        grouped.setdefault(capability.tier1, set()).add(capability.tier3)
+    return {key: frozenset(value) for key, value in sorted(grouped.items())}
 
 
 def canonical_json_of(
@@ -528,6 +579,33 @@ class SetReading:
     #: ``trace_inconsistency`` disposition stays advisory-unscored in this version, and
     #: ``doctor`` says so.
     trace_inconsistencies: tuple[str, ...] = ()
+    #: Declared capabilities no run in the set exercised (§12.5 ``unused``) — the
+    #: intersection over runs, since one run using a declaration is enough to make it a
+    #: supported one. Reported in the Declared-vs-Observed table; blocks only where the
+    #: profile's ``scope.block_on`` names ``unused``.
+    scope_unused: tuple[str, ...] = ()
+    #: The §13.5.2 peripheral set: every tier-1 class in fewer than 100% of runs, with
+    #: its tier-3 expansion, so the report names the class *and* the exact thing.
+    peripheral: tuple[PeripheralCapability, ...] = ()
+    #: The ``max_rare_capability_risk`` findings behind ``rare_capability_blocking``.
+    rare_findings: tuple[RareCapabilityFinding, ...] = ()
+    #: The tier-1 classes present in *every* run of the set.
+    core_t1: tuple[str, ...] = ()
+    #: The §13.5.4 sensitive-directory hits across the set — any run, any single time.
+    sensitive_hits: tuple[str, ...] = ()
+    #: ``1 − J̄(tier 2)`` (§13.5.3); reported, never gated by default.
+    directory_instability: float | None = None
+    #: The §13.4 trajectory clusters, for the report's cluster list.
+    trajectory_clusters: tuple[TrajectoryCluster, ...] = ()
+    #: The §13.1 continuation rule held this set open on a resolved pass interval because
+    #: the tier-1 capability sets disagreed — the "escalates to the next look" state.
+    held_open_for_capability: bool = False
+    #: Runs whose exit reason was ``timeout`` (§24: a distinct state, never blended into
+    #: assertion failures in the counts or the strip).
+    n_timed_out: int = 0
+    #: Runs by §12.7 outcome, so the matrix counts are exact rather than reconstructed.
+    n_not_evaluable: int = 0
+    n_excluded_quality: int = 0
 
 
 #: §13.5.2: the configured ``max_rare_capability_risk`` severity maps to a risk-weight
@@ -601,6 +679,12 @@ def aggregate(
     )
 
     scope_exceeded = tuple(sorted({cap for run in runs for cap in run.scope_exceeded}))
+    # Unused is the intersection: a declaration one run exercised is supported, not unused.
+    scope_unused = (
+        tuple(sorted(frozenset.intersection(*(frozenset(run.scope_unused) for run in runs))))
+        if runs
+        else ()
+    )
     # Observed only if *every* run's proxy ran: a set with one unobserved run has an
     # incomplete egress picture, so the gate defers rather than passing on partial evidence.
     egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
@@ -643,6 +727,17 @@ def aggregate(
         ),
         canary_reads_observed=len(runs) > 0 and all(run.canary_reads_observed for run in runs),
         canary_without_read=any(run.canary_without_read for run in runs),
+        scope_unused=scope_unused,
+        peripheral=capability.peripheral,
+        rare_findings=capability.rare_findings,
+        core_t1=capability.core,
+        sensitive_hits=capability.sensitive_hits,
+        directory_instability=_opt_round(capability.directory_instability),
+        trajectory_clusters=trajectory.clusters,
+        held_open_for_capability=decision.held_open_for_capability,
+        n_timed_out=sum(1 for run in runs if run.exit_reason == "timeout"),
+        n_not_evaluable=stability.denominators.n_not_evaluable,
+        n_excluded_quality=stability.denominators.n_excluded_quality,
     )
 
 
@@ -800,9 +895,24 @@ def _scope_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult
             "declared scope",
             f"capabilities observed outside declared scope: {', '.join(reading.scope_exceeded)}",
         )
+    # §12.5: over-declaration is a finding in its own right — a declared capability no run
+    # used widens the privilege a reviewer must reason about. It blocks only where the
+    # profile opts in (``block_on: [unused]``); otherwise it is named in the reason and in
+    # the Declared-vs-Observed table, and the gate's status is decided by what was exceeded.
+    if reading.scope_unused and "unused" in block_on:
+        return _tgr(
+            reading.target,
+            "block",
+            ", ".join(reading.scope_unused),
+            "declared scope",
+            f"declared capabilities never used: {', '.join(reading.scope_unused)}",
+        )
     status = "warn" if reading.scope_exceeded else "pass"
     observed = ", ".join(reading.scope_exceeded) if reading.scope_exceeded else "within scope"
-    return _tgr(reading.target, status, observed, "declared scope", "declared vs observed")
+    reason = "declared vs observed"
+    if reading.scope_unused:
+        reason += f"; declared but never used: {', '.join(reading.scope_unused)}"
+    return _tgr(reading.target, status, observed, "declared scope", reason)
 
 
 #: The egress/DNS security-runtime checks whose capture plane is not built yet. Under a
@@ -1181,15 +1291,31 @@ def _build_summary(
     n_evaluable = sum(r.n_evaluable for r in readings)
     n_completed = sum(r.n_completed for r in readings)
 
+    looks = tuple(profile.matrix.looks)
+    # Which pre-registered look each set stopped at, keyed by 1-based look index (§17.2) —
+    # what lets a reader tell a set that resolved at N = 6 from one that ran to N = 20.
+    stopped_at: dict[str, int] = {}
+    for reading in readings:
+        index = looks.index(reading.look) + 1 if reading.look in looks else len(looks)
+        key = str(index)
+        stopped_at[key] = stopped_at.get(key, 0) + 1
     matrix = MatrixSummary(
         scenarios=len(scenarios),
         targets=len(targets),
         runs_planned=n_completed,
         runs_completed=n_completed,
         runs_evaluable=n_evaluable,
+        runs_not_evaluable=sum(r.n_not_evaluable for r in readings),
+        runs_excluded_quality=sum(r.n_excluded_quality for r in readings),
+        runs_errored=n_completed - n_evaluable,
+        # §24: a timeout is a distinct state — counted here beside the others, never
+        # blended into the assertion failures it is arithmetically grouped with (§12.7).
+        runs_timed_out=sum(r.n_timed_out for r in readings),
         design="sequential",
-        looks=tuple(profile.matrix.looks),
+        looks=looks,
         boundary_z=profile.matrix.boundary_z,
+        sets_stopped_at_look=dict(sorted(stopped_at.items())),
+        sets_held_open_for_capability=sum(1 for r in readings if r.held_open_for_capability),
         descriptive_only=descriptive_only,
     )
     functional = FunctionalSummary(
@@ -1216,12 +1342,9 @@ def _build_summary(
             None if primary.trajectory_at_noise_floor else primary.mean_pairwise_distance
         ),
         trajectory_at_noise_floor=primary.trajectory_at_noise_floor,
+        trajectory_clusters=len(primary.trajectory_clusters),
     )
-    capability_profile = CapabilityProfileSummary(
-        tier1={
-            "core": sorted({cap for r in readings for run in r.runs for cap in run.caps_t1}),
-        }
-    )
+    capability_profile = _capability_profile(readings)
     # §10.8 disagreements across every set, into the machine-readable summary. The
     # disposition is advisory-unscored in this version (doctor lists it as inert), so the
     # finding's surface is the report — absent entirely on a consistent run.
@@ -1257,6 +1380,69 @@ def _build_summary(
     )
 
 
+def _capability_profile(readings: Sequence[SetReading]) -> CapabilityProfileSummary:
+    """The §13.5 profile across the whole matrix, at all three tiers (§17.2).
+
+    ``core`` is what *every* run of every set exercised; ``peripheral`` is everything else
+    in the union — reported dual-tier (§13.5.2), the class beside its tier-3 expansion, so
+    a reviewer sees "sometimes reads outside the workspace" *and* which path. Sets are
+    merged by class: run counts add, expansions union, so a class peripheral on one target
+    and absent on another is still peripheral. ``rare_high_risk`` is the frequency-
+    independent gate's own output, never averaged into anything.
+    """
+    all_runs = [run for r in readings for run in r.runs]
+    union = sorted({cap for run in all_runs for cap in run.caps_t1})
+    total_runs = len(all_runs)
+    core = sorted(cap for cap in union if all(cap in run.caps_t1 for run in all_runs))
+    # Every set's tier-3 expansion is on its runs, so the matrix-wide expansion of a class is
+    # the union over all runs — the same source the per-set peripheral report drew from.
+    expansions = {
+        cls: sorted({cap for run in all_runs for cap in run.tier3_by_class.get(cls, ())})
+        for cls in union
+    }
+    weight_of = {p.tier1: p.weight for r in readings for p in r.peripheral}
+    peripheral_classes = [cap for cap in union if cap not in core]
+    peripheral_rows = [
+        {
+            "tier1": cap,
+            "weight": weight_of.get(cap, 0),
+            "runs": sum(1 for run in all_runs if cap in run.caps_t1),
+            "of": total_runs,
+            "frequency": (
+                round6(sum(1 for run in all_runs if cap in run.caps_t1) / total_runs)
+                if total_runs
+                else 0.0
+            ),
+            "tier3": expansions[cap],
+        }
+        for cap in sorted(peripheral_classes, key=lambda cap: (-weight_of.get(cap, 0), cap))
+    ]
+    rare_rows = [
+        {
+            "tier1": finding.tier1,
+            "weight": finding.weight,
+            "runs": finding.run_count,
+            "of": finding.total_runs,
+            "tier3": list(finding.tier3),
+            "target": reading.target.slug,
+        }
+        for reading in readings
+        for finding in reading.rare_findings
+    ]
+    instabilities = [
+        r.directory_instability for r in readings if r.directory_instability is not None
+    ]
+    return CapabilityProfileSummary(
+        tier1={"core": core, "peripheral": peripheral_rows},
+        tier2={
+            "instability": max(instabilities) if instabilities else None,
+            "sensitive_hits": sorted({hit for r in readings for hit in r.sensitive_hits}),
+        },
+        tier3={"expansions": expansions},
+        rare_high_risk=tuple(rare_rows),
+    )
+
+
 def build_figures(readings: Sequence[SetReading]) -> Figures:
     """Assemble the report figures from the readings (§13.8), for both renderers.
 
@@ -1267,15 +1453,16 @@ def build_figures(readings: Sequence[SetReading]) -> Figures:
     rather than a bare gate status. (Supported/unused rows need the declared scope itself
     and land when the scope plane is fully wired into the executor.)
     """
-    from bellwether.report import CapabilityRow, StripRow, TrajectoryCluster
+    from bellwether.report import CapabilityRow, StripRow
+    from bellwether.report import TrajectoryCluster as TrajectoryClusterFigure
 
     strip: list[StripRow] = []
     heatmap: list[CapabilityRow] = []
-    clusters: list[TrajectoryCluster] = []
+    clusters: list[TrajectoryClusterFigure] = []
     run_labels: tuple[str, ...] = ()
 
     for reading in readings:
-        cells: tuple[StripCell, ...] = tuple(_outcome_cell(run.outcome) for run in reading.runs)
+        cells: tuple[StripCell, ...] = tuple(_outcome_cell(run) for run in reading.runs)
         strip.append(
             StripRow(
                 label=f"{reading.scenario_id}/{reading.target.model_alias}",
@@ -1288,19 +1475,50 @@ def build_figures(readings: Sequence[SetReading]) -> Figures:
 
     primary = readings[0]
     run_labels = tuple(f"r{i + 1}" for i in range(len(primary.runs)))
+    # Rows grouped by the §13.5 partition — a class in every run is core, anything else is
+    # peripheral — so the flagship visual makes "sometimes does this" impossible to miss.
+    core = set(primary.core_t1)
+    rare = {finding.tier1 for finding in primary.rare_findings}
     caps_seen: dict[tuple[str, str], list[bool]] = {}
     for index, run in enumerate(primary.runs):
         for cap in run.caps_t1:
-            key = ("core", cap)
+            key = ("core" if cap in core else "peripheral", cap)
             caps_seen.setdefault(key, [False] * len(primary.runs))
             caps_seen[key][index] = True
     for (tier1, cap), hits in caps_seen.items():
-        heatmap.append(CapabilityRow(tier1_class=tier1, capability=cap, exercised=tuple(hits)))
+        heatmap.append(
+            CapabilityRow(
+                tier1_class=tier1, capability=cap, exercised=tuple(hits), high_risk=cap in rare
+            )
+        )
+
+    # §13.4: the cluster list, largest first in the renderer; ids are assigned in the
+    # metric's deterministic (representative-sorted) order so the same runs name the same
+    # clusters every time.
+    for index, cluster in enumerate(primary.trajectory_clusters, start=1):
+        clusters.append(
+            TrajectoryClusterFigure(
+                cluster_id=f"c{index}",
+                run_count=cluster.size,
+                representative=tuple(_step_label(step) for step in cluster.representative),
+                mean_intra_distance=cluster.mean_intra_distance,
+            )
+        )
 
     exceeded = sorted({cap for reading in readings for cap in reading.scope_exceeded})
+    # Unused across the matrix: a declaration every set left untouched. One target using
+    # it is enough to make it supported rather than over-declared.
+    unused = (
+        sorted(frozenset.intersection(*(frozenset(r.scope_unused) for r in readings)))
+        if readings
+        else []
+    )
     declared_vs_observed = tuple(
         ScopeRow(capability=cap, declared=False, observed=True, disposition="exceeded")
         for cap in exceeded
+    ) + tuple(
+        ScopeRow(capability=cap, declared=True, observed=False, disposition="unused")
+        for cap in unused
     )
 
     return Figures(
@@ -1313,7 +1531,8 @@ def build_figures(readings: Sequence[SetReading]) -> Figures:
 
 
 #: §12.7 run outcomes map straight onto four of the five strip-chart cells; the fifth
-#: (``timeout``) is a distinct exit reason the aggregate does not carry separately yet.
+#: (``timeout``) is the ``fail``-outcome run whose exit reason was a timeout — §17.4 is
+#: firm that it must not be drawn like an assertion failure.
 _CELL: Mapping[RunOutcome, StripCell] = {
     "pass": "pass",
     "fail": "fail",
@@ -1322,5 +1541,13 @@ _CELL: Mapping[RunOutcome, StripCell] = {
 }
 
 
-def _outcome_cell(outcome: RunOutcome) -> StripCell:
-    return _CELL.get(outcome, "not_evaluable")
+def _outcome_cell(run: AnalysedRun) -> StripCell:
+    if run.outcome == "fail" and run.exit_reason == "timeout":
+        return "timeout"
+    return _CELL.get(run.outcome, "not_evaluable")
+
+
+def _step_label(step: StepSignature) -> str:
+    """One step of a trajectory representative, as the report names it: the parts of the
+    ``(kind, tool, tier-1)`` signature that are present, joined — ``tool_call/read/workspace_read``."""
+    return "/".join(part for part in step if part is not None)

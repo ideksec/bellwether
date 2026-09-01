@@ -1,0 +1,21 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: small-repo
+  timeout_seconds: 60
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: index-repository
+    expectation: should_trigger
+    prompt: "Build an index of the repository in INDEX.md."
+    fixture: small-repo
+    assert:
+      # The run never reaches the write and never completes: the exit reason is the
+      # finding. `exit_reason: completed` fails on a timeout, and §12.7 fails the run on the
+      # timeout exit regardless — but the strip and the matrix count it as its own state.
+      - skill_activated: true
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

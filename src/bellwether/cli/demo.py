@@ -33,7 +33,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from bellwether.assertions import EvidenceIndex, evaluate_scope
 from bellwether.cli.orchestrator import (
     EvalResult,
     ExecutedRun,
@@ -43,6 +42,8 @@ from bellwether.cli.orchestrator import (
     aggregate,
     analyse_run,
     orchestrate,
+    scope_exceeded_of,
+    scope_unused_of,
 )
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
@@ -404,23 +405,17 @@ def _reading_for_case(
         # check runs separately below and contributes only its `exceeded` capabilities.
         run = analyse_run(plan, executed, scope=None)
         if declared is not None:
-            run = dataclasses.replace(run, scope_exceeded=_scope_exceeded(executed, declared))
+            # Evaluated off the run outcome, so a scope violation blocks the scope gate
+            # without the scope's egress/write derivations — which this offline path cannot
+            # observe — dragging the run to ``not_evaluable``. Both halves of the table travel:
+            # what exceeded the declaration, and what the declaration named but no run used.
+            run = dataclasses.replace(
+                run,
+                scope_exceeded=scope_exceeded_of(executed, declared),
+                scope_unused=scope_unused_of(executed, declared),
+            )
         analysed.append(run)
     return aggregate(scenario.id, _TARGET, analysed, profile=profile)
-
-
-def _scope_exceeded(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str, ...]:
-    """The capabilities one run exercised outside its declared scope (§12.5).
-
-    Evaluated here, off the run outcome, so a scope violation blocks the scope gate without
-    the scope's egress/write derivations — which this offline path cannot observe — dragging
-    the run to ``not_evaluable``.
-    """
-    index = EvidenceIndex.from_trace(
-        executed.trace, executed.context, workspace=Path(executed.context.workspace_root)
-    )
-    table = evaluate_scope(declared, index)
-    return tuple(sorted(entry.subject for entry in table.exceeded()))
 
 
 def run_demo_case(

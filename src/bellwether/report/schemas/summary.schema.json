@@ -132,6 +132,11 @@
           "title": "Trajectory At Noise Floor",
           "type": "boolean"
         },
+        "trajectory_clusters": {
+          "default": 0,
+          "title": "Trajectory Clusters",
+          "type": "integer"
+        },
         "trajectory_dispersion": {
           "anyOf": [
             {
@@ -444,6 +449,11 @@
         },
         "runs_planned": {
           "title": "Runs Planned",
+          "type": "integer"
+        },
+        "runs_timed_out": {
+          "default": 0,
+          "title": "Runs Timed Out",
           "type": "integer"
         },
         "scenarios": {

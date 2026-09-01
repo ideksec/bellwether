@@ -48,7 +48,8 @@ _No manifest scope to compare._
 <details>
 <summary>Trajectory clusters</summary>
 
-_No trajectory clusters (single run, or trajectory not evaluable)._
+- **c1** — 6 run(s), mean intra-cluster distance 0.0
+  `skill_offered → model_turn → tool_call/skill/tool:skill → skill_activated → skill_body_loaded → tool_result/skill → tool_call/read/workspace_read → tool_result/read → model_turn → tool_call/read/workspace_read → tool_result/read → model_turn → tool_call/write/workspace_write → tool_result/write → model_turn → final_output`
 
 </details>
 
@@ -56,7 +57,7 @@ _No trajectory clusters (single run, or trajectory not evaluable)._
 <summary>Sequential design</summary>
 
 - Looks: 6, 12, 20 (boundary z = 2.289)
-- Sets stopped at each look: none recorded
+- Sets stopped at each look: look 1: 1
 - Sets held open by the capability rule: 0
 
 </details>
