@@ -2018,3 +2018,101 @@ the read is outside the declared scope (`deny_read: **/.aws/**`) on a single occ
 §13.5.4 sensitive-directory flag records `.aws/` on the same occurrence. The acceptance test
 asserts the property the section exists for — `not_ready` at N = 6, 12 and 20 alike, with
 weighted Jaccard clearing 0.8 at every N — rather than which gate name carried it.
+
+## §9.4, §10.1, §11.2, §3.3 — The `claude-code` adapter reads two sources, was built from an observed session, and is the harness where credential isolation actually bites
+
+WP-17 landed the second harness: the real Claude Code CLI running headless inside the sandbox
+(`harness/claude_code.py`). Six decisions worth recording.
+
+**Every fact about the CLI was observed, not assumed.** §9.4 says to consult the harness's
+current CLI and hooks documentation at build time because flag names change. The public docs
+did not carry verbatim line shapes, so the ground truth was taken from the binary itself:
+CLI 2.1.257 driven headless (`claude -p … --output-format stream-json --verbose`) against a
+scripted Messages API on localhost, with `PreToolUse`/`PostToolUse` hooks writing their stdin to
+a file. That session — the `init` line with `claude_code_version`/`permissionMode`/`apiKeySource`/
+`tools`/`skills`, `assistant` lines whose `message.content` carries `tool_use` blocks (with
+`stop_reason` observed as `null` at emit time, so the adapter derives it from the content),
+`user` lines carrying `tool_result` blocks keyed by `tool_use_id` plus a structured
+`tool_use_result`, a synthetic `user` line injecting the skill body, and the `result` line with
+`subtype`/`is_error`/`num_turns`/`permission_denials`/usage — is committed, paths normalised, as
+`tests/golden/claude-code/`. The hook stdin shape (`hook_event_name`, `tool_name`, `tool_input`,
+`tool_use_id`, `tool_response`, `duration_ms`, `permission_mode`, `transcript_path`, `cwd`) is
+committed beside it. The parser tolerates unknown line types and records malformed lines as a
+count. Where the binary is on PATH (CI installs the pinned version) the session is re-run for
+real through the adapter with a real FIFO sink. A CLI format change therefore breaks a test
+rather than silently emptying Plane A — which would read as a skill that did nothing.
+
+**Plane A comes from two independent sources, cross-checked, and the cross-check is a Plane A
+record.** §9.4 asks for the hook stream as "a second, in-band source of tool-call evidence that
+does not depend on parsing stdout", written to the host-owned sink; §10.8 says disagreement is a
+finding. The hooks are configured inline (`--settings '{"hooks": …}'`, no extra mount) with one
+command, `cat >> /dev/bellwether-events; echo` — `>>` is the write-only open the FIFO's mode
+permits from inside, and the trailing `echo` keeps the hook's stdout a valid empty response so
+the recorder never blocks a tool. After the run the two streams are reconciled per
+`tool_use_id` (exact, not positional): a call on one side and not the other, or a name mismatch,
+is emitted as `kind: trace_inconsistency` on Plane A — an observation *about* the plane, which
+the canonicaliser excludes from the step sequence (a trajectory that varied with how the harness
+reported itself would read as skill nondeterminism) and the orchestrator folds into the same
+`trace_inconsistencies` field as the §10.8 findings. An *empty* hook stream against a stdout
+with tool calls is a coverage fact, not N findings: Plane A records `partial` with the reason.
+`--setting-sources user` keeps a fixture's `.claude/settings.json` from reconfiguring the harness
+under test.
+
+**The permission mode is recorded as pre-approval.** A headless run proceeds only under a
+permission mode that never asks (`bypassPermissions`; the CLI refuses it as root, and the sandbox
+runs as uid 1000). Every tool call is therefore auto-approved, and §10.1 says pre-approval must
+be visible: each `tool_call` carries `permission: auto_approved`, the mode is in the trace's
+`harness_capabilities`, and a `result` line's `permission_denials` become `permission_prompt`
+records with `resolution: denied`.
+
+**This is the harness where §3.3 invariant 1 bites.** On `api-loop` the model runs host-side
+with the real key and the sandbox is handed nothing. The CLI's calls originate *inside* the
+sandbox, so they can leave only through the recording proxy carrying the sandbox-scoped token
+the proxy swaps for the real key (§10.5.1). Consequences: the §16.4 preflight refuses a
+`claude-code` target with no `egress.image` (the run would spend a container watching the CLI
+fail to reach any model); `build_proxy_provider` brokers a key only for the providers a
+`claude-code` target names (from the manifest's matrix override or, absent one, every profile's
+targets — a slight over-approximation that errs toward brokering, never toward a keyless run)
+and leaves the broker empty otherwise; the executor delivers `ANTHROPIC_API_KEY=<scoped token>`
+because that is the variable the CLI reads, whatever the provider's `api_key_env` is on the host.
+The container test asserts the real key is absent from every artifact.
+
+**Telemetry is disabled and its hosts are declared, but only the intake hosts.** §10.5.0 says
+to set a telemetry-disable flag where the harness offers one, record that it was set, and declare
+`infrastructure_endpoints`. `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
+`DISABLE_AUTOUPDATER`, `DISABLE_BUG_COMMAND` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` are
+set and listed in the trace. The declared infrastructure endpoints are the telemetry and
+error-reporting intake domains (`datadoghq.com`, `sentry.io`, `statsig.com`, by suffix) — *not*
+the download, package-registry or documentation hosts the CLI also knows, because auto-update is
+off, nothing is installed at run time, and an allowlisted content host is a route a skill could
+carry data out on. The proxy adds them to its allowlist only when a key is brokered (a
+`claude-code` evaluation), so an api-loop run's allowlist is unchanged.
+
+**The normalizer learned the CLI's tool vocabulary; the adapter did not translate it.** §11.2's
+example records `"tool": "Read", "input": {"file_path": …}` and expects the *normalizer* to
+compute `workspace_read` from it. One table (`trace/tool_vocabulary.py`) now maps api-loop's
+`read`/`write` with `path` and the CLI's `Read`/`Write`/`Edit`/`MultiEdit`/`NotebookEdit` with
+`file_path`/`notebook_path` (and `Glob`/`Grep` as reads of their `path`) onto the filesystem
+capabilities, used by both the canonicaliser and the evidence index so the capability sets and
+the declared-vs-observed reads agree. Anything else stays `tool:<name>`. The alternative —
+rewriting tool names in the adapter — would have put a translation between the trace and what
+the harness actually reported.
+
+**Read state for a harness whose model channel is visible only at the proxy.** On `api-loop`
+the model-channel scanner sees the tool-result blocks inside each composed request. Here the
+request bodies are scanned sidecar-side, and the recorded read is established from the full text
+of the tool results the CLI reported (`tool_result_actions`: a marker there is
+`canary_in_context`, anchored to the `tool_result`, text never in the trace); model-endpoint
+body hits at the sidecar are then graded per canary against that set — a read one is the
+expected info-level in-context finding, a never-read one stays `canary_without_read` at high.
+Before this, every body hit graded `preceded_by_read=False`, which would have flagged
+`legit-credential-reader`'s correct behaviour as a `high` finding on this harness.
+
+**Known bounds, stated.** The sink container path is fixed (`/dev/bellwether-events`), a §3.5
+tell to draw per run later (the hook settings already take the path). The CLI's session
+transcript lands in the harness-state zone as ordinary state churn. Durations on `tool_result`
+are host receipt-time deltas between the `tool_use` and `tool_result` lines (the hook stream's
+`duration_ms` is finer but arrives after the run). The container proof is CI-only (the sandbox
+image is an `npm install` of the pinned CLI on a digest-pinned Node base) and drives a scripted
+model; no labelled live run has used a `claude-code` target yet, and `examples/live/` still
+targets `api-loop`.

@@ -180,6 +180,40 @@ before/after, so its declared `overlay_diff` fidelity is true and a write glob i
 the authoritative plane (see spec-notes §13.5.2/§12.7/§12.5/§24). The remaining §24 rows depend on
 post-v0.1 subsystems (static scanner, probe suite, real-network adapter) and land with them.
 
+**WP-17 then landed — the `claude-code` adapter, the second harness and the last v0.1 work
+package.** The real Claude Code CLI runs headless *inside* the sandbox
+(`claude -p … --output-format stream-json`, `harness/claude_code.py`) and Plane A is read from
+two independent sources: its structured stdout stream (one JSON object per line — `init`,
+`assistant` turns with `tool_use` blocks and usage, `user` lines carrying `tool_result`s
+correlated by `tool_use_id`, a final `result`) mapped onto the §11.3 vocabulary, and its own
+`PreToolUse`/`PostToolUse` hooks, configured inline via `--settings` to append their stdin to the
+**host-owned sink FIFO** (§10.1) — the writer the sink was built for. The two are cross-checked
+per `tool_use_id` after the run: a call one source has and the other lacks is a
+`trace_inconsistency` on Plane A (folded into the same summary field as the §10.8 findings), an
+empty hook stream degrades the plane to `partial` with the reason. Every fact about the CLI —
+flag names, line shapes, hook stdin fields, telemetry env, the `Skill` tool's `{skill}` input —
+was **observed at build time** from a real headless session of CLI 2.1.257 driven against a
+scripted Messages API, committed as `tests/golden/claude-code/` so a future format change breaks a
+test rather than silently emptying Plane A; where the binary is on PATH (CI installs the pinned
+version) the same session is re-run for real through the adapter and a real FIFO. The harness's
+model calls originate inside the sandbox, so they leave only through the recording proxy carrying
+the **sandbox-scoped token** the proxy swaps for the real key — §3.3 invariant 1 finally bites:
+`build_proxy_provider` brokers a key only for the providers a `claude-code` target names, the
+§16.4 preflight refuses a `claude-code` target with no `egress.image`, and the executor hands the
+CLI `ANTHROPIC_API_KEY=<scoped token>` plus the telemetry-disable env (recorded in the trace) with
+the CLI's intake hosts declared as `harness_infrastructure`. The normalizer learned the CLI's tool
+vocabulary in one table (`trace/tool_vocabulary.py`): `Read`/`Write`/`Edit`/… with `file_path`
+are the same filesystem capabilities as api-loop's `read`/`write` with `path`, for the capability
+sets and the evidence index alike (the §11.2 example, honoured). Read state for this harness —
+whose model channel is visible only at the proxy — comes from the full text of the tool results
+the CLI reported (`tool_result_actions`, a marker there is the `canary_in_context` read), and
+model-endpoint body hits at the sidecar are graded per canary against it. The CLI controls its
+own skill presentation, so `trigger_metrics_portable` is true — the reason WP-17 is in v0.1. The
+container proof (`sandbox/claude-code/Dockerfile`, CI-only `test_execution_claude_code_docker.py`)
+runs the CLI in the hardened sandbox behind the real proxy against the scripted API and asserts
+activation by the harness, hook corroboration, model-API-only egress with the real key absent
+from every artifact, and the write landing on Plane B (see spec-notes §9.4/§10.1/§11.2/§3.3).
+
 ---
 
 ## Where the build is
@@ -217,9 +251,9 @@ post-v0.1 subsystems (static scanner, probe suite, real-network adapter) and lan
 | WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
 | **Model-API canary channel** — every composed request scanned host-side, §10.4.1 read-state grading per-request/per-canary, credentials plane `full`, `canary_without_read` scored (`security_runtime.canary_reads`) | **done** — finishes WP-16's capture story; corpus skills land with WP-20 |
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
-| WP-17 `claude-code` adapter | **remaining** — see "What's next" |
+| **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-982 tests: 929 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
+1010 tests: 956 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -319,10 +353,12 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      body-scan logic is offline-proven and the sidecar composition is CI-proven. Then the corpus skills
      (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
      §10.4 done-when.
-3. **`claude-code` adapter (WP-17).** The second harness, so a skill is evaluated under the real CLI
-   and its hooks, cross-checked against the host sink. Largely independent — can move earlier if a
-   real-harness signal is wanted sooner; flagged late only because it is a big chunk with an
-   external-docs dependency.
+3. **`claude-code` adapter (WP-17) — done.** The second harness: a skill is evaluated under the
+   real CLI and its hooks, cross-checked against the host sink. What remains around it is
+   *proof breadth*, not code: the CI-only container test drives the CLI against a scripted
+   Messages API; a labelled live run on a `claude-code` target (a paid run, opt-in) is the next
+   deliberate step, and `telemetry-noisy` (§24) becomes buildable now that a real harness with
+   declared infrastructure endpoints exists.
 4. **Corpus & acceptance (WP-20) — done.** All eleven v0.1 skills are in and CI-asserted: the
    security slice (`canary-thief`, `dns-thief`, `legit-credential-reader`), the functional slice
    (`benign-stable`, `file-selective`, `always-fails`), and the frequency-independence/scope/shape
@@ -330,14 +366,16 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    §24 rows that remain (`over-triggering`, `git-peeker`, `telemetry-noisy`, the chunked thieves,
    `prompt-channel-thief`, `server-tool-user`, `fetch-and-exec`, `obfuscated-injection`,
    `eval-aware`, `model-divergent`, `oom-hog`) each need a post-v0.1 subsystem — the static
-   scanner, the probe suite, or the real-network `claude-code` adapter — and land with it. With
-   this, **WP-17 is the v0.1 "done" line.**
+   scanner, the probe suite, or a real-network corpus run — and land with it. With WP-17 in,
+   **every v0.1 work package is built**; what is left for the v0.1 line is the live proof of the
+   second harness and the loose ends below.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
-the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client), and
+the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client),
 **plugin-layout staging** — installing an Agent Plugin bundle whole, in the layout a real client
-uses, rather than each skill as a bare directory — which folds into WP-17's `claude-code` adapter
-(spec-notes §5/§6/§18).
+uses (`--plugin-dir`), rather than each skill as a bare directory (spec-notes §5/§6/§18) — and a
+per-run **sink path** drawn from the identifier stream rather than the fixed
+`/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
 
 **The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
 `egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
@@ -858,8 +896,8 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
 | `requires.min_bellwether_version` is not checked by the §16.4 preflight | `cli/preflight.py` | The rest of BW-51 is closed — `run` refuses an unsatisfiable policy before spending and `doctor` evaluates the check per profile — but version comparison needs an ordering rule the project has not committed to, and the one profile that sets it (`high`) already refuses on its missing capture planes, so skipping it cannot produce a false start today. |
 | Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
-| Sink container path is chosen ad hoc by the caller | `sandbox/docker.py` `sink_bind` | §3.5: a fixed FIFO path is an instrumentation tell. The WP-17 adapter (the sink's writer) should draw it per run, plausibly via `sandbox/identifiers.py`. |
-| The FIFO event sink has no writer yet | `capture/sink.py` | `api-loop` reports its own events in-process; the sink's writer is the `claude-code` adapter's hook stream (WP-17). The sink is built and container-tested. |
+| Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
+| The claude-code adapter has no live-model proof yet | `tests/test_execution_claude_code_docker.py` | The container proof drives the real CLI against a scripted Messages API through the real proxy (CI-only). A labelled live run on a `claude-code` target is a paid, opt-in step not yet taken; `examples/live/` still targets `api-loop`. |
 | Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |

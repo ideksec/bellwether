@@ -22,13 +22,14 @@ executor never imports a provider itself, so the ``harness → sandbox`` boundar
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from bellwether.capture import (
     Canary,
     CanaryPlanting,
+    HostEventSink,
     ModelChannelScanner,
     PlaneStatus,
     collect_filesystem_events,
@@ -41,14 +42,20 @@ from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
 from bellwether.config.models.config import SandboxConfig, ZoneConfig
 from bellwether.determinism import SeededRng, stable_hash
+from bellwether.errors import BellwetherError
 from bellwether.harness import (
     ApiLoopAdapter,
+    ClaudeCodeAdapter,
+    LaunchResult,
     ModelClient,
     OfferedSkill,
     RawHarnessEvent,
     RunLimits,
     SandboxToolset,
+    claude_code_environment,
+    hook_settings,
 )
+from bellwether.harness.claude_code import DEFAULT_SINK_CONTAINER_PATH
 from bellwether.harness.tools import docker_exec_runner
 from bellwether.sandbox import (
     DockerBackend,
@@ -57,6 +64,7 @@ from bellwether.sandbox import (
     ZoneMap,
     prepare_sandbox,
 )
+from bellwether.sandbox.docker import StreamedExec
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
     Action,
@@ -80,6 +88,7 @@ from bellwether.trace import (
     read_trace,
     redact_trace_actions,
     token_totals_from_events,
+    tool_result_actions,
     write_trace,
     written_file_actions,
 )
@@ -184,6 +193,71 @@ def _resolve_canary_path(slot_path: str, *, home: str, workspace_root: str) -> P
     return PurePosixPath(workspace_root) / slot_path
 
 
+class _DockerLaunch:
+    """The claude-code adapter's launcher, bound to a run's persistent container.
+
+    The whole coupling between the adapter and the backend: the CLI argv becomes one
+    streamed ``docker exec`` against the container ``start_persistent`` opened, with the
+    workspace root as its working directory and its stderr filed under the run directory.
+    """
+
+    def __init__(self, backend: DockerBackend, prepared: PreparedSandbox, run_dir: Path) -> None:
+        self._backend = backend
+        self._prepared = prepared
+        self._run_dir = run_dir
+
+    def __call__(self, argv: list[str], timeout: float) -> _DockerLaunched:
+        streamed = self._backend.exec_stream(
+            self._prepared, argv, timeout=timeout, stderr_path=self._run_dir / "harness-stderr.log"
+        )
+        return _DockerLaunched(streamed)
+
+
+class _DockerLaunched:
+    def __init__(self, streamed: StreamedExec) -> None:
+        self._streamed = streamed
+
+    def lines(self) -> Iterator[str]:
+        return self._streamed.lines()
+
+    def wait(self) -> LaunchResult:
+        end = self._streamed.wait()
+        return LaunchResult(
+            exit_code=end.exit_code, timed_out=end.timed_out, stderr_tail=end.stderr_tail
+        )
+
+
+def _harness_events_status(
+    adapter: ApiLoopAdapter | ClaudeCodeAdapter, events: Sequence[RawHarnessEvent]
+) -> PlaneStatus | None:
+    """Plane A's fidelity for this run (§10.7).
+
+    On api-loop the loop *is* the harness, so an event stream is the whole plane. On
+    claude-code the plane is the CLI's stdout corroborated by its hook stream on the host
+    sink; where the hook stream is empty or disagrees, the plane is ``partial`` with the
+    reason, so an assertion reading Plane A's silence knows what it rests on.
+    """
+    if not events:
+        return None
+    if isinstance(adapter, ClaudeCodeAdapter) and adapter.reconciliation is not None:
+        reason = adapter.reconciliation.coverage_reason()
+        if reason is not None:
+            return PlaneStatus(fidelity="partial", reason=reason)
+    return PlaneStatus(fidelity="full")
+
+
+def _tool_result_sources(
+    plane_a: Sequence[Action], texts: Sequence[tuple[str, str, str]]
+) -> list[tuple[Action, str]]:
+    """Pair each tool result's full text with the Plane A action that recorded it."""
+    by_call_id = {
+        str(action.action.get("tool_call_id")): action
+        for action in plane_a
+        if action.kind == "tool_result"
+    }
+    return [(by_call_id[call_id], text) for call_id, _tool, text in texts if call_id in by_call_id]
+
+
 def _reported_model_id(events: Sequence[RawHarnessEvent], fallback: str) -> str:
     """The model id the provider said it served, read from the ``model_turn`` events.
 
@@ -259,6 +333,10 @@ class SandboxRunExecutor:
     #: Whether sandbox identifiers are randomised (§3.5). Recorded in the trace either way, so
     #: a run with findable identifiers reads as a deliberate choice, not concealment.
     randomize_identifiers: bool = True
+    #: Provider name → its configured ``base_url`` (``None`` for the provider default), for a
+    #: ``claude-code`` target whose CLI talks to the API from inside the sandbox and needs to
+    #: be pointed at the same endpoint the proxy allowlists as ``model_api``.
+    provider_base_urls: Mapping[str, str | None] = field(default_factory=dict)
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
@@ -309,30 +387,69 @@ class SandboxRunExecutor:
         ro_binds += self._stage_canary_files(planting, prepared, run_dir)
         extra_ro_binds = ro_binds or None
 
+        # The harness: the api-loop reference (the model runs host-side, tools exec into the
+        # sandbox) or the real Claude Code CLI *inside* the sandbox (§9.4). The CLI's own
+        # model calls leave only through the proxy carrying the sandbox-scoped token, and its
+        # hook stream lands on the host-owned sink — both stood up here, before the container.
+        use_claude_code = plan.target.harness == "claude-code"
+        sink: HostEventSink | None = None
+        sink_bind: tuple[Path, PurePosixPath] | None = None
+        if use_claude_code:
+            if run_proxy is None:
+                raise BellwetherError(
+                    "a claude-code target needs the recording proxy: the CLI's model calls "
+                    "originate inside the sandbox and have no route out but the proxy, which "
+                    "injects the real key (§3.3 invariant 1); set egress.image in config.yaml"
+                )
+            sink = HostEventSink((run_dir / "events").resolve())
+            sink.start()
+            sink_bind = (sink.path, PurePosixPath(DEFAULT_SINK_CONTAINER_PATH))
+            extra_env.update(
+                claude_code_environment(
+                    api_token=run_proxy.sandbox_credential(plan.target.provider),
+                    base_url=self.provider_base_urls.get(plan.target.provider),
+                    config_dir=str(prepared.zones.harness_state),
+                )
+            )
+
         try:
             self.backend.mount(prepared)
             self.backend.start_persistent(
                 prepared,
                 network=network,
                 dns=dns,
+                sink_bind=sink_bind,
                 extra_env=extra_env,
                 extra_ro_binds=extra_ro_binds,
-            )
-            client, model_id = self.client_factory(plan)
-            # The model-API channel scan (§10.4.1): every request the loop composes is
-            # scanned host-side for the run's canaries before it leaves, graded by whether
-            # a tool-result block carried the marker into context (the recorded read).
-            # This is the residual channel §2 names — it cannot be blocked, so it is
-            # observed; wiring it is what lifts the credentials plane to `full`.
-            scanner = ModelChannelScanner(client, tuple(canaries)) if canaries else None
-            adapter = ApiLoopAdapter(
-                scanner if scanner is not None else client,
-                SandboxToolset(docker_exec_runner(self.backend, prepared)),
-                skills=(offered_skill(self.package),),
             )
             started_at = dt.datetime.now(dt.UTC)
             prompt = plan.scenario.prompt
             prompt_text = prompt if isinstance(prompt, str) else "\n".join(prompt)
+            scanner: ModelChannelScanner | None = None
+            adapter: ApiLoopAdapter | ClaudeCodeAdapter
+            if use_claude_code:
+                assert sink is not None
+                hook_sink = sink
+                claude = ClaudeCodeAdapter(
+                    _DockerLaunch(self.backend, prepared, run_dir),
+                    hook_source=lambda: [event.payload for event in hook_sink.stop()],
+                    settings=hook_settings(DEFAULT_SINK_CONTAINER_PATH),
+                )
+                adapter = claude
+                _client, model_id = self.client_factory(plan)
+            else:
+                client, model_id = self.client_factory(plan)
+                # The model-API channel scan (§10.4.1): every request the loop composes is
+                # scanned host-side for the run's canaries before it leaves, graded by whether
+                # a tool-result block carried the marker into context (the recorded read).
+                # This is the residual channel §2 names — it cannot be blocked, so it is
+                # observed; wiring it is what lifts the credentials plane to `full`.
+                scanner = ModelChannelScanner(client, tuple(canaries)) if canaries else None
+                adapter = ApiLoopAdapter(
+                    scanner if scanner is not None else client,
+                    SandboxToolset(docker_exec_runner(self.backend, prepared)),
+                    skills=(offered_skill(self.package),),
+                )
             events = list(adapter.run(prompt_text, model_id=model_id, limits=self.limits))
             observed_at = dt.datetime.now(dt.UTC)
 
@@ -369,13 +486,30 @@ class SandboxRunExecutor:
             plane_c += self._written_file_leaks(
                 prepared, plane_b, canaries, start_seq=plane_c_base + len(plane_c)
             )
+            # The recorded reads on a harness whose model channel is only visible at the proxy:
+            # the full text of every tool result the CLI reported, scanned for the run's
+            # markers — a hit is the §10.4.1 read (`canary_in_context`, info), anchored to the
+            # tool_result that carried it, and what grades the body hits below.
+            if isinstance(adapter, ClaudeCodeAdapter):
+                plane_c += tool_result_actions(
+                    _tool_result_sources(plane_a, adapter.tool_result_texts),
+                    canaries,
+                    start_seq=plane_c_base + len(plane_c),
+                )
+            read_ids = frozenset(
+                str(action.action.get("canary_id"))
+                for action in plane_c
+                if action.kind == "canary_in_context"
+            )
             # And the request *bodies* the proxy scanned sidecar-side (the body never leaves the
             # proxy): the hits arrive on each flow, already located, so they are paired with their
             # Plane D egress action and recorded as body leaks (§10.5.2). ``egress_flows[i]`` is the
-            # flow ``plane_d[i]`` was built from, so the two line up by position.
+            # flow ``plane_d[i]`` was built from, so the two line up by position. A model-endpoint
+            # hit is graded by whether a recorded read carried that canary into context.
             plane_c += egress_body_actions(
                 list(zip(plane_d, (flow.canary_hits for flow in egress_flows), strict=True)),
                 start_seq=plane_c_base + len(plane_c),
+                read_canary_ids=read_ids,
             )
             # And the model-API channel: what the host-side scanner found in each composed
             # request, graded by read state and anchored to the model turn the request
@@ -404,7 +538,11 @@ class SandboxRunExecutor:
                     model_alias=plan.target.model_alias,
                     model_id_requested=model_id,
                     model_id_reported=_reported_model_id(events, model_id),
-                    harness_capabilities=adapter.capabilities().as_record(),
+                    harness_capabilities=(
+                        adapter.capabilities_record()
+                        if isinstance(adapter, ClaudeCodeAdapter)
+                        else adapter.capabilities().as_record()
+                    ),
                 ),
                 sandbox=SandboxRef(
                     image=self.backend.image,
@@ -412,7 +550,7 @@ class SandboxRunExecutor:
                 ),
                 identity=self._identity_block(planting, canaries),
                 coverage=assemble_coverage(
-                    harness_events=PlaneStatus(fidelity="full") if events else None,
+                    harness_events=_harness_events_status(adapter, events),
                     filesystem_writes=filesystem_writes_status(set(zone_diffs)),
                     # The proxy writing its flow log is proof the egress plane was captured, even
                     # at zero flows — an observed-clean run, not an unobserved one (§10.7).
@@ -457,6 +595,8 @@ class SandboxRunExecutor:
         finally:
             self.backend.stop_persistent(prepared)
             self.backend.unmount(prepared)
+            if sink is not None:
+                sink.stop()  # idempotent: the adapter normally drained it already
             # The resolver goes first: when it joined the proxy's bridge, the proxy's close removes
             # that bridge, which a still-attached resolver container would block.
             if run_resolver is not None:

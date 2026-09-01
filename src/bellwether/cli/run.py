@@ -16,7 +16,7 @@ before it will send the real key (§3.3).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +38,7 @@ from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import resolve_run
 from bellwether.config.models.config import Config
+from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
 from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
@@ -48,6 +49,7 @@ __all__ = [
     "ExecutorFactory",
     "build_proxy_provider",
     "build_resolver_provider",
+    "claude_code_providers",
     "policy_digest",
     "run_evaluation",
 ]
@@ -188,6 +190,7 @@ def sandbox_executor_factory(
     zones: ZoneMap | None = None,
     randomize_identifiers: bool = True,
     plant_canaries: bool = False,
+    provider_base_urls: Mapping[str, str | None] | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -232,12 +235,39 @@ def sandbox_executor_factory(
             zones=zones if zones is not None else ZoneMap(),
             randomize_identifiers=randomize_identifiers,
             plant_canaries=plant_canaries,
+            provider_base_urls=dict(provider_base_urls or {}),
         )
 
     return make
 
 
-def build_proxy_provider(config: Config) -> SidecarProxyProvider | None:
+def claude_code_providers(policy: Policy, manifest: SkillManifest | None) -> frozenset[str]:
+    """The providers a ``claude-code`` target could name for this skill (§9.4, §3.3).
+
+    The manifest's matrix override wins where it sets targets; otherwise every profile's
+    required targets are considered, since the profile is selected later by criticality and
+    the proxy is assembled before that. A slight over-approximation across profiles is the
+    price of building the sidecar once per evaluation, and it errs toward brokering a key for
+    a target that may not run — never toward running a claude-code target with no key.
+    """
+    if manifest is not None and manifest.matrix is not None and manifest.matrix.targets:
+        specs = list(manifest.matrix.targets)
+    else:
+        specs = [
+            spec
+            for profile_name in sorted(policy.profiles)
+            for spec in policy.profile(profile_name).matrix.required_targets
+        ]
+    return frozenset(spec.provider for spec in specs if spec.harness == "claude-code")
+
+
+def build_proxy_provider(
+    config: Config,
+    *,
+    environ: Mapping[str, str] | None = None,
+    brokered_providers: Iterable[str] = (),
+    rng_seed: int = 0,
+) -> SidecarProxyProvider | None:
     """Assemble the recording-proxy provider from config, or ``None`` when it is unwired.
 
     The proxy is wired only when ``egress.image`` is set (§10.5); left empty — the shipped default —
@@ -245,34 +275,63 @@ def build_proxy_provider(config: Config) -> SidecarProxyProvider | None:
     live config sets the digest-pinned sidecar image to turn it on.
 
     The allowlist is default-deny: the configured providers' hosts are ``model_api`` by
-    construction, and ``egress.allowlist`` entries are the operator's explicit additions. The broker
-    is **empty** — the ``api-loop`` model runs host-side with the real key, so the sandbox is handed
-    no credential at all (§3.3 invariant 1 in its strongest form: nothing to steal). The proxy still
-    records and allowlist-checks the skill's own traffic.
+    construction, the claude-code adapter's declared telemetry hosts are ``harness_infrastructure``
+    (§10.5.0 — so a stray telemetry call never reads as the skill's egress), and
+    ``egress.allowlist`` entries are the operator's explicit additions.
+
+    The broker holds a key only for ``brokered_providers`` — the providers a ``claude-code`` target
+    names, whose CLI talks to the API from *inside* the sandbox and is handed a sandbox-scoped token
+    the proxy swaps for the real key on the way out (§3.3 invariant 1, §10.5.1). For an
+    ``api-loop``-only evaluation the broker stays **empty**: that model runs host-side with the real
+    key, so the sandbox is handed no credential at all — nothing to steal.
     """
     egress = config.egress
     if not egress.image:
         return None
 
     from bellwether.capture import CredentialBroker, EgressAllowlist, provider_hosts
+    from bellwether.determinism import SeededRng
+    from bellwether.harness import CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS
     from bellwether.harness.live_client import DEFAULT_ANTHROPIC_BASE_URL
     from bellwether.sandbox import DockerBackend
 
-    base_urls = [
-        provider.base_url or DEFAULT_ANTHROPIC_BASE_URL for provider in config.providers.values()
-    ]
+    base_url_of = {
+        name: provider.base_url or DEFAULT_ANTHROPIC_BASE_URL
+        for name, provider in config.providers.items()
+    }
+    brokered = sorted(set(brokered_providers))
     allowlist = EgressAllowlist(
-        provider_endpoints=provider_hosts(base_urls),
-        infrastructure_endpoints=frozenset(),
+        provider_endpoints=provider_hosts(base_url_of.values()),
+        infrastructure_endpoints=(
+            frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS) if brokered else frozenset()
+        ),
         extra=frozenset(egress.allowlist),
     )
+    broker = CredentialBroker({})
+    provider_of_host: dict[str, str] = {}
+    if brokered:
+        api_key_env: dict[str, str] = {}
+        for name in brokered:
+            provider = config.providers.get(name)
+            if provider is not None and provider.api_key_env:
+                api_key_env[name] = provider.api_key_env
+        broker = CredentialBroker.for_run(
+            api_key_env, environ if environ is not None else {}, rng=SeededRng(rng_seed, "broker")
+        )
+        provider_of_host = {
+            host: name
+            for name in brokered
+            if name in base_url_of
+            for host in provider_hosts([base_url_of[name]])
+        }
     return SidecarProxyProvider(
         backend=DockerBackend(image=config.sandbox.image),
         image=egress.image,
         allowlist=allowlist,
         max_requests=egress.per_run_caps.max_requests,
         max_request_bytes=egress.per_run_caps.max_request_bytes,
-        broker=CredentialBroker({}),
+        broker=broker,
+        provider_of_host=provider_of_host,
     )
 
 

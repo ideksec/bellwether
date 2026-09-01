@@ -29,7 +29,7 @@ from bellwether.cli.orchestrator import TargetInfo
 from bellwether.config.models.config import Config
 from bellwether.config.models.policy import ProfileSpec
 from bellwether.errors import BellwetherError
-from bellwether.harness import ApiLoopAdapter
+from bellwether.harness import ApiLoopAdapter, ClaudeCodeAdapter
 from bellwether.verdict import PreconditionFailure, TargetDeclaration, check_preconditions
 
 __all__ = ["available_planes", "preflight_failures", "refuse_on_preflight_failures"]
@@ -58,24 +58,40 @@ def available_planes(config: Config) -> frozenset[str]:
 def _declare(config: Config, target: TargetInfo) -> TargetDeclaration | PreconditionFailure:
     """One target's composed declaration, or the failure explaining why none exists.
 
-    Only the ``api-loop`` adapter ships. Any other harness name must refuse *here*, before
-    a container is paid for: today a ``claude-code`` target runs the whole sandbox under
-    the api-loop adapter and then dies on the trace-to-plan binding ("does not match the
-    run plan") — money spent, wrong error. The static adapter declaration is overlaid with
+    Two adapters ship: ``api-loop`` and ``claude-code``. Any other harness name must refuse
+    *here*, before a container is paid for. A ``claude-code`` target additionally needs the
+    recording proxy wired: the CLI's model calls originate inside the sandbox and have no
+    route out except the proxy, which is also where the sandbox-scoped token is swapped for
+    the real key (§3.3 invariant 1) — without ``egress.image`` the run would spend a container
+    to watch the CLI fail to reach any model. The static adapter declaration is overlaid with
     the composition-scoped observability bits (proxy → egress, resolver → DNS), which the
     adapter alone cannot know.
     """
-    if target.harness != "api-loop":
+    if target.harness == "api-loop":
+        capabilities = dict(ApiLoopAdapter.capabilities().as_record())
+    elif target.harness == "claude-code":
+        if not config.egress.image:
+            return PreconditionFailure(
+                gate="matrix.required_targets",
+                target=target.slug,
+                remedy=(
+                    "the claude-code harness reaches the model only through the recording "
+                    "proxy (its calls originate inside the sandbox, and the proxy injects the "
+                    "real key — §3.3 invariant 1); set egress.image in config.yaml to wire the "
+                    "proxy sidecar, or use an api-loop target"
+                ),
+            )
+        capabilities = dict(ClaudeCodeAdapter.static_capabilities().as_record())
+    else:
         return PreconditionFailure(
             gate="matrix.required_targets",
             target=target.slug,
             remedy=(
-                f"no adapter for harness '{target.harness}' ships in this build (the "
-                "claude-code adapter is WP-17); use an api-loop target, or remove this "
-                "target from the profile's matrix"
+                f"no adapter for harness '{target.harness}' ships in this build (api-loop and "
+                "claude-code do); use one of those, or remove this target from the profile's "
+                "matrix"
             ),
         )
-    capabilities = dict(ApiLoopAdapter.capabilities().as_record())
     capabilities["egress_observable"] = bool(config.egress.image)
     capabilities["dns_observable"] = bool(config.dns.image)
     return TargetDeclaration(label=target.slug, provider=target.provider, capabilities=capabilities)

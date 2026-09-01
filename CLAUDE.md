@@ -33,7 +33,10 @@ verdict** (`security_runtime.canaries` — a skill that exfiltrates a planted ca
 `ready`), and the **DNS gate is scored** (`security_runtime.dns`, with the live smoke wiring the
 resolver so the labelled run keeps `ready` on observed evidence). The model-API canary
 channel is scanned and scored (`security_runtime.canary_reads`; credentials plane `full`). What
-remains is *breadth*: the `claude-code` adapter (WP-17, the v0.1 done line). The acceptance
+remains is *proof breadth*: every v0.1 work package is built, including the **`claude-code`
+adapter** (WP-17 — the real CLI headless inside the sandbox, stream-json → Plane A, its hooks →
+the host-owned sink, cross-checked; scoped token through the proxy; offline-proven against a real
+CLI 2.1.257 session, in-container proof CI-only, **no live-model run on it yet**). The acceptance
 corpus is complete — eleven skills incl. the §10.4.1 false-positive guard, the §13.5 tier-model
 regression, and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at
 N = 6/12/20 alike) are CI-asserted — and the `credential_read_undeclared` disposition waits on

@@ -36,6 +36,14 @@ HarnessEventKind = Literal[
     "tool_result",
     "final_output",
     "harness_error",
+    #: A permission the harness raised and how it resolved (§10.1): critical for detecting
+    #: privilege pre-approval. Emitted by adapters whose harness has a permission layer.
+    "permission_prompt",
+    #: The adapter's own two sources disagreed — the harness's structured output and its
+    #: hook stream written to the host-owned sink (§9.4 adapter 1, §10.8). Recorded on
+    #: Plane A because it is an observation *about* Plane A; never a capability, never a
+    #: trajectory step.
+    "trace_inconsistency",
 ]
 
 

@@ -334,7 +334,8 @@ _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
     ),
     (
         "harness versions match version_pin",
-        "only the api-loop adapter ships; nothing to pin against",
+        "the claude-code CLI version is read from the sandbox image at run time and recorded "
+        "in every trace; checking it against version_pin from doctor needs a container",
     ),
 )
 
@@ -379,9 +380,11 @@ def run(
     from bellwether.cli.run import (
         build_proxy_provider,
         build_resolver_provider,
+        claude_code_providers,
         run_evaluation,
         sandbox_executor_factory,
     )
+    from bellwether.determinism import stable_hash
     from bellwether.harness import RunLimits
     from bellwether.skill import load_skill
 
@@ -434,8 +437,19 @@ def run(
                     eval_id,
                     limits=RunLimits(max_total_tokens=max_tokens),
                     # Wired only when egress.image is set (a live config); otherwise None and the
-                    # sandbox runs networkless, exactly as first-light (§10.5).
-                    proxy=build_proxy_provider(loaded_config),
+                    # sandbox runs networkless, exactly as first-light (§10.5). A key is brokered
+                    # into the sidecar only for the providers a claude-code target names — the
+                    # harness whose model calls originate inside the sandbox (§3.3).
+                    proxy=build_proxy_provider(
+                        loaded_config,
+                        environ=os.environ,
+                        brokered_providers=claude_code_providers(loaded_policy, package.manifest),
+                        rng_seed=int(stable_hash(eval_id).removeprefix("sha256:")[:16], 16),
+                    ),
+                    provider_base_urls={
+                        name: provider.base_url
+                        for name, provider in loaded_config.providers.items()
+                    },
                     # Wired only when dns.image is set; otherwise None and DNS stays not_evaluable
                     # (§10.6). When both are on, the resolver shares the proxy's internal bridge.
                     resolver=build_resolver_provider(loaded_config),

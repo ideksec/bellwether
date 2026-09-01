@@ -72,6 +72,13 @@ jobs:
       - name: Pinning discipline
         run: uv run python tools/pin_lint.py
 
+      # The real Claude Code CLI, pinned to the version the adapter's golden session was
+      # taken from (sandbox/claude-code/Dockerfile pins the same). With it on PATH the
+      # offline suite drives the real binary headless against a scripted Messages API on
+      # localhost — no key, no container — so a CLI format change breaks a test here.
+      - name: Install the Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.257
+
       # The offline suite: no API key, no daemon. The container tests are a separate
       # job so that their absence here is a deselection rather than a silent skip.
       - name: Tests

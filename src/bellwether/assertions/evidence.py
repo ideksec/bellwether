@@ -22,6 +22,7 @@ from bellwether.trace import (
     NormalizationContext,
     PlaneCoverage,
     Trace,
+    filesystem_access,
 )
 
 __all__ = ["EgressEvidence", "EvidenceIndex", "ToolCallEvidence", "WriteEvidence"]
@@ -220,9 +221,11 @@ def _index_harness_action(
                     args_json=json.dumps(payload, sort_keys=True),
                 )
             )
-            path = payload.get("path")
-            if tool == "read" and isinstance(path, str):
-                reads.append((action.seq, _normalize_tool_path(path, context)))
+            # The same harness-tool table the canonicaliser uses (§11.2), so a `Read` on
+            # Claude Code and a `read` on api-loop are the same reported read here.
+            access = filesystem_access(tool, payload)
+            if access is not None and not access.write:
+                reads.append((action.seq, _normalize_tool_path(access.path, context)))
     elif action.kind == "skill_activated":
         skill = action.action.get("skill")
         if isinstance(skill, str):

@@ -90,6 +90,16 @@ class RunProxy:
         """The proxy CA, mounted read-only at the container trust path so TLS is intercepted."""
         return [(self.ca_host_path, _CA_CONTAINER_PATH)]
 
+    def sandbox_credential(self, provider: str) -> str | None:
+        """The sandbox-scoped token for ``provider`` (§3.3 invariant 1, §10.5.1), or ``None``
+        where this evaluation brokers no key for it — the api-loop case, where the model runs
+        host-side and the sandbox is handed nothing. This token is worthless outside the proxy,
+        which swaps it for the real key on the way out; the real key is never returned here."""
+        broker = self.sidecar.broker
+        if provider not in broker.ready_providers():
+            return None
+        return broker.sandbox_token(provider)
+
     def flows(self) -> list[EgressFlow]:
         """Every flow the proxy recorded for this run — Plane D of the trace (§10.5)."""
         return self.sidecar.flows()

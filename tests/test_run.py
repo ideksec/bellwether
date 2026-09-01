@@ -419,12 +419,13 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
         )
 
 
-def test_run_refuses_a_target_with_no_shipped_adapter(
+def test_run_refuses_a_claude_code_target_with_no_proxy_wired(
     package: SkillPackage, tmp_path: Path
 ) -> None:
-    """A `claude-code` target has no adapter in this build. Pre-preflight it ran the whole
-    sandbox under the api-loop adapter and then died on the trace-to-plan binding ("does not
-    match the run plan") — money spent, wrong error. Now it refuses up front, naming WP-17."""
+    """A `claude-code` target needs the recording proxy: the CLI's model calls originate inside
+    the sandbox and have no route out but the proxy (§3.3 invariant 1). With no `egress.image`
+    the run would spend a container to watch the CLI fail to reach any model, so the §16.4
+    preflight refuses up front, naming the setting."""
     pol = _policy()
     low = pol.profile("low")
     matrix = low.matrix.model_copy(
@@ -440,7 +441,7 @@ def test_run_refuses_a_target_with_no_shipped_adapter(
     def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
         raise AssertionError("the executor must never be built for a target with no adapter")
 
-    with pytest.raises(BellwetherError, match="no adapter for harness 'claude-code'"):
+    with pytest.raises(BellwetherError, match="reaches the model only through the recording proxy"):
         run_evaluation(
             config=_config(),
             policy=policy,

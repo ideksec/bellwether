@@ -29,6 +29,7 @@ from bellwether.trace.build import (
     model_channel_actions,
     redact_trace_actions,
     token_totals_from_events,
+    tool_result_actions,
     written_file_actions,
 )
 from bellwether.trace.canonical import (
@@ -60,6 +61,7 @@ from bellwether.trace.models import (
     TokenTotals,
 )
 from bellwether.trace.reader import Evaluability, Trace, iter_actions, parse_trace, read_trace
+from bellwether.trace.tool_vocabulary import FilesystemAccess, filesystem_access, tool_target
 from bellwether.trace.writer import TraceWriter, serialize_record, write_trace
 
 __all__ = [
@@ -74,6 +76,7 @@ __all__ = [
     "Coverage",
     "Evaluability",
     "ExitReason",
+    "FilesystemAccess",
     "IdentityBlock",
     "NormalizationContext",
     "PlaneCoverage",
@@ -97,6 +100,7 @@ __all__ = [
     "egress_actions",
     "egress_body_actions",
     "exit_reason_from_events",
+    "filesystem_access",
     "filesystem_actions",
     "harness_actions",
     "iter_actions",
@@ -106,6 +110,8 @@ __all__ = [
     "redact_trace_actions",
     "serialize_record",
     "token_totals_from_events",
+    "tool_result_actions",
+    "tool_target",
     "write_trace",
     "written_file_actions",
 ]
