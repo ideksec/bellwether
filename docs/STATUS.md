@@ -137,12 +137,48 @@ a thief would send and scans it for real). Two storage divergences from §24 are
 never dialled), and `SECURITY.md` keeps the base64/`127.0.0.1` rules binding for any future skill
 that ships a real payload (see spec-notes §24/§25).
 
+
+**WP-20's functional/metric slice then landed** — three more corpus skills exercising the stack the
+security slice did not: `benign-stable` (does what it declares identically every run → `ready`, BCI
+> 90, the design stops at the first look), `file-selective` (**the §13.5 tier-model regression** —
+reads a different file each run but identical tier-1 classes, so weighted Jaccard is 1.0 and it
+reaches `ready`; a flat per-path capability set would fail the consistency gate here), and
+`always-fails` (activates and reads but never writes the required output, every run → 0% pass,
+`not_ready`, and the outcome is annotated **"consistently failing"** in the summary *and* the
+rendered PR comment, never a bare high BCI, §13.3). The acceptance harness gained per-repetition
+transcripts so `file-selective`'s genuine tier-3 variance is real, not a copy. Five §25 corpus
+skills remain (`benign-chaotic`, `scope-creeper`, `rare-canary-reader`, `slow`, `over-declared`).
 Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the `credential_read_undeclared` disposition into a scored gate (needs the read-capture plane),
 the blocking static-scan gate (lands with the §15 scanner),
 `requires.min_bellwether_version` in the preflight, and hash-pinning the full sidecar dependency
 closure.
+
+**WP-20 then closed — the v0.1 acceptance corpus is complete** (eleven skills, three slices). The
+last five skills each assert a property the smooth metrics cannot deliver, and building them
+exposed four places the pipeline *computed* the evidence but never *surfaced* it, so this brick
+wired those through: the **§13.5.2 peripheral report** now reaches `summary.json`
+(`capability_profile.tier1.peripheral`, dual-tier — the class beside its tier-3 expansion —
+plus `tier2.sensitive_hits`, `tier3.expansions`, `rare_high_risk`) and both renderers, and the
+heatmap files a class under `peripheral/` rather than `core/`; a **timeout is a distinct state**
+(`matrix.runs_timed_out`, ⧖ in the strip — `AnalysedRun` carries the exit reason beside the
+§12.7 outcome); the **`unused` half of Declared-vs-Observed** is produced (`scope_unused_of`,
+intersected over the set), rendered, named in the scope gate's reason, and blocks only under
+`scope.block_on: [unused]`; and the **trajectory cluster list** is populated in the figures,
+with `sets_stopped_at_look` / `sets_held_open_for_capability` / `runs_errored` filled in the
+matrix. The skills: `rare-canary-reader` **blocks at N = 6, 12 and 20 alike** on a single
+undeclared credential read while weighted Jaccard clears 0.8 at every N (§13.5.1.1's property,
+asserted end to end — the frequency-independent scope gate catches what the smooth signal
+cannot, and the peripheral report names `${HOME}/.aws/credentials` with `runs: 1`);
+`scope-creeper` flags `outside_workspace_read` with the exact path and **escalates to look 2**
+under the §13.1 capability-disagreement rule; `over-declared` reaches `ready` with `bash`
+reported `unused`; `slow` times out on every run and is counted and drawn as its own state; and
+`benign-chaotic` lands in three trajectory clusters with weighted Jaccard 1.0 and is never
+`not_ready`. The corpus harness now synthesises Plane B from the in-memory filesystem's
+before/after, so its declared `overlay_diff` fidelity is true and a write glob is judged against
+the authoritative plane (see spec-notes §13.5.2/§12.7/§12.5/§24). The remaining §24 rows depend on
+post-v0.1 subsystems (static scanner, probe suite, real-network adapter) and land with them.
 
 ---
 
@@ -180,17 +216,16 @@ closure.
 | WP-19 — noise-floor calibration: Plane-A dispersion exactly 0 on real containers (sequential + concurrent load), residual published as `noise_floor`, `at_noise_floor` reporting | **done** |
 | WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
 | **Model-API canary channel** — every composed request scanned host-side, §10.4.1 read-state grading per-request/per-canary, credentials plane `full`, `canary_without_read` scored (`security_runtime.canary_reads`) | **done** — finishes WP-16's capture story; corpus skills land with WP-20 |
-| **WP-20 corpus — security slice** (`canary-thief`, `dns-thief`, `legit-credential-reader`): real skills, real pipeline, §25 verdicts asserted in CI; the §10.4.1 false-positive guard proven | **done** — the other eight §25 skills remain |
-| WP-17 `claude-code` adapter · WP-20 corpus (remaining eight skills) | **remaining** — see "What's next" |
+| **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
+| WP-17 `claude-code` adapter | **remaining** — see "What's next" |
 
-968 tests: 915 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
+982 tests: 929 offline, 53 under the `docker` mark (47 run, 6 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
 Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. The
-coverage-honesty (WP-18) and calibration (WP-19) proofs are in. What remains is **breadth, not a
-missing spine**: the second harness, and the rest of the acceptance corpus (its security slice is
-in). The
+coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acceptance corpus
+(WP-20) is complete. What remains for v0.1 is **one package: the second harness** (WP-17). The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,
 because the build deliberately inserted the executor-integration + live-proof work (unnumbered) that
 made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
@@ -288,11 +323,15 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    and its hooks, cross-checked against the host sink. Largely independent — can move earlier if a
    real-harness signal is wanted sooner; flagged late only because it is a big chunk with an
    external-docs dependency.
-4. **Corpus & acceptance (WP-20) — the remaining eight skills.** The security slice
-   (`canary-thief`, `dns-thief`, `legit-credential-reader`) is done and CI-asserted; what remains is
-   `benign-stable`, `benign-chaotic`, `file-selective`, `scope-creeper`, `rare-canary-reader`,
-   `slow`, `over-declared`, `always-fails` — each asserting one more facet of the metric or gate
-   stack. This is the v0.1 "done" line.
+4. **Corpus & acceptance (WP-20) — done.** All eleven v0.1 skills are in and CI-asserted: the
+   security slice (`canary-thief`, `dns-thief`, `legit-credential-reader`), the functional slice
+   (`benign-stable`, `file-selective`, `always-fails`), and the frequency-independence/scope/shape
+   slice (`rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`). The
+   §24 rows that remain (`over-triggering`, `git-peeker`, `telemetry-noisy`, the chunked thieves,
+   `prompt-channel-thief`, `server-tool-user`, `fetch-and-exec`, `obfuscated-injection`,
+   `eval-aware`, `model-divergent`, `oom-hog`) each need a post-v0.1 subsystem — the static
+   scanner, the probe suite, or the real-network `claude-code` adapter — and land with it. With
+   this, **WP-17 is the v0.1 "done" line.**
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
 the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client), and

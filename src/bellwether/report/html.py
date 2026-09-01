@@ -23,6 +23,7 @@ committed example report has a stable git diff and the regeneration test can byt
 from __future__ import annotations
 
 import html
+from collections.abc import Mapping
 
 from bellwether.determinism import format_float
 from bellwether.report.figures import CapabilityRow, StripCell, StripRow
@@ -84,6 +85,7 @@ def render_html_report(summary: Summary, figures: Figures) -> str:
         *_trace_inconsistency_section(summary),
         _strip_section(figures),
         _heatmap_section(figures),
+        *_peripheral_section(summary),
         _declared_vs_observed(figures),
         _limitations(summary),
         _provenance(summary),
@@ -329,6 +331,55 @@ def _heatmap_section(figures: Figures) -> str:
         "  </div>\n"
         "</section>"
     )
+
+
+def _peripheral_section(summary: Summary) -> list[str]:
+    """The §13.5.2 peripheral report — mirrors the PR comment, rendered only where any
+    class is peripheral or a sensitive directory was reached. Dual-tier by rule: the class
+    and its tier-3 expansion together, never one without the other."""
+    profile = summary.capability_profile
+    raw = profile.tier1.get("peripheral")
+    rows = [row for row in raw if isinstance(row, Mapping)] if isinstance(raw, list) else []
+    rare = {
+        str(entry.get("tier1")) for entry in profile.rare_high_risk if isinstance(entry, Mapping)
+    }
+    sensitive_raw = profile.tier2.get("sensitive_hits")
+    sensitive = [str(hit) for hit in sensitive_raw] if isinstance(sensitive_raw, list) else []
+    if not rows and not sensitive:
+        return []
+    items: list[str] = []
+    for row in rows:
+        tier1 = str(row.get("tier1", ""))
+        frequency = row.get("frequency", 0.0)
+        percent = f"{float(frequency) * 100:.0f}%" if isinstance(frequency, (int, float)) else "—"
+        flag = ' <span class="chip block">rare high-risk (§13.5.2)</span>' if tier1 in rare else ""
+        tier3 = row.get("tier3")
+        expansions = [str(cap) for cap in tier3] if isinstance(tier3, list) else []
+        expansion_items = (
+            "".join(f"<li><code>{_esc(cap)}</code></li>" for cap in expansions)
+            if expansions
+            else '<li class="muted-text">(no tier-3 expansion recorded)</li>'
+        )
+        items.append(
+            f"    <li><strong>Peripheral capability:</strong> <code>{_esc(tier1)}</code> "
+            f"&mdash; in {_esc(row.get('runs', 0))} of {_esc(row.get('of', 0))} runs "
+            f"({_esc(percent)}), risk weight {_esc(row.get('weight', '—'))}{flag}"
+            f"<ul>{expansion_items}</ul></li>"
+        )
+    if sensitive:
+        joined = ", ".join(f"<code>{_esc(hit)}</code>" for hit in sensitive)
+        items.append(
+            f"    <li><strong>Sensitive directory reached (§13.5.4):</strong> {joined} "
+            "&mdash; on at least one run; frequency is irrelevant to this finding</li>"
+        )
+    return [
+        '<section class="block-section">\n'
+        "  <h2>Peripheral capabilities</h2>\n"
+        '  <p class="muted-text">What the skill <strong>sometimes</strong> does &mdash; a class '
+        "absent from at least one run. Invisible to a reviewer who ran it once.</p>\n"
+        "  <ul>\n" + "\n".join(items) + "\n  </ul>\n"
+        "</section>"
+    ]
 
 
 def _declared_vs_observed(figures: Figures) -> str:

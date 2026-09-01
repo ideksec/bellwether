@@ -1946,3 +1946,75 @@ matcher compares the two literally — a `~` would not match and the legitimate 
 out-of-scope. The remaining eight §25 corpus skills (`benign-stable`, `benign-chaotic`,
 `file-selective`, `scope-creeper`, `rare-canary-reader`, `slow`, `over-declared`, `always-fails`)
 are follow-on bricks, each asserting one more facet of the metric or gate stack.
+
+## §13.5.2, §12.7, §12.5, §24 — Finishing the corpus surfaced four computed-but-unreported facts; a timeout stays a failed run but a distinct state; `unused` names, and blocks only on opt-in
+
+The last five §25 skills (`rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`,
+`benign-chaotic`) each assert something the report has to *show*, and building them found that in
+four places the pipeline computed the fact and dropped it before the summary. Each is now wired
+through; the decisions worth recording are below.
+
+**The §13.5.2 peripheral report is in `summary.json` and both renderers, dual-tier by rule.** The
+metric already produced the peripheral set with its tier-3 expansion, but `capability_profile`
+carried only a `core` list — and that list was the *union* over runs, labelled core. It is now the
+intersection (a class in every run of every set), `peripheral` is everything else in the union
+with its frequency, risk weight and expansion, `tier2` carries `sensitive_hits` and directory
+instability, `tier3.expansions` the class→target map, and `rare_high_risk` the
+`max_rare_capability_risk` findings. The expansion pairing needed a fix of its own: the
+orchestrator grouped tier-3 targets by parsing a `<class>:` prefix back out of the target string,
+and a filesystem tier-3 is a bare normalised path with no such prefix, so every read and write
+expanded under `"other"`. It now re-asks `capability_for` per action — the same function the
+canonicaliser used — so the pairing is the one the sets hold. The PR comment and HTML report gain
+a "Peripheral capabilities" section rendered only where any class is peripheral or a sensitive
+directory was reached, always the class beside the path, and the heatmap files a class under
+`peripheral/` rather than `core/` with the rare-gate flag on it. `scope-creeper` is the assertion:
+`outside_workspace_read` in 2 of 6 runs, expansion `${HOME}/projects/other-service/NOTES.md`,
+visible in the comment.
+
+**A timeout is scored as §12.7 says and counted as §24 says — both, not one.** §12.7's table folds
+a `timeout` exit into the `fail` outcome, and that arithmetic is unchanged: `slow` has a 0% pass
+rate and blocks the functional gate. But §24 requires the timeout "counted as a distinct state, not
+a silent pass and not blended into assertion failures", and the strip chart's ⧖ cell existed with
+nothing producing it (the code admitted "the aggregate does not carry [it] separately yet"). Now
+`AnalysedRun` carries the exit reason beside the outcome, the strip draws ⧖ for a failed run whose
+exit was a timeout, and `matrix.runs_timed_out` counts them — alongside `runs_not_evaluable`,
+`runs_excluded_quality` and `runs_errored`, which the summary model had declared and the
+orchestrator had left at zero. `sets_stopped_at_look` (keyed by 1-based look index, per the §17.2
+example) and `sets_held_open_for_capability` are filled the same way; `scope-creeper`'s "escalates
+to look 2" is asserted through them.
+
+**`unused` is produced, rendered, and named in the gate's reason; it blocks only where a profile
+opts in.** `evaluate_scope` already returned the `unused` rows; only the `exceeded` half reached
+the reading. `scope_unused_of` now yields the other half, intersected over the set (one run using a
+declaration makes it supported, not over-declared) and again across targets in the figures. The
+scope gate's *status* is still decided by what was exceeded: under the shipped `block_on:
+[exceeded]` an unused declaration keeps `pass` and is named in the reason ("declared but never
+used: bash"); under `block_on: [unused]` it blocks. The alternative — warning by default — would
+turn every `ready` skill with a spare declaration `conditional`, which is a policy choice the
+profile already has a knob for. `over-declared` reaches `ready` with `bash` in the table.
+
+Two consequences for the corpus harness and the `skill` tool. The harness had declared Plane B at
+`overlay_diff` while injecting no Plane B actions, which made every write glob read `unused` — a
+plane claimed and not watched, the exact shape §10.7 forbids. It now synthesises Plane B from the
+in-memory filesystem's before/after (workspace-relative writes only, refusing anything else), so
+the declared fidelity is true. And the harness's `skill` activation tool is a tool call on Plane A,
+so a manifest that uses `tools.allow` must list it; `over-declared` does, with a comment — the
+alternative (exempting the activation tool from the table) would hide a real call.
+
+**`benign-chaotic` lands in three clusters, not "many".** Six scripted runs over the same three
+tier-1 classes by six different routes produce three single-linkage clusters at the 0.2 cut —
+the runs that differ only by a re-read or one extra file merge. The assertion is `≥ 3` clusters,
+weighted Jaccard exactly 1.0, verdict `ready` or `conditional`, no gate blocking; the cluster list
+is now populated in the figures (it had been left empty) so the comment shows every route. The
+number of clusters travels as `consistency.trajectory_clusters`.
+
+**`rare-canary-reader` blocks on the scope gate, not `max_rare_capability_risk`, and that is what
+the spec's worked example predicts.** §13.5.1.1's table uses a weight-10 `canary_read` class; this
+implementation classifies a read of the planted credential file as `outside_workspace_read`
+(weight 3 — no producer emits a `canary_read` action kind; the Plane C finding for the read is
+`canary_in_context`, and §25's worked example says the same: "the `medium` setting blocks at
+weight ≥ 5... so it does *not* fire here"). What fires is frequency-independent by construction:
+the read is outside the declared scope (`deny_read: **/.aws/**`) on a single occurrence, and the
+§13.5.4 sensitive-directory flag records `.aws/` on the same occurrence. The acceptance test
+asserts the property the section exists for — `not_ready` at N = 6, 12 and 20 alike, with
+weighted Jaccard clearing 0.8 at every N — rather than which gate name carried it.

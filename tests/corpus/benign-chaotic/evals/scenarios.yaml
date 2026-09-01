@@ -1,0 +1,20 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: mixed-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: orientation-notes
+    expectation: should_trigger
+    prompt: "Explore the repository and write orientation notes into NOTES.md."
+    fixture: mixed-repo
+    assert:
+      # Every run activates, reads something, writes the notes, completes — by a different
+      # route each time. The outcome is stable; only the trajectory varies.
+      - skill_activated: true
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

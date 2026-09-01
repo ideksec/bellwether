@@ -6,12 +6,38 @@
     "tier1": {
       "core": [
         "tool:skill",
-        "workspace_read",
-        "workspace_write"
+        "workspace_read"
+      ],
+      "peripheral": [
+        {
+          "frequency": 0.3,
+          "of": 20,
+          "runs": 6,
+          "tier1": "workspace_write",
+          "tier3": [
+            "${WORKSPACE}/config.ini"
+          ],
+          "weight": 2
+        }
       ]
     },
-    "tier2": {},
-    "tier3": {}
+    "tier2": {
+      "instability": 0.147368,
+      "sensitive_hits": []
+    },
+    "tier3": {
+      "expansions": {
+        "tool:skill": [
+          "flaky-formatter"
+        ],
+        "workspace_read": [
+          "${WORKSPACE}/config.ini"
+        ],
+        "workspace_write": [
+          "${WORKSPACE}/config.ini"
+        ]
+      }
+    }
   },
   "consistency": {
     "annotation": "consistently failing",
@@ -28,6 +54,7 @@
     "pass_rate": 0.3,
     "per_scenario": {},
     "trajectory_at_noise_floor": false,
+    "trajectory_clusters": 2,
     "trajectory_dispersion": 0.102024,
     "weights_digest": "sha256:3728fff70ecda1eacc5b1d419049f013bb5dd565b6893d381bde27d97c0d268f",
     "weights_normalised_over": null
@@ -72,9 +99,12 @@
     "runs_excluded_quality": 0,
     "runs_not_evaluable": 0,
     "runs_planned": 20,
+    "runs_timed_out": 0,
     "scenarios": 1,
     "sets_held_open_for_capability": 0,
-    "sets_stopped_at_look": {},
+    "sets_stopped_at_look": {
+      "3": 1
+    },
     "targets": 1
   },
   "noise_floor": {

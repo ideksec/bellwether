@@ -25,6 +25,7 @@ branches. The output is deterministic: given the same summary and figures, the s
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from bellwether.determinism import format_float
@@ -231,6 +232,55 @@ def _declared_vs_observed(figures: Figures) -> str:
     return "### Declared vs observed\n\n" + header + "\n" + "\n".join(rows)
 
 
+def _peripheral_section(summary: Summary) -> list[str]:
+    """The §13.5.2 peripheral report, rendered only where any class is peripheral.
+
+    Dual-tier by rule: the class beside its tier-3 expansion, never one without the other —
+    "sometimes reads outside the workspace" is not actionable; "sometimes reads
+    ``${HOME}/.aws/credentials``" is. A class the frequency-independent gate flagged is
+    marked as such, and the §13.5.4 sensitive-directory hits ride in the same section.
+    """
+    profile = summary.capability_profile
+    raw = profile.tier1.get("peripheral")
+    rows = [row for row in raw if isinstance(row, Mapping)] if isinstance(raw, list) else []
+    rare = {
+        str(entry.get("tier1")) for entry in profile.rare_high_risk if isinstance(entry, Mapping)
+    }
+    sensitive_raw = profile.tier2.get("sensitive_hits")
+    sensitive = [str(hit) for hit in sensitive_raw] if isinstance(sensitive_raw, list) else []
+    if not rows and not sensitive:
+        return []
+    lines: list[str] = []
+    for row in rows:
+        tier1 = str(row.get("tier1", ""))
+        runs = row.get("runs", 0)
+        of = row.get("of", 0)
+        frequency = row.get("frequency", 0.0)
+        percent = f"{float(frequency) * 100:.0f}%" if isinstance(frequency, (int, float)) else "—"
+        flag = " — **rare high-risk (§13.5.2)**" if tier1 in rare else ""
+        lines.append(
+            f"- **Peripheral capability:** `{tier1}` — in {runs} of {of} runs ({percent}), "
+            f"risk weight {row.get('weight', '—')}{flag}"
+        )
+        tier3 = row.get("tier3")
+        expansions = [str(cap) for cap in tier3] if isinstance(tier3, list) else []
+        for cap in expansions:
+            lines.append(f"  - `{cap}`")
+        if not expansions:
+            lines.append("  - _(no tier-3 expansion recorded)_")
+    if sensitive:
+        joined = ", ".join(f"`{hit}`" for hit in sensitive)
+        lines.append(
+            f"- **Sensitive directory reached (§13.5.4):** {joined} — on at least one run; "
+            "frequency is irrelevant to this finding"
+        )
+    return [
+        "### Peripheral capabilities\n\n"
+        "_What the skill **sometimes** does — a class absent from at least one run. "
+        "Invisible to a reviewer who ran it once._\n\n" + "\n".join(lines)
+    ]
+
+
 def _limitations_body(summary: Summary) -> str:
     return "\n".join(f"- {line}" for line in summary.limitations)
 
@@ -269,6 +319,7 @@ def render_pr_comment(summary: Summary, figures: Figures) -> str:
         "### Repetition outcomes\n\n" + render_strip_chart(figures.strip),
         "### Capability heatmap\n\n"
         + render_capability_heatmap(figures.heatmap, figures.run_labels),
+        *_peripheral_section(summary),
         _declared_vs_observed(figures),
         _collapsible("Trajectory clusters", render_trajectory_clusters(figures.clusters)),
         _collapsible("Sequential design", _sequential_design(summary)),

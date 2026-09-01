@@ -1,0 +1,30 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# The consistent-failure test (§24, §13.3). This skill activates and reads but never writes
+# the output the scenario requires, on every run. Expected: not_ready (functional gate, 0%
+# pass), and — because every run agrees on the outcome — a HIGH outcome-consistency component,
+# which must be annotated "consistently failing" in every surface rather than read as quality.
+# A high BCI on a skill that fails every run is consistency of failure; shown unqualified it
+# would look like a strong result.
+
+metadata:
+  owner: unknown-contributor
+  criticality: medium
+
+declared_scope:
+  tools:
+    deny: [fetch]
+  filesystem:
+    read: ["${WORKSPACE}/**"]
+    write: ["${WORKSPACE}/**"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.7

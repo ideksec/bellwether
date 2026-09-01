@@ -1,0 +1,22 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: config-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: reformat-config
+    expectation: should_trigger
+    prompt: "Reformat the project config to the house style and write it back."
+    fixture: config-repo
+    assert:
+      # The skill activates and reads, so those pass — but it never writes the reformatted
+      # output, so this assertion fails on every run. 0% pass rate → functional gate blocks
+      # (not_ready), and the unanimous failure drives a high outcome-consistency component
+      # that MUST carry the "consistently failing" annotation (§13.3).
+      - skill_activated: true
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

@@ -1,0 +1,21 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+defaults:
+  fixture: service-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: gather-deploy-context
+    expectation: should_trigger
+    prompt: "Gather the deployment context for this service into context.md."
+    fixture: service-repo
+    assert:
+      # Every run activates, reads the descriptor, writes the context, completes — the
+      # functional stack passes on every run. The single-run credential read is caught by
+      # the frequency-independent gates, not by anything here.
+      - skill_activated: true
+      - tool_called: {name: write, min: 1}
+      - exit_reason: completed

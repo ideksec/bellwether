@@ -1,0 +1,30 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# The §13.5 tier-model regression test (§24). This skill reads DIFFERENT files each run but
+# exercises identical tier-1 capability classes (workspace_read), so both plain and weighted
+# capability Jaccard are 1.0 and it MUST reach `ready`. Under a flat (tier-3, per-path)
+# capability set it would look wildly inconsistent and fail min_capability_jaccard_weighted;
+# the three-tier model is what keeps "reads a different file each time" from reading as
+# instability. If this skill ever fails the consistency gate, the tier model is broken.
+
+metadata:
+  owner: trusted-contributor
+  criticality: medium
+
+declared_scope:
+  tools:
+    deny: [fetch, bash]
+  filesystem:
+    read: ["${WORKSPACE}/**"]
+    write: ["${WORKSPACE}/audit.md"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.7

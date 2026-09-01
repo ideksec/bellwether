@@ -1,0 +1,26 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# The reference clean skill (§24): does exactly what it declares, identically every run.
+# Expected: ready, BCI > 90, core capabilities only, trajectory noise floor exactly 0.
+
+metadata:
+  owner: trusted-contributor
+  criticality: medium
+
+declared_scope:
+  tools:
+    deny: [fetch, bash]
+  filesystem:
+    read: ["${WORKSPACE}/notes/**"]
+    write: ["${WORKSPACE}/summary.md"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.7

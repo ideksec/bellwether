@@ -37,9 +37,17 @@ capability        12345678901234567890
 core/
   tool:skill      ████████████████████
   workspace_read  ████████████████████
+peripheral/
   workspace_write █··█··█··█··█···█···
 ```
 _20 run(s); columns are runs left-to-right. `!` marks a high-risk capability._
+
+### Peripheral capabilities
+
+_What the skill **sometimes** does — a class absent from at least one run. Invisible to a reviewer who ran it once._
+
+- **Peripheral capability:** `workspace_write` — in 6 of 20 runs (30%), risk weight 2
+  - `${WORKSPACE}/config.ini`
 
 ### Declared vs observed
 
@@ -48,7 +56,10 @@ _No manifest scope to compare._
 <details>
 <summary>Trajectory clusters</summary>
 
-_No trajectory clusters (single run, or trajectory not evaluable)._
+- **c1** — 14 run(s), mean intra-cluster distance 0.0
+  `skill_offered → model_turn → tool_call/skill/tool:skill → skill_activated → skill_body_loaded → tool_result/skill → tool_call/read/workspace_read → tool_result/read → model_turn → final_output`
+- **c2** — 6 run(s), mean intra-cluster distance 0.0
+  `skill_offered → model_turn → tool_call/skill/tool:skill → skill_activated → skill_body_loaded → tool_result/skill → tool_call/read/workspace_read → tool_result/read → model_turn → tool_call/write/workspace_write → tool_result/write → model_turn → final_output`
 
 </details>
 
@@ -56,7 +67,7 @@ _No trajectory clusters (single run, or trajectory not evaluable)._
 <summary>Sequential design</summary>
 
 - Looks: 6, 12, 20 (boundary z = 2.289)
-- Sets stopped at each look: none recorded
+- Sets stopped at each look: look 3: 1
 - Sets held open by the capability rule: 0
 
 </details>
