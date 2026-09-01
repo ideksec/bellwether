@@ -195,8 +195,9 @@ def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> N
     """§16.4 / BW-51: doctor evaluates the precondition check for real — one row per profile,
     against that profile's own matrix targets and the planes the config wires — instead of
     listing it as pending. A fresh scaffold warns truthfully: its policy names claude-code
-    targets (the WP-17 adapter does not ship), and the high profile requires planes that are
-    not built. `run` refuses these same combinations; doctor's job is to say so earlier."""
+    targets while wiring no recording proxy (which that harness needs to reach any model),
+    and the high profile requires planes that are not built. `run` refuses these same
+    combinations; doctor's job is to say so earlier."""
     runner.invoke(app, ["init", str(tmp_path)])
     result = runner.invoke(
         app,
@@ -219,10 +220,12 @@ def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> N
         assert checks[name]["status"] in ("ok", "warn")
     assert not any("§16.4 precondition check passes" in name for name in checks)
 
-    # The scaffold policy names claude-code targets → warn, naming the missing adapter.
+    # The scaffold policy names claude-code targets but wires no proxy → warn, naming what
+    # the CLI harness needs (its model calls leave the sandbox only through the proxy).
     low = checks["precondition check (§16.4) — profile 'low'"]
     assert low["status"] == "warn"
-    assert "no adapter for harness 'claude-code'" in low["detail"]
+    assert "claude-code harness reaches the model only through the recording proxy" in low["detail"]
+    assert "egress.image" in low["detail"]
     # The high profile additionally requires planes this version has not built.
     high = checks["precondition check (§16.4) — profile 'high'"]
     assert "capture_planes[process]" in high["detail"]

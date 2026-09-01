@@ -51,10 +51,13 @@ DNS resolver runs as a second sidecar with its queries recorded as Plane E. The 
 client** (Anthropic), the `bellwether run` CLI, and the shipped GitHub Action round out the
 pipeline.
 
-What remains is **breadth, not a missing spine**: turning the captured-but-unscored
-credential-read plane into a gate, the static scanner, process/read capture, and the
-`claude-code` harness adapter — the v0.1 acceptance corpus is complete (eleven skills, three
-slices, every §25 verdict asserted in CI). See
+**Both v0.1 harnesses ship**: the `api-loop` reference and the real **Claude Code CLI** running
+headless inside the sandbox, its structured output cross-checked against its own hooks writing
+to a host-owned sink, its model calls leaving only through the proxy with a sandbox-scoped token.
+What remains is **breadth, not a missing spine**: a live-model proof of the second harness,
+turning the captured-but-unscored credential-read plane into a gate, the static scanner, and
+process/read capture — the v0.1 acceptance corpus is complete (eleven skills, three slices,
+every §25 verdict asserted in CI). See
 [docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan, and the table below
 for exactly what is implemented versus refused-with-exit-3.
 
@@ -263,7 +266,7 @@ alone and an unmentioned component would read as one that ran clean.
 | **Skill & trace** — skill parsing + the three digests, payload allowlist, ARF schema, JSONL writer/reader, incomplete-trace detection | done (WP-2, WP-3) |
 | **Sandbox** — zones, fixture materialisation, payload staging, isolation profile; overlay mount + whiteout-aware upper-dir diff; container lifecycle | done (WP-4) |
 | **Capture** — host-owned event sink (Plane A), per-zone filesystem overlay (Plane B), the coverage block | done (WP-5) |
-| **Harness** — `api-loop` adapter: agent loop, sandboxed tools, scripted provider, golden trace | done (WP-6) |
+| **Harness** — `api-loop` adapter: agent loop, sandboxed tools, scripted provider, golden trace. Its trigger metrics measure Bellwether's own prompt assembly and carry `harness-specific: not portable` | done (WP-6) |
 | **Analysis** — canonicalization + epoch anchoring, platform baseline, assertions + Declared-vs-Observed, metrics (Wilson/Pocock, risk-weighted Jaccard, trajectory clustering, BCI), verdict engine | done (WP-7–11) |
 | §16.4 precondition check (refuse an unsatisfiable policy *before* spending) | done — wired into `run` (refuses before the executor is built) and `doctor` (per-profile rows) |
 | **Reporting** — schema-versioned `summary.json`, the §13.8 figures, the Markdown PR comment, a self-contained theme-aware HTML report | done (WP-12, §17.4) |
@@ -281,7 +284,7 @@ alone and an unmentioned component would read as one that ran clean.
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
 | **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
 | **Acceptance corpus** — eleven `tests/corpus/` skills driven through the real pipeline with §25 verdicts asserted in CI: the §10.4.1 false-positive guard (`legit-credential-reader`), the §13.5 tier-model regression (`file-selective`), and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at N = 6, 12 and 20 alike) all proven; the §13.5.2 peripheral report (class + exact path), the timeout state, and the `unused` half of Declared-vs-Observed surface in `summary.json` and both reports | done (WP-20) |
-| `claude-code` harness adapter (WP-17) | remaining |
+| **`claude-code` harness adapter** — the real CLI headless in the sandbox; stream-json → Plane A, hooks → the host-owned sink, cross-checked; scoped token through the proxy; telemetry off and declared; `Read`/`Write`/`Edit` mapped onto the shared capability vocabulary; trigger metrics portable | done (WP-17) — offline-proven against a real CLI 2.1.257 session; in-container proof is CI-only; no live-model run yet |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
 they implement is [docs/spec.md](docs/spec.md). Where the implementation had to resolve

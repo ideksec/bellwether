@@ -32,6 +32,7 @@ from bellwether.constants import SENSITIVE_DIRECTORIES
 from bellwether.sandbox import ZONE_RULES, Zone, ZoneMap
 from bellwether.trace.epochs import anchor_events
 from bellwether.trace.models import Action, CanonBlock, Capability
+from bellwether.trace.tool_vocabulary import filesystem_access, tool_target
 
 __all__ = [
     "CanonicalTrace",
@@ -64,8 +65,17 @@ _PLANE_TRAJ_LETTER: dict[str, str] = {
 }
 
 
+#: Plane A records that are observations *about* the run rather than steps the skill took:
+#: an adapter's cross-check finding, a permission the harness raised. They are evidence,
+#: never trajectory — a step sequence that varied with how the harness reported itself
+#: would read as skill nondeterminism (§11.4, §11.6).
+_NON_STEP_KINDS: frozenset[str] = frozenset({"trace_inconsistency", "permission_prompt"})
+
+
 def _in_trajectory(action: Action, trajectory_planes: frozenset[str]) -> bool:
     """Whether this action contributes a step to the trajectory (§11.6)."""
+    if action.kind in _NON_STEP_KINDS:
+        return False
     letter = _PLANE_TRAJ_LETTER.get(action.plane)
     return letter is not None and letter in trajectory_planes
 
@@ -203,16 +213,22 @@ def capability_for(action: Action, context: NormalizationContext) -> Capability 
     if kind == "tool_call":
         tool = payload.get("tool")
         tool_input = payload.get("input") or {}
-        if tool in ("read", "write") and isinstance(tool_input.get("path"), str):
-            return _filesystem_capability(
-                _tool_zone_path(tool_input["path"], context),
-                write=tool == "write",
-                deleted=False,
-                context=context,
+        if isinstance(tool, str) and isinstance(tool_input, dict):
+            # Which harness tools touch the filesystem, and through which argument, is the
+            # normalizer's knowledge (§11.2): `read`/`write` on api-loop, `Read`/`Write`/
+            # `Edit`/… on Claude Code. One table, so the capability sets and the evidence
+            # index agree on what a call reached.
+            access = filesystem_access(tool, tool_input)
+            if access is not None:
+                return _filesystem_capability(
+                    _tool_zone_path(access.path, context),
+                    write=access.write,
+                    deleted=False,
+                    context=context,
+                )
+            return Capability(
+                tier1=f"tool:{tool}", tier2=f"tool:{tool}", tier3=tool_target(tool_input)
             )
-        if isinstance(tool, str):
-            target = _tool_target(tool_input)
-            return Capability(tier1=f"tool:{tool}", tier2=f"tool:{tool}", tier3=target)
         return None
 
     if kind in ("file_write", "file_delete"):
@@ -405,15 +421,6 @@ def _directory_of(tier2: str) -> str | None:
     if name.startswith("${") and name.endswith("}"):
         return None
     return name + trailing if not name.endswith("/") else name
-
-
-def _tool_target(tool_input: dict[str, object]) -> str | None:
-    """Tier 3 for a generic tool call: the most identifying input it has."""
-    for key in ("url", "command", "name", "path"):
-        value = tool_input.get(key)
-        if isinstance(value, str):
-            return value
-    return None
 
 
 def _target(action: Action, context: NormalizationContext) -> str:

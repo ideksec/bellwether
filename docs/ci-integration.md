@@ -73,6 +73,7 @@ same job holds it — which is the property the `sneaky-exfiltrator` example is 
   reached `ready` on a real labelled pull request against a live model, in a sandbox behind the
   recording proxy with egress observed, and every run's evidence was uploaded as an artifact.
 - **What is still narrow.** That proof covers one skill, one target (`api-loop` + Haiku), at a
-  single look of 6. The `claude-code` adapter, the controlled DNS resolver in the live path, and
-  the acceptance corpus are not part of it. See `docs/STATUS.md` for the current boundary, and
-  the README's "What the live verdict gates today" for which gates are actually scored.
+  single look of 6. The `claude-code` adapter ships and is proven against a scripted model (on
+  the host, and in the sandbox behind the proxy on CI), but no labelled live run has used a
+  `claude-code` target yet. See `docs/STATUS.md` for the current boundary, and the README's
+  "What the live verdict gates today" for which gates are actually scored.

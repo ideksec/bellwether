@@ -456,8 +456,17 @@ def analyse_run(
         dns_observed=dns_observed,
         dns_blocked=index.dns_blocked_present,
         # §10.8: raised only where both planes are in-domain and the plane whose silence
-        # is read supports an absence claim — a fidelity gap never becomes a finding.
-        trace_inconsistencies=tuple(f.reason for f in trace_inconsistencies(index)),
+        # is read supports an absence claim — a fidelity gap never becomes a finding. An
+        # adapter's own cross-check (the claude-code hook stream against its stdout) lands
+        # on Plane A as `trace_inconsistency` records and is folded in here.
+        trace_inconsistencies=tuple(f.reason for f in trace_inconsistencies(index))
+        + tuple(
+            str(action.action.get("reason"))
+            for action in trace.actions
+            if action.plane == "harness"
+            and action.kind == "trace_inconsistency"
+            and isinstance(action.action.get("reason"), str)
+        ),
         # The canary-reads gate's pass is an absence claim over the model-API channel, so
         # it takes §10.8's stricter bar: a `partial` plane from before the model-channel
         # scan defers rather than passing on the channel it never watched.

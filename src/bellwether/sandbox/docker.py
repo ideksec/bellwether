@@ -18,16 +18,18 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from collections.abc import Mapping, Sequence
+import threading
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import IO
 
 from bellwether.errors import BellwetherError
 from bellwether.sandbox.overlay import OverlayMount, PathChange, mount_overlay, read_overlay_diff
 from bellwether.sandbox.session import PreparedSandbox
 from bellwether.sandbox.zones import Zone
 
-__all__ = ["ContainerResult", "DockerBackend"]
+__all__ = ["ContainerResult", "DockerBackend", "ExecEnd", "StreamedExec"]
 
 #: Size cap on every fallback ``--tmpfs`` mount. An uncapped tmpfs is a host-DoS: it draws
 #: from host memory and a skill filling ``/tmp`` could exhaust it (§9.2 bounds the sandbox's
@@ -64,6 +66,49 @@ class ContainerResult:
         if self.exit_code == 137:
             return "oom"
         return "harness_error"
+
+
+@dataclass(frozen=True)
+class ExecEnd:
+    """How a streamed exec ended."""
+
+    exit_code: int
+    timed_out: bool
+    stderr_tail: str
+
+
+@dataclass
+class StreamedExec:
+    """A running ``docker exec`` whose stdout is consumed line by line (see ``exec_stream``)."""
+
+    process: subprocess.Popen[str]
+    timeout: float
+    stderr_path: Path
+    _stderr_file: IO[str] = field(repr=False)
+    timed_out: bool = False
+
+    def lines(self) -> Iterator[str]:
+        """Stdout lines as they arrive; the wall clock kills the client at ``timeout``."""
+        timer = threading.Timer(self.timeout, self._kill)
+        timer.daemon = True
+        timer.start()
+        try:
+            assert self.process.stdout is not None
+            yield from self.process.stdout
+        finally:
+            timer.cancel()
+
+    def _kill(self) -> None:
+        self.timed_out = True
+        self.process.kill()
+
+    def wait(self) -> ExecEnd:
+        code = self.process.wait()
+        if self.process.stdout is not None:
+            self.process.stdout.close()
+        self._stderr_file.close()
+        tail = self.stderr_path.read_text(encoding="utf-8") if self.stderr_path.exists() else ""
+        return ExecEnd(exit_code=code, timed_out=self.timed_out, stderr_tail=tail[-2000:])
 
 
 @dataclass
@@ -457,6 +502,44 @@ class DockerBackend:
             )
         return ContainerResult(
             exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr
+        )
+
+    def exec_stream(
+        self,
+        prepared: PreparedSandbox,
+        argv: list[str],
+        *,
+        timeout: float,
+        stderr_path: Path,
+    ) -> StreamedExec:
+        """Start one command in the persistent container and stream its stdout.
+
+        The agent-CLI harness (§9.4 adapter 1) is a long-lived process whose structured
+        output must be consumed as it is produced — a run killed at the wall clock must leave
+        every line up to that point (§11.1). Its stderr goes to a host file, never a pipe:
+        an undrained pipe while stdout is being read is a deadlock waiting for a chatty
+        harness. The wall clock kills the ``docker exec`` client; the container itself is
+        removed by :meth:`stop_persistent` regardless, so nothing outlives the run.
+        """
+        command = [
+            self.binary,
+            "exec",
+            "--workdir",
+            str(prepared.identifiers.workspace_root),
+            prepared.identifiers.container_name,
+            *argv,
+        ]
+        stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        stderr_file = stderr_path.open("w", encoding="utf-8")
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+            text=True,
+        )
+        return StreamedExec(
+            process=process, timeout=timeout, stderr_path=stderr_path, _stderr_file=stderr_file
         )
 
     def stop_persistent(self, prepared: PreparedSandbox) -> None:

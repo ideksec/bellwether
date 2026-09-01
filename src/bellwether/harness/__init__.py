@@ -18,6 +18,20 @@ afterwards. Never hard-code a model identifier: aliases resolve through config.
 from __future__ import annotations
 
 from bellwether.harness.api_loop import ApiLoopAdapter, OfferedSkill
+from bellwether.harness.claude_code import (
+    CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS,
+    CLAUDE_CODE_TELEMETRY_ENV,
+    ClaudeCodeAdapter,
+    HookReconciliation,
+    LaunchedProcess,
+    Launcher,
+    LaunchResult,
+    ScriptedLaunch,
+    SessionFacts,
+    claude_code_argv,
+    claude_code_environment,
+    hook_settings,
+)
 from bellwether.harness.live_client import (
     AnthropicClient,
     HttpResponse,
@@ -45,13 +59,20 @@ from bellwether.harness.provider import (
 from bellwether.harness.tools import ExecResult, SandboxExec, SandboxToolset, ToolOutcome
 
 __all__ = [
+    "CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS",
+    "CLAUDE_CODE_TELEMETRY_ENV",
     "AnthropicClient",
     "ApiLoopAdapter",
+    "ClaudeCodeAdapter",
     "ExecResult",
     "HarnessAdapter",
     "HarnessCapabilities",
+    "HookReconciliation",
     "HttpResponse",
     "HttpTransport",
+    "LaunchResult",
+    "LaunchedProcess",
+    "Launcher",
     "ModelClient",
     "ModelRequest",
     "ModelTurn",
@@ -61,12 +82,17 @@ __all__ = [
     "SandboxExec",
     "SandboxToolset",
     "ScriptedClient",
+    "ScriptedLaunch",
+    "SessionFacts",
     "ToolCallRequest",
     "ToolOutcome",
     "ToolSpec",
     "TurnUsage",
     "anthropic_request_body",
     "build_model_client",
+    "claude_code_argv",
+    "claude_code_environment",
+    "hook_settings",
     "parse_anthropic_response",
     "resolve_model",
 ]
