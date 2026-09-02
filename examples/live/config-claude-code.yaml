@@ -1,0 +1,76 @@
+apiVersion: bellwether/v1
+kind: Config
+
+# The cheap config for a *live* run of the **claude-code** harness — the one that proves the
+# second harness works against a real model end to end, the leg the container test cannot cover
+# because it drives a scripted Messages API. It differs from the api-loop live config
+# (`config.yaml`) in exactly the ways the two harnesses differ:
+#
+#   - the harness is `claude-code`: the real Claude Code CLI runs *inside* the sandbox as the
+#     agent under observation (§9.4 adapter 1), so the sandbox image must carry the CLI, and the
+#     CLI's model calls originate in the container;
+#   - because those calls originate in the container, the recording proxy is not optional here —
+#     it is the only route out, and it injects the real key the sandbox never holds (§3.3
+#     invariant 1). `bellwether run` refuses a claude-code target with no `egress.image` up front
+#     (§16.4), so this file must set it.
+#
+# The key is read from ANTHROPIC_API_KEY by the host and brokered into the sidecar as a
+# sandbox-scoped token the proxy swaps back for the real key — the real key never enters the
+# container (§3.3). For a real skill repository, keep your own config under .bellwether/.
+
+providers:
+  anthropic:
+    type: anthropic
+    api_key_env: ANTHROPIC_API_KEY
+    models:
+      # The cheapest model, to prove the pipeline. Bump deliberately once it is green.
+      haiku: "claude-haiku-4-5-20251001"
+
+harnesses:
+  claude-code:
+    # The real CLI, headless, inside the sandbox. It brings its own tools (Read/Write/Bash/…),
+    # so — unlike api-loop, where Bellwether implements the tools — there is no `tools:` list to
+    # declare here; the normaliser maps the CLI's tool names onto the shared vocabulary (§11.2).
+    type: claude-code
+
+sandbox:
+  backend: docker
+  # The claude-code sandbox image: a digest-pinned Node base with the CLI pinned to the exact
+  # version the adapter was built against (sandbox/claude-code/Dockerfile). It is a moving tag
+  # rather than a digest because the workflow builds it fresh each run — the same reasoning the
+  # sidecar tags carry below. A non-blocking advisory prints; that is acceptable for the
+  # project's own smoke image built from a digest-pinned base in the same workflow.
+  image: bw-sandbox-claude-code:live
+  memory: 2g
+  cpus: 2
+  pids_limit: 512
+  timeout_seconds: 300
+  # The harness-state zone must be writable: the CLI stores its session state under
+  # /home/agent/.claude, and under a read-only root a path with no writable mount is read-only,
+  # so an unlisted harness-state zone reads as a CLI that could do nothing (§9.2, §21).
+  writable_paths: ["/work", "/tmp", "/home/agent/.claude"]
+  randomize_identifiers: true
+
+egress:
+  # Required for claude-code (see the header): the CLI's model calls leave only through this
+  # dual-homed recording proxy, which injects the real key and records every flow as Plane D
+  # (§10.5). The workflow builds this image before the run; a moving tag is acceptable for the
+  # project's own freshly-built smoke image.
+  image: bw-proxy-sidecar:live
+
+dns:
+  # The controlled resolver, on for parity with the api-loop live config: the sandbox is pointed
+  # at it via --dns, every lookup is logged as Plane E, and the DNS gate is decided from observed
+  # evidence (§10.6) rather than deferring — which keeps a benign run at `ready`. An HTTP proxy
+  # never sees UDP/53; this is the plane that watches the covert channel routing around it.
+  image: bw-resolver-sidecar:live
+
+capture:
+  filesystem_writes: overlay
+  filesystem_reads: fanotify
+  process: ebpf
+  harness_hooks: true
+  harness_event_sink: fifo
+  zones:
+    workspace: /work
+    harness_state: /home/agent/.claude

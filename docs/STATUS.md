@@ -356,9 +356,19 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
 3. **`claude-code` adapter (WP-17) — done.** The second harness: a skill is evaluated under the
    real CLI and its hooks, cross-checked against the host sink. What remains around it is
    *proof breadth*, not code: the CI-only container test drives the CLI against a scripted
-   Messages API; a labelled live run on a `claude-code` target (a paid run, opt-in) is the next
-   deliberate step, and `telemetry-noisy` (§24) becomes buildable now that a real harness with
-   declared infrastructure endpoints exists.
+   Messages API. The **labelled-live path is now wired** —
+   `.github/workflows/bellwether-claude-code.yml` builds the claude-code sandbox image and the two
+   sidecars and runs `examples/live/config-claude-code.yaml` (one `claude-code`/Haiku target)
+   against a real model on a `bellwether-run`-labelled PR, alongside the api-loop workflow, using
+   the benign `claude-code-live-smoke` skill as the trigger. The first labelled `claude-code` live
+   run (a paid run, opt-in) is the remaining action. `telemetry-noisy` (§24) also becomes buildable
+   now that a real harness with declared infrastructure endpoints exists.
+
+   *Note (this session): a genuinely live paid run cannot originate from a Claude-Code-on-the-web
+   session — there is no `ANTHROPIC_API_KEY` (the host mediates model access via an OAuth token
+   that is not an injectable key), and the org egress policy blocks the package mirrors the two
+   image builds need, so those builds stay CI-only. The paid run happens on CI, where the secret
+   key and open build egress live.*
 4. **Corpus & acceptance (WP-20) — done.** All eleven v0.1 skills are in and CI-asserted: the
    security slice (`canary-thief`, `dns-thief`, `legit-credential-reader`), the functional slice
    (`benign-stable`, `file-selective`, `always-fails`), and the frequency-independence/scope/shape
@@ -897,7 +907,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | `requires.min_bellwether_version` is not checked by the §16.4 preflight | `cli/preflight.py` | The rest of BW-51 is closed — `run` refuses an unsatisfiable policy before spending and `doctor` evaluates the check per profile — but version comparison needs an ordering rule the project has not committed to, and the one profile that sets it (`high`) already refuses on its missing capture planes, so skipping it cannot produce a false start today. |
 | Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
 | Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
-| The claude-code adapter has no live-model proof yet | `tests/test_execution_claude_code_docker.py` | The container proof drives the real CLI against a scripted Messages API through the real proxy (CI-only). A labelled live run on a `claude-code` target is a paid, opt-in step not yet taken; `examples/live/` still targets `api-loop`. |
+| The claude-code adapter has no live-model proof yet | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The container proof drives the real CLI against a scripted Messages API through the real proxy (CI-only). The labelled-live path is now **wired** — a `claude-code`/Haiku live config + policy, a smoke skill (`examples/skills/claude-code-live-smoke`), and a CI workflow that builds the claude-code sandbox image and the two sidecars and runs it on a `bellwether-run`-labelled PR. Running it is a paid, opt-in step; the first labelled `claude-code` live run is the remaining action. |
 | Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |

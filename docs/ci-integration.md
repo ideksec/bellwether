@@ -54,6 +54,15 @@ This repository's workflow points at its own cheap smoke config
 ([`examples/live/`](../examples/live/) — api-loop + Haiku, one look of 6, a hard token cap). In a
 real skill repository, point `BELLWETHER_CONFIG`/`BELLWETHER_POLICY` at your own `.bellwether/`.
 
+A **second workflow**,
+[`.github/workflows/bellwether-claude-code.yml`](../.github/workflows/bellwether-claude-code.yml),
+runs the same changed skills under the **`claude-code`** harness — the real Claude Code CLI
+headless *inside* the sandbox — against a real model, using
+[`examples/live/config-claude-code.yaml`](../examples/live/config-claude-code.yaml). It is gated
+identically (the `bellwether-run` label plus the key), and builds the claude-code sandbox image
+and the two sidecars before the run. On a labelled PR that changes a skill, both workflows run, so
+the skill is evaluated under both harnesses side by side.
+
 ## The key never enters the sandbox
 
 The API key is a secret held by the **harness on the CI runner**, not by the skill under
@@ -72,8 +81,10 @@ same job holds it — which is the property the `sneaky-exfiltrator` example is 
 - **`bellwether run` on a live container** — **proven end to end on CI.** A benign skill has
   reached `ready` on a real labelled pull request against a live model, in a sandbox behind the
   recording proxy with egress observed, and every run's evidence was uploaded as an artifact.
-- **What is still narrow.** That proof covers one skill, one target (`api-loop` + Haiku), at a
-  single look of 6. The `claude-code` adapter ships and is proven against a scripted model (on
-  the host, and in the sandbox behind the proxy on CI), but no labelled live run has used a
-  `claude-code` target yet. See `docs/STATUS.md` for the current boundary, and the README's
-  "What the live verdict gates today" for which gates are actually scored.
+- **What is still narrow.** The `api-loop` proof covers one skill, one target (`api-loop` +
+  Haiku), at a single look of 6. The `claude-code` live path is now **wired**
+  (`bellwether-claude-code.yml` + `examples/live/config-claude-code.yaml`) and proven against a
+  scripted model (on the host, and in the sandbox behind the proxy on CI); the first *labelled*
+  live run on a `claude-code` target is the deliberate next step. See `docs/STATUS.md` for the
+  current boundary, and the README's "What the live verdict gates today" for which gates are
+  actually scored.

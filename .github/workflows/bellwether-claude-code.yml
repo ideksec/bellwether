@@ -1,0 +1,168 @@
+name: Bellwether (claude-code)
+
+# The live proof of the *second* harness: evaluate the skills a pull request changes under the
+# real Claude Code CLI running headless inside the sandbox, behind the recording proxy, against a
+# real model — and post the verdict back on the PR. This runs *alongside* `bellwether.yml` (the
+# api-loop live path), so a labelled PR that changes a skill gets it evaluated under both
+# harnesses, side by side.
+#
+# The only structural difference from `bellwether.yml`: this build also stands up the claude-code
+# sandbox image (the CLI runs *inside* the sandbox here, §9.4), and the recording proxy is not
+# optional — the CLI's model calls leave only through it (§3.3 invariant 1), so `bellwether run`
+# refuses a claude-code target with no `egress.image`.
+#
+# The live evaluation costs real model tokens, so it is opt-in per PR: it runs only when the PR
+# carries the `bellwether-run` label AND the ANTHROPIC_API_KEY secret is set. Without the label
+# (or the key) the job just reports which skills it would evaluate and passes — so no PR ever
+# spends by surprise, and forks stay green. The key is held by the runner and brokered into the
+# sidecar as a sandbox-scoped token; the real key never enters the sandbox (§3.3).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  pull-requests: write   # so the report comment can be posted
+
+concurrency:
+  group: bellwether-claude-code-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BELLWETHER_CONFIG: examples/live/config-claude-code.yaml
+  BELLWETHER_POLICY: examples/live/policy-claude-code.yaml
+  BELLWETHER_MAX_TOKENS: "60000"
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0   # the base commit must be present to diff against
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Detect changed skills
+        id: detect
+        run: |
+          # pipefail matters: without it a git-diff failure upstream of the pipe is swallowed and
+          # the step emits an empty "no skills changed" — a detection failure dressed as a clean
+          # result. `changed-skills` exits 0 with empty output when the diff genuinely touches no
+          # skill, so a legitimate quiet PR still passes.
+          set -euo pipefail
+          git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+            | uv run bellwether changed-skills > changed-skills.txt
+          echo "Changed skills:"; cat changed-skills.txt
+          {
+            echo "skills<<EOF"
+            cat changed-skills.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: No skills changed
+        if: steps.detect.outputs.skills == ''
+        run: echo "No skills changed in this pull request; nothing to evaluate."
+
+      - name: Not labelled for evaluation
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          !contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        run: |
+          echo "These skills changed:"; cat changed-skills.txt
+          echo "Add the 'bellwether-run' label to this PR to evaluate them under claude-code (costs model tokens)."
+
+      - name: Build the claude-code sandbox image
+        # The CLI runs *inside* this image (§9.4); the live config's sandbox.image points at this
+        # tag. Built here — the same daemon serves the sudo `run` below — rather than pulled from a
+        # published digest, to keep the smoke self-contained. Its base is digest-pinned in the
+        # Dockerfile; the tag is moving on purpose (a fresh build each run), like the sidecars.
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        run: docker build -f sandbox/claude-code/Dockerfile -t bw-sandbox-claude-code:live .
+
+      - name: Build the recording-proxy sidecar image
+        # Not optional for claude-code: the CLI's model calls leave only through this proxy, which
+        # injects the real key the sandbox never holds (§3.3 invariant 1). The config's
+        # egress.image points at this tag.
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        run: docker build -f sidecar/proxy/Dockerfile -t bw-proxy-sidecar:live .
+
+      - name: Build the controlled-resolver sidecar image
+        # The second sidecar: the config's dns.image points at this tag, so each repetition's
+        # sandbox is pointed at the resolver via --dns and the DNS plane is observed (§10.6).
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        run: docker build -f sidecar/resolver/Dockerfile -t bw-resolver-sidecar:live .
+
+      - name: Evaluate and comment
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "Labelled for evaluation, but ANTHROPIC_API_KEY is not set — skipping."
+            echo "Would evaluate:"; cat changed-skills.txt
+            exit 0
+          fi
+          bw="$(pwd)/.venv/bin/bellwether"
+          status=0
+          while IFS= read -r skill; do
+            [ -z "${skill}" ] && continue
+            echo "::group::Evaluating ${skill} (claude-code)"
+            out=".bellwether-out/$(echo "${skill}" | tr '/' '-')"
+            # The host-side overlay capture (§10.0) mounts overlayfs, which needs root, so the run
+            # goes under sudo with the key preserved. The key is brokered into the sidecar as a
+            # scoped token and never reaches the sandbox.
+            if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" run "${skill}" \
+                 --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
+                 --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}"; then
+              verdict_status=0
+            else
+              verdict_status=$?
+            fi
+            sudo chown -R "$(id -u):$(id -g)" "${out}" || true
+            eval_dir=$(find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1)
+            echo "::group::Bellwether report — ${skill} (claude-code)"
+            cat "${eval_dir}/report/pr_comment.md" 2>/dev/null || echo "(no report was rendered)"
+            echo "::endgroup::"
+            uv run bellwether pr-comment "${eval_dir}" || true
+            # Exit 2 is a real not_ready verdict; 3 is infrastructure. Either keeps the check red,
+            # but a not_ready is the skill's result, not a broken job.
+            [ "${verdict_status}" -ne 0 ] && status="${verdict_status}"
+            echo "::endgroup::"
+          done < changed-skills.txt
+          exit "${status}"
+
+      - name: Upload the evidence
+        # The ground truth behind the verdict must not die with the runner. Uploads the artifact
+        # tree — per-run ARF traces, rendered report, summary.json, verdict.json — redacted at
+        # capture (§3.3) so it is safe to publish. `always()` so a not_ready or infra-failed run
+        # keeps its evidence too. The bulky root-owned overlay working dirs under runs/ are excluded.
+        if: >-
+          always() &&
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bellwether-evidence-claude-code
+          include-hidden-files: true
+          path: |
+            .bellwether-out/**
+            !.bellwether-out/**/runs/**
+          if-no-files-found: error
