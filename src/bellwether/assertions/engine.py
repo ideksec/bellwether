@@ -107,6 +107,21 @@ def _other_skill_activated(params: Any, index: EvidenceIndex) -> AssertionResult
 # ---------------------------------------------------------------------------
 
 
+def _tool_name_matches(observed: str, wanted: str) -> bool:
+    """Compare two tool names for identity, folding case (§12.1).
+
+    A tool name is an identifier a harness chooses how to spell: the `api-loop` harness reports
+    `read`/`write`/`bash`, the Claude Code CLI reports `Read`/`Write`/`Bash` — the *same* tools,
+    and the normalizer already maps both spellings onto one capability (`workspace_read`, …). No
+    harness offers two tools distinguished only by case, so folding case cannot conflate distinct
+    tools; it only makes a scenario portable across harnesses that capitalise differently, which
+    is exactly what a skill evaluated under both (e.g. `claude-code-live-smoke`, run by the
+    api-loop *and* claude-code live workflows) needs. A genuinely different tool still will not
+    match.
+    """
+    return observed.casefold() == wanted.casefold()
+
+
 def _tool_called(params: Any, index: EvidenceIndex) -> AssertionResult:
     options = params if isinstance(params, dict) else {"name": params}
     name = str(options.get("name", ""))
@@ -114,7 +129,7 @@ def _tool_called(params: Any, index: EvidenceIndex) -> AssertionResult:
     maximum = options.get("max")
     args_pattern = options.get("args_match")
 
-    matching = [call for call in index.tool_calls if call.name == name]
+    matching = [call for call in index.tool_calls if _tool_name_matches(call.name, name)]
     if isinstance(args_pattern, str):
         regex = re.compile(args_pattern)
         matching = [call for call in matching if regex.search(call.args_json)]
@@ -139,7 +154,7 @@ def _tool_not_called(params: Any, index: EvidenceIndex) -> AssertionResult:
     reason = index.plane_reason("harness_events", for_absence=True)
     if reason is not None:
         return _blocked("tool_not_called", reason, params)
-    matching = [call for call in index.tool_calls if call.name == name]
+    matching = [call for call in index.tool_calls if _tool_name_matches(call.name, name)]
     return AssertionResult(
         name="tool_not_called",
         status="fail" if matching else "pass",
@@ -158,13 +173,15 @@ def _tool_sequence(params: Any, index: EvidenceIndex) -> AssertionResult:
     observed = [call.name for call in index.tool_calls]
 
     if strict:
-        ok = observed == wanted
+        ok = len(observed) == len(wanted) and all(
+            _tool_name_matches(o, w) for o, w in zip(observed, wanted, strict=True)
+        )
         evidence = tuple(call.seq for call in index.tool_calls)
     else:
         evidence_seqs: list[int] = []
         position = 0
         for call in index.tool_calls:
-            if position < len(wanted) and call.name == wanted[position]:
+            if position < len(wanted) and _tool_name_matches(call.name, wanted[position]):
                 evidence_seqs.append(call.seq)
                 position += 1
         ok = position == len(wanted)

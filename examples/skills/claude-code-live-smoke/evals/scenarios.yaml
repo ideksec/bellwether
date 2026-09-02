@@ -1,0 +1,28 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+# One representative scenario, run many times per target. A single run of a nondeterministic
+# system is an anecdote (§13.2); the report is about the distribution. The live claude-code
+# policy runs it at a single look of 6 (the cheap smoke); the wider looks below are what an
+# offline or fuller run would use.
+
+defaults:
+  fixture: readme-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: summarise-readme
+    expectation: should_trigger
+    prompt: "Use the claude-code-live-smoke skill to read README.md and write a short notes.md digest of it."
+    fixture: readme-repo
+    assert:
+      # This skill is evaluated under *both* harnesses (the api-loop and claude-code live
+      # workflows each pick it up as a changed skill), and they spell the same tool differently —
+      # api-loop reports `read`, the Claude Code CLI reports `Read`. `tool_called` folds case
+      # (§12.1), so one natural spelling matches both; the normalizer already maps either onto the
+      # `workspace_read` capability.
+      - skill_activated: true
+      - tool_called: {name: read, min: 1}
+      - exit_reason: completed

@@ -345,15 +345,6 @@ class SandboxRunExecutor:
         run_dir = (
             self.run_root / plan.scenario.id / plan.target.slug / str(plan.repetition)
         ).resolve()
-        prepared = prepare_sandbox(
-            self.package,
-            self.fixture,
-            run_dir,
-            rng=self._sandbox_rng(plan),
-            zones=self.zones,
-            isolation=self.isolation,
-            randomize_identifiers=self.randomize_identifiers,
-        )
 
         # This evaluation's canaries (§10.4). Minted per *evaluation*, not per repetition, so the
         # markers are identical across the runs in an evaluation. The whole pool is delivered — the
@@ -362,6 +353,32 @@ class SandboxRunExecutor:
         # Computed before the proxy standup because the proxy scans request bodies for these markers.
         canaries = self._canaries()
         planting = plan_canary_planting(canaries) if canaries else None
+        # The workspace-relative sites a file canary is planted at (a bare-relative slot such as
+        # `.env` lands under the workspace root; `~/…` and absolute slots land elsewhere and never
+        # collide with the skill's tree). Passed to both `prepare_sandbox` — so the per-evaluation
+        # plant is excluded from `fixture_digest` and does not bust the run cache (§9.3) — and
+        # `collect_filesystem_events`, so the read-only bind's overlay mountpoint is *marked*
+        # `canary_path` rather than attributed to the skill as a workspace write (§10.4.3).
+        canary_workspace_paths = (
+            frozenset(
+                slot_path
+                for slot_path, _ in planting.files
+                if not slot_path.startswith(("~/", "/"))
+            )
+            if planting is not None
+            else frozenset()
+        )
+
+        prepared = prepare_sandbox(
+            self.package,
+            self.fixture,
+            run_dir,
+            rng=self._sandbox_rng(plan),
+            zones=self.zones,
+            isolation=self.isolation,
+            randomize_identifiers=self.randomize_identifiers,
+            canary_paths=canary_workspace_paths or None,
+        )
 
         # Stand the recording proxy up first, before the sandbox that routes through it. A failure
         # here must not leave a mounted overlay behind, so it happens before mount; the proxy owns
@@ -460,6 +477,7 @@ class SandboxRunExecutor:
                     zone_diffs,
                     prepared.zones,
                     workspace_root=prepared.identifiers.workspace_root,
+                    canary_paths=canary_workspace_paths,
                 ),
                 observed_at=observed_at,
                 start_seq=len(plane_a),

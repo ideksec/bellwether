@@ -208,7 +208,16 @@ def _filesystem_write_rows(
     observed = [
         (write.seq, write.path)
         for write in index.writes
-        if not write.deleted and write.zone != "scratch" and write.path not in absorbed
+        if not write.deleted
+        and write.zone != "scratch"
+        # §10.2: the harness-state zone is the harness's own area — a real harness (the
+        # claude-code CLI) churns its session transcript, config, and backups there on every
+        # run. Those are not the skill's declared *workspace* scope; they are recorded and
+        # surfaced by the dedicated ``harness_state_write`` finding (see sandbox/zones.py), so
+        # judging them against the skill's filesystem.write globs would flag the harness's own
+        # machinery as a scope violation. Excluded here exactly as scratch is.
+        and write.zone != "harness_state"
+        and write.path not in absorbed
     ]
 
     rows: list[ScopeEntry] = []

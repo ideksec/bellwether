@@ -2114,5 +2114,93 @@ transcript lands in the harness-state zone as ordinary state churn. Durations on
 are host receipt-time deltas between the `tool_use` and `tool_result` lines (the hook stream's
 `duration_ms` is finer but arrives after the run). The container proof is CI-only (the sandbox
 image is an `npm install` of the pinned CLI on a digest-pinned Node base) and drives a scripted
-model; no labelled live run has used a `claude-code` target yet, and `examples/live/` still
-targets `api-loop`.
+model. The **labelled-live path is now wired** (`.github/workflows/bellwether-claude-code.yml` +
+`examples/live/config-claude-code.yaml`), and the first labelled `claude-code` live run has now
+happened — see the §9.4/§10.6 note below for the five environment defects it surfaced.
+
+### §10.4.3 — a planted canary is invisible to the skill's filesystem accounting
+
+A file canary is delivered as a **read-only bind** at its slot path (`_stage_canary_files`). For
+the workspace-relative slot (`.env` → `${WORKSPACE}/.env`), Docker creates the bind's *mountpoint*
+in the overlay upper, and the Plane B overlay diff records it as a `created` — a workspace write
+the skill never issued. Left unmarked, that phantom write became a `workspace_write` capability
+(so the **scope gate blocked** a benign skill on a `.env` it never touched) and a §10.8
+cross-plane "disagreement" (Plane B write with no Plane A claim). The `.env` is the only pool slot
+this hits; the `~/…` credential slots land outside the workspace and never collide.
+
+The fix wires the `canary_path` mark that already existed in the model but was never populated:
+the executor passes the planted workspace-relative paths to `collect_filesystem_events(canary_paths=…)`
+(and to `prepare_sandbox` so the plant is excluded from `fixture_digest`, §9.3), and the two
+consumers now honour the mark — `capability_for` returns no capability for a `canary_path` write
+(`trace/canonical.py`), and `_index_filesystem_action` drops it from the write evidence the §10.8
+matrix and the write-based assertions read (`assertions/evidence.py`). This is §10.4.3 made real
+on the filesystem plane: the plant reaches the container and is recorded by reference, but the
+instrument's own bait is never attributed to the skill. A skill that *reads* the bait is a Plane A
+tool call, attributed on its own; a marker that *leaves* is a Plane C finding — neither is touched.
+Proven on a real container: the planted `.env` shows in Plane B marked `canary_path`, and the run's
+`scope_exceeded` and `trace_inconsistencies` are both empty.
+
+## §9.4, §10.6 — The first live `claude-code` run found five environment defects the scripted proof could not
+
+The offline `claude-code` proof drives a scripted Messages API in-container (CI-only). It exercises
+the adapter, the two-source cross-check, and the vocabulary — but never a real model, a real sidecar
+topology, or a cloud CI runner's networking. The first labelled live run (PR #65, evaluating
+`examples/skills/claude-code-live-smoke` under the real CLI against Haiku) surfaced five defects, each
+invisible to every offline test, in the order the run reached them:
+
+1. **Planted canary phantom write** — the §10.4.3 note above; the first live run is where it bit.
+2. **Harness-state churn mis-scoped.** The CLI writes session state under `/home/agent/.claude`
+   (`.claude.json`, `projects/*/…jsonl`). `_filesystem_write_rows` (evaluate_scope) excluded
+   `zone == "scratch"` but not `zone == "harness_state"`, so the CLI's own bookkeeping was compared
+   against the skill's workspace write globs and **blocked scope**. `capability_for` already excluded
+   it, but scope reads the EvidenceIndex, not `capability_for`. Fixed by excluding `harness_state`
+   from the declared-scope write comparison exactly as `scratch` is; the dedicated
+   `no_harness_state_write` assertion still surfaces the churn. `api-loop` never hit this — its
+   harness runs host-side and writes no state into the sandbox.
+3. **Upload-artifact EACCES on the overlay workdir.** The kernel leaves overlayfs `work/work`
+   mode-000 root-owned; `chown` cannot make a mode-000 directory readable, and `upload-artifact`
+   walks the whole tree to apply its exclude patterns, hitting EACCES despite excluding `runs/**`.
+   Fixed by `sudo rm -rf "${eval_dir}/runs"` before upload in both live workflows — the ARF traces
+   live at `traces/`, not under `runs/`, so no kept evidence lives there.
+4. **The proxy hostname exceeded the DNS label limit.** The sandbox's `HTTPS_PROXY` host was the
+   proxy sidecar's *container name*, `bw-proxy-<run_id>` — a live run_id makes that ~97 chars, past
+   the 63-octet single-label DNS cap, so the embedded resolver refused it (`NORESOLVE`) and the CLI's
+   model call failed `ENOTFOUND` before reaching the proxy. Fixed with a short, fixed Docker
+   network-alias (`bw-proxy`) that `HTTPS_PROXY` points at; each run owns its own internal bridge, so
+   a fixed alias is unambiguous. The alias is added **only on a user-defined network** (the default
+   `bridge`/`host`/`none` reject `--network-alias`), and the container keeps its long unique name for
+   lifecycle. `api-loop` never hit this — its model runs host-side, so its sandbox never resolves the
+   proxy; the `claude-code` CLI, calling the model from inside the sandbox, is the first to.
+5. **A cloud runner's DNS search domain manufactured a phantom `dns_blocked`.** With the proxy
+   reachable and the token budget raised (the CLI resends its whole system prompt and ~16 bundled
+   skills every request, ~190k tokens/run, so the smoke ceiling is 400k), the run completed the task
+   and every gate passed **except DNS, which warned** — and a warn caps the verdict at `conditional`,
+   never `ready` (`compose_verdict`, §16.2). Cause: a GitHub-hosted runner is an Azure VM whose host
+   `resolv.conf` carries `search …dx.internal.cloudapp.net`, and Docker copies the host search list
+   into the container unless told otherwise (the failing run's `resolv.conf` showed
+   `# Overrides: [nameservers options]` — `search` *not* overridden — beside the inherited search
+   line). glibc/Node then append that suffix to every unqualified lookup, so an allowlisted
+   `api.anthropic.com` also produced `api.anthropic.com.<search>`, which the controlled resolver
+   rightly NXDOMAINs (default-deny, §10.6). That search-list artefact is the runner's environment, not
+   the skill choosing a new destination, but it landed as a `dns_blocked` event. Fixed by clearing the
+   search list at the sandbox: `build_argv` now emits `--dns-search .` alongside `--dns` (proven on a
+   real daemon: `--dns-search .` makes Docker override the search list to empty — `Overrides` then
+   lists `search` — while the embedded resolver at `127.0.0.11` is untouched, so the short proxy alias
+   still resolves and only the phantom suffixed queries disappear). Again `claude-code`-only: its model
+   DNS happens inside the sandbox.
+
+And one non-environment defect, in the tool-name assertions: they matched the tool name **exactly**,
+and the two harnesses spell the same tool differently — the api-loop harness reports `read`/`write`,
+the Claude Code CLI reports `Read`/`Write`. The `claude-code-live-smoke` skill is evaluated under
+*both* live workflows (each detects it as a changed skill), so a single scenario must pass under both
+casings — and no exact-match spelling can. The first attempt (asserting `{name: Read}`) fixed
+claude-code but regressed the api-loop run of the same skill from `ready` to `not_ready` (functional
+0/6 against the lowercase `read` it observes). The right fix is to fold case in the tool-name
+comparison: `tool_called`, `tool_not_called`, and `tool_sequence` now compare on `casefold`
+(`_tool_name_matches`), so one natural spelling (`{name: read}`) matches both harnesses. This
+conflates nothing — a tool name is an identifier a harness chooses how to capitalise, the normalizer
+already maps both spellings onto one capability (`workspace_read`), and no harness offers two tools
+distinguished only by case, so a genuinely different tool still will not match. It also makes every
+scenario portable across the two harnesses, which is the property WP-17's trigger-portable metrics
+depend on. (An earlier revision of this note argued the opposite — that folding case would mask a
+mismatch — before the dual-harness evaluation of one skill made the portability need concrete.)

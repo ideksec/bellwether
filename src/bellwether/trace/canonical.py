@@ -236,6 +236,13 @@ def capability_for(action: Action, context: NormalizationContext) -> Capability 
         path = payload.get("path")
         if not isinstance(path, str) or not isinstance(zone, str):
             return None
+        if payload.get("canary_path"):
+            # §10.4.3: a planted canary is the instrument's, delivered by reference. Its own
+            # presence in the workspace — the read-only bind's mountpoint, which the overlay
+            # captures as a create the skill never issued — is not the skill's capability. A
+            # skill that *reads* the bait is a Plane A tool call, attributed on its own; a
+            # marker that *leaves* is a Plane C finding. The plant's mountpoint is neither.
+            return None
         if zone == "harness_state" and action.correlation.anchor_seq is None:
             # §10.2: harness state enters the capability set only where written by a
             # tool call. An uncorrelated write there is the harness's own state

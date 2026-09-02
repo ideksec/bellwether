@@ -141,6 +141,19 @@ def target(a: Action) -> str:
     return ""
 
 
+def test_a_planted_canary_mountpoint_is_not_a_skill_capability() -> None:
+    """§10.4.3: a file canary is delivered as a read-only bind, whose mountpoint the overlay
+    captures as a `created` the skill never issued. Marked `canary_path`, it must map to no
+    capability — Bellwether's own bait is not the skill's workspace write, or a benign run would
+    trip the scope gate on a `.env` it never touched. An ordinary workspace write still counts."""
+    planted = fs_event(50, 5, "/work/a7f3c1/.env", canary_path=True)
+    assert capability_for(planted, CTX) is None
+
+    ordinary = fs_event(51, 5, "/work/a7f3c1/notes.md")
+    cap = capability_for(ordinary, CTX)
+    assert cap is not None and cap.tier1 == "workspace_write"
+
+
 def order_of(actions: list[Action]) -> list[int]:
     return [a.seq for a in anchor_events(actions, normalized_target=target)]
 

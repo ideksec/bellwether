@@ -183,6 +183,21 @@ def test_tool_sequence_subsequence_and_strict(index: EvidenceIndex) -> None:
     assert strict.status == "fail"
 
 
+def test_tool_name_matching_folds_case(index: EvidenceIndex) -> None:
+    """A tool name is an identifier a harness capitalises as it likes — api-loop reports `read`,
+    the Claude Code CLI reports `Read` — so the tool-name assertions fold case, letting one
+    scenario match a skill evaluated under both harnesses. The evidence (seq numbers) is identical
+    to the lowercase match, and a genuinely different tool still does not match."""
+    # `index` observed lowercase `read`/`bash`; a PascalCase assertion still matches it.
+    assert evaluate(spec("tool_called", {"name": "Read", "min": 1}), index).status == "pass"
+    caught = evaluate(spec("tool_not_called", "Bash"), index)
+    assert caught.status == "fail" and caught.evidence == (5,)
+    seq = evaluate(spec("tool_sequence", {"sequence": ["Read", "Bash"]}), index)
+    assert seq.status == "pass" and seq.evidence == (3, 5)
+    # A different tool is still a non-match, folding or not.
+    assert evaluate(spec("tool_called", {"name": "Fetch", "min": 1}), index).status == "fail"
+
+
 # ---------------------------------------------------------------------------
 # Filesystem
 # ---------------------------------------------------------------------------
@@ -222,6 +237,28 @@ def test_no_harness_state_write(index: EvidenceIndex) -> None:
         make_trace([fs_write(1, "/home/agent/.claude/s.json", zone="harness_state")])
     )
     assert evaluate(spec("no_harness_state_write"), writing).status == "fail"
+
+
+def test_a_harness_state_write_is_not_a_declared_scope_violation() -> None:
+    """§10.2: the harness's own churn in its state zone — the claude-code CLI's session
+    transcript, config, and backups, written on every run — is surfaced by the
+    ``harness_state_write`` finding, not judged against the skill's declared *workspace* scope
+    (exactly as scratch is excluded, sandbox/zones.py). Without this, a benign skill under a real
+    harness blocks the scope gate on the harness's own bookkeeping, which is what the first live
+    claude-code run hit."""
+    scope = make_scope(filesystem={"read": [], "write": ["${WORKSPACE}/notes.md"], "deny_read": []})
+    idx = index_of(
+        make_trace(
+            [
+                fs_write(9, "/home/agent/.claude/.claude.json", zone="harness_state"),
+                fs_write(10, "/home/agent/.claude/projects/-work-x/s.jsonl", zone="harness_state"),
+            ]
+        )
+    )
+    table = evaluate_scope(scope, idx)
+    assert [e for e in table.exceeded() if e.area == "filesystem.write"] == []
+    # Not silently dropped: the writes still fail their own dedicated gate.
+    assert evaluate(spec("no_harness_state_write"), idx).status == "fail"
 
 
 def test_read_presence_passes_but_read_absence_is_not_evaluable(index: EvidenceIndex) -> None:

@@ -235,6 +235,12 @@ def _index_harness_action(
 def _index_filesystem_action(action: Action, context: NormalizationContext) -> WriteEvidence | None:
     if action.kind not in ("file_write", "file_delete"):
         return None
+    if action.action.get("canary_path"):
+        # §10.4.3: the read-only bind that plants a canary shows in the overlay as a create the
+        # skill never issued. It is the instrument's, not a skill write — so it must not enter the
+        # write evidence the §10.8 precedence matrix and the write-based assertions read, or a
+        # benign run would report a cross-plane "disagreement" over Bellwether's own bait.
+        return None
     path = action.action.get("path")
     zone = action.action.get("zone")
     if not isinstance(path, str) or not isinstance(zone, str):

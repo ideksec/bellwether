@@ -12,6 +12,15 @@ a real model end to end, without spending much.
   workflow has built the sidecar image, and the controlled DNS resolver is not enabled in this
   config — so both gates warn rather than block on a plane a given invocation may not have
   exercised (§25).
+- **`config-claude-code.yaml`** / **`policy-claude-code.yaml`** — the same cheap smoke, but for the
+  **`claude-code`** harness: the real Claude Code CLI runs headless *inside* the sandbox, so the
+  sandbox image carries the CLI and the recording proxy is mandatory (the CLI's model calls leave
+  only through it, carrying a scoped token the proxy swaps for the real key — §3.3). One
+  `claude-code`/`anthropic`/`haiku` target at a single look of 6, egress/DNS advisory for the first
+  proof. Driven on CI by
+  [`../../.github/workflows/bellwether-claude-code.yml`](../../.github/workflows/bellwether-claude-code.yml),
+  which runs alongside the api-loop workflow so a labelled PR evaluates each changed skill under
+  both harnesses.
 
 ## Running it
 

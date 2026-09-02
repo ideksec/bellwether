@@ -59,6 +59,18 @@ _CONFDIR_NAME = "mitmproxy"
 #: build-time concern the read-only, non-root sandbox cannot run ``update-ca-certificates`` for.
 _CA_CERT_NAME = "mitmproxy-ca-cert.pem"
 
+#: The short DNS name the sandbox reaches the proxy by (its ``HTTPS_PROXY`` host). A Docker
+#: **network alias**, not the container name: the container name is ``bw-proxy-<run_id>`` and the
+#: run id can exceed the 63-octet limit a single DNS label allows (eval id + scenario + target +
+#: repetition — ~95 chars for a live run), which makes it an *invalid hostname the embedded
+#: resolver refuses*, so the CLI's model call failed ``ENOTFOUND`` before reaching the proxy. A
+#: short fixed alias is unambiguous because each run owns its own internal bridge, and Docker's
+#: embedded DNS resolves it locally on that bridge (never the controlled resolver, so no Plane E
+#: churn). The api-loop harness never hit this — its model runs host-side, so its sandbox never
+#: resolved the proxy at all; the claude-code CLI, calling the model from *inside* the sandbox, is
+#: the first to.
+_PROXY_NETWORK_ALIAS = "bw-proxy"
+
 
 @dataclass(frozen=True)
 class SidecarHandle:
@@ -97,6 +109,14 @@ class MitmproxySidecar(RecordingProxy):
     sleep: Callable[[float], None] = time.sleep
     _handle: SidecarHandle | None = field(default=None, repr=False)
 
+    def _network_is_user_defined(self) -> bool:
+        """Whether ``self.network`` is a user-defined network (so ``--network-alias`` and container-
+        name DNS work). Docker's built-ins — ``bridge``/``host``/``none`` and ``container:<id>`` —
+        are not; the run's ``bw-int-<run_id>`` bridge is. Only a smoke test uses a built-in one."""
+        return self.network not in ("bridge", "host", "none") and not self.network.startswith(
+            "container:"
+        )
+
     def sidecar_argv(self, container_name: str, config_container_path: PurePosixPath) -> list[str]:
         """The full ``docker run`` command for the sidecar.
 
@@ -105,6 +125,12 @@ class MitmproxySidecar(RecordingProxy):
         """
         argv = [self.binary, "run", "--rm", "-d", "--name", container_name]
         argv += ["--network", self.network]
+        # The short alias is how the sandbox resolves the proxy (its HTTPS_PROXY host); the long
+        # container name is a valid *name* but not a valid single-label *hostname* (§ _PROXY_NETWORK_ALIAS).
+        # Aliases are only accepted on user-defined networks — the run's ``bw-int-<run_id>`` bridge is
+        # one, but a smoke test on the default ``bridge`` is not, so add it only where it is legal.
+        if self._network_is_user_defined():
+            argv += ["--network-alias", _PROXY_NETWORK_ALIAS]
         argv += ["-v", f"{self.shared_dir}:{SIDECAR_SHARED_MOUNT}:rw"]
         for env_name in sorted(self.broker.sidecar_real_key_env()):
             argv += ["-e", env_name]  # name only — value forwarded from the launcher's env
@@ -185,10 +211,15 @@ class MitmproxySidecar(RecordingProxy):
                 f"{result.stderr.strip() or result.returncode}"
             )
 
+        # Reached by the short network alias where one is legal (the run's user-defined bridge), so
+        # the sandbox's embedded DNS can resolve the HTTPS_PROXY host — the over-long container name
+        # is not a valid single-label hostname. On a built-in network (a smoke test) there is no
+        # alias, so fall back to the container name.
+        proxy_host = _PROXY_NETWORK_ALIAS if self._network_is_user_defined() else container_name
         self._handle = SidecarHandle(
             run_id=run_id,
             container_name=container_name,
-            proxy_url=f"http://{container_name}:{self.listen_port}",
+            proxy_url=f"http://{proxy_host}:{self.listen_port}",
             config_host_path=config_host,
             flow_log_host_path=flow_log_host,
             ca_cert_host_path=ca_cert_host,
