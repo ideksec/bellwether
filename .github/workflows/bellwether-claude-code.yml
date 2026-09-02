@@ -114,6 +114,9 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
+          # Temporary: turn on the in-sandbox network probe (resolv.conf + proxy/API resolution)
+          # so the first live claude-code ENOTFOUND is debuggable. Removed once green.
+          BW_CLAUDE_CODE_NET_PROBE: "1"
         run: |
           if [ -z "${ANTHROPIC_API_KEY}" ]; then
             echo "Labelled for evaluation, but ANTHROPIC_API_KEY is not set — skipping."
@@ -129,7 +132,7 @@ jobs:
             # The host-side overlay capture (§10.0) mounts overlayfs, which needs root, so the run
             # goes under sudo with the key preserved. The key is brokered into the sidecar as a
             # scoped token and never reaches the sandbox.
-            if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" run "${skill}" \
+            if sudo --preserve-env=ANTHROPIC_API_KEY,BW_CLAUDE_CODE_NET_PROBE "${bw}" run "${skill}" \
                  --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
                  --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}"; then
               verdict_status=0
@@ -143,6 +146,10 @@ jobs:
             # which reaches the job log by default. Surface them before runs/ is dropped, so *why*
             # the CLI errored is visible here without downloading the artifact.
             echo "::group::claude-code diagnostics — ${skill}"
+            echo "--- in-sandbox network probe (resolv.conf, proxy + API resolution) ---"
+            find "${eval_dir}/runs" -name 'net-probe.log' 2>/dev/null | sort | head -n1 | while read -r p; do
+              cat "${p}" 2>/dev/null || true
+            done
             echo "--- harness stderr (tail, per run) ---"
             find "${eval_dir}/runs" -name 'harness-stderr.log' 2>/dev/null | sort | while read -r f; do
               echo "### ${f}"; tail -n 30 "${f}" 2>/dev/null || true
