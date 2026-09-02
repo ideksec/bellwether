@@ -2189,10 +2189,18 @@ invisible to every offline test, in the order the run reached them:
    still resolves and only the phantom suffixed queries disappear). Again `claude-code`-only: its model
    DNS happens inside the sandbox.
 
-And one non-environment defect, in the smoke's own assertion: `tool_called` matches the tool name
-**exactly** (§12.1), and the CLI names its built-in tools in PascalCase (`Read`), so the scenario's
-`{name: read}` could never match and dragged functional to 0/6. The scenario now asserts
-`{name: Read}` — the tool the CLI actually emits, consistent with the golden session and the §11.2
-example (`"tool": "Read"`). This is not a case-insensitivity fix in the engine: making `tool_called`
-fold case would mask a real harness/scenario mismatch; the assertion must name what the harness
-reports.
+And one non-environment defect, in the tool-name assertions: they matched the tool name **exactly**,
+and the two harnesses spell the same tool differently — the api-loop harness reports `read`/`write`,
+the Claude Code CLI reports `Read`/`Write`. The `claude-code-live-smoke` skill is evaluated under
+*both* live workflows (each detects it as a changed skill), so a single scenario must pass under both
+casings — and no exact-match spelling can. The first attempt (asserting `{name: Read}`) fixed
+claude-code but regressed the api-loop run of the same skill from `ready` to `not_ready` (functional
+0/6 against the lowercase `read` it observes). The right fix is to fold case in the tool-name
+comparison: `tool_called`, `tool_not_called`, and `tool_sequence` now compare on `casefold`
+(`_tool_name_matches`), so one natural spelling (`{name: read}`) matches both harnesses. This
+conflates nothing — a tool name is an identifier a harness chooses how to capitalise, the normalizer
+already maps both spellings onto one capability (`workspace_read`), and no harness offers two tools
+distinguished only by case, so a genuinely different tool still will not match. It also makes every
+scenario portable across the two harnesses, which is the property WP-17's trigger-portable metrics
+depend on. (An earlier revision of this note argued the opposite — that folding case would mask a
+mismatch — before the dual-harness evaluation of one skill made the portability need concrete.)

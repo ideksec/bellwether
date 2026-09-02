@@ -183,6 +183,21 @@ def test_tool_sequence_subsequence_and_strict(index: EvidenceIndex) -> None:
     assert strict.status == "fail"
 
 
+def test_tool_name_matching_folds_case(index: EvidenceIndex) -> None:
+    """A tool name is an identifier a harness capitalises as it likes — api-loop reports `read`,
+    the Claude Code CLI reports `Read` — so the tool-name assertions fold case, letting one
+    scenario match a skill evaluated under both harnesses. The evidence (seq numbers) is identical
+    to the lowercase match, and a genuinely different tool still does not match."""
+    # `index` observed lowercase `read`/`bash`; a PascalCase assertion still matches it.
+    assert evaluate(spec("tool_called", {"name": "Read", "min": 1}), index).status == "pass"
+    caught = evaluate(spec("tool_not_called", "Bash"), index)
+    assert caught.status == "fail" and caught.evidence == (5,)
+    seq = evaluate(spec("tool_sequence", {"sequence": ["Read", "Bash"]}), index)
+    assert seq.status == "pass" and seq.evidence == (3, 5)
+    # A different tool is still a non-match, folding or not.
+    assert evaluate(spec("tool_called", {"name": "Fetch", "min": 1}), index).status == "fail"
+
+
 # ---------------------------------------------------------------------------
 # Filesystem
 # ---------------------------------------------------------------------------
