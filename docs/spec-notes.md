@@ -2114,5 +2114,28 @@ transcript lands in the harness-state zone as ordinary state churn. Durations on
 are host receipt-time deltas between the `tool_use` and `tool_result` lines (the hook stream's
 `duration_ms` is finer but arrives after the run). The container proof is CI-only (the sandbox
 image is an `npm install` of the pinned CLI on a digest-pinned Node base) and drives a scripted
-model; no labelled live run has used a `claude-code` target yet, and `examples/live/` still
-targets `api-loop`.
+model. The **labelled-live path is now wired** (`.github/workflows/bellwether-claude-code.yml` +
+`examples/live/config-claude-code.yaml`); the first labelled `claude-code` live run is the
+remaining step.
+
+### §10.4.3 — a planted canary is invisible to the skill's filesystem accounting
+
+A file canary is delivered as a **read-only bind** at its slot path (`_stage_canary_files`). For
+the workspace-relative slot (`.env` → `${WORKSPACE}/.env`), Docker creates the bind's *mountpoint*
+in the overlay upper, and the Plane B overlay diff records it as a `created` — a workspace write
+the skill never issued. Left unmarked, that phantom write became a `workspace_write` capability
+(so the **scope gate blocked** a benign skill on a `.env` it never touched) and a §10.8
+cross-plane "disagreement" (Plane B write with no Plane A claim). The `.env` is the only pool slot
+this hits; the `~/…` credential slots land outside the workspace and never collide.
+
+The fix wires the `canary_path` mark that already existed in the model but was never populated:
+the executor passes the planted workspace-relative paths to `collect_filesystem_events(canary_paths=…)`
+(and to `prepare_sandbox` so the plant is excluded from `fixture_digest`, §9.3), and the two
+consumers now honour the mark — `capability_for` returns no capability for a `canary_path` write
+(`trace/canonical.py`), and `_index_filesystem_action` drops it from the write evidence the §10.8
+matrix and the write-based assertions read (`assertions/evidence.py`). This is §10.4.3 made real
+on the filesystem plane: the plant reaches the container and is recorded by reference, but the
+instrument's own bait is never attributed to the skill. A skill that *reads* the bait is a Plane A
+tool call, attributed on its own; a marker that *leaves* is a Plane C finding — neither is touched.
+Proven on a real container: the planted `.env` shows in Plane B marked `canary_path`, and the run's
+`scope_exceeded` and `trace_inconsistencies` are both empty.

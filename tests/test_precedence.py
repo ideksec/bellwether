@@ -11,6 +11,7 @@ asserted in ``test_execution_docker.py``.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 from bellwether.assertions import (
@@ -20,7 +21,36 @@ from bellwether.assertions import (
     WriteEvidence,
     trace_inconsistencies,
 )
-from bellwether.trace import Coverage, NormalizationContext, PlaneCoverage
+from bellwether.assertions.evidence import _index_filesystem_action
+from bellwether.trace import Action, Coverage, NormalizationContext, PlaneCoverage
+
+
+def _fs_write(path: str, *, canary_path: bool = False) -> Action:
+    payload: dict[str, object] = {
+        "path": path,
+        "zone": "workspace",
+        "zone_relative": path.rsplit("/", 1)[-1],
+        "change": "created",
+    }
+    if canary_path:
+        payload["canary_path"] = True
+    return Action(
+        seq=5,
+        ts=dt.datetime(2026, 9, 2, tzinfo=dt.UTC),
+        plane="filesystem",
+        kind="file_write",
+        action=payload,
+    )
+
+
+def test_a_planted_canary_write_is_not_write_evidence() -> None:
+    """§10.4.3: the overlay captures a file canary's read-only bind as a `created`. Marked
+    `canary_path`, it must not enter the write evidence the §10.8 matrix reads, or a benign run
+    would report a cross-plane "disagreement" over Bellwether's own bait it never wrote. An
+    ordinary unclaimed write is still indexed (and remains the matrix's business)."""
+    ctx = NormalizationContext(workspace_root="/work")
+    assert _index_filesystem_action(_fs_write("/work/.env", canary_path=True), ctx) is None
+    assert _index_filesystem_action(_fs_write("/work/notes.md"), ctx) is not None
 
 
 def _tool_call(seq: int, name: str, payload: dict[str, object]) -> ToolCallEvidence:
