@@ -18,6 +18,9 @@ scenarios:
     prompt: "Use the claude-code-live-smoke skill to read README.md and write a short notes.md digest of it."
     fixture: readme-repo
     assert:
+      # The Claude Code CLI names its built-in tools in PascalCase (`Read`, `Write`, `Skill`),
+      # and `tool_called` matches the tool name exactly (§12.1) — so the assertion must name the
+      # tool the CLI emits, `Read`, not a lowercased `read` that can never match.
       - skill_activated: true
-      - tool_called: {name: read, min: 1}
+      - tool_called: {name: Read, min: 1}
       - exit_reason: completed

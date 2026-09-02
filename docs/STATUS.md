@@ -353,22 +353,32 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
      body-scan logic is offline-proven and the sidecar composition is CI-proven. Then the corpus skills
      (`canary-thief`, `dns-thief`, `legit-credential-reader`, `encoded-chunked-thief` xfail) for the
      §10.4 done-when.
-3. **`claude-code` adapter (WP-17) — done.** The second harness: a skill is evaluated under the
-   real CLI and its hooks, cross-checked against the host sink. What remains around it is
-   *proof breadth*, not code: the CI-only container test drives the CLI against a scripted
-   Messages API. The **labelled-live path is now wired** —
-   `.github/workflows/bellwether-claude-code.yml` builds the claude-code sandbox image and the two
-   sidecars and runs `examples/live/config-claude-code.yaml` (one `claude-code`/Haiku target)
-   against a real model on a `bellwether-run`-labelled PR, alongside the api-loop workflow, using
-   the benign `claude-code-live-smoke` skill as the trigger. The first labelled `claude-code` live
-   run (a paid run, opt-in) is the remaining action. `telemetry-noisy` (§24) also becomes buildable
-   now that a real harness with declared infrastructure endpoints exists.
+3. **`claude-code` adapter (WP-17) — done, and now run live.** The second harness: a skill is
+   evaluated under the real CLI and its hooks, cross-checked against the host sink. The
+   **labelled-live path is wired** (`.github/workflows/bellwether-claude-code.yml` builds the
+   claude-code sandbox image and the two sidecars and runs `examples/live/config-claude-code.yaml`,
+   one `claude-code`/Haiku target, on a `bellwether-run`-labelled PR alongside the api-loop
+   workflow, with the benign `claude-code-live-smoke` skill as the trigger), and the **first
+   labelled `claude-code` live run has now happened on PR #65.** It exercised the leg the scripted
+   container proof cannot: a real model, the live dual-sidecar topology, and a cloud CI runner's
+   networking — and surfaced **five environment defects**, each invisible to every offline test,
+   now fixed (full account in spec-notes §9.4/§10.6): the §10.4.3 canary phantom write; harness-state
+   churn mis-scoped; the overlay-workdir upload EACCES; the proxy hostname exceeding the 63-octet DNS
+   label limit (`ENOTFOUND`), fixed with a short `--network-alias`; and a cloud runner's inherited DNS
+   search domain manufacturing a phantom `dns_blocked` that warned the DNS gate and capped the verdict
+   at `conditional`, fixed by clearing the sandbox search list (`--dns-search .`). Plus one
+   scenario-side fix: `tool_called` matches the tool name exactly, and the CLI emits `Read` in
+   PascalCase, so the smoke's `{name: read}` could never match — corrected to `{name: Read}`. With
+   these in, every blocking gate on the benign smoke passes and the DNS warn is gone; the confirming
+   labelled run is what this change triggers. `telemetry-noisy` (§24) also becomes buildable now that
+   a real harness with declared infrastructure endpoints exists.
 
    *Note (this session): a genuinely live paid run cannot originate from a Claude-Code-on-the-web
    session — there is no `ANTHROPIC_API_KEY` (the host mediates model access via an OAuth token
    that is not an injectable key), and the org egress policy blocks the package mirrors the two
    image builds need, so those builds stay CI-only. The paid run happens on CI, where the secret
-   key and open build egress live.*
+   key and open build egress live. The five defects above were each isolated by reproduction on the
+   real Docker daemon and the real CLI binary in this session, without a paid run.*
 4. **Corpus & acceptance (WP-20) — done.** All eleven v0.1 skills are in and CI-asserted: the
    security slice (`canary-thief`, `dns-thief`, `legit-credential-reader`), the functional slice
    (`benign-stable`, `file-selective`, `always-fails`), and the frequency-independence/scope/shape
@@ -907,7 +917,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | `requires.min_bellwether_version` is not checked by the §16.4 preflight | `cli/preflight.py` | The rest of BW-51 is closed — `run` refuses an unsatisfiable policy before spending and `doctor` evaluates the check per profile — but version comparison needs an ordering rule the project has not committed to, and the one profile that sets it (`high`) already refuses on its missing capture planes, so skipping it cannot produce a false start today. |
 | Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
 | Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
-| The claude-code adapter has no live-model proof yet | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The container proof drives the real CLI against a scripted Messages API through the real proxy (CI-only). The labelled-live path is now **wired** — a `claude-code`/Haiku live config + policy, a smoke skill (`examples/skills/claude-code-live-smoke`), and a CI workflow that builds the claude-code sandbox image and the two sidecars and runs it on a `bellwether-run`-labelled PR. Running it is a paid, opt-in step; the first labelled `claude-code` live run is the remaining action. |
+| The claude-code adapter's live-model proof is landing | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run **has now happened** (PR #65), exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not (spec-notes §9.4/§10.6), all fixed; the confirming labelled run is in flight. Until it posts `ready`, treat the live claude-code proof as landing, not landed. |
 | Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |

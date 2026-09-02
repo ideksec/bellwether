@@ -119,9 +119,6 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
-          # Temporary: turn on the in-sandbox network probe (resolv.conf + proxy/API resolution)
-          # so the first live claude-code ENOTFOUND is debuggable. Removed once green.
-          BW_CLAUDE_CODE_NET_PROBE: "1"
         run: |
           if [ -z "${ANTHROPIC_API_KEY}" ]; then
             echo "Labelled for evaluation, but ANTHROPIC_API_KEY is not set — skipping."
@@ -137,7 +134,7 @@ jobs:
             # The host-side overlay capture (§10.0) mounts overlayfs, which needs root, so the run
             # goes under sudo with the key preserved. The key is brokered into the sidecar as a
             # scoped token and never reaches the sandbox.
-            if sudo --preserve-env=ANTHROPIC_API_KEY,BW_CLAUDE_CODE_NET_PROBE "${bw}" run "${skill}" \
+            if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" run "${skill}" \
                  --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
                  --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}"; then
               verdict_status=0
@@ -146,32 +143,6 @@ jobs:
             fi
             sudo chown -R "$(id -u):$(id -g)" "${out}" || true
             eval_dir=$(find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1)
-            # Diagnostics for the first live claude-code runs (temporary): the CLI's own stderr and
-            # the harness_error reason live only in the runs/ scratch and the ARF traces, neither of
-            # which reaches the job log by default. Surface them before runs/ is dropped, so *why*
-            # the CLI errored is visible here without downloading the artifact.
-            echo "::group::claude-code diagnostics — ${skill}"
-            echo "--- in-sandbox network probe (resolv.conf, proxy + API resolution) ---"
-            find "${eval_dir}/runs" -name 'net-probe.log' 2>/dev/null | sort | head -n1 | while read -r p; do
-              cat "${p}" 2>/dev/null || true
-            done
-            echo "--- harness stderr (tail, per run) ---"
-            find "${eval_dir}/runs" -name 'harness-stderr.log' 2>/dev/null | sort | while read -r f; do
-              echo "### ${f}"; tail -n 30 "${f}" 2>/dev/null || true
-            done
-            echo "--- harness_error / final result from the first trace ---"
-            t=$(find "${eval_dir}/traces" -name '*.jsonl' 2>/dev/null | sort | head -n1)
-            if [ -n "${t}" ]; then
-              grep -F 'harness_error' "${t}" 2>/dev/null | head -n 3 || true
-              echo "--- Plane D egress (what the proxy saw) ---"
-              grep -F 'egress' "${t}" 2>/dev/null | head -n 6 || true
-              echo "--- Plane E DNS (what the resolver saw) ---"
-              grep -F '"plane":"dns"' "${t}" 2>/dev/null | head -n 8 || true
-              echo "--- CLI init/system line (endpoint, apiKeySource) ---"
-              grep -F 'claude_code_version' "${t}" 2>/dev/null | head -n 1 || true
-              grep -F 'apiKeySource' "${t}" 2>/dev/null | head -n 1 || true
-            fi
-            echo "::endgroup::"
             # Drop the per-run sandbox scratch under runs/ before upload-artifact walks the tree:
             # it holds the kernel's overlayfs workdir (`work/work`, left mode 000, unreadable even
             # after chown), which the artifact's exclude walk hits EACCES on despite excluding

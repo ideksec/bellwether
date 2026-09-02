@@ -89,12 +89,15 @@ def test_extra_env_absent_leaves_the_environment_untouched(prepared) -> None:  #
 def test_dns_points_the_container_at_the_controlled_resolver(prepared) -> None:  # type: ignore[no-untyped-def]
     """--dns names the resolver by IP (§10.6): one nameserver, and single-request so glibc sends
     one query per lookup rather than splitting A/AAAA, so the resolver sees them all. The internal
-    bridge (no route out) is what makes that the only resolver reachable (§3.3 invariant 3)."""
+    bridge (no route out) is what makes that the only resolver reachable (§3.3 invariant 3). The
+    search list is cleared (`--dns-search .`) so a cloud runner's inherited search domain does not
+    append a suffix to every lookup and manufacture a phantom NXDOMAIN off an allowlisted name."""
     backend = DockerBackend(image=_IMAGE)
     argv = backend.build_argv(prepared, ["true"], dns="172.30.0.7")
     joined = " ".join(argv)
     assert "--dns 172.30.0.7" in joined
     assert "--dns-option single-request" in joined
+    assert "--dns-search ." in joined
 
 
 def test_no_dns_flag_when_the_resolver_is_unset(prepared) -> None:  # type: ignore[no-untyped-def]

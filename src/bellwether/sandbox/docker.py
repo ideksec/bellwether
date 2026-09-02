@@ -353,7 +353,20 @@ class DockerBackend:
             # `--dns-opt single-request` keeps glibc from splitting A/AAAA across sockets, so every
             # lookup is one query to one place, the resolver sees them all, and the covert channel
             # cannot leak on a path the log misses.
-            argv += ["--dns", dns, "--dns-option", "single-request"]
+            #
+            # `--dns-search .` clears the search list so it is *empty*, not inherited. A cloud CI
+            # runner's host resolv.conf carries a search domain (a GitHub-hosted runner is an Azure
+            # VM: `search …dx.internal.cloudapp.net`), and Docker copies the host search list into
+            # the container unless told otherwise. glibc/Node then append that suffix to every
+            # unqualified lookup, so an allowlisted `api.anthropic.com` also produces a
+            # `api.anthropic.com.<search>` query — a name the controlled resolver rightly NXDOMAINs
+            # (default-deny, §10.6). That search-list artefact is the runner's environment, not the
+            # skill choosing a new destination, but it lands as a `dns_blocked` event and warns the
+            # DNS gate. Only the claude-code harness hits it — its model call resolves the endpoint
+            # from *inside* the sandbox; the api-loop model runs host-side. Clearing the search list
+            # leaves the embedded resolver (127.0.0.11) untouched, so the short proxy alias still
+            # resolves; only the phantom suffixed queries disappear.
+            argv += ["--dns", dns, "--dns-search", ".", "--dns-option", "single-request"]
         argv += ["--hostname", prepared.identifiers.hostname]
         argv += ["--name", prepared.identifiers.container_name]
 

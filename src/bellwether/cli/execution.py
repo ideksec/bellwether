@@ -22,7 +22,6 @@ executor never imports a provider itself, so the ``harness → sandbox`` boundar
 from __future__ import annotations
 
 import datetime as dt
-import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -440,31 +439,6 @@ class SandboxRunExecutor:
                 extra_env=extra_env,
                 extra_ro_binds=extra_ro_binds,
             )
-            # Diagnostic only (opt-in via env): probe the sandbox's own view of DNS and the
-            # proxy before the harness runs — resolv.conf, whether the proxy host resolves, and
-            # whether an external name reaches the resolver upstream. This is how the first live
-            # claude-code runs, which error `ENOTFOUND` before any model call, are debugged without
-            # a way to enter the ephemeral container. Never on by default; it runs no skill code.
-            if use_claude_code and os.environ.get("BW_CLAUDE_CODE_NET_PROBE"):
-                probe = self.backend.exec_in(
-                    prepared,
-                    [
-                        "sh",
-                        "-c",
-                        'echo "HTTPS_PROXY=$HTTPS_PROXY"; echo "--- resolv.conf ---"; '
-                        "cat /etc/resolv.conf 2>&1; "
-                        'ph=$(printf "%s" "$HTTPS_PROXY" | sed -E "s#^https?://##; s#[:/].*##"); '
-                        'echo "--- getent hosts $ph (proxy) ---"; '
-                        'getent hosts "$ph" 2>&1 || echo "NORESOLVE_PROXY rc=$?"; '
-                        'echo "--- getent hosts api.anthropic.com ---"; '
-                        'getent hosts api.anthropic.com 2>&1 || echo "NORESOLVE_API rc=$?"',
-                    ],
-                    timeout=30,
-                )
-                (run_dir / "net-probe.log").write_text(
-                    f"exit={probe.exit_code}\n{probe.stdout}\n[stderr]\n{probe.stderr}\n",
-                    encoding="utf-8",
-                )
             started_at = dt.datetime.now(dt.UTC)
             prompt = plan.scenario.prompt
             prompt_text = prompt if isinstance(prompt, str) else "\n".join(prompt)

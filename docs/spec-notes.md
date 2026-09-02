@@ -2115,8 +2115,8 @@ are host receipt-time deltas between the `tool_use` and `tool_result` lines (the
 `duration_ms` is finer but arrives after the run). The container proof is CI-only (the sandbox
 image is an `npm install` of the pinned CLI on a digest-pinned Node base) and drives a scripted
 model. The **labelled-live path is now wired** (`.github/workflows/bellwether-claude-code.yml` +
-`examples/live/config-claude-code.yaml`); the first labelled `claude-code` live run is the
-remaining step.
+`examples/live/config-claude-code.yaml`), and the first labelled `claude-code` live run has now
+happened — see the §9.4/§10.6 note below for the five environment defects it surfaced.
 
 ### §10.4.3 — a planted canary is invisible to the skill's filesystem accounting
 
@@ -2139,3 +2139,60 @@ instrument's own bait is never attributed to the skill. A skill that *reads* the
 tool call, attributed on its own; a marker that *leaves* is a Plane C finding — neither is touched.
 Proven on a real container: the planted `.env` shows in Plane B marked `canary_path`, and the run's
 `scope_exceeded` and `trace_inconsistencies` are both empty.
+
+## §9.4, §10.6 — The first live `claude-code` run found five environment defects the scripted proof could not
+
+The offline `claude-code` proof drives a scripted Messages API in-container (CI-only). It exercises
+the adapter, the two-source cross-check, and the vocabulary — but never a real model, a real sidecar
+topology, or a cloud CI runner's networking. The first labelled live run (PR #65, evaluating
+`examples/skills/claude-code-live-smoke` under the real CLI against Haiku) surfaced five defects, each
+invisible to every offline test, in the order the run reached them:
+
+1. **Planted canary phantom write** — the §10.4.3 note above; the first live run is where it bit.
+2. **Harness-state churn mis-scoped.** The CLI writes session state under `/home/agent/.claude`
+   (`.claude.json`, `projects/*/…jsonl`). `_filesystem_write_rows` (evaluate_scope) excluded
+   `zone == "scratch"` but not `zone == "harness_state"`, so the CLI's own bookkeeping was compared
+   against the skill's workspace write globs and **blocked scope**. `capability_for` already excluded
+   it, but scope reads the EvidenceIndex, not `capability_for`. Fixed by excluding `harness_state`
+   from the declared-scope write comparison exactly as `scratch` is; the dedicated
+   `no_harness_state_write` assertion still surfaces the churn. `api-loop` never hit this — its
+   harness runs host-side and writes no state into the sandbox.
+3. **Upload-artifact EACCES on the overlay workdir.** The kernel leaves overlayfs `work/work`
+   mode-000 root-owned; `chown` cannot make a mode-000 directory readable, and `upload-artifact`
+   walks the whole tree to apply its exclude patterns, hitting EACCES despite excluding `runs/**`.
+   Fixed by `sudo rm -rf "${eval_dir}/runs"` before upload in both live workflows — the ARF traces
+   live at `traces/`, not under `runs/`, so no kept evidence lives there.
+4. **The proxy hostname exceeded the DNS label limit.** The sandbox's `HTTPS_PROXY` host was the
+   proxy sidecar's *container name*, `bw-proxy-<run_id>` — a live run_id makes that ~97 chars, past
+   the 63-octet single-label DNS cap, so the embedded resolver refused it (`NORESOLVE`) and the CLI's
+   model call failed `ENOTFOUND` before reaching the proxy. Fixed with a short, fixed Docker
+   network-alias (`bw-proxy`) that `HTTPS_PROXY` points at; each run owns its own internal bridge, so
+   a fixed alias is unambiguous. The alias is added **only on a user-defined network** (the default
+   `bridge`/`host`/`none` reject `--network-alias`), and the container keeps its long unique name for
+   lifecycle. `api-loop` never hit this — its model runs host-side, so its sandbox never resolves the
+   proxy; the `claude-code` CLI, calling the model from inside the sandbox, is the first to.
+5. **A cloud runner's DNS search domain manufactured a phantom `dns_blocked`.** With the proxy
+   reachable and the token budget raised (the CLI resends its whole system prompt and ~16 bundled
+   skills every request, ~190k tokens/run, so the smoke ceiling is 400k), the run completed the task
+   and every gate passed **except DNS, which warned** — and a warn caps the verdict at `conditional`,
+   never `ready` (`compose_verdict`, §16.2). Cause: a GitHub-hosted runner is an Azure VM whose host
+   `resolv.conf` carries `search …dx.internal.cloudapp.net`, and Docker copies the host search list
+   into the container unless told otherwise (the failing run's `resolv.conf` showed
+   `# Overrides: [nameservers options]` — `search` *not* overridden — beside the inherited search
+   line). glibc/Node then append that suffix to every unqualified lookup, so an allowlisted
+   `api.anthropic.com` also produced `api.anthropic.com.<search>`, which the controlled resolver
+   rightly NXDOMAINs (default-deny, §10.6). That search-list artefact is the runner's environment, not
+   the skill choosing a new destination, but it landed as a `dns_blocked` event. Fixed by clearing the
+   search list at the sandbox: `build_argv` now emits `--dns-search .` alongside `--dns` (proven on a
+   real daemon: `--dns-search .` makes Docker override the search list to empty — `Overrides` then
+   lists `search` — while the embedded resolver at `127.0.0.11` is untouched, so the short proxy alias
+   still resolves and only the phantom suffixed queries disappear). Again `claude-code`-only: its model
+   DNS happens inside the sandbox.
+
+And one non-environment defect, in the smoke's own assertion: `tool_called` matches the tool name
+**exactly** (§12.1), and the CLI names its built-in tools in PascalCase (`Read`), so the scenario's
+`{name: read}` could never match and dragged functional to 0/6. The scenario now asserts
+`{name: Read}` — the tool the CLI actually emits, consistent with the golden session and the §11.2
+example (`"tool": "Read"`). This is not a case-insensitivity fix in the engine: making `tool_called`
+fold case would mask a real harness/scenario mismatch; the assertion must name what the harness
+reports.
