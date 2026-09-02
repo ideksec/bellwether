@@ -224,6 +224,28 @@ def test_no_harness_state_write(index: EvidenceIndex) -> None:
     assert evaluate(spec("no_harness_state_write"), writing).status == "fail"
 
 
+def test_a_harness_state_write_is_not_a_declared_scope_violation() -> None:
+    """§10.2: the harness's own churn in its state zone — the claude-code CLI's session
+    transcript, config, and backups, written on every run — is surfaced by the
+    ``harness_state_write`` finding, not judged against the skill's declared *workspace* scope
+    (exactly as scratch is excluded, sandbox/zones.py). Without this, a benign skill under a real
+    harness blocks the scope gate on the harness's own bookkeeping, which is what the first live
+    claude-code run hit."""
+    scope = make_scope(filesystem={"read": [], "write": ["${WORKSPACE}/notes.md"], "deny_read": []})
+    idx = index_of(
+        make_trace(
+            [
+                fs_write(9, "/home/agent/.claude/.claude.json", zone="harness_state"),
+                fs_write(10, "/home/agent/.claude/projects/-work-x/s.jsonl", zone="harness_state"),
+            ]
+        )
+    )
+    table = evaluate_scope(scope, idx)
+    assert [e for e in table.exceeded() if e.area == "filesystem.write"] == []
+    # Not silently dropped: the writes still fail their own dedicated gate.
+    assert evaluate(spec("no_harness_state_write"), idx).status == "fail"
+
+
 def test_read_presence_passes_but_read_absence_is_not_evaluable(index: EvidenceIndex) -> None:
     """The §10.8 asymmetry: Plane A can show a read happened; only read capture could
     show one did not."""
