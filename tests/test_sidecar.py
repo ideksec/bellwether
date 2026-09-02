@@ -117,6 +117,9 @@ def test_the_real_key_is_forwarded_by_name_never_valued_on_the_command_line() ->
 
     argv = sidecar.sidecar_argv("bw-proxy-r1", PurePosixPath("/bw/config.json"))
     assert "-e" in argv
+    # A short network alias the sandbox can resolve as its HTTPS_PROXY host (the container name
+    # is too long to be a valid single-label DNS hostname).
+    assert "--network-alias" in argv and "bw-proxy" in argv
     # The env var is named...
     assert "ANTHROPIC_API_KEY" in argv
     # ...but its value never appears, in any token.
@@ -142,7 +145,11 @@ def test_start_writes_a_secretless_config_and_becomes_ready(tmp_path: Path) -> N
     assert config.max_requests == 5
     # The real key is never written to the shared config the container can read.
     assert _REAL_KEY not in config_text
-    assert sidecar.proxy_url() == "http://bw-proxy-r1:8080"
+    # The sandbox reaches the proxy by its short network alias, not the container name: the
+    # ``bw-proxy-<run_id>`` container name can exceed the 63-octet DNS label limit and then does
+    # not resolve, which failed the claude-code model call ENOTFOUND.
+    assert sidecar.proxy_url() == "http://bw-proxy:8080"
+    assert sidecar.container_name() == "bw-proxy-r1"
     # No canaries were passed, so none are configured.
     assert config.canary_markers == ()
 
