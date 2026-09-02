@@ -32,7 +32,12 @@ concurrency:
 env:
   BELLWETHER_CONFIG: examples/live/config-claude-code.yaml
   BELLWETHER_POLICY: examples/live/policy-claude-code.yaml
-  BELLWETHER_MAX_TOKENS: "60000"
+  # Higher than the api-loop smoke's 60k: the Claude Code CLI resends its whole system prompt and
+  # its ~16 bundled skill definitions on every request (~80 KB bodies), so a benign read+write run
+  # spends ~190k tokens. A 60k ceiling tripped `budget_exceeded` *after* the task completed, marking
+  # every run not_evaluable. Haiku makes this cheap (~$0.10-0.20/run); the policy's max_cost_usd
+  # still bounds spend.
+  BELLWETHER_MAX_TOKENS: "400000"
 
 jobs:
   evaluate:
