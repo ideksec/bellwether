@@ -138,6 +138,12 @@ jobs:
             fi
             sudo chown -R "$(id -u):$(id -g)" "${out}" || true
             eval_dir=$(find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1)
+            # Drop the per-run sandbox scratch under runs/ before upload-artifact walks the tree:
+            # it holds the kernel's overlayfs workdir (`work/work`, left mode 000, unreadable even
+            # after chown), which the artifact's exclude walk hits EACCES on despite excluding
+            # runs/**. No evidence the artifact keeps lives there (the ARF traces are at
+            # <eval_dir>/traces/), so remove it.
+            sudo rm -rf "${eval_dir}/runs" 2>/dev/null || true
             echo "::group::Bellwether report — ${skill} (claude-code)"
             cat "${eval_dir}/report/pr_comment.md" 2>/dev/null || echo "(no report was rendered)"
             echo "::endgroup::"

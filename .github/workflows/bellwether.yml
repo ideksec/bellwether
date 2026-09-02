@@ -129,6 +129,12 @@ jobs:
             # The artifact tree is the single <out>/<eval_id>/ directory; find it at the top
             # level rather than descending into the root-owned overlay dirs under it.
             eval_dir=$(find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1)
+            # Drop the per-run sandbox scratch under runs/ before it reaches upload-artifact. It
+            # holds the kernel's overlayfs workdir — a `work/work` dir left mode 000, which even a
+            # chown cannot make readable — so the artifact's include/exclude tree walk hits EACCES
+            # on it even though the path already excludes runs/**. It carries no evidence the
+            # artifact keeps (the ARF traces live at <eval_dir>/traces/, beside it), so remove it.
+            sudo rm -rf "${eval_dir}/runs" 2>/dev/null || true
             # Surface the evidence inline: the rendered report (verdict, per-repetition outcome
             # grid, capability heatmap) goes into the job log, so *why* a run landed where it did
             # is visible here without opening the PR. The full ARF traces are uploaded below.
