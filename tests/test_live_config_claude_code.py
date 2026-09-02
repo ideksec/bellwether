@@ -93,12 +93,13 @@ def test_the_claude_code_live_config_observes_dns() -> None:
     assert build_resolver_provider(config) is not None
 
 
-def test_egress_and_dns_stay_advisory_for_the_first_claude_code_live_proof() -> None:
-    """Both planes are observed on this harness (the proxy is mandatory, the resolver is on), so a
-    benign run is clean either way — but the smoke policy keeps both at `warn` rather than `block`
-    for the first live proof, so a surprise flow in the shakeout does not redden the run before the
-    pipeline is trusted. Promoting to `block` is the deliberate follow-up (§25)."""
+def test_egress_and_dns_gates_block_on_the_claude_code_live_config() -> None:
+    """Both planes are observed on this harness (the proxy is mandatory, the resolver is on), so the
+    §16.4 precondition is satisfied and default-deny is *enforced*. They were `warn` for the first
+    live proof; now that the benign claude-code run is confirmed clean (PR #65), a surprise flow or
+    an out-of-allowlist lookup reddens the run rather than only warning. If this config rots back to
+    a gate at `warn`, this fails — the tightening must not silently regress (§25)."""
     policy = load_policy(_LIVE / "policy-claude-code.yaml")
     runtime = policy.profile("low").gates.security_runtime
-    assert runtime.egress_outside_allowlist == "warn"
-    assert runtime.dns_outside_allowlist == "warn"
+    assert runtime.egress_outside_allowlist == "block"
+    assert runtime.dns_outside_allowlist == "block"

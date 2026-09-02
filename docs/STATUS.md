@@ -404,32 +404,36 @@ inserted the executor-integration + live-proof work (unnumbered) that made WP-13
 None of these block the v0.1 line; they are the natural next bricks, roughly in order of
 ratio of value to effort:
 
-1. **Promote the live egress/DNS gates from `warn` to `block`.** The live smoke policies keep
-   `egress_outside_allowlist` and `dns_outside_allowlist` advisory for the first proofs; now that
-   both harnesses run clean and are trusted, promoting them to `block` is the deliberate follow-up
-   (small, config + a rot test). This is the highest-value tightening.
-2. **WP-14 live doctor interception probe** — a live check that the CA-trust chain actually
+1. **WP-14 live doctor interception probe** — a live check that the CA-trust chain actually
    intercepts (small; the host core is done, only the live probe remains).
-3. **Plugin-layout staging** — install an Agent Plugin bundle *whole*, in the layout a real client
+2. **Plugin-layout staging** — install an Agent Plugin bundle *whole*, in the layout a real client
    uses (`--plugin-dir`), rather than each skill as a bare directory (spec-notes §5/§6/§18).
-4. **Per-run sink path** drawn from the identifier stream rather than the fixed
+3. **Per-run sink path** drawn from the identifier stream rather than the fixed
    `/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
-5. **`openai_compatible` provider** — a Chat-Completions message-shape translation behind the
+4. **`openai_compatible` provider** — a Chat-Completions message-shape translation behind the
    existing `ModelClient` seam (the Anthropic client is done).
-6. **The remaining §24 corpus rows** — `over-triggering`, `git-peeker`, `telemetry-noisy`, the
+5. **The remaining §24 corpus rows** — `over-triggering`, `git-peeker`, `telemetry-noisy`, the
    chunked/interleaved thieves, `prompt-channel-thief`, `server-tool-user`, `fetch-and-exec`,
    `obfuscated-injection`, `eval-aware`, `model-divergent`, `oom-hog`. Each waits on a post-v0.1
    subsystem (static scanner, probe suite, or a real-network corpus run); `telemetry-noisy` is now
    buildable since a real harness with declared infrastructure endpoints exists.
+6. **Credential-read capture plane** — turn the captured-but-unscored undeclared-credential-read
+   into a gate (the one "captured as evidence, not yet scored" item left after the DNS and
+   canary-read gates landed).
 
-**The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
-`egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
-labeled live PR stands the dual-homed proxy up around each repetition and egress reads *observed*.
-A benign skill is observed-clean, which lifts the `conditional` cap the unobserved plane imposed:
-this is the run that reaches **`ready`**. The smoke policy keeps `egress_outside_allowlist` at
-`warn` for this first proof (a clean run passes either way; a surprise flow in the shakeout warns
-rather than reddening the run before the pipeline is trusted); promoting it to `block` is the
-deliberate follow-up. A test guards the config against rotting back to proxy-off.
+*Recently completed (was item 1 here): the live egress/DNS gates are now `block`, not `warn`.
+Both live policies enforce default-deny — `egress_outside_allowlist` and `dns_outside_allowlist`
+are `block` in `examples/live/policy.yaml` and `policy-claude-code.yaml`, guarded by rot tests, and
+the §16.4 precondition confirms both planes are observed so a benign run still reaches `ready`.*
+
+**The live smoke run observes egress and DNS and enforces the allowlist.** `examples/live/config.yaml`
+sets `egress.image` and `dns.image`, and the `Bellwether` workflow builds those sidecar images before
+the paid run — so a labeled live PR stands the dual-homed proxy and controlled resolver up around each
+repetition, egress and DNS read *observed*, and a benign skill is observed-clean. The smoke policies
+now set `egress_outside_allowlist` and `dns_outside_allowlist` to **`block`**: a clean run passes
+(default-deny enforced, nothing outside the allowlist), and a surprise flow or an out-of-allowlist
+lookup reddens the run rather than only warning. A rot test guards each config against a gate
+regressing to `warn` or the plane rotting to unobserved.
 
 **The producer path has an executor-level done-when on CI.** `test_execution_proxy_docker` stands
 a real mitmproxy sidecar up around a real sandbox run *through `SandboxRunExecutor`* — the two

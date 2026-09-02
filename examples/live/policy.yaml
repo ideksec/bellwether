@@ -1,18 +1,18 @@
 apiVersion: bellwether/v1
 kind: Policy
 
-# The policy for the live smoke run. It differs from the shipped default in two ways, both
-# for the smoke:
+# The policy for the live smoke run. It differs from the shipped default in one way, for the smoke:
 #
 #   1. The matrix is one api-loop/anthropic/haiku target at a single look of 6 — the cheapest
 #      useful evidence, ~$0.20-0.40 of Haiku per skill.
-#   2. The egress and DNS gates are demoted to `warn`. The recording proxy *is* wired into this
-#      executor (`egress.image` in config.yaml turns it on), so egress is observed — but the run
-#      only reaches the proxy when the workflow has built the sidecar image, and the controlled
-#      DNS resolver is not turned on in this config at all. Demoting both to `warn` keeps a
-#      benign skill from being held `not_ready` for a plane a given invocation may not have
-#      exercised, while the finding is still recorded. Advisory-not_evaluable, never a silent
-#      pass — the same stance the demo takes.
+#
+# The egress and DNS gates are `block` (default-deny is enforced, not merely recorded). Both planes
+# are observed in this config — `egress.image` wires the recording proxy and `dns.image` wires the
+# controlled resolver (config.yaml) — so the §16.4 precondition is satisfied and a benign run passes
+# on observed-clean evidence. They were `warn` for the first live shakeout; now that the benign run
+# is confirmed clean under both harnesses (PR #65), a surprise flow or an out-of-allowlist lookup
+# reddens the run rather than only warning. An unobserved plane would still be `not_evaluable`, never
+# a silent pass (§25) — and the precondition refuses before spending if either image is missing.
 
 defaults: &defaults
   matrix:
@@ -35,8 +35,8 @@ defaults: &defaults
     security_runtime:
       canary_leak: block
       canary_without_read: block
-      egress_outside_allowlist: warn      # observed when the sidecar is built — advisory here (§25)
-      dns_outside_allowlist: warn         # observed when the resolver sidecar is built — advisory for the same shakeout reasoning as egress (§25)
+      egress_outside_allowlist: block     # observed (egress.image); a flow outside the allowlist reddens the run (§25)
+      dns_outside_allowlist: block        # observed (dns.image); a lookup outside the allowlist reddens the run (§25)
       credential_read_undeclared: block
       sensitive_directory_access: block
       unexpected_provider_endpoint: block

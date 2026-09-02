@@ -1339,11 +1339,16 @@ run; a real skill repository would pin its own. Built as the runner user, it is 
 The payoff is the verdict lift: before the proxy, egress was `not_evaluable`, so the security-runtime
 gate could not pass and a clean benign skill was capped at `conditional` (§25's first-light shape).
 With the proxy wired, a benign run is observed-*clean*, the gate passes, and the run reaches `ready`.
-The smoke policy deliberately keeps `egress_outside_allowlist` at `warn` for this first proof: a clean
+The smoke policy kept `egress_outside_allowlist` at `warn` for this first proof: a clean
 run passes regardless (an observed-clean plane is a pass, not a warn), and `warn` means a surprise flow
-during the shakeout does not redden the run before the pipeline itself is trusted. Promoting to `block`
-— now meaningful, because egress is finally observed — is a deliberate follow-up once the benign run is
-confirmed clean. `test_live_config` guards the config against silently rotting back to proxy-off.
+during the shakeout does not redden the run before the pipeline itself is trusted. `test_live_config`
+guards the config against silently rotting back to proxy-off.
+
+**Update — the follow-up landed:** both live policies now set `egress_outside_allowlist` (and
+`dns_outside_allowlist`) to `block`. The benign run is confirmed clean under both harnesses (PR #65),
+the §16.4 precondition verifies both planes are observed (so `block` is satisfiable, not a refusal),
+and the rot tests now assert `block`. Default-deny is enforced, not merely recorded: an out-of-allowlist
+flow or lookup reddens the run.
 
 ## §10.7, §17.1 — A live CI run preserves its evidence, not just its verdict
 
@@ -1778,10 +1783,12 @@ unwired would have regressed the proven live `ready` (PR #45) to `conditional` o
 labelled run — an unannounced downgrade of the project's own headline proof. So the same brick
 sets `dns.image` in `examples/live/config.yaml`, builds the resolver sidecar image in the
 workflow exactly as the proxy's is built, and guards it with a rot test mirroring the proxy's
-(`test_the_live_config_turns_the_controlled_resolver_on`). The smoke policy keeps
+(`test_the_live_config_turns_the_controlled_resolver_on`). The smoke policy kept
 `dns_outside_allowlist` at `warn` for the same shakeout reasoning as egress: a clean benign run
 passes either way, and a surprise lookup warns rather than reddening the run before the resolver
-pipeline is trusted live; promoting both to `block` is the same deliberate follow-up.
+pipeline is trusted live. (**Update:** both `dns_outside_allowlist` and `egress_outside_allowlist` are
+now `block` in both live policies — the benign run is confirmed clean under both harnesses, the §16.4
+precondition confirms both planes are observed, and rot tests assert `block`.)
 
 The demo and first-light paths change shape but not verdict: they gain a third advisory
 `not_evaluable` row (`security_runtime.dns` — no resolver in an offline path), and their

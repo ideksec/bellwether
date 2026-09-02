@@ -71,16 +71,14 @@ def test_the_live_config_turns_the_controlled_resolver_on() -> None:
     assert provider is not None
 
 
-def test_egress_stays_advisory_for_the_first_live_proof() -> None:
-    """The proxy is wired now, so egress is observed — but the smoke policy keeps
-    `egress_outside_allowlist` at `warn` rather than `block` for the first live proof: a benign
-    run is clean either way (an observed-clean plane passes), and `warn` means a surprise flow in
-    the shakeout does not turn the run red before the pipeline itself is trusted. Promoting to
-    `block` is a deliberate follow-up once the benign run is confirmed clean (§25)."""
+def test_egress_and_dns_gates_block_now_that_both_planes_are_observed() -> None:
+    """Both planes are observed in this config — `egress.image` wires the proxy and `dns.image`
+    wires the resolver — so the §16.4 precondition is satisfied and default-deny is *enforced*,
+    not merely recorded. They were `warn` for the first live shakeout; now that the benign run is
+    confirmed clean under both harnesses (PR #65), a flow or a lookup outside the allowlist reddens
+    the run rather than only warning. If this config rots back to a gate at `warn`, this fails —
+    the tightening is deliberate and must not silently regress (§25)."""
     policy = load_policy(_LIVE / "policy.yaml")
     profile = policy.profile("low")
-    assert profile.gates.security_runtime.egress_outside_allowlist == "warn"
-    # DNS is observed too now, and stays advisory for the same shakeout reasoning: a benign
-    # run is clean either way (an observed-clean plane passes), and `warn` keeps a surprise
-    # lookup from reddening the run before the resolver pipeline is trusted live.
-    assert profile.gates.security_runtime.dns_outside_allowlist == "warn"
+    assert profile.gates.security_runtime.egress_outside_allowlist == "block"
+    assert profile.gates.security_runtime.dns_outside_allowlist == "block"
