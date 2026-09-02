@@ -3,9 +3,11 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the **recording-proxy-to-live-verdict** arc: the proxy is now wired into
-the executor as a dual-homed sidecar, a benign skill has reached **`ready` on a live labelled PR
-with egress observed**, and every run's evidence (per-run ARF traces + report) is uploaded from CI.
+Last updated at the end of the **claude-code-live** arc: the proxy is wired into the executor as a
+dual-homed sidecar, and a benign skill has reached **`ready` on a live labelled PR with egress
+observed under *both* harnesses** — api-loop and, now, the real Claude Code CLI headless in the
+sandbox (PR #65, `claude-code-live-smoke`: 8 gates pass, functional 6/6, DNS clean). Every run's
+evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
@@ -367,10 +369,12 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    label limit (`ENOTFOUND`), fixed with a short `--network-alias`; and a cloud runner's inherited DNS
    search domain manufacturing a phantom `dns_blocked` that warned the DNS gate and capped the verdict
    at `conditional`, fixed by clearing the sandbox search list (`--dns-search .`). Plus one
-   scenario-side fix: `tool_called` matches the tool name exactly, and the CLI emits `Read` in
-   PascalCase, so the smoke's `{name: read}` could never match — corrected to `{name: Read}`. With
-   these in, every blocking gate on the benign smoke passes and the DNS warn is gone; the confirming
-   labelled run is what this change triggers. `telemetry-noisy` (§24) also becomes buildable now that
+   scenario-side fix: the tool-name assertions matched exactly, and the two harnesses spell the same
+   tool differently (api-loop `read`, the CLI `Read`) — and `claude-code-live-smoke` is evaluated
+   under *both* live workflows, so no exact spelling satisfies both. `tool_called`/`tool_not_called`/
+   `tool_sequence` now fold case (`_tool_name_matches`), so one natural `{name: read}` matches both.
+   With these in, the claude-code live run reached **`ready`** — 8 gates pass, functional 6/6, DNS
+   clean (no phantom `dns_blocked`) — and the api-loop run of the same skill stays `ready` too. `telemetry-noisy` (§24) also becomes buildable now that
    a real harness with declared infrastructure endpoints exists.
 
    *Note (this session): a genuinely live paid run cannot originate from a Claude-Code-on-the-web
@@ -917,7 +921,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | `requires.min_bellwether_version` is not checked by the §16.4 preflight | `cli/preflight.py` | The rest of BW-51 is closed — `run` refuses an unsatisfiable policy before spending and `doctor` evaluates the check per profile — but version comparison needs an ordering rule the project has not committed to, and the one profile that sets it (`high`) already refuses on its missing capture planes, so skipping it cannot produce a false start today. |
 | Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
 | Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
-| The claude-code adapter's live-model proof is landing | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run **has now happened** (PR #65), exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not (spec-notes §9.4/§10.6), all fixed; the confirming labelled run is in flight. Until it posts `ready`, treat the live claude-code proof as landing, not landed. |
+| The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
 | Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
