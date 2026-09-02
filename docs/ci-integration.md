@@ -81,10 +81,10 @@ same job holds it — which is the property the `sneaky-exfiltrator` example is 
 - **`bellwether run` on a live container** — **proven end to end on CI.** A benign skill has
   reached `ready` on a real labelled pull request against a live model, in a sandbox behind the
   recording proxy with egress observed, and every run's evidence was uploaded as an artifact.
-- **What is still narrow.** The `api-loop` proof covers one skill, one target (`api-loop` +
-  Haiku), at a single look of 6. The `claude-code` live path is now **wired**
-  (`bellwether-claude-code.yml` + `examples/live/config-claude-code.yaml`) and proven against a
-  scripted model (on the host, and in the sandbox behind the proxy on CI); the first *labelled*
-  live run on a `claude-code` target is the deliberate next step. See `docs/STATUS.md` for the
+- **What is still narrow.** Each proof covers one skill, one target, at a single look of 6.
+  The `claude-code` live path is now **proven end to end on CI** the same way `api-loop` is
+  (`bellwether-claude-code.yml` + `examples/live/config-claude-code.yaml`): the first labelled
+  live run on a `claude-code` target reached `ready` against a real model, in the sandbox behind
+  the recording proxy, with egress and DNS observed (PR #65). See `docs/STATUS.md` for the
   current boundary, and the README's "What the live verdict gates today" for which gates are
   actually scored.

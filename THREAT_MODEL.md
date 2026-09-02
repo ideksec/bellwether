@@ -14,8 +14,8 @@ documentation as much as in the verdict.
 | Threat | Description | Live today | Planned |
 |---|---|---|---|
 | Instruction injection in a skill body | Hidden or obfuscated directives — base64, unicode tricks, non-English text, system-message impersonation | Behavioural evidence only: whatever the injected directive makes the agent *do* is captured by the planes below | Static scan (§15, v0.2); injection-specific detectors |
-| Credential exfiltration | Skill causes the agent to read secrets and transmit them | Canaries planted per run; leaks scanned across output, DNS names, tool args, egress URLs and bodies, written files; a leak **gates the verdict** (`security_runtime.canaries`) | Model-API read-state grading (`canary_without_read`) |
-| DNS-channel exfiltration | Secret encoded into query labels, bypassing an HTTP proxy entirely — an HTTP proxy does not see UDP/53 | Controlled resolver (NXDOMAIN default, full query log), label-aware canary matching; a canary in a query name gates via the canary gate | Scoring DNS-outside-allowlist as its own gate |
+| Credential exfiltration | Skill causes the agent to read secrets and transmit them | Canaries planted per run; leaks scanned across output, DNS names, tool args, egress URLs and bodies, written files; a leak **gates the verdict** (`security_runtime.canaries`). Model-API read-state grading is live too: a planted canary present in a composed model request with no accounting read **gates the verdict** (`security_runtime.canary_reads`; credentials plane `full`) | Model-API body scanning for the semantic-secret residual |
+| DNS-channel exfiltration | Secret encoded into query labels, bypassing an HTTP proxy entirely — an HTTP proxy does not see UDP/53 | Controlled resolver (NXDOMAIN default, full query log), label-aware canary matching; a canary in a query name gates via the canary gate, and a lookup of a name outside the allowlist **gates the verdict** on its own (`security_runtime.dns`) | — |
 | Exfiltration via the allowlisted model channel | Skill embeds secrets in a prompt to the permitted model endpoint | Per-run request and byte caps on the sandbox-scoped channel. **Residual — see below** | Model-API body scanning, request-shape enforcement, volume anomaly detection (§10.5.2, v0.2) |
 | Exfiltration via server-side tools | Skill uses a provider-executed tool so no packet leaves the sandbox other than the allowlisted API call | Nothing yet — stated, not hidden | Proxy-side parsing into `proxy_inferred` records; coverage degradation where unparseable (§10.5.3, v0.2) |
 | Dynamic payload fetch | Skill body looks benign but fetches instructions at runtime, so the reviewed artifact differs from the executed one | Default-deny egress blocks the fetch and records the attempt as evidence | Static fetch-and-execute detection as an automatic critical (§15) |
@@ -125,20 +125,21 @@ cleared.
 ## What the verdict gates today (enforcement boundary)
 
 The point of this section is that the enforcement boundary is *stated*, not implied. On
-the live `run` path the verdict is composed from six gates: **evidence**, **functional**
+the live `run` path the verdict is composed from eight gates: **evidence**, **functional**
 (pass-rate lower bound), **consistency** (behavioural stability), **scope**
 (declared-vs-observed — a skill that uses a tool or reads a path outside its manifest is
 blocked, now on the live path and not only in the demo), **security_runtime.egress**
-(egress outside the default-deny allowlist, from the recording proxy), and
+(egress outside the default-deny allowlist, from the recording proxy),
 **security_runtime.canaries** (a planted canary at any non-model destination — final
 output, DNS query name, tool arguments, an egress request, a written file — blocks under
-the default policy; unplanted defers as `not_evaluable`, never passes).
+the default policy; unplanted defers as `not_evaluable`, never passes),
+**security_runtime.dns** (a lookup of a name outside the allowlist, from the controlled
+resolver), and **security_runtime.canary_reads** (a planted canary present in a composed
+model request with no accounting read — blocks; credentials plane `full`).
 
 Findings that are **captured as evidence but do not yet drive the scored verdict**:
-DNS-outside-allowlist (Plane E), undeclared credential reads, `canary_without_read`
-(model-context grading — unscored until the model-API channel's read-state scanning
-lands, because its evidence cannot yet exist), sensitive-directory access, and the
-volume/anomaly checks. Their `block` dispositions in policy read like active controls but
+undeclared credential reads, sensitive-directory access, and the volume/anomaly checks.
+Their `block` dispositions in policy read like active controls but
 do not, on their own, make a verdict `not_ready` in this version; wiring each into a gate
 is per-plane roadmap work. `bellwether doctor` names exactly which configured dispositions
 are inert, so a control is never mistaken for one that gates. Treat their findings as

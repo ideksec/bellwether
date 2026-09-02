@@ -164,17 +164,30 @@ not walk, adding a network layer will not help you find out why.
 Nothing here is optional for v0.1. §3.3's critical invariants are established in this phase, and a
 v0.1 without them ships a security tool whose own key handling is broken.
 
-> **Progress & re-ordering note (read this).** Phase A is complete and the recording-proxy spine of
-> Phase B is done: WP-13 is built and, crucially, **wired into the executor** and proven on a live
-> labelled PR that reached `ready` with egress observed. Getting there inserted work these WP numbers
-> don't name — the dual-homed proxy in the executor, the `bellwether run` provider plumbing, the CI
-> live-proof, and evidence upload — which is legitimate connective tissue that made WP-13 usable end
-> to end. As a result the remaining Phase B work is best done in a **dependency order that differs
-> from the raw numbering**: finish WP-15 (DNS) by wiring its resolver into the executor the same way
-> the proxy was, then live canaries (WP-16), then WP-19 (noise floor — it validates the variance
-> metric and should precede leaning on it), then WP-18 (coverage matrix), then WP-17 (`claude-code`
-> adapter), then WP-20 (corpus). `docs/STATUS.md` → "What's next" holds the live version of this list.
-> The WP definitions below remain the authoritative *specs*; only their order has been revised.
+> **Progress note (read this): v0.1 is functionally complete.** Phase A is done, and all of Phase B
+> has since landed in a **dependency order that differed from the raw numbering** — WP-13 (recording
+> proxy) wired into the executor, then WP-15 (DNS) → WP-16 (canaries) → WP-19 (noise floor) → WP-18
+> (coverage matrix) → WP-17 (`claude-code` adapter) → WP-20 (corpus). Getting there inserted work
+> these WP numbers don't name — the dual-homed proxy in the executor, the `bellwether run` provider
+> plumbing, the CI live-proof, and evidence upload — legitimate connective tissue that made WP-13
+> usable end to end. **Both harnesses are now proven live**: a benign skill reached `ready` on a
+> labelled PR under `api-loop` and, on PR #65, under the real Claude Code CLI (WP-17) — 8 gates pass,
+> functional 6/6. **Every v0.1 work package is built.** What remains are post-v0.1 loose ends, none
+> blocking the v0.1 line — see the "Post-v0.1 loose ends" block below, and `docs/STATUS.md` →
+> "What's next" for the live, ordered version. The WP definitions below remain the authoritative
+> *specs*.
+>
+> **Post-v0.1 loose ends (non-blocking).** Self-contained, do first: (1) **promote the live
+> egress/DNS gates from `warn` to `block`** now that both harnesses run clean (config + a rot test);
+> (2) **WP-14 live doctor interception probe** — `doctor` issues a real request from inside the
+> container and asserts the proxy recorded it, and that a direct public-resolver query fails (the
+> live half of the WP-14/WP-15 done-whens; host core done); (3) **per-run sink path** from the
+> identifier stream, replacing the fixed `/dev/bellwether-events` (§3.5); (4) **`openai_compatible`
+> provider** — the Chat-Completions message-shape translation behind the `ModelClient` seam. Then the
+> remaining §24 corpus rows, each gated on a post-v0.1 subsystem: **static scanner** (`git-peeker`,
+> `obfuscated-injection`, `fetch-and-exec`, `eval-aware`); **probe suite** (`over-triggering`,
+> `prompt-channel-thief`, `server-tool-user`, `model-divergent`, `oom-hog`); **real-network corpus
+> run** (the chunked/interleaved thieves, `telemetry-noisy`).
 
 ### WP-13 — Recording proxy sidecar
 **Spec:** §10.5, §10.5.0, §10.5.1, §3.3, §22

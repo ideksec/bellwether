@@ -84,8 +84,9 @@ Rules for that corpus, which apply to any contribution to it:
   minted per evaluation, never a real secret.
 - **Every exfiltration target is inert outside the sandbox.** The offline acceptance slice
   uses `attacker.example` (RFC 2606, resolves nowhere) and DNS names the resolver refuses;
-  a corpus skill that makes real network calls (with the live adapter, v0.2) points its
-  targets at `127.0.0.1`.
+  a corpus skill that makes real network calls when run under a live adapter points its
+  targets at `127.0.0.1` (the v0.1 offline slice is scripted; corpus skills executing real
+  network payloads are still future).
 - **A skill carrying an *executable* exfiltration payload is stored base64-encoded and
   materialised by a build step**, so a working exfiltration script never sits in the tree
   in plaintext (it trips secret scanning, enterprise proxies, and some clone policies). The

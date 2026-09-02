@@ -253,18 +253,23 @@ from every artifact, and the write landing on Plane B (see spec-notes §9.4/§10
 | WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
 | **Model-API canary channel** — every composed request scanned host-side, §10.4.1 read-state grading per-request/per-canary, credentials plane `full`, `canary_without_read` scored (`security_runtime.canary_reads`) | **done** — finishes WP-16's capture story; corpus skills land with WP-20 |
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
-| **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
+| **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done, and live-proven** — the in-container proof is the CI-only `test_execution_claude_code_docker.py` (real CLI against a scripted Messages API), and the first labelled live run reached **`ready` against a real model** (PR #65, `claude-code-live-smoke`: 8 gates pass, functional 6/6, DNS clean) |
 
-1010 tests: 956 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1018 tests: 964 offline, 54 under the `docker` mark. All green.
 
 ## What's next — remaining work, in recommended order
 
-Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. The
-coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acceptance corpus
-(WP-20) is complete. What remains for v0.1 is **one package: the second harness** (WP-17). The
-order below reflects dependencies and reuses momentum — it is not the raw WP numbering,
-because the build deliberately inserted the executor-integration + live-proof work (unnumbered) that
-made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
+**v0.1 is functionally complete.** Every work package is built, both harnesses (api-loop *and*
+claude-code) are proven live to `ready` on a labelled PR, and the acceptance corpus (WP-20),
+coverage-honesty (WP-18) and calibration (WP-19) proofs are all in. What remains are **post-v0.1
+loose ends** — none blocking the v0.1 line — listed under "Post-v0.1 — the loose ends" below.
+
+The numbered subsections that follow (WP-15 / WP-16 / WP-17 / WP-20) are a **retrospective** of how
+each of the last packages landed, kept for reference; they are all done. The forward-looking
+next-steps list is the **"Post-v0.1 — the loose ends"** section after them. The order in both
+reflects dependencies and reuses momentum — not the raw WP numbering, because the build deliberately
+inserted the executor-integration + live-proof work (unnumbered) that made WP-13 usable end to end.
+`docs/BUILDPLAN.md` carries the same note.
 
 1. **WP-15 (controlled DNS resolver) — code-complete; CI validates the live path.** The whole
    resolver mirrors the recording proxy, built as a second sidecar on the run's internal bridge, and
@@ -381,8 +386,8 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    session — there is no `ANTHROPIC_API_KEY` (the host mediates model access via an OAuth token
    that is not an injectable key), and the org egress policy blocks the package mirrors the two
    image builds need, so those builds stay CI-only. The paid run happens on CI, where the secret
-   key and open build egress live. The five defects above were each isolated by reproduction on the
-   real Docker daemon and the real CLI binary in this session, without a paid run.*
+   key and open build egress live. The five environment defects above were each isolated by
+   reproduction on the real Docker daemon and the real CLI binary, without a paid run.*
 4. **Corpus & acceptance (WP-20) — done.** All eleven v0.1 skills are in and CI-asserted: the
    security slice (`canary-thief`, `dns-thief`, `legit-credential-reader`), the functional slice
    (`benign-stable`, `file-selective`, `always-fails`), and the frequency-independence/scope/shape
@@ -390,16 +395,32 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    §24 rows that remain (`over-triggering`, `git-peeker`, `telemetry-noisy`, the chunked thieves,
    `prompt-channel-thief`, `server-tool-user`, `fetch-and-exec`, `obfuscated-injection`,
    `eval-aware`, `model-divergent`, `oom-hog`) each need a post-v0.1 subsystem — the static
-   scanner, the probe suite, or a real-network corpus run — and land with it. With WP-17 in,
-   **every v0.1 work package is built**; what is left for the v0.1 line is the live proof of the
-   second harness and the loose ends below.
+   scanner, the probe suite, or a real-network corpus run — and land with it. With WP-17 in **and
+   live-proven** (PR #65), **every v0.1 work package is built and both harnesses are proven live**;
+   what is left are the post-v0.1 loose ends below.
 
-Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
-the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client),
-**plugin-layout staging** — installing an Agent Plugin bundle whole, in the layout a real client
-uses (`--plugin-dir`), rather than each skill as a bare directory (spec-notes §5/§6/§18) — and a
-per-run **sink path** drawn from the identifier stream rather than the fixed
-`/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
+### Post-v0.1 — the loose ends (the forward-looking next steps)
+
+None of these block the v0.1 line; they are the natural next bricks, roughly in order of
+ratio of value to effort:
+
+1. **Promote the live egress/DNS gates from `warn` to `block`.** The live smoke policies keep
+   `egress_outside_allowlist` and `dns_outside_allowlist` advisory for the first proofs; now that
+   both harnesses run clean and are trusted, promoting them to `block` is the deliberate follow-up
+   (small, config + a rot test). This is the highest-value tightening.
+2. **WP-14 live doctor interception probe** — a live check that the CA-trust chain actually
+   intercepts (small; the host core is done, only the live probe remains).
+3. **Plugin-layout staging** — install an Agent Plugin bundle *whole*, in the layout a real client
+   uses (`--plugin-dir`), rather than each skill as a bare directory (spec-notes §5/§6/§18).
+4. **Per-run sink path** drawn from the identifier stream rather than the fixed
+   `/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
+5. **`openai_compatible` provider** — a Chat-Completions message-shape translation behind the
+   existing `ModelClient` seam (the Anthropic client is done).
+6. **The remaining §24 corpus rows** — `over-triggering`, `git-peeker`, `telemetry-noisy`, the
+   chunked/interleaved thieves, `prompt-channel-thief`, `server-tool-user`, `fetch-and-exec`,
+   `obfuscated-injection`, `eval-aware`, `model-divergent`, `oom-hog`. Each waits on a post-v0.1
+   subsystem (static scanner, probe suite, or a real-network corpus run); `telemetry-noisy` is now
+   buildable since a real harness with declared infrastructure endpoints exists.
 
 **The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
 `egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
@@ -417,8 +438,8 @@ run routed through the proxy — and asserts egress reads **observed** (not unav
 skill's trace is observed-*clean*, and no bridge leaks on teardown. It exercises the load-bearing
 unknown: if mitmproxy does not write its CA where the executor expects, `ca_cert_path()` raises and
 the run fails loudly rather than producing a zero-egress trace (§9.2). This is the same observed-clean
-state that lets a benign live run reach `ready`; the remaining step is proving it against a live model
-on a labeled PR.
+state that lets a benign live run reach `ready` — now proven against a live model on a labelled PR
+under both harnesses (api-loop and claude-code, PR #65).
 
 **`bellwether run` can now turn the proxy on from config.** `build_proxy_provider` reads
 `egress.image` (a new digest-pinned field): empty — the shipped default — leaves the sandbox

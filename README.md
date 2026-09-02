@@ -54,8 +54,9 @@ pipeline.
 **Both v0.1 harnesses ship**: the `api-loop` reference and the real **Claude Code CLI** running
 headless inside the sandbox, its structured output cross-checked against its own hooks writing
 to a host-owned sink, its model calls leaving only through the proxy with a sandbox-scoped token.
-What remains is **breadth, not a missing spine**: a live-model proof of the second harness,
-turning the captured-but-unscored credential-read plane into a gate, the static scanner, and
+Both harnesses are now **proven live** — a benign skill reaches `ready` against a real model on a
+labelled PR under `api-loop` *and* `claude-code` (PR #65). What remains is **breadth, not a missing
+spine**: turning the captured-but-unscored credential-read plane into a gate, the static scanner, and
 process/read capture — the v0.1 acceptance corpus is complete (eleven skills, three slices,
 every §25 verdict asserted in CI). See
 [docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan, and the table below
@@ -276,7 +277,7 @@ alone and an unmentioned component would read as one that ran clean.
 | **Live model client** — Anthropic Messages API behind the `ModelClient` seam | done |
 | **`bellwether run` from the CLI** — resolve → live client → matrix → verdict → artifact tree | done |
 | **CI integration** — `bellwether changed-skills`, `bellwether pr-comment`, the shipped GitHub Action (only changed skills, paid run label-gated), per-run evidence uploaded as an artifact | done |
-| **Live verdict on CI** — a benign skill reaching `ready` against a real model, egress observed | proven |
+| **Live verdict on CI** — a benign skill reaching `ready` against a real model, egress observed, under **both** the `api-loop` and `claude-code` harnesses | proven (PR #65) |
 | **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files, **and every composed model request** (§10.4.1 read-state grading); a leak gates the verdict (`security_runtime.canaries`), an unread canary in model context gates it too (`security_runtime.canary_reads`); credentials plane `full` | done (WP-16 capture story; corpus skills land with WP-20) |
 | CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |
 | Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace; a lookup outside the allowlist gates the verdict (`security_runtime.dns`) | done (WP-15) |
@@ -284,7 +285,7 @@ alone and an unmentioned component would read as one that ran clean.
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
 | **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
 | **Acceptance corpus** — eleven `tests/corpus/` skills driven through the real pipeline with §25 verdicts asserted in CI: the §10.4.1 false-positive guard (`legit-credential-reader`), the §13.5 tier-model regression (`file-selective`), and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at N = 6, 12 and 20 alike) all proven; the §13.5.2 peripheral report (class + exact path), the timeout state, and the `unused` half of Declared-vs-Observed surface in `summary.json` and both reports | done (WP-20) |
-| **`claude-code` harness adapter** — the real CLI headless in the sandbox; stream-json → Plane A, hooks → the host-owned sink, cross-checked; scoped token through the proxy; telemetry off and declared; `Read`/`Write`/`Edit` mapped onto the shared capability vocabulary; trigger metrics portable | done (WP-17) — offline-proven against a real CLI 2.1.257 session; in-container proof is CI-only; no live-model run yet |
+| **`claude-code` harness adapter** — the real CLI headless in the sandbox; stream-json → Plane A, hooks → the host-owned sink, cross-checked; scoped token through the proxy; telemetry off and declared; `Read`/`Write`/`Edit` mapped onto the shared capability vocabulary; trigger metrics portable | done (WP-17) — offline-proven against a real CLI 2.1.257 session; in-container proof is CI-only; **live-proven end to end** (PR #65, reached `ready` against a real model — 8 gates pass, functional 6/6) |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
 they implement is [docs/spec.md](docs/spec.md). Where the implementation had to resolve

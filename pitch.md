@@ -150,15 +150,16 @@ Pre-v0.1, under active construction — but the loop closes end to end. On a rea
 request, a changed skill is detected, run six times in a hardened sandbox behind a
 recording proxy that observes its egress, scored across the gates, and posted back as a
 verdict; a benign skill has reached `ready` this way on CI, against a live model, with
-every run's evidence uploaded as an artifact. The offline analysis path — parser, trace
-format, sandbox, harness, capture planes, metrics, verdict engine, and report — is built
-and tested: **899 tests, of which 45 drive a real container** and assert from *inside* it
-that capabilities are zero, the root filesystem is read-only, and no test machinery is
-visible anywhere in the filesystem. The live client speaks to Anthropic's API; other
-providers are designed for but not yet implemented.
+every run's evidence uploaded as an artifact — under **both** harnesses now: the `api-loop`
+reference and the real **Claude Code CLI** running headless inside the sandbox (PR #65). The
+offline analysis path — parser, trace format, sandbox, harness, capture planes, metrics,
+verdict engine, and report — is built and tested: **1,018 tests, of which 54 drive a real
+container** (964 run offline) and assert from *inside* it that capabilities are zero, the root
+filesystem is read-only, and no test machinery is visible anywhere in the filesystem. The live
+client speaks to Anthropic's API; other providers are designed for but not yet implemented.
 
-What remains is breadth, not a missing spine: the still-unscored planes, the static
-scanner, the `claude-code` adapter, and the acceptance corpus.
+What remains is breadth, not a missing spine: the still-unscored credential-read plane and the
+static scanner. The second harness (`claude-code`) and the acceptance corpus have both landed.
 
 **Roughly fifty defects have been found and fixed so far**, across several self-reviews and
 independent adversarial passes — including the pre-release pass that made the repository
