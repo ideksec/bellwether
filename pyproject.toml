@@ -17,14 +17,14 @@ classifiers = [
 
 dependencies = [
     # Config, policy, ARF, and summary schemas (§22).
-    "pydantic>=2.7,<3",
+    "pydantic>=2.13.5,<3",
     "pyyaml>=6.0.1",
     # CLI (§20, §22).
-    "typer>=0.12,<1",
+    "typer>=0.27.2,<1",
     # Report rendering (§17). Charts are hand-rolled inline SVG; no JS charting dep.
     "jinja2>=3.1",
     # Trajectory edit distance (§13.4).
-    "rapidfuzz>=3.9",
+    "rapidfuzz>=3.14.6",
 ]
 
 # Deliberately absent: the Docker SDK. The sandbox backend shells out to the `docker`
@@ -34,7 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 # Kept optional deliberately: the metrics module hand-rolls Wilson, BCa bootstrap, and
 # single-linkage clustering (§22) so contributors need no scientific stack.
-stats = ["scipy>=1.13"]
+stats = ["scipy>=1.18.1"]
 
 [project.scripts]
 bellwether = "bellwether.cli:main"
@@ -55,10 +55,10 @@ packages = ["src/bellwether"]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
-    "hypothesis>=6.100",
-    "ruff>=0.6",
-    "mypy>=1.11",
-    "import-linter>=2.0",
+    "hypothesis>=6.167.1",
+    "ruff>=0.16.5",
+    "mypy>=2.3.1",
+    "import-linter>=2.14",
     "types-PyYAML>=6.0",
 ]
 
