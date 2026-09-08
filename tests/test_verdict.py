@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from bellwether.config.models.policy import ProfileSpec, Requires
 from bellwether.config.policy_loader import parse_policy
 from bellwether.errors import ConfigurationError
 from bellwether.verdict import (
@@ -228,6 +229,106 @@ def test_a_satisfiable_matrix_produces_no_failures() -> None:
     profile = default_policy("medium")
     targets = [api_loop_target("anthropic"), api_loop_target("openai")]
     assert check_preconditions(profile, targets, available_planes=ALL_PLANES) == []  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# §16.4 — requires.min_bellwether_version
+# ---------------------------------------------------------------------------
+
+
+def _version_profile(minimum: str) -> ProfileSpec:
+    """A bare profile whose only requirement is a minimum Bellwether version."""
+    return ProfileSpec(requires=Requires(min_bellwether_version=minimum))
+
+
+def test_a_running_version_below_the_minimum_is_refused() -> None:
+    """§16.4: a policy written against a future build (min 0.3) refuses on a 0.1 runner,
+    before the matrix is paid for — the same run the missing-plane clause blocks, caught one
+    rung earlier with a version-shaped remedy."""
+    profile = _version_profile("0.3")
+    failures = check_preconditions(profile, [], running_version="0.1.0.dev0")
+
+    version_failures = [f for f in failures if f.gate == "requires.min_bellwether_version"]
+    assert version_failures
+    assert "requires Bellwether >= 0.3" in version_failures[0].remedy
+    assert "0.1.0.dev0" in version_failures[0].remedy
+    assert version_failures[0].target == "(runner)"
+
+
+@pytest.mark.parametrize("running", ["0.3", "0.3.0", "0.3.1", "1.0", "2.0.0"])
+def test_a_running_version_at_or_above_the_minimum_passes(running: str) -> None:
+    """0.3, 0.3.0 (padding-equal), and anything later all satisfy `min 0.3`."""
+    profile = _version_profile("0.3")
+    failures = check_preconditions(profile, [], running_version=running)
+    assert not any(f.gate == "requires.min_bellwether_version" for f in failures)
+
+
+def test_a_dev_build_of_the_minimum_does_not_satisfy_it() -> None:
+    """A pre-release sorts below the same final release: 0.3.dev0 does not clear `min 0.3`.
+    The safe direction for a start-blocking gate — refuse a borderline build, never admit
+    one on a suffix the rule does not fully model."""
+    profile = _version_profile("0.3")
+    failures = check_preconditions(profile, [], running_version="0.3.dev0")
+    assert any(f.gate == "requires.min_bellwether_version" for f in failures)
+
+
+def test_the_version_clause_is_not_evaluated_without_a_running_version() -> None:
+    """The pure check stays pure: a caller that cannot name the running version (the
+    default) makes no version comparison rather than importing __version__ itself."""
+    profile = _version_profile("0.3")
+    failures = check_preconditions(profile, [], running_version=None)
+    assert not any(f.gate == "requires.min_bellwether_version" for f in failures)
+
+
+def test_an_unparseable_minimum_version_is_itself_a_start_blocker() -> None:
+    """A `min_bellwether_version` the ordering rule cannot read is refused, not waved
+    through: the check cannot promise the requirement is met, so it names the bad value."""
+    profile = _version_profile("latest")
+    failures = check_preconditions(profile, [], running_version="0.1.0.dev0")
+
+    version_failures = [f for f in failures if f.gate == "requires.min_bellwether_version"]
+    assert version_failures
+    assert "not a recognisable version" in version_failures[0].remedy
+
+
+def test_the_committed_ordering_rule() -> None:
+    """The rule itself (see `_parse_version`): a release segment of leading integers, any
+    suffix marking a pre-release that sorts below the bare release, missing trailing
+    components padded with zeros."""
+    from bellwether.verdict.precondition import _parse_version, _version_lt
+
+    assert _parse_version("0.1.0.dev0") == ((0, 1, 0), False)
+    assert _parse_version("0.3") == ((0, 3), True)
+    assert _parse_version("1.2.3rc1") == ((1, 2, 3), False)  # trailing marker on a component
+    assert _parse_version("latest") is None
+    assert _parse_version("") is None
+
+    assert _version_lt(((0, 1, 0), False), ((0, 3), True))  # 0.1.0.dev < 0.3, release decides
+    assert _version_lt(((0, 3), False), ((0, 3), True))  # 0.3.dev < 0.3, finality decides
+    assert not _version_lt(((0, 3, 0), True), ((0, 3), True))  # 0.3.0 == 0.3, padding-equal
+    assert not _version_lt(((0, 3), True), ((0, 3), True))  # equal is not less-than
+    assert not _version_lt(((1, 0), True), ((0, 3), True))  # 1.0 > 0.3
+
+
+def test_the_high_profile_refuses_on_the_running_dev_version_via_preflight() -> None:
+    """End to end through the composition layer: the shipped `high` profile sets
+    min_bellwether_version 0.3, and `preflight_failures` threads the real installed version
+    (0.1.x.dev) so the clause fires on the run/doctor path, not just the pure check."""
+    import yaml
+
+    from bellwether.cli.orchestrator import TargetInfo
+    from bellwether.cli.preflight import preflight_failures
+    from bellwether.config import parse_config, template_path
+
+    config = parse_config(yaml.safe_load(template_path("config.yaml").read_text(encoding="utf-8")))
+    profile = default_policy("high")
+    targets = [
+        TargetInfo(spec.harness, spec.provider, spec.model_alias)
+        for spec in profile.matrix.required_targets  # type: ignore[attr-defined]
+    ]
+
+    failures = preflight_failures(config, profile, targets)  # type: ignore[arg-type]
+    assert any(f.gate == "requires.min_bellwether_version" for f in failures)
 
 
 # ---------------------------------------------------------------------------
