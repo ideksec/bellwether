@@ -44,6 +44,7 @@ from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
 from bellwether.harness import ModelClient, RunLimits, build_model_client
 from bellwether.skill import SkillPackage
+from bellwether.verdict import validate_capability_weights
 
 __all__ = [
     "ExecutorFactory",
@@ -128,6 +129,18 @@ def run_evaluation(
     refuse_on_preflight_failures(
         config, resolved.profile, targets, profile_name=resolved.profile_name
     )
+
+    # §16.1: a capability class the manifest denies must not be weighted 0. Weight 0 erases it
+    # from the risk-weighted Jaccard — the one figure feeding the BCI — so a skill could be
+    # denied a tool by its own manifest and still post a clean consistency score while using it.
+    # This is a *cross-document* check (policy weights × manifest deny list) neither document can
+    # make alone, so it runs here, where both are in hand, and raises before a container is paid
+    # for. A denied tool maps to the `tool:<name>` class the weight table names.
+    if package.manifest is not None:
+        validate_capability_weights(
+            resolved.profile.metrics.capability_risk_weights,
+            deny_classes={f"tool:{tool}" for tool in package.manifest.declared_scope.tools.deny},
+        )
 
     model_id_by_slug = {rt.target.slug: rt.model_id for rt in resolved.targets}
     provider_by_slug = {rt.target.slug: rt.target.provider for rt in resolved.targets}

@@ -230,6 +230,23 @@ version is threaded in from `cli/preflight.py` (`bellwether.__version__`) as a p
 (min `0.3`) now refuses on both the version and its missing capture planes on this v0.1 runner, the
 version failure carrying a version-shaped remedy the plane failure cannot (see spec-notes §16.4).
 
+**The two weight validators then got wired to the real paths** (§16.1, §13.7) — built and tested
+since WP-11, but called from nowhere, so a mis-weighted policy was discovered late or never. The
+higher-value one is the **cross-document §16.1 check** now in `run_evaluation`: a capability class
+the manifest denies must not be weighted 0, because weight 0 erases it from the risk-weighted
+Jaccard — the one figure feeding the BCI — so a skill could be denied a tool by its own manifest and
+still post a clean consistency score while using it. Neither document can make the check alone
+(policy holds the weights, the manifest holds the deny list), so it runs where both are in hand and
+**refuses before a container is paid for**, alongside the §16.4 preflight; a denied tool maps to the
+`tool:<name>` class the weight table names. This is the project's signature failure mode — a control
+that renders clean without running — closed one more place. The **§13.7 BCI-weight check** is now a
+`doctor` row: a component weighted 0 does not disable the component (that is
+`metrics.components_excluded`) but silently drops it from the composite, so `doctor` warns, named to
+file and key, before a run rather than after a quietly-wrong BCI. The config model already rejects a
+weight set that does not sum to 1.0, so the zero-weight warning is the residual foot-gun worth
+surfacing; the row reads `ok` on a clean scaffold rather than being omitted (an absent check reads
+as a passed one).
+
 ---
 
 ## Where the build is
@@ -269,7 +286,7 @@ version failure carrying a version-shaped remedy the plane failure cannot (see s
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1029 tests: 975 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1032 tests: 978 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -933,7 +950,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
 | `requires.min_bellwether_version` in the §16.4 preflight — **closed** | `cli/preflight.py`, `verdict/precondition.py` | The last disclosed BW-51 skip. Now checked: `preflight_failures` threads the running `__version__` into `check_preconditions`, which owns a committed conservative-PEP-440 ordering rule (`_parse_version`/`_version_lt` — no `packaging` dependency). A running version below the policy minimum, or an unparseable minimum, refuses before spending; the shipped `high` profile (min `0.3`) now refuses on both the version and its missing planes on a v0.1 runner (spec-notes §16.4). |
-| Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
+| Weight validation wired to `doctor`/`run` — **closed** | `cli/run.py`, `cli/app.py` | Both validators are now called on the real paths. `run_evaluation` runs the cross-document §16.1 check (policy `capability_risk_weights` × the manifest's `tools.deny`, mapped to `tool:<name>`) and refuses before spending if a manifest-denied class is weighted 0 — that would erase it from the risk-weighted Jaccard and let a skill post a clean consistency score while using a denied tool. `doctor` runs the §13.7 BCI-weight check on `config.metrics.bci_weights`, surfacing a zero component (which silently drops from the composite — the config model already rejects a non-1.0 sum) named to file and key, as a `warn` row (advisory, not blocking). |
 | Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
 | Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |

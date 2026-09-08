@@ -35,6 +35,7 @@ from bellwether.config import (
 from bellwether.determinism import canonical_json
 from bellwether.errors import BellwetherError, ConfigurationError
 from bellwether.sandbox import DockerBackend, overlay_available
+from bellwether.verdict import validate_bci_weights
 
 __all__ = ["ExitCode", "app", "main"]
 
@@ -185,6 +186,27 @@ def doctor(
                 "check": "enforced settings (§21)",
                 "status": "ok",
                 "detail": "no setting is disabled that would make a result unearned",
+            }
+        )
+
+    # §13.7: a BCI component weighted 0 does not disable the component — it silently drops it
+    # from the composite (use metrics.components_excluded to disable one). The config model
+    # already rejects a weight set that does not sum to 1.0, so what remains to catch here is a
+    # zero weight, surfaced named to file and key before a run rather than discovered in a
+    # quietly-wrong BCI after one.
+    _bci_warnings = validate_bci_weights(
+        loaded_config.metrics.bci_weights.model_dump(), source=str(config)
+    )
+    for _warning in _bci_warnings:
+        checks.append(
+            {"check": "BCI component weights (§13.7)", "status": "warn", "detail": _warning}
+        )
+    if not _bci_warnings:
+        checks.append(
+            {
+                "check": "BCI component weights (§13.7)",
+                "status": "ok",
+                "detail": "five components sum to 1.0 with no zero weight",
             }
         )
 

@@ -234,6 +234,63 @@ def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> N
     assert payload["blocking_problems"] == 0
 
 
+def test_doctor_warns_when_a_bci_component_is_weighted_zero(tmp_path: Path) -> None:
+    """§13.7: a BCI component weighted 0 does not disable the component — it silently drops it
+    from the composite (use metrics.components_excluded to disable one). The config model already
+    rejects a weight set that does not sum to 1.0, so doctor catches the remaining foot-gun — a
+    zero weight — named to file and key before a run rather than in a quietly-wrong BCI after."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    config_path = tmp_path / ".bellwether" / "config.yaml"
+    # Zero the output component and move its weight to outcome so the set still sums to 1.0 —
+    # otherwise the config model rejects it before doctor's own check ever runs.
+    text = config_path.read_text(encoding="utf-8")
+    text = text.replace("    outcome: 0.30", "    outcome: 0.35").replace(
+        "    output: 0.05", "    output: 0.00"
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    payload = json.loads(result.output)
+    checks = {check["check"]: check for check in payload["checks"]}
+    assert "BCI component weights (§13.7)" in checks
+    bci = checks["BCI component weights (§13.7)"]
+    assert bci["status"] == "warn"
+    assert "output" in bci["detail"]  # names the offending key
+    assert "components_excluded" in bci["detail"]  # names the right remedy
+    assert str(config_path) in bci["detail"]  # names the file
+    # Advisory, not blocking — the spec calls for a warning, not a failure.
+    assert payload["blocking_problems"] == 0
+
+
+def test_doctor_reports_ok_bci_weights_on_a_fresh_scaffold(tmp_path: Path) -> None:
+    """The scaffold's five components sum to 1.0 with no zero weight, so the row is `ok` — not
+    omitted. A check that only appears when it fails reads, when absent, as one that passed."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(tmp_path / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    checks = {check["check"]: check for check in json.loads(result.output)["checks"]}
+    assert checks["BCI component weights (§13.7)"]["status"] == "ok"
+
+
 def test_changed_skills_exits_zero_when_nothing_matches(tmp_path: Path) -> None:
     """The CI workflow pipes `git diff` into `changed-skills` under `set -o pipefail` with no
     error suppression, so this exit-code contract is load-bearing: empty output with exit 0 is
