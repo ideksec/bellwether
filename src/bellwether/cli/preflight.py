@@ -15,16 +15,18 @@ unobserved plane. So the rule is: a plane is available exactly when the config w
 component that captures it, mirroring `run.build_proxy_provider` / `build_resolver_provider`
 — the same predicates, read from the same fields.
 
-Known bound, stated rather than hidden: ``requires.min_bellwether_version`` is not checked
-here. Comparing versions needs a version-ordering rule this project has not committed to, and
-the one profile that sets it (``high``) already refuses on its missing capture planes, so
-skipping it cannot produce a false start today. It is tracked in STATUS as outstanding.
+``requires.min_bellwether_version`` is checked here too: the running version this layer
+knows (``bellwether.__version__``) is threaded into ``check_preconditions``, which owns the
+committed ordering rule (a conservative PEP 440 subset — see ``verdict/precondition.py``).
+This layer is the only one that can name the running version, so the pure check takes it as
+an argument rather than importing it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from bellwether import __version__
 from bellwether.cli.orchestrator import TargetInfo
 from bellwether.config.models.config import Config
 from bellwether.config.models.policy import ProfileSpec
@@ -98,13 +100,20 @@ def _declare(config: Config, target: TargetInfo) -> TargetDeclaration | Precondi
 
 
 def preflight_failures(
-    config: Config, profile: ProfileSpec, targets: Sequence[TargetInfo]
+    config: Config,
+    profile: ProfileSpec,
+    targets: Sequence[TargetInfo],
+    *,
+    running_version: str = __version__,
 ) -> list[PreconditionFailure]:
     """Every reason this profile cannot be satisfied by this composition, or an empty list.
 
     No-adapter targets are reported alongside the §16.4 check's own findings rather than
     short-circuiting it, so one doctor row or one refusal shows the whole picture instead
     of revealing failures one fix at a time.
+
+    ``running_version`` defaults to the installed Bellwether version and is a parameter only
+    so a test can drive the ``min_bellwether_version`` clause against a chosen version.
     """
     failures: list[PreconditionFailure] = []
     declarations: list[TargetDeclaration] = []
@@ -115,7 +124,12 @@ def preflight_failures(
         else:
             declarations.append(declared)
     failures.extend(
-        check_preconditions(profile, declarations, available_planes=available_planes(config))
+        check_preconditions(
+            profile,
+            declarations,
+            available_planes=available_planes(config),
+            running_version=running_version,
+        )
     )
     return failures
 

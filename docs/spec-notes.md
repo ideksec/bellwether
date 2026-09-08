@@ -1665,10 +1665,23 @@ against that profile's own matrix targets, replacing the pending row; rows are `
 `critical`, because an unsatisfiable profile is a fact about policy-vs-composition and `run`
 refuses it with the same failures.
 
-Known bound, disclosed: `requires.min_bellwether_version` is not checked. Version comparison needs
-an ordering rule the project has not committed to, and the one profile that sets it already
-refuses on its missing capture planes, so the skip cannot produce a false start today. Tracked in
-STATUS → Outstanding actions.
+`requires.min_bellwether_version` is now checked too (it was disclosed here as an outstanding
+skip: version comparison needed an ordering rule the project had not committed to). The committed
+rule lives in `verdict/precondition.py` (`_parse_version`/`_version_lt`): a deliberately
+conservative subset of PEP 440, chosen so no `packaging` dependency enters a project that already
+hand-rolls Wilson, BCa, and clustering to keep the dependency surface thin. The **release segment**
+is the leading run of dot-separated integer components, missing trailing components padded with
+zeros (`0.3` == `0.3.0`); any suffix (`.dev0`, `rc1`, `+local`, even a `post` release PEP 440 would
+rank *above* the base) marks a *pre-release of* that segment and sorts strictly below the bare
+release. That last choice is the safe direction for a start-blocking gate: an unmodelled suffix can
+only ever make the check refuse a borderline build, never falsely admit one. An unparseable minimum
+(no leading integer, e.g. `"latest"`) is itself a start-blocker rather than a silent pass — the
+check cannot promise the requirement is met, so it names the bad value. The comparison stays out of
+the pure `check_preconditions`: the running version is threaded in from `cli/preflight.py` (the only
+layer that can name `bellwether.__version__`) as a parameter, `None` meaning "not evaluated", mirroring
+how `available_planes` supplies composition truth. The shipped `high` profile (min `0.3`) now refuses
+on both the version and its missing capture planes on a v0.1 runner — belt and suspenders, and the
+version failure carries a version-shaped remedy the plane failure cannot.
 
 ## §10.4, §16.2, §10.7 — The canary gate scores the leak class only, and passes on `partial` fidelity deliberately
 

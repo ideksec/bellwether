@@ -154,8 +154,8 @@ Still deferred (work packages, not quick fixes): the network/write scope *deriva
 undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
 the `credential_read_undeclared` disposition into a scored gate (needs the read-capture plane),
 the blocking static-scan gate (lands with the §15 scanner),
-`requires.min_bellwether_version` in the preflight, and hash-pinning the full sidecar dependency
-closure.
+and hash-pinning the full sidecar dependency closure.
+(`requires.min_bellwether_version` in the preflight has since been closed — see the entry below.)
 
 **WP-20 then closed — the v0.1 acceptance corpus is complete** (eleven skills, three slices). The
 last five skills each assert a property the smooth metrics cannot deliver, and building them
@@ -216,6 +216,20 @@ runs the CLI in the hardened sandbox behind the real proxy against the scripted 
 activation by the harness, hook corroboration, model-API-only egress with the real key absent
 from every artifact, and the write landing on Plane B (see spec-notes §9.4/§10.1/§11.2/§3.3).
 
+**The last disclosed BW-51 skip then closed — `requires.min_bellwether_version` is checked in the
+§16.4 preflight.** It was the one precondition the wired check left out, because comparing versions
+needed an ordering rule the project had not committed to. The rule is now committed in
+`verdict/precondition.py` (`_parse_version`/`_version_lt`): a deliberately conservative subset of
+PEP 440 — release segment of leading integers, missing components padded with zeros (`0.3` ==
+`0.3.0`), any suffix (`.dev0`, `rc1`, even a `post` release) sorting *below* the bare release — so
+no `packaging` dependency enters a project that hand-rolls its stats to keep the surface thin, and
+an unmodelled suffix can only ever refuse a borderline start, never falsely admit one. An
+unparseable minimum (`"latest"`) is itself a start-blocker rather than a silent pass. The running
+version is threaded in from `cli/preflight.py` (`bellwether.__version__`) as a parameter, keeping
+`check_preconditions` pure — the same pattern `available_planes` uses. The shipped `high` profile
+(min `0.3`) now refuses on both the version and its missing capture planes on this v0.1 runner, the
+version failure carrying a version-shaped remedy the plane failure cannot (see spec-notes §16.4).
+
 ---
 
 ## Where the build is
@@ -255,7 +269,7 @@ from every artifact, and the write landing on Plane B (see spec-notes §9.4/§10
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1010 tests: 956 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1029 tests: 975 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -918,7 +932,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Item | Where | Why it is still open |
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
-| `requires.min_bellwether_version` is not checked by the §16.4 preflight | `cli/preflight.py` | The rest of BW-51 is closed — `run` refuses an unsatisfiable policy before spending and `doctor` evaluates the check per profile — but version comparison needs an ordering rule the project has not committed to, and the one profile that sets it (`high`) already refuses on its missing capture planes, so skipping it cannot produce a false start today. |
+| `requires.min_bellwether_version` in the §16.4 preflight — **closed** | `cli/preflight.py`, `verdict/precondition.py` | The last disclosed BW-51 skip. Now checked: `preflight_failures` threads the running `__version__` into `check_preconditions`, which owns a committed conservative-PEP-440 ordering rule (`_parse_version`/`_version_lt` — no `packaging` dependency). A running version below the policy minimum, or an unparseable minimum, refuses before spending; the shipped `high` profile (min `0.3`) now refuses on both the version and its missing planes on a v0.1 runner (spec-notes §16.4). |
 | Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
 | Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |

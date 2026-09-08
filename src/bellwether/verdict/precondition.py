@@ -33,12 +33,16 @@ rather than after it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from bellwether.config.models.policy import ProfileSpec
 
 __all__ = ["PreconditionFailure", "TargetDeclaration", "check_preconditions"]
+
+#: A dotted-version component, split into its leading integer and whatever trails it.
+_VERSION_COMPONENT = re.compile(r"^(\d+)(.*)$")
 
 
 @dataclass(frozen=True)
@@ -73,11 +77,89 @@ class PreconditionFailure:
         )
 
 
+def _parse_version(version: str) -> tuple[tuple[int, ...], bool] | None:
+    """Split a version into its ordering key: ``(release-segment, is-final)``.
+
+    The **release segment** is the leading run of dot-separated integer components; a
+    version carrying any further suffix (a ``.dev0``, ``rc1``, ``1.0.post2``, ``+local`` …)
+    is a *pre-release of* that segment and sorts strictly below the bare release. Returns
+    ``None`` for a string with no leading integer at all — a version this rule declines to
+    order rather than guess at.
+
+    This is the committed ordering rule (see :func:`_min_version_failure`): a deliberately
+    conservative subset of PEP 440, enough to gate ``min_bellwether_version`` without a
+    packaging dependency. It orders the simple ``MAJOR.MINOR[.PATCH]`` versions the policy
+    uses, and every unknown suffix — including ``post`` releases PEP 440 would rank *above*
+    the base — is treated as "below", so the rule can only ever refuse a borderline start,
+    never falsely admit one.
+    """
+    release: list[int] = []
+    final = True
+    for part in version.strip().split("."):
+        match = _VERSION_COMPONENT.match(part)
+        if match is None:
+            # A component with no leading integer (``dev0``, ``rc1``) begins the suffix.
+            final = False
+            break
+        release.append(int(match.group(1)))
+        if match.group(2):
+            # Trailing non-digits on an otherwise-numeric component (``3rc1``) — a marker.
+            final = False
+            break
+    if not release:
+        return None
+    return tuple(release), final
+
+
+def _version_lt(lower: tuple[tuple[int, ...], bool], upper: tuple[tuple[int, ...], bool]) -> bool:
+    """``lower < upper`` under the committed ordering, comparing release then finality."""
+    lower_release, lower_final = lower
+    upper_release, upper_final = upper
+    width = max(len(lower_release), len(upper_release))
+    lower_padded = lower_release + (0,) * (width - len(lower_release))
+    upper_padded = upper_release + (0,) * (width - len(upper_release))
+    if lower_padded != upper_padded:
+        return lower_padded < upper_padded
+    # Equal release segments: a pre-release sorts below the same final release.
+    return (not lower_final) and upper_final
+
+
+def _min_version_failure(minimum: str, running: str) -> PreconditionFailure | None:
+    """Refuse if ``running`` is below the policy's ``min_bellwether_version`` (§16.4).
+
+    An unparseable ``minimum`` is itself a start-blocking fault: the check cannot promise
+    the requirement is met, so it refuses with a remedy rather than waving the run through.
+    """
+    minimum_key = _parse_version(minimum)
+    if minimum_key is None:
+        return PreconditionFailure(
+            gate="requires.min_bellwether_version",
+            target="(runner)",
+            remedy=(
+                f"requires.min_bellwether_version is set to {minimum!r}, which is not a "
+                "recognisable version (expected a dotted release such as '0.3'); correct the "
+                "policy, or remove the requirement"
+            ),
+        )
+    running_key = _parse_version(running)
+    if running_key is None or _version_lt(running_key, minimum_key):
+        return PreconditionFailure(
+            gate="requires.min_bellwether_version",
+            target="(runner)",
+            remedy=(
+                f"this policy requires Bellwether >= {minimum} but the running version is "
+                f"{running}; upgrade Bellwether, or lower requires.min_bellwether_version"
+            ),
+        )
+    return None
+
+
 def check_preconditions(
     profile: ProfileSpec,
     targets: Sequence[TargetDeclaration],
     *,
     available_planes: frozenset[str] = frozenset(),
+    running_version: str | None = None,
 ) -> list[PreconditionFailure]:
     """Return every reason the matrix cannot satisfy the policy, or an empty list.
 
@@ -91,6 +173,10 @@ def check_preconditions(
         available_planes: The capture planes the current runner can actually provide
             (§10.7). A required plane absent from this set is an unsatisfiable gate, not a
             degraded run.
+        running_version: The Bellwether version this run would execute under, supplied by
+            the composition layer (``cli/preflight.py``) so this function stays pure. When
+            ``None`` the ``requires.min_bellwether_version`` clause is not evaluated — a
+            caller that cannot name the running version cannot make the comparison.
     """
     failures: list[PreconditionFailure] = []
     gates = profile.gates
@@ -182,8 +268,18 @@ def check_preconditions(
             )
         )
 
-    # (2) Required capture planes the runner cannot provide.
+    # (2) Required capture planes the runner cannot provide, and the minimum Bellwether
+    # version. Both live under `requires` (§16.4): the version bound catches a policy that
+    # names evidence a *future* build produces — it refuses the same run the missing-plane
+    # clause does, one rung earlier and with a version-shaped remedy, so a policy written
+    # against v0.3 fails clearly on a v0.1 runner instead of only via its planes.
     if profile.requires is not None:
+        if profile.requires.min_bellwether_version is not None and running_version is not None:
+            version_failure = _min_version_failure(
+                profile.requires.min_bellwether_version, running_version
+            )
+            if version_failure is not None:
+                failures.append(version_failure)
         missing = [p for p in profile.requires.capture_planes if p not in available_planes]
         for plane in sorted(set(missing)):
             failures.append(
