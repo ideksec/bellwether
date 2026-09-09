@@ -1092,9 +1092,35 @@ the credential is passed in rather than read from the environment, keeping the c
 explicit. **(2)** Two parsing edges have teeth: an unrecognised `stop_reason` maps to `other`, never
 silently to `end_turn` (a new provider stop reason must not read as a clean finish), and
 `model_id_reported` comes from the response's `model` field, so §9.3's requested-vs-served divergence
-is recorded. `openai_compatible` is refused with a clear message rather than half-built: its Chat
-Completions shape needs a message translation the loop's Anthropic-shaped messages don't carry, so it
-is a distinct client, not a config toggle.
+is recorded.
+
+**`openai_compatible` now has a client** (it was previously refused as a distinct follow-on). It is a
+separate client, not a config toggle, because the Chat Completions shape genuinely differs:
+`OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat
+Completions array (the system prompt becomes a leading `system` message; an assistant turn's
+`tool_use` blocks become `tool_calls` with the tool input serialised to the JSON-string `arguments`
+the API wants, its `content` `null` when the turn was tool calls only; each `tool_result` block
+becomes its own `tool` message keyed by `tool_call_id`, preserving the model-assigned id for
+cross-plane correlation) and translates the response back — `finish_reason` → the same neutral stop
+vocabulary (unknown → `other`), `prompt`/`completion_tokens` → input/output with
+`prompt_tokens_details.cached_tokens` as the cache read, and a tool call's `arguments` JSON-decoded
+to a dict (an unparseable or non-object value is a controlled error, not a broken call passed on).
+The same pure-functions-plus-transport-seam discipline applies, so all of it is tested without a
+network or a key.
+
+**The §3.3 credential guard extends to it, with a different trust source.** The api-loop client
+sends the *real* key host-side, so an attacker-controlled `base_url` in the checked-in `config.yaml`
+would exfiltrate it — the exact reason `anthropic` is pinned to `TRUSTED_ANTHROPIC_HOSTS`. But
+`openai_compatible` exists *so that* the endpoint can be operator-chosen (a gateway, a local
+server), so there is no single host to hard-code. The resolution: pin to HTTPS on
+`DEFAULT_TRUSTED_OPENAI_HOSTS` (the canonical `api.openai.com`) plus any host named in the
+`BELLWETHER_TRUSTED_MODEL_HOSTS` environment variable — **trusted config outside the evaluated
+checkout**, which a malicious PR editing `config.yaml` cannot reach. The cli layer (`run_evaluation`)
+reads that env var and threads the host set into `build_model_client`; the harness module never reads
+the environment itself, keeping the credential path explicit and the client testable. Cleartext is
+refused even for a trusted host (the key would leak on the wire), and label-boundary matching stops a
+lookalike (`api.openai.com.evil.test`) from posing as the canonical endpoint — the same guard shape
+as the Anthropic pin.
 
 ---
 

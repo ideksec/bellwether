@@ -10,9 +10,20 @@ whose model calls route through the proxy with the scoped token.
 The wire translation is kept as pure functions and the HTTP call behind a ``transport`` seam, so the
 request shape, the response parsing, the auth headers, and the error mapping are all unit-tested
 without a network or an API key — the same discipline the rest of the pipeline follows. The
-``api-loop`` adapter already builds messages in the Anthropic content-block shape, so the Anthropic
-client is a near-passthrough; an ``openai_compatible`` client needs a message-shape translation and
-is a separate follow-on (see :func:`build_model_client`).
+``api-loop`` adapter builds messages in the Anthropic content-block shape, so the Anthropic client is
+a near-passthrough; the ``openai_compatible`` client translates that shape into the Chat Completions
+messages array (the system prompt becomes a leading ``system`` message, ``tool_use`` blocks become
+assistant ``tool_calls`` carrying JSON-string arguments, and each ``tool_result`` block becomes its
+own ``tool`` message keyed by ``tool_call_id``) and translates the response back.
+
+The §3.3 credential guard applies to both, because the ``api-loop`` client runs host-side with the
+**real** key. Anthropic is pinned to :data:`TRUSTED_ANTHROPIC_HOSTS`. ``openai_compatible`` exists
+precisely so the endpoint can be operator-chosen, so there is no single host to hard-code: it is
+pinned to HTTPS on :data:`DEFAULT_TRUSTED_OPENAI_HOSTS` (the canonical OpenAI endpoint) plus any host
+named in the :data:`TRUSTED_MODEL_HOSTS_ENV` environment variable — trusted config *outside* the
+evaluated checkout, so a ``base_url`` a malicious PR edits into ``config.yaml`` cannot redirect the
+real key to an attacker. The cli layer reads that env var and threads it in; this module never reads
+the environment itself.
 """
 
 from __future__ import annotations
@@ -37,13 +48,19 @@ __all__ = [
     "DEFAULT_ANTHROPIC_BASE_URL",
     "DEFAULT_ANTHROPIC_VERSION",
     "DEFAULT_MAX_TOKENS",
+    "DEFAULT_TRUSTED_OPENAI_HOSTS",
     "TRUSTED_ANTHROPIC_HOSTS",
+    "TRUSTED_MODEL_HOSTS_ENV",
     "AnthropicClient",
     "HttpResponse",
     "HttpTransport",
+    "OpenAiCompatibleClient",
     "anthropic_request_body",
     "build_model_client",
+    "openai_messages",
+    "openai_request_body",
     "parse_anthropic_response",
+    "parse_openai_response",
 ]
 
 #: The Anthropic API host, used when a provider of type ``anthropic`` sets no ``base_url``. This is
@@ -63,6 +80,17 @@ DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 #: A required field on the Messages API. A ceiling, not a target — the loop stops when the model
 #: stops; this only bounds a runaway single turn.
 DEFAULT_MAX_TOKENS = 4096
+
+#: The hosts an ``openai_compatible`` client will send the **real** key to without extra config —
+#: the canonical OpenAI endpoint only. Unlike Anthropic there is no single endpoint for the type
+#: (its whole point is an operator-chosen ``base_url``), so a custom gateway must be named out of
+#: band via :data:`TRUSTED_MODEL_HOSTS_ENV`, never trusted from the checked-in ``config.yaml``.
+DEFAULT_TRUSTED_OPENAI_HOSTS: frozenset[str] = frozenset({"api.openai.com"})
+#: Environment variable naming additional trusted model-endpoint hosts (comma-separated). It is
+#: read by the cli layer from the process environment — trusted configuration *outside* the
+#: evaluated checkout — so a ``base_url`` a malicious PR edits into ``config.yaml`` cannot add a
+#: host the real key may be sent to. This module never reads it; the value is threaded in.
+TRUSTED_MODEL_HOSTS_ENV = "BELLWETHER_TRUSTED_MODEL_HOSTS"
 
 
 class HttpResponse(NamedTuple):
@@ -244,6 +272,240 @@ class AnthropicClient:
         return parse_anthropic_response(payload)
 
 
+#: OpenAI ``finish_reason`` → the neutral :class:`ModelTurn` vocabulary. As with Anthropic, an
+#: unrecognised reason maps to ``other`` rather than being read as a clean end of turn.
+_OPENAI_FINISH_REASONS: dict[str, str] = {
+    "stop": "end_turn",
+    "tool_calls": "tool_use",
+    "length": "max_tokens",
+    "content_filter": "other",
+    "function_call": "other",
+}
+
+
+def _stringify_tool_result(content: Any) -> str:
+    """The tool-result content, as the string Chat Completions expects for a ``tool`` message.
+
+    The ``api-loop`` loop already carries the result as a string; a structured value (some
+    Anthropic-shaped callers use a block list) is serialised rather than dropped."""
+    if isinstance(content, str):
+        return content
+    return json.dumps(content)
+
+
+def openai_messages(request: ModelRequest) -> list[dict[str, Any]]:
+    """Translate the loop's Anthropic content-block messages into the Chat Completions array.
+
+    The system prompt leads as a ``system`` message; an assistant turn's ``tool_use`` blocks become
+    ``tool_calls`` with the tool input serialised to the JSON-string ``arguments`` the API wants
+    (its ``content`` is ``null`` when the turn was tool calls only); and a user turn's ``tool_result``
+    blocks each become their own ``tool`` message keyed by ``tool_call_id`` — the id the model
+    assigned, preserved end to end for cross-plane correlation (§11.5). The relative order the loop
+    built (assistant tool_calls, then their results) is preserved, which the API requires.
+    """
+    messages: list[dict[str, Any]] = []
+    if request.system:
+        messages.append({"role": "system", "content": request.system})
+    for message in request.messages:
+        role = message.get("role")
+        blocks = message.get("content")
+        blocks = blocks if isinstance(blocks, list) else []
+        text = "".join(
+            str(b.get("text", ""))
+            for b in blocks
+            if isinstance(b, Mapping) and b.get("type") == "text"
+        )
+        if role == "assistant":
+            tool_calls = [
+                {
+                    "id": str(b.get("id", "")),
+                    "type": "function",
+                    "function": {
+                        "name": str(b.get("name", "")),
+                        "arguments": json.dumps(b.get("input", {})),
+                    },
+                }
+                for b in blocks
+                if isinstance(b, Mapping) and b.get("type") == "tool_use"
+            ]
+            assistant: dict[str, Any] = {"role": "assistant", "content": text or None}
+            if tool_calls:
+                assistant["tool_calls"] = tool_calls
+            messages.append(assistant)
+            continue
+        # A user turn: any text is a user message; each tool_result becomes its own tool message.
+        if text or not blocks:
+            messages.append({"role": "user", "content": text})
+        for b in blocks:
+            if isinstance(b, Mapping) and b.get("type") == "tool_result":
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(b.get("tool_use_id", "")),
+                        "content": _stringify_tool_result(b.get("content", "")),
+                    }
+                )
+    return messages
+
+
+def openai_request_body(request: ModelRequest, *, max_tokens: int) -> dict[str, Any]:
+    """The Chat Completions request body for one :class:`ModelRequest`.
+
+    Tools translate into the ``function`` wrapper (``input_schema`` → ``parameters``); with none
+    present the key is omitted, so a no-tool request is not sent an empty tool list.
+    """
+    body: dict[str, Any] = {
+        "model": request.model_id,
+        "max_tokens": max_tokens,
+        "messages": openai_messages(request),
+    }
+    if request.tools:
+        body["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                },
+            }
+            for tool in request.tools
+        ]
+    return body
+
+
+def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+    """Decode a Chat Completions tool call's ``arguments`` into a dict, or raise.
+
+    The API sends a JSON *string*; an empty string is an empty argument object. A non-JSON or
+    non-object value is a changed or corrupt response, refused rather than passed on as a broken
+    tool call (some compatible servers hand back an object directly — accepted for robustness).
+    """
+    if isinstance(arguments, Mapping):
+        return dict(arguments)
+    if not isinstance(arguments, str):
+        raise BellwetherError(
+            "model API tool_call 'arguments' was neither a JSON string nor an object"
+        )
+    if arguments.strip() == "":
+        return {}
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError as error:
+        raise BellwetherError(
+            f"model API tool_call 'arguments' was not valid JSON: {error}"
+        ) from error
+    if not isinstance(parsed, Mapping):
+        raise BellwetherError("model API tool_call 'arguments' did not decode to a JSON object")
+    return dict(parsed)
+
+
+def parse_openai_response(payload: Mapping[str, Any]) -> ModelTurn:
+    """Turn a Chat Completions response into a :class:`ModelTurn`, or raise :class:`BellwetherError`.
+
+    The first choice's message supplies the text (``content``, ``null`` when only tools were called)
+    and any ``tool_calls``; ``finish_reason`` maps to the neutral stop vocabulary; ``usage`` maps
+    ``prompt``/``completion_tokens`` to input/output and reads ``prompt_tokens_details.cached_tokens``
+    as the cache read where present (the API exposes no cache-write count, so it stays 0); and the
+    top-level ``model`` is recorded as served, so a silent swap is visible (§9.3). A malformed or
+    changed shape becomes a controlled error rather than escaping from deep in the pipeline.
+    """
+    if not isinstance(payload, Mapping):
+        raise BellwetherError("model API response was not a JSON object")
+
+    choices = payload.get("choices", [])
+    if not isinstance(choices, list) or not choices:
+        raise BellwetherError(
+            "model API response 'choices' was empty or not a list; expected at least one choice"
+        )
+    choice = choices[0]
+    if not isinstance(choice, Mapping):
+        raise BellwetherError("model API response choice was not an object")
+    message = choice.get("message", {})
+    if not isinstance(message, Mapping):
+        raise BellwetherError("model API response choice.message was not an object")
+
+    raw_text = message.get("content")
+    text = "" if raw_text is None else str(raw_text)
+
+    tool_calls_raw = message.get("tool_calls") or []
+    if not isinstance(tool_calls_raw, list):
+        raise BellwetherError("model API response message.tool_calls was not a list")
+    tool_calls: list[ToolCallRequest] = []
+    for raw in tool_calls_raw:
+        if not isinstance(raw, Mapping):
+            raise BellwetherError("model API response contained a tool_call that is not an object")
+        function = raw.get("function", {})
+        if not isinstance(function, Mapping):
+            raise BellwetherError("model API tool_call carried no 'function' object")
+        tool_calls.append(
+            ToolCallRequest(
+                id=str(raw.get("id", "")),
+                name=str(function.get("name", "")),
+                input=_parse_tool_arguments(function.get("arguments", "")),
+            )
+        )
+
+    usage = payload.get("usage", {})
+    if not isinstance(usage, Mapping):
+        raise BellwetherError(
+            f"model API response 'usage' was {type(usage).__name__}, expected an object"
+        )
+    details = usage.get("prompt_tokens_details")
+    cache_read = _int_field(details, "cached_tokens") if isinstance(details, Mapping) else 0
+    stop = choice.get("finish_reason")
+    return ModelTurn(
+        text=text,
+        tool_calls=tuple(tool_calls),
+        stop_reason=_OPENAI_FINISH_REASONS.get(stop or "", "other"),  # type: ignore[arg-type]
+        usage=TurnUsage(
+            input=_int_field(usage, "prompt_tokens"),
+            output=_int_field(usage, "completion_tokens"),
+            cache_read=cache_read,
+            cache_write=0,
+        ),
+        model_id_reported=payload.get("model"),
+    )
+
+
+@dataclass
+class OpenAiCompatibleClient:
+    """A :class:`ModelClient` backed by an OpenAI-compatible Chat Completions endpoint.
+
+    Like :class:`AnthropicClient` it holds the real credential (``repr=False`` so a stray repr does
+    not print it) and reads nothing from the environment. ``base_url`` is the operator-configured
+    endpoint including any version prefix (e.g. ``https://api.openai.com/v1``); the client posts to
+    ``{base_url}/chat/completions``, the convention the OpenAI SDK and compatible servers share.
+    """
+
+    api_key: str = field(repr=False)
+    base_url: str = ""
+    max_tokens: int = DEFAULT_MAX_TOKENS
+    timeout: float = 120.0
+    transport: HttpTransport = _urllib_post
+
+    def complete(self, request: ModelRequest) -> ModelTurn:
+        body = json.dumps(openai_request_body(request, max_tokens=self.max_tokens)).encode("utf-8")
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {self.api_key}",
+        }
+        url = self.base_url.rstrip("/") + "/chat/completions"
+        response = self.transport(url, headers, body, self.timeout)
+        if response.status != 200:
+            snippet = response.body[:500].decode("utf-8", "replace")
+            raise BellwetherError(
+                f"model API returned HTTP {response.status} from {url}: {snippet}"
+            )
+        try:
+            payload = json.loads(response.body)
+        except json.JSONDecodeError as error:
+            raise BellwetherError(
+                f"model API returned a non-JSON body from {url}: {error}"
+            ) from error
+        return parse_openai_response(payload)
+
+
 def _require_trusted_anthropic_endpoint(base_url: str) -> None:
     """Refuse to build a real-key client for any endpoint not on :data:`TRUSTED_ANTHROPIC_HOSTS`.
 
@@ -266,15 +528,43 @@ def _require_trusted_anthropic_endpoint(base_url: str) -> None:
         )
 
 
+def _require_trusted_openai_endpoint(base_url: str, trusted_hosts: frozenset[str]) -> None:
+    """Refuse to build a real-key ``openai_compatible`` client for an untrusted endpoint (§3.3).
+
+    Same invariant as the Anthropic guard, with the trusted set supplied rather than hard-coded: the
+    type exists so the endpoint can vary, so a custom gateway is named out of band (via
+    :data:`TRUSTED_MODEL_HOSTS_ENV`) rather than trusted from the checked-in ``config.yaml`` a
+    malicious PR can edit. HTTPS is required so the key is never sent in cleartext.
+    """
+    parts = urlsplit(base_url)
+    host = (parts.hostname or "").lower()
+    trusted = any(host == h or host.endswith("." + h) for h in trusted_hosts)
+    if parts.scheme != "https" or not trusted:
+        allowed = ", ".join(sorted(trusted_hosts)) or "(none)"
+        raise BellwetherError(
+            f"refusing to send the real API key to base_url {base_url!r}: the host-side model client "
+            f"uses the real credential, so an openai_compatible endpoint is pinned to HTTPS on a "
+            f"trusted host (allowed: {allowed}). config.yaml is part of the evaluated checkout, so a "
+            f"tampered base_url would exfiltrate the key; name a trusted gateway host in the "
+            f"{TRUSTED_MODEL_HOSTS_ENV} environment variable — trusted config outside the checkout — "
+            "not in config.yaml."
+        )
+
+
 def build_model_client(
-    provider: ProviderConfig, *, api_key: str, transport: HttpTransport | None = None
+    provider: ProviderConfig,
+    *,
+    api_key: str,
+    transport: HttpTransport | None = None,
+    trusted_openai_hosts: frozenset[str] = frozenset(),
 ) -> ModelClient:
     """Construct the live client for a configured provider (§9.5, §3.3).
 
-    ``anthropic`` is built after its endpoint is checked against the trusted-host allowlist — the
-    real key travels on this path, so an attacker-controlled ``base_url`` is refused. ``openai_compatible``
-    raises with a clear reason, because its Chat Completions shape needs a message-shape translation
-    the loop's Anthropic-shaped messages do not carry — that client is a distinct follow-on.
+    The real key travels on this path for both types, so each endpoint is checked before a client is
+    built: ``anthropic`` against the pinned :data:`TRUSTED_ANTHROPIC_HOSTS`, and ``openai_compatible``
+    against :data:`DEFAULT_TRUSTED_OPENAI_HOSTS` plus ``trusted_openai_hosts`` — the extra hosts the
+    cli layer parsed from :data:`TRUSTED_MODEL_HOSTS_ENV`, an out-of-checkout source a tampered
+    ``config.yaml`` cannot reach.
     """
     if provider.type == "anthropic":
         base_url = provider.base_url or DEFAULT_ANTHROPIC_BASE_URL
@@ -283,8 +573,13 @@ def build_model_client(
         if transport is not None:
             client.transport = transport
         return client
-    raise BellwetherError(
-        f"provider type {provider.type!r} has no live client yet; only 'anthropic' is implemented. "
-        "An 'openai_compatible' client needs the Chat Completions message translation and lands "
-        "separately."
-    )
+    if provider.type == "openai_compatible":
+        base_url = provider.base_url or ""
+        _require_trusted_openai_endpoint(
+            base_url, DEFAULT_TRUSTED_OPENAI_HOSTS | trusted_openai_hosts
+        )
+        openai_client = OpenAiCompatibleClient(api_key=api_key, base_url=base_url)
+        if transport is not None:
+            openai_client.transport = transport
+        return openai_client
+    raise BellwetherError(f"provider type {provider.type!r} has no live client")

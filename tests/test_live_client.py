@@ -18,10 +18,13 @@ from bellwether.harness import (
     AnthropicClient,
     HttpResponse,
     ModelRequest,
+    OpenAiCompatibleClient,
     ToolSpec,
     anthropic_request_body,
     build_model_client,
+    openai_request_body,
     parse_anthropic_response,
+    parse_openai_response,
 )
 
 _REQUEST = ModelRequest(
@@ -216,12 +219,244 @@ def test_build_model_client_refuses_a_cleartext_endpoint() -> None:
         build_model_client(provider, api_key="k")
 
 
-def test_openai_compatible_has_no_live_client_yet_and_says_so() -> None:
+def test_build_model_client_builds_an_openai_client_for_the_canonical_host() -> None:
     provider = ProviderConfig(
-        type="openai_compatible", base_url="https://x.test", models={"frontier": "m"}
+        type="openai_compatible", base_url="https://api.openai.com/v1", models={"frontier": "m"}
     )
-    with pytest.raises(BellwetherError, match="openai_compatible"):
+    client = build_model_client(provider, api_key="k")
+    assert isinstance(client, OpenAiCompatibleClient)
+
+
+def test_build_model_client_refuses_an_untrusted_openai_base_url() -> None:
+    """§3.3: the host-side client sends the real key, and openai_compatible is operator-chosen — a
+    base_url edited into a checked-in config would exfiltrate the key, so a host that is neither the
+    canonical endpoint nor named out of band is refused."""
+    provider = ProviderConfig(
+        type="openai_compatible", base_url="https://evil.example.com/v1", models={"frontier": "m"}
+    )
+    with pytest.raises(BellwetherError, match="real API key"):
         build_model_client(provider, api_key="k")
+
+
+def test_build_model_client_refuses_a_cleartext_openai_endpoint() -> None:
+    provider = ProviderConfig(
+        type="openai_compatible", base_url="http://api.openai.com/v1", models={"frontier": "m"}
+    )
+    with pytest.raises(BellwetherError, match="real API key"):
+        build_model_client(provider, api_key="k")
+
+
+def test_build_model_client_refuses_an_openai_lookalike_host() -> None:
+    provider = ProviderConfig(
+        type="openai_compatible", base_url="https://api.openai.com.evil.test", models={"f": "m"}
+    )
+    with pytest.raises(BellwetherError, match="real API key"):
+        build_model_client(provider, api_key="k")
+
+
+def test_build_model_client_accepts_a_gateway_host_named_out_of_band() -> None:
+    """A custom gateway is trusted only when named in the env-sourced allowlist the cli threads in —
+    trusted config outside the checkout, which a tampered config.yaml cannot reach."""
+    provider = ProviderConfig(
+        type="openai_compatible", base_url="https://gw.corp.test/v1", models={"frontier": "m"}
+    )
+    with pytest.raises(BellwetherError, match="real API key"):
+        build_model_client(provider, api_key="k")  # not trusted without the out-of-band host
+    client = build_model_client(
+        provider, api_key="k", trusted_openai_hosts=frozenset({"gw.corp.test"})
+    )
+    assert isinstance(client, OpenAiCompatibleClient)
+
+
+# ---------------------------------------------------------------------------
+# openai_compatible — request translation, response parsing, the client
+# ---------------------------------------------------------------------------
+
+_OPENAI_CONVERSATION = ModelRequest(
+    model_id="gpt-x",
+    system="be helpful",
+    messages=(
+        {"role": "user", "content": [{"type": "text", "text": "read a.py"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "ok"},
+                {"type": "tool_use", "id": "tu1", "name": "read", "input": {"path": "a.py"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "data"}],
+        },
+    ),
+    tools=(ToolSpec(name="read", description="read a file", input_schema={"type": "object"}),),
+)
+
+
+def test_openai_translation_maps_system_tool_use_and_tool_result() -> None:
+    """The Anthropic content-block shape the loop builds becomes the Chat Completions array: a
+    leading system message, tool_use → assistant tool_calls with JSON-string arguments, tool_result
+    → a tool message keyed by the same id (§11.5), and tools → the function wrapper."""
+    body = openai_request_body(_OPENAI_CONVERSATION, max_tokens=256)
+    assert body["model"] == "gpt-x"
+    assert body["max_tokens"] == 256
+    messages = body["messages"]
+    assert messages[0] == {"role": "system", "content": "be helpful"}
+    assert messages[1] == {"role": "user", "content": "read a.py"}
+    assistant = messages[2]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] == "ok"
+    call = assistant["tool_calls"][0]
+    assert call["id"] == "tu1"
+    assert call["type"] == "function"
+    assert call["function"]["name"] == "read"
+    assert json.loads(call["function"]["arguments"]) == {"path": "a.py"}
+    assert messages[3] == {"role": "tool", "tool_call_id": "tu1", "content": "data"}
+    assert body["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "read a file",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+
+def test_openai_assistant_content_is_null_when_only_tool_calls() -> None:
+    """OpenAI accepts a null content on an assistant turn that is purely tool calls; the loop's
+    text-free assistant block must not become an empty-string content."""
+    request = ModelRequest(
+        model_id="m",
+        system="",
+        messages=(
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": "read", "input": {}}],
+            },
+        ),
+    )
+    body = openai_request_body(request, max_tokens=8)
+    assert "system" not in {m["role"] for m in body["messages"]}  # empty system omitted
+    assert "tools" not in body
+    assert body["messages"][0]["content"] is None
+
+
+def test_parse_openai_response_reads_text_tool_calls_usage_and_model() -> None:
+    payload = {
+        "model": "gpt-x-served",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "write", "arguments": '{"path": "b.py"}'},
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "prompt_tokens_details": {"cached_tokens": 4},
+        },
+    }
+    turn = parse_openai_response(payload)
+    assert turn.text == ""  # null content is empty, not the string "None"
+    assert turn.stop_reason == "tool_use"
+    assert turn.model_id_reported == "gpt-x-served"
+    assert (turn.tool_calls[0].id, turn.tool_calls[0].name) == ("call_1", "write")
+    assert turn.tool_calls[0].input == {"path": "b.py"}
+    assert (turn.usage.input, turn.usage.output) == (11, 7)
+    assert (turn.usage.cache_read, turn.usage.cache_write) == (4, 0)
+
+
+def test_openai_finish_reasons_map_and_unknown_becomes_other() -> None:
+    def stop(reason: str) -> str:
+        return parse_openai_response(
+            {"choices": [{"finish_reason": reason, "message": {"content": "x"}}]}
+        ).stop_reason
+
+    assert stop("stop") == "end_turn"
+    assert stop("length") == "max_tokens"
+    assert stop("content_filter") == "other"
+    assert stop("something_new") == "other"
+
+
+def test_openai_empty_string_arguments_decode_to_an_empty_object() -> None:
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "tool_calls": [{"id": "c", "function": {"name": "list", "arguments": ""}}]
+                },
+            }
+        ]
+    }
+    assert parse_openai_response(payload).tool_calls[0].input == {}
+
+
+def test_openai_invalid_tool_arguments_are_a_controlled_error() -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [{"id": "c", "function": {"name": "x", "arguments": "{not json"}}]
+                }
+            }
+        ]
+    }
+    with pytest.raises(BellwetherError, match="not valid JSON"):
+        parse_openai_response(payload)
+
+
+def test_openai_empty_choices_is_a_controlled_error() -> None:
+    with pytest.raises(BellwetherError, match="choices"):
+        parse_openai_response({"choices": []})
+
+
+def test_openai_client_posts_to_chat_completions_with_bearer_auth() -> None:
+    transport = _RecordingTransport(
+        _ok({"choices": [{"finish_reason": "stop", "message": {"content": "hi"}}]})
+    )
+    client = OpenAiCompatibleClient(
+        api_key="sk-secret", base_url="https://api.openai.com/v1", transport=transport
+    )
+    turn = client.complete(_OPENAI_CONVERSATION)
+    assert turn.text == "hi"
+    assert transport.url == "https://api.openai.com/v1/chat/completions"
+    assert transport.headers["authorization"] == "Bearer sk-secret"
+    assert transport.headers["content-type"] == "application/json"
+
+
+def test_openai_client_maps_a_non_200_and_a_non_json_body() -> None:
+    err = OpenAiCompatibleClient(
+        api_key="k",
+        base_url="https://h/v1",
+        transport=_RecordingTransport(HttpResponse(429, b'{"e":"rate"}')),
+    )
+    with pytest.raises(BellwetherError, match="HTTP 429"):
+        err.complete(_OPENAI_CONVERSATION)
+    html = OpenAiCompatibleClient(
+        api_key="k",
+        base_url="https://h/v1",
+        transport=_RecordingTransport(HttpResponse(200, b"<html>")),
+    )
+    with pytest.raises(BellwetherError, match="non-JSON"):
+        html.complete(_OPENAI_CONVERSATION)
+
+
+def test_openai_client_repr_does_not_leak_the_key() -> None:
+    client = OpenAiCompatibleClient(api_key="sk-super-secret-value", base_url="https://h/v1")
+    assert "sk-super-secret-value" not in repr(client)
+    assert client.api_key == "sk-super-secret-value"
 
 
 # ---------------------------------------------------------------------------

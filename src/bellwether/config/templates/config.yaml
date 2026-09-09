@@ -20,6 +20,19 @@ providers:
       mid: "<fill in current model id>"
       small: "<fill in current model id>"
 
+  # An OpenAI-compatible endpoint (OpenAI itself, or a gateway/local server that speaks the
+  # Chat Completions API). base_url is required — the type exists so the endpoint can vary.
+  # The host-side client sends the *real* key here, so it is refused unless the base_url host
+  # is api.openai.com or is named in the BELLWETHER_TRUSTED_MODEL_HOSTS environment variable
+  # (comma-separated) — trusted config *outside* this checkout, so a tampered base_url cannot
+  # redirect the key. HTTPS is required. See spec-notes §9.5.
+  # openai:
+  #   type: openai_compatible
+  #   base_url: "https://api.openai.com/v1"
+  #   api_key_env: OPENAI_API_KEY
+  #   models:
+  #     frontier: "<fill in current model id>"
+
 harnesses:
   claude-code:
     type: claude-code

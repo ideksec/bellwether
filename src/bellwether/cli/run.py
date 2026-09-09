@@ -42,7 +42,12 @@ from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
 from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
-from bellwether.harness import ModelClient, RunLimits, build_model_client
+from bellwether.harness import (
+    TRUSTED_MODEL_HOSTS_ENV,
+    ModelClient,
+    RunLimits,
+    build_model_client,
+)
 from bellwether.skill import SkillPackage
 from bellwether.verdict import validate_capability_weights
 
@@ -145,11 +150,22 @@ def run_evaluation(
     model_id_by_slug = {rt.target.slug: rt.model_id for rt in resolved.targets}
     provider_by_slug = {rt.target.slug: rt.target.provider for rt in resolved.targets}
     key_by_slug = {rt.target.slug: environ[rt.api_key_env] for rt in resolved.targets}
+    # §3.3: extra trusted model-endpoint hosts come from the process environment — trusted config
+    # *outside* the evaluated checkout — never from config.yaml, which a malicious PR can edit to
+    # redirect the real key. The harness client refuses any openai_compatible base_url not on this
+    # set (plus the canonical OpenAI host); the anthropic client is pinned regardless.
+    trusted_hosts = frozenset(
+        host.strip().lower()
+        for host in environ.get(TRUSTED_MODEL_HOSTS_ENV, "").split(",")
+        if host.strip()
+    )
 
     def client_factory(plan: RunPlan) -> tuple[ModelClient, str]:
         slug = plan.target.slug
         provider = config.providers[provider_by_slug[slug]]
-        client = build_model_client(provider, api_key=key_by_slug[slug])
+        client = build_model_client(
+            provider, api_key=key_by_slug[slug], trusted_openai_hosts=trusted_hosts
+        )
         return client, model_id_by_slug[slug]
 
     executor = make_executor(package, fixture, client_factory)

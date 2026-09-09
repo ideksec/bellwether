@@ -247,6 +247,23 @@ weight set that does not sum to 1.0, so the zero-weight warning is the residual 
 surfacing; the row reads `ok` on a clean scaffold rather than being omitted (an absent check reads
 as a passed one).
 
+**The `openai_compatible` live client then landed** (§9.5) — the last loose end in the live-client
+package, previously refused as a distinct follow-on. `OpenAiCompatibleClient` translates the loop's
+Anthropic content-block messages into the Chat Completions array (the system prompt → a leading
+`system` message; an assistant turn's `tool_use` blocks → `tool_calls` with the input serialised to
+the JSON-string `arguments` the API wants, `content` `null` when the turn is tool calls only; each
+`tool_result` block → its own `tool` message keyed by `tool_call_id`, the model-assigned id kept for
+correlation) and translates the response back (`finish_reason` → the neutral stop vocabulary,
+unknown → `other`; `prompt`/`completion_tokens` → input/output with `prompt_tokens_details.cached_tokens`
+as the cache read; a tool call's `arguments` JSON-decoded, an unparseable one a controlled error).
+Same pure-functions-plus-`transport`-seam discipline as the Anthropic client, so it is fully tested
+without a network or a key. The **§3.3 real-key guard extends to it**, with the trust source that
+the operator-chosen endpoint demands: there is no single host to hard-code (the type exists so the
+endpoint can vary), so it is pinned to HTTPS on the canonical `api.openai.com` plus any host named in
+the **`BELLWETHER_TRUSTED_MODEL_HOSTS` env var** — trusted config *outside* the evaluated checkout,
+which a `base_url` a malicious PR edits into `config.yaml` cannot reach. The cli layer reads the env
+var and threads the host set in; the harness never reads the environment itself (spec-notes §9.5).
+
 ---
 
 ## Where the build is
@@ -272,7 +289,7 @@ as a passed one).
 | **Recording proxy wired into the executor** — dual-homed sidecar per run, CA mounted, egress → Plane D of the trace | **done** (PR #42–#43); the config switch is `egress.image` |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
 | WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, Plane C scan, executor + sidecar wiring | **whole pool planted (env var + file binds); leaks scanned across final output, DNS, tool args, non-model egress URLs *and bodies* (bodies sidecar-side), and written files; redacted end-to-end** (`test_execution_canary_docker.py`); `partial` now only because the model-API channel (read-state grading) is a follow-on |
-| Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
+| Live model client (`harness/live_client`) — Anthropic Messages API + OpenAI Chat Completions behind the `ModelClient` seam | **done** — both `anthropic` and `openai_compatible` implemented |
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
 | HTML report, worked demo (`bellwether demo`), PR-comment posting, changed-skills detection + GitHub Action | **done** |
@@ -286,7 +303,7 @@ as a passed one).
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1032 tests: 978 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1046 tests: 992 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -426,11 +443,11 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    second harness and the loose ends below.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
-the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client),
-**plugin-layout staging** — installing an Agent Plugin bundle whole, in the layout a real client
-uses (`--plugin-dir`), rather than each skill as a bare directory (spec-notes §5/§6/§18) — and a
-per-run **sink path** drawn from the identifier stream rather than the fixed
-`/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
+the DNS/canary work), **plugin-layout staging** — installing an Agent Plugin bundle whole, in the
+layout a real client uses (`--plugin-dir`), rather than each skill as a bare directory
+(spec-notes §5/§6/§18) — and a per-run **sink path** drawn from the identifier stream rather than the
+fixed `/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
+(`openai_compatible` provider support has since landed — see the entry at the top.)
 
 **The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
 `egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
@@ -646,9 +663,9 @@ piece of logic before `bellwether run` can drive a real skill (10 tests):
   headers (`x-api-key`, `anthropic-version`), and error mapping are all tested without a network or a
   key. Two edges with teeth: an unknown `stop_reason` maps to `other`, never silently to `end_turn`;
   and `model_id_reported` is recorded as what the provider *said it served*, so a silent model swap
-  is visible (§9.3). `build_model_client` dispatches on provider type — `openai_compatible` raises a
-  clear "not yet" because its Chat Completions shape needs a message translation the loop's
-  Anthropic-shaped messages don't carry.
+  is visible (§9.3). `build_model_client` dispatches on provider type; both `anthropic` and
+  `openai_compatible` are now implemented (the latter translates the loop's Anthropic-shaped messages
+  into the Chat Completions array and back — see the entry at the top and spec-notes §9.5).
 
 ### What the live interception test proved (§10.5, §3.3 — the WP-13 done-when)
 
@@ -935,8 +952,9 @@ is the authoritative sequence, and the two agree. The live-container CLI run aga
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
    lockdown that forces every lookup through it, and the `dns_query`/`dns_blocked` trace actions —
    the CI-only container slice, mirroring the proxy sidecar.
-3. **The `openai_compatible` live client** — the Chat Completions message-shape translation the
-   Anthropic client did not need.
+3. **The `openai_compatible` live client — done.** The Chat Completions message-shape translation
+   the Anthropic client did not need is implemented (`OpenAiCompatibleClient`), with the §3.3 key
+   guard extended to it via an out-of-checkout trusted-host env var. See the entry at the top.
 
 **WP-14's live half** (doctor issuing a real request and asserting `interception_confirmed`) is still
 open — the CA-in-the-loop probe. The interception test above deliberately used plain HTTP to prove
@@ -953,7 +971,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Weight validation wired to `doctor`/`run` — **closed** | `cli/run.py`, `cli/app.py` | Both validators are now called on the real paths. `run_evaluation` runs the cross-document §16.1 check (policy `capability_risk_weights` × the manifest's `tools.deny`, mapped to `tool:<name>`) and refuses before spending if a manifest-denied class is weighted 0 — that would erase it from the risk-weighted Jaccard and let a skill post a clean consistency score while using a denied tool. `doctor` runs the §13.7 BCI-weight check on `config.metrics.bci_weights`, surfacing a zero component (which silently drops from the composite — the config model already rejects a non-1.0 sum) named to file and key, as a `warn` row (advisory, not blocking). |
 | Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
-| Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
+| Live model client — `openai_compatible` variant — **closed** | `harness/live_client.py`, `cli/run.py` | `OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat Completions array (system → leading `system` message, `tool_use` → assistant `tool_calls` with JSON-string arguments, `tool_result` → per-id `tool` messages) and the response back. The §3.3 real-key guard extends to it: pinned to HTTPS on `api.openai.com` plus hosts named in `BELLWETHER_TRUSTED_MODEL_HOSTS` (out-of-checkout config the cli threads in), so a tampered `config.yaml` base_url cannot redirect the key (spec-notes §9.5). |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 
