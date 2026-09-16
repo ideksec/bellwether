@@ -283,13 +283,32 @@ _OPENAI_FINISH_REASONS: dict[str, str] = {
 }
 
 
+def _text_from_content_parts(parts: list[Any]) -> str:
+    """Concatenate the text of a content-*parts* array (``[{"type":"text","text":…}, …]``).
+
+    Both the Anthropic block shape the loop builds and the multi-part ``content`` some
+    OpenAI-compatible servers return use this array-of-parts form; a bare string part is kept
+    as-is, and any non-text part contributes nothing (it carries no assistant-visible text)."""
+    out: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            out.append(part)
+        elif isinstance(part, Mapping) and part.get("type") == "text":
+            out.append(str(part.get("text", "")))
+    return "".join(out)
+
+
 def _stringify_tool_result(content: Any) -> str:
     """The tool-result content, as the string Chat Completions expects for a ``tool`` message.
 
-    The ``api-loop`` loop already carries the result as a string; a structured value (some
-    Anthropic-shaped callers use a block list) is serialised rather than dropped."""
+    The ``api-loop`` loop already carries the result as a string; the Anthropic block-list form
+    (``[{"type":"text","text":…}]``) is flattened to its text rather than sent as a raw JSON array
+    the model would read as part of the output; any other structured value is serialised as a last
+    resort rather than dropped."""
     if isinstance(content, str):
         return content
+    if isinstance(content, list):
+        return _text_from_content_parts(content)
     return json.dumps(content)
 
 
@@ -298,10 +317,12 @@ def openai_messages(request: ModelRequest) -> list[dict[str, Any]]:
 
     The system prompt leads as a ``system`` message; an assistant turn's ``tool_use`` blocks become
     ``tool_calls`` with the tool input serialised to the JSON-string ``arguments`` the API wants
-    (its ``content`` is ``null`` when the turn was tool calls only); and a user turn's ``tool_result``
-    blocks each become their own ``tool`` message keyed by ``tool_call_id`` — the id the model
-    assigned, preserved end to end for cross-plane correlation (§11.5). The relative order the loop
-    built (assistant tool_calls, then their results) is preserved, which the API requires.
+    (its ``content`` is ``null`` only when the turn *is* tool calls — an assistant message with
+    neither text nor tool_calls carries an empty string, which the API accepts but a ``null`` it does
+    not); and a user turn's ``tool_result`` blocks each become their own ``tool`` message keyed by
+    ``tool_call_id`` — the id the model assigned, preserved end to end for cross-plane correlation
+    (§11.5). Those tool messages are emitted *before* any user text in the same turn, because the API
+    requires a ``tool`` message to immediately follow the assistant ``tool_calls`` it answers.
     """
     messages: list[dict[str, Any]] = []
     if request.system:
@@ -328,14 +349,16 @@ def openai_messages(request: ModelRequest) -> list[dict[str, Any]]:
                 for b in blocks
                 if isinstance(b, Mapping) and b.get("type") == "tool_use"
             ]
-            assistant: dict[str, Any] = {"role": "assistant", "content": text or None}
+            assistant: dict[str, Any] = {"role": "assistant"}
+            # Null content is legal only alongside tool_calls; a text-and-tool-free assistant turn
+            # takes an empty string, never null, which the API rejects.
+            assistant["content"] = (text or None) if tool_calls else text
             if tool_calls:
                 assistant["tool_calls"] = tool_calls
             messages.append(assistant)
             continue
-        # A user turn: any text is a user message; each tool_result becomes its own tool message.
-        if text or not blocks:
-            messages.append({"role": "user", "content": text})
+        # A user turn: the tool_result answers come first (each its own tool message, immediately
+        # after the assistant tool_calls it responds to), then any trailing user text.
         for b in blocks:
             if isinstance(b, Mapping) and b.get("type") == "tool_result":
                 messages.append(
@@ -345,18 +368,27 @@ def openai_messages(request: ModelRequest) -> list[dict[str, Any]]:
                         "content": _stringify_tool_result(b.get("content", "")),
                     }
                 )
+        if text or not blocks:
+            messages.append({"role": "user", "content": text})
     return messages
 
 
 def openai_request_body(request: ModelRequest, *, max_tokens: int) -> dict[str, Any]:
     """The Chat Completions request body for one :class:`ModelRequest`.
 
+    The token ceiling goes on the wire as ``max_completion_tokens``, not the deprecated
+    ``max_tokens``: on the built-in trusted host (``api.openai.com``) the reasoning models reject
+    ``max_tokens`` outright, while ``max_completion_tokens`` is accepted by every current OpenAI chat
+    model. A legacy compatible server that only understands ``max_tokens`` is the residual edge —
+    the operator points ``base_url`` at it deliberately, so that is a documented bound, not a silent
+    default failure on the canonical endpoint.
+
     Tools translate into the ``function`` wrapper (``input_schema`` → ``parameters``); with none
     present the key is omitted, so a no-tool request is not sent an empty tool list.
     """
     body: dict[str, Any] = {
         "model": request.model_id,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
         "messages": openai_messages(request),
     }
     if request.tools:
@@ -426,7 +458,18 @@ def parse_openai_response(payload: Mapping[str, Any]) -> ModelTurn:
         raise BellwetherError("model API response choice.message was not an object")
 
     raw_text = message.get("content")
-    text = "" if raw_text is None else str(raw_text)
+    if raw_text is None:
+        text = ""
+    elif isinstance(raw_text, str):
+        text = raw_text
+    elif isinstance(raw_text, list):
+        # Some compatible servers return a multi-part content array rather than a bare string;
+        # flatten its text parts instead of str()-ing the list into a garbage transcript.
+        text = _text_from_content_parts(raw_text)
+    else:
+        raise BellwetherError(
+            "model API response message.content was neither a string, a list of parts, nor null"
+        )
 
     tool_calls_raw = message.get("tool_calls") or []
     if not isinstance(tool_calls_raw, list):

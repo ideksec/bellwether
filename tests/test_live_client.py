@@ -299,7 +299,10 @@ def test_openai_translation_maps_system_tool_use_and_tool_result() -> None:
     → a tool message keyed by the same id (§11.5), and tools → the function wrapper."""
     body = openai_request_body(_OPENAI_CONVERSATION, max_tokens=256)
     assert body["model"] == "gpt-x"
-    assert body["max_tokens"] == 256
+    # The token ceiling goes on the wire as max_completion_tokens (the canonical endpoint's
+    # reasoning models reject the deprecated max_tokens), never as max_tokens.
+    assert body["max_completion_tokens"] == 256
+    assert "max_tokens" not in body
     messages = body["messages"]
     assert messages[0] == {"role": "system", "content": "be helpful"}
     assert messages[1] == {"role": "user", "content": "read a.py"}
@@ -341,6 +344,88 @@ def test_openai_assistant_content_is_null_when_only_tool_calls() -> None:
     assert "system" not in {m["role"] for m in body["messages"]}  # empty system omitted
     assert "tools" not in body
     assert body["messages"][0]["content"] is None
+
+
+def test_openai_text_free_assistant_without_tool_calls_uses_empty_string_not_null() -> None:
+    """Null content is legal only alongside tool_calls; an assistant turn with neither text nor
+    tool_use must carry an empty string, which the API accepts, not a null it rejects."""
+    request = ModelRequest(
+        model_id="m",
+        system="",
+        messages=({"role": "assistant", "content": [{"type": "thinking", "text": "…"}]},),
+    )
+    assistant = openai_request_body(request, max_tokens=8)["messages"][0]
+    assert assistant["content"] == ""  # not None
+    assert "tool_calls" not in assistant
+
+
+def test_openai_tool_results_precede_trailing_user_text_in_a_mixed_turn() -> None:
+    """A user turn that carries both tool_result and text becomes tool message(s) *then* a user
+    message — the API rejects a tool message that does not immediately follow its assistant
+    tool_calls, so the answer cannot be pushed after the text."""
+    request = ModelRequest(
+        model_id="m",
+        system="",
+        messages=(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "result"},
+                    {"type": "text", "text": "now do the next thing"},
+                ],
+            },
+        ),
+    )
+    roles = [
+        (m["role"], m.get("content"))
+        for m in openai_request_body(request, max_tokens=8)["messages"]
+    ]
+    assert roles == [("tool", "result"), ("user", "now do the next thing")]
+
+
+def test_openai_tool_result_block_list_is_flattened_to_its_text() -> None:
+    """A tool_result whose content is the Anthropic block-list form is flattened to its text, not
+    sent as a raw JSON array the model would read as part of the output."""
+    request = ModelRequest(
+        model_id="m",
+        system="",
+        messages=(
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": [{"type": "text", "text": "file data"}],
+                    }
+                ],
+            },
+        ),
+    )
+    tool_message = openai_request_body(request, max_tokens=8)["messages"][0]
+    assert tool_message == {"role": "tool", "tool_call_id": "t1", "content": "file data"}
+
+
+def test_parse_openai_response_flattens_a_multi_part_content_array() -> None:
+    """Some compatible servers return content as a parts array; the parser flattens its text
+    rather than str()-ing the list into a garbage transcript."""
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+                },
+            }
+        ]
+    }
+    assert parse_openai_response(payload).text == "ab"
+
+
+def test_parse_openai_response_rejects_a_non_string_non_list_content() -> None:
+    payload = {"choices": [{"finish_reason": "stop", "message": {"content": 42}}]}
+    with pytest.raises(BellwetherError, match="content"):
+        parse_openai_response(payload)
 
 
 def test_parse_openai_response_reads_text_tool_calls_usage_and_model() -> None:

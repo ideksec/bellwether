@@ -1108,6 +1108,24 @@ to a dict (an unparseable or non-object value is a controlled error, not a broke
 The same pure-functions-plus-transport-seam discipline applies, so all of it is tested without a
 network or a key.
 
+A self-review (`/code-review`) then hardened the translation to match the parser's own
+"validate, don't trust the shape" contract, since the first cut was weaker than the Anthropic
+parser it sits beside. Five fixes: the token ceiling goes on the wire as **`max_completion_tokens`**,
+not the deprecated `max_tokens` — on the built-in trusted host (`api.openai.com`) the reasoning
+models reject `max_tokens` outright, so the zero-config default would otherwise fail on a whole model
+class; a legacy compatible server that only understands `max_tokens` is the documented residual edge.
+The `tool_result` translation and the response parser both **flatten a content-*parts* array**
+(`[{"type":"text","text":…}]`) to its text instead of `json.dumps`-ing or `str()`-ing it into a
+transcript the model would read as garbage, and the parser now **refuses a `content` that is neither
+string, parts-list, nor null** rather than mis-stringifying it. An assistant turn with neither text
+nor tool_calls takes an **empty-string content, never `null`** (the API accepts the former, rejects
+the latter alongside no tool_calls). And a user turn's `tool_result` messages are emitted **before**
+any trailing user text, because the API requires a `tool` message to immediately follow the assistant
+`tool_calls` it answers. The current `api-loop` caller never produces the mixed/empty shapes, so
+several were latent — but `openai_messages`/`parse_openai_response` are exported translators whose
+docstrings promise the general mapping, and the project's rule is that a function handles what it says
+it handles.
+
 **The §3.3 credential guard extends to it, with a different trust source.** The api-loop client
 sends the *real* key host-side, so an attacker-controlled `base_url` in the checked-in `config.yaml`
 would exfiltrate it — the exact reason `anthropic` is pinned to `TRUSTED_ANTHROPIC_HOSTS`. But
