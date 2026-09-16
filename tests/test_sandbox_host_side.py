@@ -23,6 +23,7 @@ from bellwether.sandbox import (
     EXECUTABLE_MODE,
     FILE_MODE,
     NORMALIZED_MTIME,
+    STABLE_SINK_CONTAINER_PATH,
     IsolationProfile,
     ZoneMap,
     derive_identifiers,
@@ -436,9 +437,33 @@ def test_identifiers_carry_no_project_tell() -> None:
     """A container named `bw-*` is a tell that survives every other mitigation here."""
     for ordinal in range(25):
         identifiers = derive_identifiers(SeededRng(20260804, f"run-{ordinal}"))
-        blob = f"{identifiers.hostname} {identifiers.container_name} {identifiers.workspace_root}"
-        for tell in ("bellwether", "bw-", "sandbox", "eval", "test", "fixture"):
+        blob = (
+            f"{identifiers.hostname} {identifiers.container_name} "
+            f"{identifiers.workspace_root} {identifiers.event_sink_path}"
+        )
+        for tell in ("bellwether", "bw-", "sandbox", "eval", "test", "fixture", "event"):
             assert tell not in blob.lower()
+
+
+def test_the_sink_path_is_randomised_and_not_derivable_from_the_workspace() -> None:
+    """§3.5: a *fixed* FIFO path (the old `/dev/bellwether-events`) is a tell a skill can grep for.
+    The path is drawn per run, sits under /dev where the bind works, and uses a token independent
+    of the workspace slug — so a skill that can read its workspace path cannot derive the sink."""
+    first = derive_identifiers(SeededRng(20260804, "run-1"))
+    second = derive_identifiers(SeededRng(20260804, "run-2"))
+
+    assert first.event_sink_path.is_relative_to(PurePosixPath("/dev"))
+    assert first.event_sink_path != second.event_sink_path  # randomised across runs
+    assert first.event_sink_path == derive_identifiers(SeededRng(20260804, "run-1")).event_sink_path
+    # The sink leaf is not the workspace slug, so a skill reading its workspace path learns nothing.
+    assert first.workspace_root.name not in str(first.event_sink_path)
+
+
+def test_the_sink_path_is_stable_and_greppable_when_randomisation_is_off() -> None:
+    """Randomisation off means findable identifiers for an operator — including the sink, back at
+    the stable path the hook's fallback default names, so the two never disagree."""
+    identifiers = derive_identifiers(SeededRng(1, "run"), randomize=False)
+    assert identifiers.event_sink_path == STABLE_SINK_CONTAINER_PATH
 
 
 def test_randomisation_can_be_turned_off_and_the_choice_is_recorded() -> None:

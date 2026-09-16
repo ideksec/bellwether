@@ -364,6 +364,16 @@ def test_argv_names_the_observed_flags_and_carries_the_hook_settings_inline() ->
     assert command.startswith("cat >> /dev/bellwether-events")
 
 
+def test_hook_settings_honours_a_per_run_sink_path() -> None:
+    """§3.5: the executor draws the sink path per run and passes it here, so the hook writes to the
+    randomised FIFO the bind mounts — not the fixed default. The default is only a fallback."""
+    settings = hook_settings("/dev/7e584283")
+    for event in ("PreToolUse", "PostToolUse"):
+        command = settings["hooks"][event][0]["hooks"][0]["command"]
+        assert command == "cat >> /dev/7e584283; echo"
+        assert "bellwether" not in command
+
+
 def test_environment_delivers_the_scoped_token_and_disables_telemetry() -> None:
     env = claude_code_environment(api_token="bw-scoped-token", base_url=None)
     assert env["ANTHROPIC_API_KEY"] == "bw-scoped-token"

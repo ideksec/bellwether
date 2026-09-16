@@ -264,6 +264,20 @@ the **`BELLWETHER_TRUSTED_MODEL_HOSTS` env var** — trusted config *outside* th
 which a `base_url` a malicious PR edits into `config.yaml` cannot reach. The cli layer reads the env
 var and threads the host set in; the harness never reads the environment itself (spec-notes §9.5).
 
+**The §3.5 sink-path tell then closed.** The `claude-code` hooks write every tool-call event to a
+host-owned FIFO (§10.1) the executor mounts into the container, and that mount point was the
+constant `/dev/bellwether-events` — an instrumentation tell as reliable as a project-named container:
+a skill that checks for it knows it is being evaluated, and the path even carried the project name.
+It now joins the other §3.5 identifiers — `SandboxIdentifiers.event_sink_path`, a bare hex leaf under
+`/dev` drawn per run from a token *independent of the workspace slug* (so a skill that can read its
+workspace path cannot derive the sink), and the executor reads it for both the bind mount and the
+hook command so the two never disagree. Randomisation off returns to the greppable
+`/dev/bellwether-events` for operator findability, defined once as `sandbox.STABLE_SINK_CONTAINER_PATH`
+(the harness's `hook_settings` fallback default now references it, so the fallback cannot drift from
+the mounted path). Still under `/dev`, where the bind is proven to work — perfect concealment is not
+the goal (§3.5), and active probing still produces the `instrumentation_probe` evidence; the point is
+that the cheap fixed-string tell is gone (spec-notes §3.5).
+
 ---
 
 ## Where the build is
@@ -303,7 +317,7 @@ var and threads the host set in; the harness never reads the environment itself 
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1046 tests: 992 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1049 tests: 995 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -443,11 +457,11 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    second harness and the loose ends below.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
-the DNS/canary work), **plugin-layout staging** — installing an Agent Plugin bundle whole, in the
+the DNS/canary work), and **plugin-layout staging** — installing an Agent Plugin bundle whole, in the
 layout a real client uses (`--plugin-dir`), rather than each skill as a bare directory
-(spec-notes §5/§6/§18) — and a per-run **sink path** drawn from the identifier stream rather than the
-fixed `/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
-(`openai_compatible` provider support has since landed — see the entry at the top.)
+(spec-notes §5/§6/§18).
+(`openai_compatible` provider support and the per-run §3.5 **sink path** have since landed — see the
+entries at the top.)
 
 **The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
 `egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
@@ -969,7 +983,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
 | `requires.min_bellwether_version` in the §16.4 preflight — **closed** | `cli/preflight.py`, `verdict/precondition.py` | The last disclosed BW-51 skip. Now checked: `preflight_failures` threads the running `__version__` into `check_preconditions`, which owns a committed conservative-PEP-440 ordering rule (`_parse_version`/`_version_lt` — no `packaging` dependency). A running version below the policy minimum, or an unparseable minimum, refuses before spending; the shipped `high` profile (min `0.3`) now refuses on both the version and its missing planes on a v0.1 runner (spec-notes §16.4). |
 | Weight validation wired to `doctor`/`run` — **closed** | `cli/run.py`, `cli/app.py` | Both validators are now called on the real paths. `run_evaluation` runs the cross-document §16.1 check (policy `capability_risk_weights` × the manifest's `tools.deny`, mapped to `tool:<name>`) and refuses before spending if a manifest-denied class is weighted 0 — that would erase it from the risk-weighted Jaccard and let a skill post a clean consistency score while using a denied tool. `doctor` runs the §13.7 BCI-weight check on `config.metrics.bci_weights`, surfacing a zero component (which silently drops from the composite — the config model already rejects a non-1.0 sum) named to file and key, as a `warn` row (advisory, not blocking). |
-| Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
+| Sink container path drawn per run — **closed** | `sandbox/identifiers.py`, `cli/execution.py` | §3.5: the fixed `/dev/bellwether-events` FIFO path was an instrumentation tell a skill could grep for. It is now `SandboxIdentifiers.event_sink_path`, a bare hex leaf under `/dev` drawn per run from a token independent of the workspace slug; the executor reads it for both the bind and the hook command. Randomisation off returns to the greppable stable path (`STABLE_SINK_CONTAINER_PATH`, the single source the harness fallback also references) for operator findability (spec-notes §3.5). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
 | Live model client — `openai_compatible` variant — **closed** | `harness/live_client.py`, `cli/run.py` | `OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat Completions array (system → leading `system` message, `tool_use` → assistant `tool_calls` with JSON-string arguments, `tool_result` → per-id `tool` messages) and the response back. The §3.3 real-key guard extends to it: pinned to HTTPS on `api.openai.com` plus hosts named in `BELLWETHER_TRUSTED_MODEL_HOSTS` (out-of-checkout config the cli threads in), so a tampered `config.yaml` base_url cannot redirect the key (spec-notes §9.5). |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |

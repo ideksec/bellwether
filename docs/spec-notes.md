@@ -1410,6 +1410,33 @@ The natural home for `to_isolation()` is `SandboxConfig`, but that would force `
 the `cli` layer — `isolation_from_config` / `zone_map_from_config` in `cli/execution.py` — wired from
 `run.py`. This keeps the acyclic graph intact while making the knobs actually apply.
 
+## §3.5 — The event-sink FIFO path is drawn per run, not fixed
+
+The `claude-code` adapter's hooks write every tool-call event to a host-owned FIFO (§10.1) that the
+executor mounts into the container. That mount point was the constant `/dev/bellwether-events` — a
+§3.5 instrumentation tell as reliable as a container named `bellwether-run-3`: a skill that checks
+whether `/dev/bellwether-events` exists knows it is being evaluated, and the path even carries the
+project name. So the path now joins the other §3.5 identifiers: `SandboxIdentifiers.event_sink_path`
+is drawn per run in `derive_identifiers`, a bare hex leaf under `/dev`
+(`/dev/7e584283`, no project name), and the executor reads it for *both* the bind and the hook
+command so the hook writes exactly where the FIFO is mounted. Three decisions worth recording:
+
+- **A fresh token, not the workspace slug.** A skill can read its own workspace path; if the sink
+  leaf were derived from the same slug it could reconstruct the sink path from what it can see. The
+  leaf is an independent draw, appended after the existing identifier draws so their values (and the
+  tests pinning "no project tell") are unchanged.
+- **Still under `/dev`.** The bind is proven to work there (the CI container proof mounts the FIFO at
+  a `/dev` path); randomising only the leaf defeats the hard-coded-path check without moving the
+  mount to a directory whose writability under `--read-only` would be a new unknown. Perfect
+  concealment is explicitly not the goal (§3.5) — active probing of `/dev` still produces the
+  `instrumentation_probe` evidence; the point is that the cheap, reliable *fixed-string* tell is gone.
+- **One source of truth for the stable path.** When randomisation is off (operator findability), the
+  sink returns to the greppable `/dev/bellwether-events`, defined once as
+  `sandbox.STABLE_SINK_CONTAINER_PATH`. The harness's `DEFAULT_SINK_CONTAINER_PATH` — the fallback
+  default of `hook_settings` for standalone callers — is now `str(STABLE_SINK_CONTAINER_PATH)`, so
+  the fallback can never drift from the path the executor actually mounts. Layering holds: `harness`
+  already depends on `sandbox`, so the constant lives in the lower layer and the higher one reads it.
+
 ## §13.5.2 — `max_rare_capability_risk` maps severity to a weight *threshold*, and `critical` is stricter than `high`
 
 The spec fixes `low → weight ≥ 10`, `medium → ≥ 5`, `high → ≥ 3`; raising the severity lowers the
@@ -2147,8 +2174,7 @@ expected info-level in-context finding, a never-read one stays `canary_without_r
 Before this, every body hit graded `preceded_by_read=False`, which would have flagged
 `legit-credential-reader`'s correct behaviour as a `high` finding on this harness.
 
-**Known bounds, stated.** The sink container path is fixed (`/dev/bellwether-events`), a §3.5
-tell to draw per run later (the hook settings already take the path). The CLI's session
+**Known bounds, stated.** The CLI's session
 transcript lands in the harness-state zone as ordinary state churn. Durations on `tool_result`
 are host receipt-time deltas between the `tool_use` and `tool_result` lines (the hook stream's
 `duration_ms` is finer but arrives after the run). The container proof is CI-only (the sandbox
