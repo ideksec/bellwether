@@ -55,7 +55,6 @@ from bellwether.harness import (
     claude_code_environment,
     hook_settings,
 )
-from bellwether.harness.claude_code import DEFAULT_SINK_CONTAINER_PATH
 from bellwether.harness.tools import docker_exec_runner
 from bellwether.sandbox import (
     DockerBackend,
@@ -420,7 +419,10 @@ class SandboxRunExecutor:
                 )
             sink = HostEventSink((run_dir / "events").resolve())
             sink.start()
-            sink_bind = (sink.path, PurePosixPath(DEFAULT_SINK_CONTAINER_PATH))
+            # §3.5: the sink's container path is drawn per run from the identifiers, not fixed —
+            # a constant FIFO path is a tell a skill can grep for. The bind and the hook command
+            # (below) read the same per-run path, so the hook writes exactly where it is mounted.
+            sink_bind = (sink.path, prepared.identifiers.event_sink_path)
             extra_env.update(
                 claude_code_environment(
                     api_token=run_proxy.sandbox_credential(plan.target.provider),
@@ -450,7 +452,7 @@ class SandboxRunExecutor:
                 claude = ClaudeCodeAdapter(
                     _DockerLaunch(self.backend, prepared, run_dir),
                     hook_source=lambda: [event.payload for event in hook_sink.stop()],
-                    settings=hook_settings(DEFAULT_SINK_CONTAINER_PATH),
+                    settings=hook_settings(str(prepared.identifiers.event_sink_path)),
                 )
                 adapter = claude
                 _client, model_id = self.client_factory(plan)

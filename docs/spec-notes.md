@@ -1092,9 +1092,53 @@ the credential is passed in rather than read from the environment, keeping the c
 explicit. **(2)** Two parsing edges have teeth: an unrecognised `stop_reason` maps to `other`, never
 silently to `end_turn` (a new provider stop reason must not read as a clean finish), and
 `model_id_reported` comes from the response's `model` field, so §9.3's requested-vs-served divergence
-is recorded. `openai_compatible` is refused with a clear message rather than half-built: its Chat
-Completions shape needs a message translation the loop's Anthropic-shaped messages don't carry, so it
-is a distinct client, not a config toggle.
+is recorded.
+
+**`openai_compatible` now has a client** (it was previously refused as a distinct follow-on). It is a
+separate client, not a config toggle, because the Chat Completions shape genuinely differs:
+`OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat
+Completions array (the system prompt becomes a leading `system` message; an assistant turn's
+`tool_use` blocks become `tool_calls` with the tool input serialised to the JSON-string `arguments`
+the API wants, its `content` `null` when the turn was tool calls only; each `tool_result` block
+becomes its own `tool` message keyed by `tool_call_id`, preserving the model-assigned id for
+cross-plane correlation) and translates the response back — `finish_reason` → the same neutral stop
+vocabulary (unknown → `other`), `prompt`/`completion_tokens` → input/output with
+`prompt_tokens_details.cached_tokens` as the cache read, and a tool call's `arguments` JSON-decoded
+to a dict (an unparseable or non-object value is a controlled error, not a broken call passed on).
+The same pure-functions-plus-transport-seam discipline applies, so all of it is tested without a
+network or a key.
+
+A self-review (`/code-review`) then hardened the translation to match the parser's own
+"validate, don't trust the shape" contract, since the first cut was weaker than the Anthropic
+parser it sits beside. Five fixes: the token ceiling goes on the wire as **`max_completion_tokens`**,
+not the deprecated `max_tokens` — on the built-in trusted host (`api.openai.com`) the reasoning
+models reject `max_tokens` outright, so the zero-config default would otherwise fail on a whole model
+class; a legacy compatible server that only understands `max_tokens` is the documented residual edge.
+The `tool_result` translation and the response parser both **flatten a content-*parts* array**
+(`[{"type":"text","text":…}]`) to its text instead of `json.dumps`-ing or `str()`-ing it into a
+transcript the model would read as garbage, and the parser now **refuses a `content` that is neither
+string, parts-list, nor null** rather than mis-stringifying it. An assistant turn with neither text
+nor tool_calls takes an **empty-string content, never `null`** (the API accepts the former, rejects
+the latter alongside no tool_calls). And a user turn's `tool_result` messages are emitted **before**
+any trailing user text, because the API requires a `tool` message to immediately follow the assistant
+`tool_calls` it answers. The current `api-loop` caller never produces the mixed/empty shapes, so
+several were latent — but `openai_messages`/`parse_openai_response` are exported translators whose
+docstrings promise the general mapping, and the project's rule is that a function handles what it says
+it handles.
+
+**The §3.3 credential guard extends to it, with a different trust source.** The api-loop client
+sends the *real* key host-side, so an attacker-controlled `base_url` in the checked-in `config.yaml`
+would exfiltrate it — the exact reason `anthropic` is pinned to `TRUSTED_ANTHROPIC_HOSTS`. But
+`openai_compatible` exists *so that* the endpoint can be operator-chosen (a gateway, a local
+server), so there is no single host to hard-code. The resolution: pin to HTTPS on
+`DEFAULT_TRUSTED_OPENAI_HOSTS` (the canonical `api.openai.com`) plus any host named in the
+`BELLWETHER_TRUSTED_MODEL_HOSTS` environment variable — **trusted config outside the evaluated
+checkout**, which a malicious PR editing `config.yaml` cannot reach. The cli layer (`run_evaluation`)
+reads that env var and threads the host set into `build_model_client`; the harness module never reads
+the environment itself, keeping the credential path explicit and the client testable. Cleartext is
+refused even for a trusted host (the key would leak on the wire), and label-boundary matching stops a
+lookalike (`api.openai.com.evil.test`) from posing as the canonical endpoint — the same guard shape
+as the Anthropic pin.
 
 ---
 
@@ -1384,6 +1428,33 @@ The natural home for `to_isolation()` is `SandboxConfig`, but that would force `
 the `cli` layer — `isolation_from_config` / `zone_map_from_config` in `cli/execution.py` — wired from
 `run.py`. This keeps the acyclic graph intact while making the knobs actually apply.
 
+## §3.5 — The event-sink FIFO path is drawn per run, not fixed
+
+The `claude-code` adapter's hooks write every tool-call event to a host-owned FIFO (§10.1) that the
+executor mounts into the container. That mount point was the constant `/dev/bellwether-events` — a
+§3.5 instrumentation tell as reliable as a container named `bellwether-run-3`: a skill that checks
+whether `/dev/bellwether-events` exists knows it is being evaluated, and the path even carries the
+project name. So the path now joins the other §3.5 identifiers: `SandboxIdentifiers.event_sink_path`
+is drawn per run in `derive_identifiers`, a bare hex leaf under `/dev`
+(`/dev/7e584283`, no project name), and the executor reads it for *both* the bind and the hook
+command so the hook writes exactly where the FIFO is mounted. Three decisions worth recording:
+
+- **A fresh token, not the workspace slug.** A skill can read its own workspace path; if the sink
+  leaf were derived from the same slug it could reconstruct the sink path from what it can see. The
+  leaf is an independent draw, appended after the existing identifier draws so their values (and the
+  tests pinning "no project tell") are unchanged.
+- **Still under `/dev`.** The bind is proven to work there (the CI container proof mounts the FIFO at
+  a `/dev` path); randomising only the leaf defeats the hard-coded-path check without moving the
+  mount to a directory whose writability under `--read-only` would be a new unknown. Perfect
+  concealment is explicitly not the goal (§3.5) — active probing of `/dev` still produces the
+  `instrumentation_probe` evidence; the point is that the cheap, reliable *fixed-string* tell is gone.
+- **One source of truth for the stable path.** When randomisation is off (operator findability), the
+  sink returns to the greppable `/dev/bellwether-events`, defined once as
+  `sandbox.STABLE_SINK_CONTAINER_PATH`. The harness's `DEFAULT_SINK_CONTAINER_PATH` — the fallback
+  default of `hook_settings` for standalone callers — is now `str(STABLE_SINK_CONTAINER_PATH)`, so
+  the fallback can never drift from the path the executor actually mounts. Layering holds: `harness`
+  already depends on `sandbox`, so the constant lives in the lower layer and the higher one reads it.
+
 ## §13.5.2 — `max_rare_capability_risk` maps severity to a weight *threshold*, and `critical` is stricter than `high`
 
 The spec fixes `low → weight ≥ 10`, `medium → ≥ 5`, `high → ≥ 3`; raising the severity lowers the
@@ -1615,6 +1686,18 @@ extend it — and `doctor` reads it to warn, naming exactly which configured dis
 `dns_outside_allowlist` still gates *runnability* in the §16.4 precondition (bundled with egress), and
 is listed because it is not *scored*. The point is the discipline the project holds elsewhere: a
 control that does nothing must read as one that does nothing, never as one that works.
+
+The **budget gate is the same audit applied once more.** `BudgetGate` carries `max_cost_usd` and
+`max_wall_clock_minutes`, and the shipped policy presents them as ceilings (`25.00`/`60`, `100.00` on
+`high`), but no budget gate is composed into the verdict and neither threshold is read anywhere — so
+a `max_cost_usd` in policy reads as a spending limit and enforces nothing. `doctor` now warns that
+the budget gate does not gate the verdict in this version and points at the one cost control that *is*
+enforced: the per-repetition token ceiling (`bellwether run --max-tokens` →
+`RunLimits.max_total_tokens` → a `budget_exceeded` outcome). Actually gating a dollar or wall-clock
+budget is deferred deliberately, not forgotten: a dollar figure needs per-model pricing (which
+Bellwether ships none of — §9.5's no-hard-coded-model discipline extends to prices that go stale), and
+a wall-clock budget needs whole-evaluation aggregation across the matrix, not a per-run bound. Until
+that lands, the disclosure is what keeps the gap honest.
 
 ## §22 — The sandbox shells out to the `docker` CLI; the Docker SDK is deliberately absent
 
@@ -2121,8 +2204,7 @@ expected info-level in-context finding, a never-read one stays `canary_without_r
 Before this, every body hit graded `preceded_by_read=False`, which would have flagged
 `legit-credential-reader`'s correct behaviour as a `high` finding on this harness.
 
-**Known bounds, stated.** The sink container path is fixed (`/dev/bellwether-events`), a §3.5
-tell to draw per run later (the hook settings already take the path). The CLI's session
+**Known bounds, stated.** The CLI's session
 transcript lands in the harness-state zone as ordinary state churn. Durations on `tool_result`
 are host receipt-time deltas between the `tool_use` and `tool_result` lines (the hook stream's
 `duration_ms` is finer but arrives after the run). The container proof is CI-only (the sandbox

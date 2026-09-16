@@ -230,6 +230,66 @@ version is threaded in from `cli/preflight.py` (`bellwether.__version__`) as a p
 (min `0.3`) now refuses on both the version and its missing capture planes on this v0.1 runner, the
 version failure carrying a version-shaped remedy the plane failure cannot (see spec-notes §16.4).
 
+**The two weight validators then got wired to the real paths** (§16.1, §13.7) — built and tested
+since WP-11, but called from nowhere, so a mis-weighted policy was discovered late or never. The
+higher-value one is the **cross-document §16.1 check** now in `run_evaluation`: a capability class
+the manifest denies must not be weighted 0, because weight 0 erases it from the risk-weighted
+Jaccard — the one figure feeding the BCI — so a skill could be denied a tool by its own manifest and
+still post a clean consistency score while using it. Neither document can make the check alone
+(policy holds the weights, the manifest holds the deny list), so it runs where both are in hand and
+**refuses before a container is paid for**, alongside the §16.4 preflight; a denied tool maps to the
+`tool:<name>` class the weight table names. This is the project's signature failure mode — a control
+that renders clean without running — closed one more place. The **§13.7 BCI-weight check** is now a
+`doctor` row: a component weighted 0 does not disable the component (that is
+`metrics.components_excluded`) but silently drops it from the composite, so `doctor` warns, named to
+file and key, before a run rather than after a quietly-wrong BCI. The config model already rejects a
+weight set that does not sum to 1.0, so the zero-weight warning is the residual foot-gun worth
+surfacing; the row reads `ok` on a clean scaffold rather than being omitted (an absent check reads
+as a passed one).
+
+**The `openai_compatible` live client then landed** (§9.5) — the last loose end in the live-client
+package, previously refused as a distinct follow-on. `OpenAiCompatibleClient` translates the loop's
+Anthropic content-block messages into the Chat Completions array (the system prompt → a leading
+`system` message; an assistant turn's `tool_use` blocks → `tool_calls` with the input serialised to
+the JSON-string `arguments` the API wants, `content` `null` when the turn is tool calls only; each
+`tool_result` block → its own `tool` message keyed by `tool_call_id`, the model-assigned id kept for
+correlation) and translates the response back (`finish_reason` → the neutral stop vocabulary,
+unknown → `other`; `prompt`/`completion_tokens` → input/output with `prompt_tokens_details.cached_tokens`
+as the cache read; a tool call's `arguments` JSON-decoded, an unparseable one a controlled error).
+Same pure-functions-plus-`transport`-seam discipline as the Anthropic client, so it is fully tested
+without a network or a key. The **§3.3 real-key guard extends to it**, with the trust source that
+the operator-chosen endpoint demands: there is no single host to hard-code (the type exists so the
+endpoint can vary), so it is pinned to HTTPS on the canonical `api.openai.com` plus any host named in
+the **`BELLWETHER_TRUSTED_MODEL_HOSTS` env var** — trusted config *outside* the evaluated checkout,
+which a `base_url` a malicious PR edits into `config.yaml` cannot reach. The cli layer reads the env
+var and threads the host set in; the harness never reads the environment itself (spec-notes §9.5).
+
+**The §3.5 sink-path tell then closed.** The `claude-code` hooks write every tool-call event to a
+host-owned FIFO (§10.1) the executor mounts into the container, and that mount point was the
+constant `/dev/bellwether-events` — an instrumentation tell as reliable as a project-named container:
+a skill that checks for it knows it is being evaluated, and the path even carried the project name.
+It now joins the other §3.5 identifiers — `SandboxIdentifiers.event_sink_path`, a bare hex leaf under
+`/dev` drawn per run from a token *independent of the workspace slug* (so a skill that can read its
+workspace path cannot derive the sink), and the executor reads it for both the bind mount and the
+hook command so the two never disagree. Randomisation off returns to the greppable
+`/dev/bellwether-events` for operator findability, defined once as `sandbox.STABLE_SINK_CONTAINER_PATH`
+(the harness's `hook_settings` fallback default now references it, so the fallback cannot drift from
+the mounted path). Still under `/dev`, where the bind is proven to work — perfect concealment is not
+the goal (§3.5), and active probing still produces the `instrumentation_probe` evidence; the point is
+that the cheap fixed-string tell is gone (spec-notes §3.5).
+
+**`doctor` then gained the budget-gate disclosure** — the same silent-no-op audit the tool already
+does for `require_scan` and the inert `security_runtime` dispositions, applied to the one remaining
+configured-but-inert control. The shipped policy presents `gates.budget.max_cost_usd: 25.00` and
+`max_wall_clock_minutes: 60` (and `100.00` on `high`) as if they were dollar/time ceilings, but no
+budget gate is assembled into the verdict and neither threshold is read anywhere — a `max_cost_usd`
+in policy reads as a spending limit and enforces nothing, exactly the BW-49 trap this project stays
+vigilant about. `doctor` now warns that the budget gate does not gate the verdict in this version and
+points at the guard that *is* enforced: the per-repetition token ceiling (`bellwether run
+--max-tokens` → `RunLimits.max_total_tokens` → a `budget_exceeded` outcome). Advisory, not blocking.
+A real dollar/wall-clock budget gate needs pricing infrastructure (per-model cost) and whole-eval
+aggregation — a later work package; the disclosure is what keeps the gap honest until then.
+
 ---
 
 ## Where the build is
@@ -255,7 +315,7 @@ version failure carrying a version-shaped remedy the plane failure cannot (see s
 | **Recording proxy wired into the executor** — dual-homed sidecar per run, CA mounted, egress → Plane D of the trace | **done** (PR #42–#43); the config switch is `egress.image` |
 | WP-14 — CA trust chain (mechanism table, install env/commands, confirm predicate) | **host core done** — the live doctor probe is CI-only |
 | WP-16 — canaries: mint, decode-then-match, classify, redact, plant-planning, Plane C scan, executor + sidecar wiring | **whole pool planted (env var + file binds); leaks scanned across final output, DNS, tool args, non-model egress URLs *and bodies* (bodies sidecar-side), and written files; redacted end-to-end** (`test_execution_canary_docker.py`); `partial` now only because the model-API channel (read-state grading) is a follow-on |
-| Live model client (`harness/live_client`) — Anthropic Messages API behind the `ModelClient` seam | **done** — `openai_compatible` is a follow-on |
+| Live model client (`harness/live_client`) — Anthropic Messages API + OpenAI Chat Completions behind the `ModelClient` seam | **done** — both `anthropic` and `openai_compatible` implemented |
 | Evaluation driver + run resolution + `bellwether run` wiring | **done** |
 | WP-15 — controlled DNS resolver (allowlist, NXDOMAIN, query log, canary-in-labels) | **code-complete** — host core, sidecar image, executor wiring (`--dns`), Plane E in the trace; live standup CI-validated |
 | HTML report, worked demo (`bellwether demo`), PR-comment posting, changed-skills detection + GitHub Action | **done** |
@@ -269,7 +329,7 @@ version failure carrying a version-shaped remedy the plane failure cannot (see s
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1029 tests: 975 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1055 tests: 1001 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -409,11 +469,11 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    second harness and the loose ends below.
 
 Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
-the DNS/canary work), `openai_compatible` provider support (a follow-on to the live client),
-**plugin-layout staging** — installing an Agent Plugin bundle whole, in the layout a real client
-uses (`--plugin-dir`), rather than each skill as a bare directory (spec-notes §5/§6/§18) — and a
-per-run **sink path** drawn from the identifier stream rather than the fixed
-`/dev/bellwether-events` (§3.5: a fixed FIFO path is an instrumentation tell).
+the DNS/canary work), and **plugin-layout staging** — installing an Agent Plugin bundle whole, in the
+layout a real client uses (`--plugin-dir`), rather than each skill as a bare directory
+(spec-notes §5/§6/§18).
+(`openai_compatible` provider support and the per-run §3.5 **sink path** have since landed — see the
+entries at the top.)
 
 **The live smoke run is armed to observe egress.** `examples/live/config.yaml` now sets
 `egress.image`, and the `Bellwether` workflow builds that sidecar image before the paid run — so a
@@ -629,9 +689,9 @@ piece of logic before `bellwether run` can drive a real skill (10 tests):
   headers (`x-api-key`, `anthropic-version`), and error mapping are all tested without a network or a
   key. Two edges with teeth: an unknown `stop_reason` maps to `other`, never silently to `end_turn`;
   and `model_id_reported` is recorded as what the provider *said it served*, so a silent model swap
-  is visible (§9.3). `build_model_client` dispatches on provider type — `openai_compatible` raises a
-  clear "not yet" because its Chat Completions shape needs a message translation the loop's
-  Anthropic-shaped messages don't carry.
+  is visible (§9.3). `build_model_client` dispatches on provider type; both `anthropic` and
+  `openai_compatible` are now implemented (the latter translates the loop's Anthropic-shaped messages
+  into the Chat Completions array and back — see the entry at the top and spec-notes §9.5).
 
 ### What the live interception test proved (§10.5, §3.3 — the WP-13 done-when)
 
@@ -918,8 +978,9 @@ is the authoritative sequence, and the two agree. The live-container CLI run aga
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
    lockdown that forces every lookup through it, and the `dns_query`/`dns_blocked` trace actions —
    the CI-only container slice, mirroring the proxy sidecar.
-3. **The `openai_compatible` live client** — the Chat Completions message-shape translation the
-   Anthropic client did not need.
+3. **The `openai_compatible` live client — done.** The Chat Completions message-shape translation
+   the Anthropic client did not need is implemented (`OpenAiCompatibleClient`), with the §3.3 key
+   guard extended to it via an out-of-checkout trusted-host env var. See the entry at the top.
 
 **WP-14's live half** (doctor issuing a real request and asserting `interception_confirmed`) is still
 open — the CA-in-the-loop probe. The interception test above deliberately used plain HTTP to prove
@@ -933,10 +994,11 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 |---|---|---|
 | `fixture.yaml` generated content | §9.1 step 1 | A half-designed generator is worse than none. Needs a schema decision. |
 | `requires.min_bellwether_version` in the §16.4 preflight — **closed** | `cli/preflight.py`, `verdict/precondition.py` | The last disclosed BW-51 skip. Now checked: `preflight_failures` threads the running `__version__` into `check_preconditions`, which owns a committed conservative-PEP-440 ordering rule (`_parse_version`/`_version_lt` — no `packaging` dependency). A running version below the policy minimum, or an unparseable minimum, refuses before spending; the shipped `high` profile (min `0.3`) now refuses on both the version and its missing planes on a v0.1 runner (spec-notes §16.4). |
-| Weight validation not wired to `doctor`/`run` | `verdict/validation.py` | Built and tested; §13.7 wants a warning named to file and key at config load. |
-| Sink container path is fixed (`/dev/bellwether-events`) | `harness/claude_code.py` `DEFAULT_SINK_CONTAINER_PATH` | §3.5: a fixed FIFO path is an instrumentation tell. The claude-code adapter writes to it via its hook command; drawing the path per run from `sandbox/identifiers.py` is the follow-on (the hook settings already take the path as a parameter). |
+| Weight validation wired to `doctor`/`run` — **closed** | `cli/run.py`, `cli/app.py` | Both validators are now called on the real paths. `run_evaluation` runs the cross-document §16.1 check (policy `capability_risk_weights` × the manifest's `tools.deny`, mapped to `tool:<name>`) and refuses before spending if a manifest-denied class is weighted 0 — that would erase it from the risk-weighted Jaccard and let a skill post a clean consistency score while using a denied tool. `doctor` runs the §13.7 BCI-weight check on `config.metrics.bci_weights`, surfacing a zero component (which silently drops from the composite — the config model already rejects a non-1.0 sum) named to file and key, as a `warn` row (advisory, not blocking). |
+| Sink container path drawn per run — **closed** | `sandbox/identifiers.py`, `cli/execution.py` | §3.5: the fixed `/dev/bellwether-events` FIFO path was an instrumentation tell a skill could grep for. It is now `SandboxIdentifiers.event_sink_path`, a bare hex leaf under `/dev` drawn per run from a token independent of the workspace slug; the executor reads it for both the bind and the hook command. Randomisation off returns to the greppable stable path (`STABLE_SINK_CONTAINER_PATH`, the single source the harness fallback also references) for operator findability (spec-notes §3.5). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
-| Live model client — `openai_compatible` variant | `harness/live_client.py` | The Anthropic client is done; the Chat Completions shape needs a message-shape translation and lands separately. |
+| Live model client — `openai_compatible` variant — **closed** | `harness/live_client.py`, `cli/run.py` | `OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat Completions array (system → leading `system` message, `tool_use` → assistant `tool_calls` with JSON-string arguments, `tool_result` → per-id `tool` messages) and the response back. The §3.3 real-key guard extends to it: pinned to HTTPS on `api.openai.com` plus hosts named in `BELLWETHER_TRUSTED_MODEL_HOSTS` (out-of-checkout config the cli threads in), so a tampered `config.yaml` base_url cannot redirect the key (spec-notes §9.5). |
+| Budget gate not assembled into the verdict | `config/models/policy.py` `BudgetGate`, `cli/orchestrator.py` | `gates.budget.max_cost_usd` / `max_wall_clock_minutes` are configured (the shipped policy sets `25.00`/`60`, `100.00` on `high`) but read nowhere — no budget gate is composed, so neither is enforced. `doctor` now **discloses** this (a `warn` row, pointing at the enforced `--max-tokens` per-repetition ceiling), closing the silent-no-op reading; actually gating a dollar/wall-clock budget needs per-model pricing and whole-eval aggregation — a later work package. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 

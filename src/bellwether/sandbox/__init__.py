@@ -33,7 +33,11 @@ from bellwether.sandbox.fixtures import (
     materialize_fixture,
     normalize_metadata,
 )
-from bellwether.sandbox.identifiers import SandboxIdentifiers, derive_identifiers
+from bellwether.sandbox.identifiers import (
+    STABLE_SINK_CONTAINER_PATH,
+    SandboxIdentifiers,
+    derive_identifiers,
+)
 from bellwether.sandbox.isolation import IsolationProfile, PinnedEnvironment
 from bellwether.sandbox.overlay import (
     ChangeKind,
@@ -64,6 +68,7 @@ __all__ = [
     "EXECUTABLE_MODE",
     "FILE_MODE",
     "NORMALIZED_MTIME",
+    "STABLE_SINK_CONTAINER_PATH",
     "ZONE_RULES",
     "ChangeKind",
     "ContainerResult",

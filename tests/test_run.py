@@ -493,3 +493,53 @@ def test_the_policy_digest_changes_with_the_policy(package: SkillPackage) -> Non
     b = a.model_copy(update={"selection": Selection(by_criticality={"low": "low"})})
     assert policy_digest(a) != policy_digest(b)
     assert policy_digest(a).startswith("sha256:")
+
+
+def test_run_refuses_a_manifest_denied_tool_weighted_zero(tmp_path: Path) -> None:
+    """§16.1 on the real path: weight 0 on a class the manifest denies erases it from the
+    risk-weighted Jaccard, so a skill could use a tool its own manifest denies and still post a
+    clean consistency score. The cross-document check (policy weights × manifest deny) refuses
+    before the executor is built, alongside the §16.4 preflight."""
+    root = tmp_path / "denier"
+    (root / "evals").mkdir(parents=True)
+    (root / "SKILL.md").write_text(
+        "---\nname: denier\ndescription: d.\n---\nbody\n", encoding="utf-8"
+    )
+    (root / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: ScenarioSuite\n"
+        "scenarios:\n  - id: s\n    expectation: should_trigger\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n',
+        encoding="utf-8",
+    )
+    (root / "evals" / "manifest.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: SkillManifest\n"
+        "metadata:\n  owner: team\n  criticality: low\n"
+        "declared_scope:\n  tools:\n    deny: [curl]\n",
+        encoding="utf-8",
+    )
+    package = load_skill(root)
+
+    base = _policy()
+    low = base.profile("low")
+    metrics = low.metrics.model_copy(
+        update={"capability_risk_weights": {**low.metrics.capability_risk_weights, "curl": 0.0}}
+    )
+    profile = low.model_copy(update={"metrics": metrics})
+    policy = base.model_copy(update={"profiles": {**base.profiles, "low": profile}})
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        raise AssertionError("the executor must never be built for an invalid weight set")
+
+    with pytest.raises(BellwetherError, match="denies"):
+        run_evaluation(
+            config=_config(),
+            policy=policy,
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id="e",
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+        )

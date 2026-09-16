@@ -21,7 +21,14 @@ from pathlib import PurePosixPath
 
 from bellwether.determinism import SeededRng
 
-__all__ = ["SandboxIdentifiers", "derive_identifiers"]
+__all__ = ["STABLE_SINK_CONTAINER_PATH", "SandboxIdentifiers", "derive_identifiers"]
+
+#: The container path the host-owned event-sink FIFO (§10.1) is bound at when randomisation is
+#: **off** — greppable, so an operator debugging a run can find it. Under randomisation the path is
+#: drawn per run (see :func:`derive_identifiers`), because a *fixed* FIFO path is an instrumentation
+#: tell of exactly the kind §3.5 removes: a skill that checks for ``/dev/bellwether-events`` learns
+#: it is being evaluated. The harness hook writes to this path; the executor mounts the FIFO there.
+STABLE_SINK_CONTAINER_PATH = PurePosixPath("/dev/bellwether-events")
 
 #: Hostname stems that look like ordinary build infrastructure. A skill grepping its own
 #: hostname for "sandbox" or "bellwether" learns nothing from these.
@@ -44,6 +51,11 @@ class SandboxIdentifiers:
     workspace_root: PurePosixPath
     hostname: str
     container_name: str
+    #: The container path the host-owned event-sink FIFO is mounted at (§10.1). Randomised per run
+    #: like the other identifiers, because a *fixed* sink path is a §3.5 tell — a skill that greps
+    #: for it learns it is being evaluated. The harness hook and the executor mount both read it
+    #: from here, so the two never disagree.
+    event_sink_path: PurePosixPath = STABLE_SINK_CONTAINER_PATH
     #: False where randomisation was turned off, so the report can say the concealment
     #: mitigations of §3.5 were not in force rather than implying they were.
     randomized: bool = True
@@ -75,17 +87,25 @@ def derive_identifiers(
             workspace_root=base / f"workspace{suffix}",
             hostname=f"bellwether{suffix}",
             container_name=f"bellwether-sandbox{suffix}",
+            event_sink_path=STABLE_SINK_CONTAINER_PATH,
             randomized=False,
         )
 
     slug = rng.token(6, alphabet=_HEX)
     stem = rng.choice(_HOSTNAME_STEMS)
+    hostname = f"{stem}-{rng.token(4, alphabet=_HEX)}"
+    # A fresh token, not the workspace slug: a skill that can read the workspace path must not be
+    # able to derive the sink path from it. A bare hex leaf under /dev carries no project name (the
+    # `bellwether-events` leaf was itself a tell), and the mount point stays under /dev where the
+    # bind is proven to work.
+    sink_leaf = rng.token(8, alphabet=_HEX)
     return SandboxIdentifiers(
         workspace_root=base / slug,
-        hostname=f"{stem}-{rng.token(4, alphabet=_HEX)}",
+        hostname=hostname,
         # No project prefix: a container named `bw-*` is a tell that survives every other
         # mitigation here. The trade-off against operator findability is why
         # `randomize_identifiers: false` exists.
         container_name=f"{stem}-{slug}",
+        event_sink_path=PurePosixPath("/dev") / sink_leaf,
         randomized=True,
     )

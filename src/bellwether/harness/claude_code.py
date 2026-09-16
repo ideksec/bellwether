@@ -43,6 +43,7 @@ from typing import Any, Literal, Protocol
 
 from bellwether.determinism import canonical_json, stable_hash
 from bellwether.harness.protocol import HarnessCapabilities, RawHarnessEvent, RunLimits
+from bellwether.sandbox import STABLE_SINK_CONTAINER_PATH
 
 __all__ = [
     "CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS",
@@ -98,7 +99,12 @@ DEFAULT_PERMISSION_MODE = "bypassPermissions"
 #: appends stdin to it. ``>>`` opens the FIFO write-only, which is the only open the node's
 #: mode permits from inside; the trailing ``echo`` keeps the hook's own stdout a valid
 #: (empty-line) response so the CLI never treats the recorder as a blocking hook.
-DEFAULT_SINK_CONTAINER_PATH = "/dev/bellwether-events"
+#:
+#: This is only the *fallback* default for :func:`hook_settings`: a real run draws the path per
+#: run from the sandbox identifiers (§3.5 — a fixed FIFO path is a tell) and passes it in. The
+#: value is sourced from the sandbox layer so the fallback can never drift from the stable path
+#: the executor mounts when randomisation is off.
+DEFAULT_SINK_CONTAINER_PATH = str(STABLE_SINK_CONTAINER_PATH)
 _HOOK_EVENTS: tuple[str, ...] = ("PreToolUse", "PostToolUse")
 
 

@@ -191,6 +191,38 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert json.loads(result.output)["blocking_problems"] == 0
 
 
+def test_doctor_warns_that_the_budget_gate_does_not_enforce_a_spending_limit(
+    tmp_path: Path,
+) -> None:
+    """§16.2: the shipped policy presents gates.budget.max_cost_usd / max_wall_clock_minutes as
+    dollar/time ceilings, but no budget gate is assembled into the verdict — neither is enforced.
+    A configured control that reads as active and does nothing is the require_scan trap; doctor
+    surfaces it and points at the token ceiling that IS enforced, so a max_cost_usd there is never
+    mistaken for a spending limit."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(tmp_path / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    payload = json.loads(result.output)
+    checks = {check["check"]: check for check in payload["checks"]}
+    assert "budget gate (§16.2)" in checks
+    budget = checks["budget gate (§16.2)"]
+    assert budget["status"] == "warn"
+    assert "does not gate" in budget["detail"]
+    assert "--max-tokens" in budget["detail"]  # points at the guard that is enforced
+    assert "max_cost_usd" in budget["detail"]  # names the inert field
+    # Advisory, not blocking — the gap is disclosed, not treated as a failure.
+    assert payload["blocking_problems"] == 0
+
+
 def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> None:
     """§16.4 / BW-51: doctor evaluates the precondition check for real — one row per profile,
     against that profile's own matrix targets and the planes the config wires — instead of
@@ -232,6 +264,63 @@ def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> N
     # Advisory, not blocking: an unsatisfiable profile is a policy fact, and `run` refuses it
     # with the same failures — doctor stays exit 0 on a fresh scaffold.
     assert payload["blocking_problems"] == 0
+
+
+def test_doctor_warns_when_a_bci_component_is_weighted_zero(tmp_path: Path) -> None:
+    """§13.7: a BCI component weighted 0 does not disable the component — it silently drops it
+    from the composite (use metrics.components_excluded to disable one). The config model already
+    rejects a weight set that does not sum to 1.0, so doctor catches the remaining foot-gun — a
+    zero weight — named to file and key before a run rather than in a quietly-wrong BCI after."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    config_path = tmp_path / ".bellwether" / "config.yaml"
+    # Zero the output component and move its weight to outcome so the set still sums to 1.0 —
+    # otherwise the config model rejects it before doctor's own check ever runs.
+    text = config_path.read_text(encoding="utf-8")
+    text = text.replace("    outcome: 0.30", "    outcome: 0.35").replace(
+        "    output: 0.05", "    output: 0.00"
+    )
+    config_path.write_text(text, encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    payload = json.loads(result.output)
+    checks = {check["check"]: check for check in payload["checks"]}
+    assert "BCI component weights (§13.7)" in checks
+    bci = checks["BCI component weights (§13.7)"]
+    assert bci["status"] == "warn"
+    assert "output" in bci["detail"]  # names the offending key
+    assert "components_excluded" in bci["detail"]  # names the right remedy
+    assert str(config_path) in bci["detail"]  # names the file
+    # Advisory, not blocking — the spec calls for a warning, not a failure.
+    assert payload["blocking_problems"] == 0
+
+
+def test_doctor_reports_ok_bci_weights_on_a_fresh_scaffold(tmp_path: Path) -> None:
+    """The scaffold's five components sum to 1.0 with no zero weight, so the row is `ok` — not
+    omitted. A check that only appears when it fails reads, when absent, as one that passed."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(tmp_path / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    checks = {check["check"]: check for check in json.loads(result.output)["checks"]}
+    assert checks["BCI component weights (§13.7)"]["status"] == "ok"
 
 
 def test_changed_skills_exits_zero_when_nothing_matches(tmp_path: Path) -> None:

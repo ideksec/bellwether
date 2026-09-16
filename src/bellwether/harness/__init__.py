@@ -33,12 +33,17 @@ from bellwether.harness.claude_code import (
     hook_settings,
 )
 from bellwether.harness.live_client import (
+    DEFAULT_TRUSTED_OPENAI_HOSTS,
+    TRUSTED_MODEL_HOSTS_ENV,
     AnthropicClient,
     HttpResponse,
     HttpTransport,
+    OpenAiCompatibleClient,
     anthropic_request_body,
     build_model_client,
+    openai_request_body,
     parse_anthropic_response,
+    parse_openai_response,
 )
 from bellwether.harness.protocol import (
     HarnessAdapter,
@@ -61,6 +66,8 @@ from bellwether.harness.tools import ExecResult, SandboxExec, SandboxToolset, To
 __all__ = [
     "CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS",
     "CLAUDE_CODE_TELEMETRY_ENV",
+    "DEFAULT_TRUSTED_OPENAI_HOSTS",
+    "TRUSTED_MODEL_HOSTS_ENV",
     "AnthropicClient",
     "ApiLoopAdapter",
     "ClaudeCodeAdapter",
@@ -77,6 +84,7 @@ __all__ = [
     "ModelRequest",
     "ModelTurn",
     "OfferedSkill",
+    "OpenAiCompatibleClient",
     "RawHarnessEvent",
     "RunLimits",
     "SandboxExec",
@@ -93,6 +101,8 @@ __all__ = [
     "claude_code_argv",
     "claude_code_environment",
     "hook_settings",
+    "openai_request_body",
     "parse_anthropic_response",
+    "parse_openai_response",
     "resolve_model",
 ]
