@@ -191,6 +191,38 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert json.loads(result.output)["blocking_problems"] == 0
 
 
+def test_doctor_warns_that_the_budget_gate_does_not_enforce_a_spending_limit(
+    tmp_path: Path,
+) -> None:
+    """§16.2: the shipped policy presents gates.budget.max_cost_usd / max_wall_clock_minutes as
+    dollar/time ceilings, but no budget gate is assembled into the verdict — neither is enforced.
+    A configured control that reads as active and does nothing is the require_scan trap; doctor
+    surfaces it and points at the token ceiling that IS enforced, so a max_cost_usd there is never
+    mistaken for a spending limit."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(tmp_path / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    payload = json.loads(result.output)
+    checks = {check["check"]: check for check in payload["checks"]}
+    assert "budget gate (§16.2)" in checks
+    budget = checks["budget gate (§16.2)"]
+    assert budget["status"] == "warn"
+    assert "does not gate" in budget["detail"]
+    assert "--max-tokens" in budget["detail"]  # points at the guard that is enforced
+    assert "max_cost_usd" in budget["detail"]  # names the inert field
+    # Advisory, not blocking — the gap is disclosed, not treated as a failure.
+    assert payload["blocking_problems"] == 0
+
+
 def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> None:
     """§16.4 / BW-51: doctor evaluates the precondition check for real — one row per profile,
     against that profile's own matrix targets and the planes the config wires — instead of

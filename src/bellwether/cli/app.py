@@ -258,6 +258,33 @@ def doctor(
             }
         )
 
+    # §16.2: the budget gate's thresholds (max_cost_usd, max_wall_clock_minutes) are recorded in
+    # policy — the shipped template presents them as dollar/time ceilings — but this version
+    # assembles no budget gate into the verdict, so neither bound is enforced. That is the same
+    # silent-no-op trap as require_scan: a control that reads as active and does nothing. The live
+    # cost guard that IS enforced is the per-repetition token ceiling (`bellwether run --max-tokens`
+    # → RunLimits.max_total_tokens → a `budget_exceeded` outcome). Surface the gap so a max_cost_usd
+    # in policy is never mistaken for a spending limit.
+    _budgets = sorted(
+        {
+            f"max_cost_usd={profile.gates.budget.max_cost_usd:g}, "
+            f"max_wall_clock_minutes={profile.gates.budget.max_wall_clock_minutes}"
+            for profile in _static_profiles
+        }
+    )
+    checks.append(
+        {
+            "check": "budget gate (§16.2)",
+            "status": "warn",
+            "detail": (
+                "gates.budget (max_cost_usd, max_wall_clock_minutes) is recorded but does not gate "
+                "the verdict in this version — no dollar or wall-clock budget is enforced. The live "
+                "cost guard that is enforced is the per-repetition token ceiling ('bellwether run "
+                "--max-tokens', a budget_exceeded outcome). Configured: " + "; ".join(_budgets)
+            ),
+        }
+    )
+
     # §16.4 / BW-51: the precondition check, evaluated for real — per profile, against that
     # profile's own matrix targets and the planes this config actually wires. Reported as
     # `warn`, not `critical`: an unsatisfiable profile is a fact about policy-vs-composition,

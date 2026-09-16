@@ -1669,6 +1669,18 @@ extend it — and `doctor` reads it to warn, naming exactly which configured dis
 is listed because it is not *scored*. The point is the discipline the project holds elsewhere: a
 control that does nothing must read as one that does nothing, never as one that works.
 
+The **budget gate is the same audit applied once more.** `BudgetGate` carries `max_cost_usd` and
+`max_wall_clock_minutes`, and the shipped policy presents them as ceilings (`25.00`/`60`, `100.00` on
+`high`), but no budget gate is composed into the verdict and neither threshold is read anywhere — so
+a `max_cost_usd` in policy reads as a spending limit and enforces nothing. `doctor` now warns that
+the budget gate does not gate the verdict in this version and points at the one cost control that *is*
+enforced: the per-repetition token ceiling (`bellwether run --max-tokens` →
+`RunLimits.max_total_tokens` → a `budget_exceeded` outcome). Actually gating a dollar or wall-clock
+budget is deferred deliberately, not forgotten: a dollar figure needs per-model pricing (which
+Bellwether ships none of — §9.5's no-hard-coded-model discipline extends to prices that go stale), and
+a wall-clock budget needs whole-evaluation aggregation across the matrix, not a per-run bound. Until
+that lands, the disclosure is what keeps the gap honest.
+
 ## §22 — The sandbox shells out to the `docker` CLI; the Docker SDK is deliberately absent
 
 §22's technology table names the `docker` SDK for container work. The implementation does not use it,

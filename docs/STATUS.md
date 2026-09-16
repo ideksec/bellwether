@@ -278,6 +278,18 @@ the mounted path). Still under `/dev`, where the bind is proven to work — perf
 the goal (§3.5), and active probing still produces the `instrumentation_probe` evidence; the point is
 that the cheap fixed-string tell is gone (spec-notes §3.5).
 
+**`doctor` then gained the budget-gate disclosure** — the same silent-no-op audit the tool already
+does for `require_scan` and the inert `security_runtime` dispositions, applied to the one remaining
+configured-but-inert control. The shipped policy presents `gates.budget.max_cost_usd: 25.00` and
+`max_wall_clock_minutes: 60` (and `100.00` on `high`) as if they were dollar/time ceilings, but no
+budget gate is assembled into the verdict and neither threshold is read anywhere — a `max_cost_usd`
+in policy reads as a spending limit and enforces nothing, exactly the BW-49 trap this project stays
+vigilant about. `doctor` now warns that the budget gate does not gate the verdict in this version and
+points at the guard that *is* enforced: the per-repetition token ceiling (`bellwether run
+--max-tokens` → `RunLimits.max_total_tokens` → a `budget_exceeded` outcome). Advisory, not blocking.
+A real dollar/wall-clock budget gate needs pricing infrastructure (per-model cost) and whole-eval
+aggregation — a later work package; the disclosure is what keeps the gap honest until then.
+
 ---
 
 ## Where the build is
@@ -317,7 +329,7 @@ that the cheap fixed-string tell is gone (spec-notes §3.5).
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1049 tests: 995 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1050 tests: 996 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -986,6 +998,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Sink container path drawn per run — **closed** | `sandbox/identifiers.py`, `cli/execution.py` | §3.5: the fixed `/dev/bellwether-events` FIFO path was an instrumentation tell a skill could grep for. It is now `SandboxIdentifiers.event_sink_path`, a bare hex leaf under `/dev` drawn per run from a token independent of the workspace slug; the executor reads it for both the bind and the hook command. Randomisation off returns to the greppable stable path (`STABLE_SINK_CONTAINER_PATH`, the single source the harness fallback also references) for operator findability (spec-notes §3.5). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
 | Live model client — `openai_compatible` variant — **closed** | `harness/live_client.py`, `cli/run.py` | `OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat Completions array (system → leading `system` message, `tool_use` → assistant `tool_calls` with JSON-string arguments, `tool_result` → per-id `tool` messages) and the response back. The §3.3 real-key guard extends to it: pinned to HTTPS on `api.openai.com` plus hosts named in `BELLWETHER_TRUSTED_MODEL_HOSTS` (out-of-checkout config the cli threads in), so a tampered `config.yaml` base_url cannot redirect the key (spec-notes §9.5). |
+| Budget gate not assembled into the verdict | `config/models/policy.py` `BudgetGate`, `cli/orchestrator.py` | `gates.budget.max_cost_usd` / `max_wall_clock_minutes` are configured (the shipped policy sets `25.00`/`60`, `100.00` on `high`) but read nowhere — no budget gate is composed, so neither is enforced. `doctor` now **discloses** this (a `warn` row, pointing at the enforced `--max-tokens` per-repetition ceiling), closing the silent-no-op reading; actually gating a dollar/wall-clock budget needs per-model pricing and whole-eval aggregation — a later work package. |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 
