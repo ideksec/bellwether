@@ -420,6 +420,31 @@ def run(
         list[str] | None,
         typer.Option("--tag", help="Run only scenarios carrying this tag (repeatable)."),
     ] = None,
+    targets: Annotated[
+        str | None,
+        typer.Option(
+            "--targets", help="Comma-separated model aliases to keep (e.g. frontier,small)."
+        ),
+    ] = None,
+    n_max: Annotated[
+        int | None,
+        typer.Option("--n-max", help="Sequential ceiling, matrix-wide (must be a look point)."),
+    ] = None,
+    looks: Annotated[
+        str | None,
+        typer.Option("--looks", help="Comma-separated look points, matrix-wide (advanced, §13.1)."),
+    ] = None,
+    repetitions: Annotated[
+        int | None,
+        typer.Option(
+            "--repetitions",
+            help="Fixed-N mode: exactly N runs per set; the verdict is descriptive_only and "
+            "cannot be ready (§13.1).",
+        ),
+    ] = None,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -453,6 +478,7 @@ def run(
 
     try:
         work = _expand_skill_args(skills)
+        parsed_looks = _parse_looks(looks)
     except BellwetherError as error:
         typer.echo(f"bellwether run: {error}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
@@ -507,6 +533,10 @@ def run(
                 companions_for=companion_resolver(skill_dir),
                 scenario_ids=tuple(scenario or ()),
                 tags=tuple(tag or ()),
+                target_aliases=_split_csv(targets),
+                n_max_override=n_max,
+                looks_override=parsed_looks,
+                repetitions=repetitions,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -551,7 +581,7 @@ def run(
             typer.echo(f"bellwether run [{skill_dir}]: {error}", err=True)
             raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
 
-        if result.exit_code == 2:
+        if exit_code_for(result.exit_code, result.verdict.verdict, strict=strict) != ExitCode.OK:
             worst = ExitCode.NOT_READY
         results.append(
             {
@@ -718,6 +748,40 @@ def pr_comment(
         as_json=json_output,
         lines=[f"{action} comment on {context.slug}#{context.number}"],
     )
+
+
+def exit_code_for(result_exit_code: int, verdict: str, *, strict: bool) -> ExitCode:
+    """The §20 exit code for one skill's result.
+
+    ``ready`` and ``conditional`` are 0 and ``not_ready`` is 2 (revision 1 mapped ``conditional``
+    to 1, which every CI system reads as failure — the opposite of the documented default).
+    ``--strict`` promotes ``conditional`` to the failing code for repositories that want the
+    stricter posture; it never touches ``ready``.
+    """
+    if result_exit_code == 2 or (strict and verdict == "conditional"):
+        return ExitCode.NOT_READY
+    return ExitCode.OK
+
+
+def _split_csv(text: str | None) -> tuple[str, ...]:
+    return tuple(part.strip() for part in (text or "").split(",") if part.strip())
+
+
+def _parse_looks(text: str | None) -> tuple[int, ...] | None:
+    """``--looks 6,12,20`` → ``(6, 12, 20)``; a non-integer refuses rather than being dropped."""
+    if text is None:
+        return None
+    looks: list[int] = []
+    for part in _split_csv(text):
+        try:
+            looks.append(int(part))
+        except ValueError:
+            raise BellwetherError(
+                f"--looks expects comma-separated integers (e.g. 6,12,20), got {part!r}"
+            ) from None
+    if not looks:
+        raise BellwetherError("--looks was given but names no look points")
+    return tuple(looks)
 
 
 def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...]]]:

@@ -111,6 +111,7 @@ __all__ = [
     "aggregate",
     "analyse_run",
     "build_figures",
+    "consistent_schedule",
     "drive_evaluation",
     "effective_schedule",
     "orchestrate",
@@ -274,19 +275,34 @@ def effective_schedule(
         chosen_looks = list(defaults.looks)
     else:
         chosen_looks = list(looks)
-    if chosen_looks != sorted(set(chosen_looks)):
+    return consistent_schedule(chosen_looks, chosen_n, subject=f"scenario {scenario.id!r}")
+
+
+def consistent_schedule(
+    looks: Sequence[int], n_max: int, *, subject: str
+) -> tuple[tuple[int, ...], int]:
+    """Apply the §13.1 schedule rule to a candidate ``(looks, n_max)``, or refuse.
+
+    The rule the manifest override, a scenario's own override, and the CLI's ``--looks``/
+    ``--n-max`` all share: looks strictly increasing and unique, and the last look equal to
+    ``n_max``. Looks above ``n_max`` are dropped — unambiguous when ``n_max`` sits on a
+    pre-registered look — and any other mismatch refuses, because inventing a decision point at
+    ``n_max`` would change the number of looks and so the Pocock correction the design was
+    pre-registered with. ``subject`` names whose schedule is being checked in the message.
+    """
+    chosen = list(looks)
+    if chosen != sorted(set(chosen)):
         raise BellwetherError(
-            f"scenario {scenario.id!r}: looks must be strictly increasing and unique, got "
-            f"{chosen_looks}"
+            f"{subject}: looks must be strictly increasing and unique, got {chosen}"
         )
-    effective = [look for look in chosen_looks if look <= chosen_n]
-    if not effective or effective[-1] != chosen_n:
+    effective = [look for look in chosen if look <= n_max]
+    if not effective or effective[-1] != n_max:
         raise BellwetherError(
-            f"scenario {scenario.id!r}: n_max {chosen_n} is not the last look of its schedule "
-            f"{chosen_looks} (§13.1); set looks and n_max together so the last look equals n_max "
-            "(e.g. looks: [6, 12] with n_max: 12), or choose an n_max that is a pre-registered look"
+            f"{subject}: n_max {n_max} is not the last look of its schedule {chosen} (§13.1); "
+            "set looks and n_max together so the last look equals n_max (e.g. looks: [6, 12] "
+            "with n_max: 12), or choose an n_max that is a pre-registered look"
         )
-    return tuple(effective), chosen_n
+    return tuple(effective), n_max
 
 
 def plan_matrix(

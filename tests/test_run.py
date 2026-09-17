@@ -807,3 +807,79 @@ def test_run_evaluation_runs_only_the_selected_scenario(tmp_path: Path) -> None:
         tags=["keep"],
     )
     assert seen == {"a"}
+
+
+# ---------------------------------------------------------------------------
+# §20 matrix options: --targets, --n-max/--looks, --repetitions (fixed mode)
+# ---------------------------------------------------------------------------
+
+
+def _resolved():  # type: ignore[no-untyped-def]
+    from bellwether.cli.run_plan import resolve_run
+
+    return resolve_run(_config(), _policy(), None, environ=_ENVIRON, profile_override="low")
+
+
+def test_targets_filters_by_alias_and_refuses_when_nothing_matches() -> None:
+    from bellwether.cli.run import apply_matrix_options
+
+    resolved = _resolved()
+    kept = apply_matrix_options(resolved, target_aliases=["frontier"])
+    assert [rt.target.model_alias for rt in kept.targets] == ["frontier"]
+    with pytest.raises(BellwetherError, match="frontier"):
+        apply_matrix_options(resolved, target_aliases=["nope"])
+
+
+def test_n_max_and_looks_override_the_matrix_under_the_schedule_rule() -> None:
+    from bellwether.cli.run import apply_matrix_options
+
+    resolved = _resolved()  # low profile: looks [6, 12, 20], n_max 20
+    assert apply_matrix_options(resolved, n_max_override=12).looks == (6, 12)
+    both = apply_matrix_options(resolved, looks_override=[2, 4], n_max_override=4)
+    assert (both.looks, both.n_max) == ((2, 4), 4)
+    only_looks = apply_matrix_options(resolved, looks_override=[3, 9])
+    assert (only_looks.looks, only_looks.n_max) == ((3, 9), 9)  # n_max defaults to the last look
+    with pytest.raises(BellwetherError, match="n_max"):
+        apply_matrix_options(resolved, n_max_override=10)  # not a pre-registered look
+
+
+def test_repetitions_forces_a_single_look_and_excludes_the_other_overrides() -> None:
+    from bellwether.cli.run import apply_matrix_options
+
+    resolved = _resolved()
+    fixed = apply_matrix_options(resolved, repetitions=3)
+    assert (fixed.looks, fixed.n_max) == ((3,), 3)
+    with pytest.raises(BellwetherError, match="cannot be combined"):
+        apply_matrix_options(resolved, repetitions=3, n_max_override=3)
+    with pytest.raises(BellwetherError, match="at least two"):
+        apply_matrix_options(resolved, repetitions=1)
+
+
+def test_fixed_mode_runs_exactly_n_times_and_is_descriptive_only(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """§13.1 / §16.2 rule 6 end to end: `--repetitions 3` runs three times (not the profile's 20)
+    and the verdict is descriptive_only — it can never be `ready`, because a fixed-N run makes no
+    sequential decision and licenses no gate-eligible interval."""
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    result = run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        repetitions=3,
+    )
+    assert holder["exec"].calls == 3
+    assert result.verdict.descriptive_only is True
+    assert result.verdict.verdict != "ready"

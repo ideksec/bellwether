@@ -511,3 +511,32 @@ def test_run_exposes_the_scenario_and_tag_filters() -> None:
     assert result.exit_code == 0
     assert "--scenario" in result.output
     assert "--tag" in result.output
+
+
+def test_exit_code_for_maps_verdicts_and_strict_promotes_conditional() -> None:
+    """§20: ready and conditional exit 0, not_ready exits 2; --strict promotes conditional to the
+    failing code and never touches ready."""
+    from bellwether.cli.app import exit_code_for
+
+    assert exit_code_for(0, "ready", strict=False) == ExitCode.OK
+    assert exit_code_for(0, "conditional", strict=False) == ExitCode.OK
+    assert exit_code_for(2, "not_ready", strict=False) == ExitCode.NOT_READY
+    assert exit_code_for(0, "conditional", strict=True) == ExitCode.NOT_READY
+    assert exit_code_for(0, "ready", strict=True) == ExitCode.OK
+
+
+def test_run_exposes_the_section_20_matrix_options() -> None:
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    for option in ("--targets", "--n-max", "--looks", "--repetitions", "--strict"):
+        assert option in result.output, option
+
+
+def test_looks_parsing_refuses_a_non_integer() -> None:
+    from bellwether.cli.app import _parse_looks
+    from bellwether.errors import BellwetherError
+
+    assert _parse_looks("6,12,20") == (6, 12, 20)
+    assert _parse_looks(None) is None
+    with pytest.raises(BellwetherError, match="integers"):
+        _parse_looks("6,twelve")

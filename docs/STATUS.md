@@ -377,6 +377,19 @@ or a filter that selects nothing, **refuses** naming what exists (the suite's id
 empty selection run to completion would be a clean-looking verdict about no evidence at all, the
 same reflex as refusing a suite with no scenarios. Both options are repeatable.
 
+**The rest of the §20 `run` surface followed** — `--targets`, `--n-max`, `--looks`,
+`--repetitions`, and `--strict`. `--targets a,b` narrows the resolved target set by alias and
+refuses when nothing matches, naming the aliases the config defines. `--n-max` / `--looks` override
+the profile's sequential design, and `consistent_schedule` checks the §13.1 invariant once for
+every path that builds a schedule (profile, per-scenario override, and CLI flag alike): looks must
+be strictly increasing and `n_max` must be the schedule's last look, or the run refuses before
+spending. `--repetitions N` is the spec's fixed-N mode: it is exclusive with the sequential flags,
+needs at least two runs, collapses the schedule to a single look, and the report is written in
+`descriptive_only` mode because no early-stop boundary was applied. `--strict` maps `conditional`
+to a non-zero exit through `exit_code_for`, so a pipeline that wants "ready or nothing" gets it
+without parsing the report. The per-scenario override path is unchanged; the CLI flag is the outer
+layer that per-scenario schedules still sit inside.
+
 ---
 
 ## Where the build is
@@ -416,7 +429,7 @@ same reflex as refusing a suite with no scenarios. Both options are repeatable.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1098 tests: 1044 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1105 tests: 1051 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

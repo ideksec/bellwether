@@ -17,6 +17,7 @@ before it will send the real key (§3.3).
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,7 @@ from bellwether.cli.orchestrator import (
     EvalResult,
     RunExecutor,
     RunPlan,
+    consistent_schedule,
     drive_evaluation,
     effective_schedule,
     orchestrate,
@@ -38,7 +40,7 @@ from bellwether.cli.orchestrator import (
 )
 from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
-from bellwether.cli.run_plan import resolve_run
+from bellwether.cli.run_plan import ResolvedRun, resolve_run
 from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
@@ -56,6 +58,7 @@ from bellwether.verdict import validate_capability_weights
 
 __all__ = [
     "ExecutorFactory",
+    "apply_matrix_options",
     "build_proxy_provider",
     "build_resolver_provider",
     "claude_code_providers",
@@ -137,15 +140,33 @@ def run_evaluation(
     companions_for: Callable[[Scenario], tuple[SkillPackage, ...]] | None = None,
     scenario_ids: Sequence[str] = (),
     tags: Sequence[str] = (),
+    target_aliases: Sequence[str] = (),
+    n_max_override: int | None = None,
+    looks_override: Sequence[int] | None = None,
+    repetitions: int | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
     Everything up to the executor is validated first (§9.5, §16.1) so a misconfigured run fails
     before a single container starts. The scenarios come from the skill's ``evals/scenarios.yaml``;
     a skill with none is refused rather than silently producing an empty, clean-looking result.
+
+    The §20 matrix options: ``target_aliases`` keeps only the resolved targets whose model alias
+    is listed (``--targets frontier,small``); ``n_max_override``/``looks_override`` replace the
+    resolved schedule matrix-wide under the §13.1 consistency rule (``--n-max``/``--looks``); and
+    ``repetitions`` forces **fixed mode** — exactly that many runs per set, a single look at N, and
+    a ``descriptive_only`` verdict that can never be ``ready`` (§13.1, §16.2 rule 6), because a
+    fixed-N run makes no sequential decision and licenses no gate-eligible interval.
     """
     resolved = resolve_run(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
+    )
+    resolved = apply_matrix_options(
+        resolved,
+        target_aliases=target_aliases,
+        n_max_override=n_max_override,
+        looks_override=looks_override,
+        repetitions=repetitions,
     )
 
     # §21 / THREAT_MODEL: the settings that bound residual-channel exfiltration and the
@@ -279,7 +300,57 @@ def run_evaluation(
         created_at=created_at,
         bellwether_version=bellwether_version,
         out_dir=out_dir,
+        descriptive_only=repetitions is not None,
     )
+
+
+def apply_matrix_options(
+    resolved: ResolvedRun,
+    *,
+    target_aliases: Sequence[str] = (),
+    n_max_override: int | None = None,
+    looks_override: Sequence[int] | None = None,
+    repetitions: int | None = None,
+) -> ResolvedRun:
+    """Apply the §20 matrix options to a resolved run, or refuse.
+
+    ``--targets`` filters by model alias and refuses when nothing matches, naming the aliases the
+    matrix has — a silently empty target list would be a run about nothing. ``--repetitions``
+    is exclusive with ``--n-max``/``--looks``: fixed mode *is* a schedule (one look at N), so
+    combining them would be two schedules. ``--n-max``/``--looks`` go through the same §13.1
+    consistency rule as every other schedule override.
+    """
+    if target_aliases:
+        wanted = set(target_aliases)
+        kept = tuple(rt for rt in resolved.targets if rt.target.model_alias in wanted)
+        if not kept:
+            have = sorted({rt.target.model_alias for rt in resolved.targets})
+            raise BellwetherError(
+                f"--targets {sorted(wanted)} matches none of the matrix's model aliases {have}"
+            )
+        resolved = replace(resolved, targets=kept)
+    if repetitions is not None:
+        if n_max_override is not None or looks_override is not None:
+            raise BellwetherError(
+                "--repetitions forces a fixed-N schedule (one look at N) and cannot be combined "
+                "with --n-max or --looks"
+            )
+        if repetitions < 2:
+            raise BellwetherError(
+                f"--repetitions {repetitions}: a repetition set needs at least two runs "
+                "(repetition is mandatory; a single run is an anecdote, §13.2)"
+            )
+        return replace(resolved, looks=(repetitions,), n_max=repetitions)
+    if n_max_override is not None or looks_override is not None:
+        looks = list(looks_override) if looks_override is not None else list(resolved.looks)
+        n_max = (
+            n_max_override
+            if n_max_override is not None
+            else (looks[-1] if looks_override is not None else resolved.n_max)
+        )
+        checked_looks, checked_n = consistent_schedule(looks, n_max, subject="--looks/--n-max")
+        return replace(resolved, looks=checked_looks, n_max=checked_n)
+    return resolved
 
 
 def sandbox_executor_factory(
