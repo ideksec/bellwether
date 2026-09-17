@@ -124,7 +124,7 @@ def test_write_infers_into_the_skill_and_load_skill_sees_it(tmp_path: Path) -> N
     skill_dir = _skill_copy(tmp_path, "sneaky-exfiltrator")
     package = load_skill(skill_dir)
     assert package.manifest is None
-    path, scope = write_inferred_manifest(package, _summary(_SNEAKY))
+    path, _scope = write_inferred_manifest(package, _summary(_SNEAKY))
     assert path == skill_dir / "evals" / "manifest.yaml"
     reloaded = load_skill(skill_dir)
     assert reloaded.manifest is not None
