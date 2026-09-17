@@ -913,14 +913,50 @@ def init_manifest(
 
 @app.command(name="trace")
 def show_trace(
-    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    run: Annotated[
+        str, typer.Argument(help="A run id (from the report's evidence links) or a trace path.")
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory `bellwether run` wrote to.")
+    ] = Path("bellwether-runs"),
+    eval_id: Annotated[
+        str | None, typer.Option("--eval", help="Search only this evaluation's traces.")
+    ] = None,
+    plane: Annotated[
+        list[str] | None,
+        typer.Option("--plane", help="Show only actions from this plane (repeatable)."),
+    ] = None,
+    kind: Annotated[
+        list[str] | None,
+        typer.Option("--kind", help="Show only actions of this kind (repeatable)."),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
-    """Pretty-print or filter one ARF trace."""
-    _not_yet(
-        "trace",
-        "WP-12",
-        "the ARF reader landed in WP-3, but nothing writes traces to an artifact tree yet",
+    """Pretty-print or filter one ARF trace from an artifact tree (§20, §17.1).
+
+    Finds the trace by the ``run_id`` its header carries — the id the report's evidence
+    links name — under ``--out`` (optionally within one ``--eval``), or reads the path given.
+    One line per action: seq, time, plane, kind, and what it did.
+    """
+    from bellwether.cli.trace_view import (
+        TraceFilter,
+        load_trace,
+        locate_trace,
+        render_trace_lines,
+        trace_record,
+    )
+
+    try:
+        path = locate_trace(run, out_dir=out, eval_id=eval_id)
+        trace = load_trace(path)
+    except BellwetherError as error:
+        typer.echo(f"bellwether trace: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    filt = TraceFilter(planes=frozenset(plane or ()), kinds=frozenset(kind or ()))
+    _emit(
+        {"path": str(path), **trace_record(trace, filt)},
+        as_json=json_output,
+        lines=[f"trace    {path}", *render_trace_lines(trace, filt)],
     )
 
 
@@ -930,17 +966,57 @@ def render_report(
     json_output: JsonFlag = False,
 ) -> None:
     """Re-render a report from stored artifacts."""
-    _not_yet("report", "WP-12", "the report renderer has not landed")
+    _not_yet(
+        "report",
+        "a WP-12 follow-on",
+        "the renderers exist (`bellwether run` writes report/pr_comment.md and report.html), but "
+        "re-rendering from a stored tree needs the figures rebuilt from its traces and canonical "
+        "forms, which nothing does yet; `bellwether diff` and `bellwether trace` read stored "
+        "artifacts today",
+    )
 
 
 @app.command()
 def diff(
-    eval_a: Annotated[str, typer.Argument(help="Baseline evaluation id.")],
-    eval_b: Annotated[str, typer.Argument(help="Candidate evaluation id.")],
+    eval_a: Annotated[
+        str,
+        typer.Argument(
+            help="Baseline: an eval id under --out, an eval directory, or a summary.json."
+        ),
+    ],
+    eval_b: Annotated[str, typer.Argument(help="Candidate, same forms.")],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
     json_output: JsonFlag = False,
 ) -> None:
-    """Diff two evaluations."""
-    _not_yet("diff", "v0.2", "baseline diffing has not landed")
+    """Diff two evaluations by their summary.json (§17.5, §20).
+
+    Compares the verdict, every gate, the functional and consistency readings, the tier-1
+    capability profile (expansion is the regression signal), security findings and spend.
+    Components whose inputs are not comparable are named at the top rather than silently
+    skipped; different schema versions are refused. Reports; does not apply the regression gate.
+    """
+    from bellwether.cli.diff import (
+        diff_record,
+        diff_summaries,
+        load_summary,
+        render_diff_markdown,
+        resolve_summary,
+    )
+
+    try:
+        summary_a = load_summary(resolve_summary(eval_a, out_dir=out))
+        summary_b = load_summary(resolve_summary(eval_b, out_dir=out))
+        result = diff_summaries(summary_a, summary_b)
+    except BellwetherError as error:
+        typer.echo(f"bellwether diff: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        diff_record(result),
+        as_json=json_output,
+        lines=[render_diff_markdown(result).rstrip("\n")],
+    )
 
 
 def main() -> None:

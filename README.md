@@ -72,6 +72,20 @@ container, nothing below it is faked):
 uv run bellwether demo          # writes examples/reports/<eval>/report/report.html
 ```
 
+Two commands read a stored artifact tree back, so the evidence a report points at is a
+command away rather than a JSONL file to parse by hand:
+
+```bash
+# one run's trace, one line per action — the run id is the one the report's evidence links name
+uv run bellwether trace demo-sneaky-exfiltrator-001 --out examples/reports --kind tool_call
+# what changed between two evaluations: verdict, gates, readings, tier-1 capability profile, spend
+uv run bellwether diff demo-benign-note-taker demo-sneaky-exfiltrator --out examples/reports
+```
+
+`diff` follows §17.5: components whose inputs are not comparable are named at the top rather
+than silently skipped, a schema-version mismatch is refused, and tier-1 capability *expansion*
+is surfaced first as the regression signal. It reports; it does not apply the regression gate.
+
 The three are chosen to reach three different verdicts, so the report's shape is visible in
 each: a clean note-taker (`conditional`), a **credential exfiltrator that passes its task but
 reads `~/.aws/credentials`** and is caught by the declared-vs-observed check (`not_ready`),
@@ -292,7 +306,8 @@ alone and an unmentioned component would read as one that ran clean.
 | **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files, **and every composed model request** (§10.4.1 read-state grading); a leak gates the verdict (`security_runtime.canaries`), an unread canary in model context gates it too (`security_runtime.canary_reads`); credentials plane `full` | done (WP-16 capture story; corpus skills land with WP-20) |
 | CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |
 | Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace; a lookup outside the allowlist gates the verdict (`security_runtime.dns`) | done (WP-15) |
-| Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline diffing (§17.5) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
+| `bellwether trace` (one run's ARF trace, located by run id, filtered by plane/kind) · `bellwether diff` (two evaluations by `summary.json`, under the §17.5 comparability rules) | done — both read stored artifact trees offline |
+| Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline *storage* and the regression gate (§17.5) · `report` re-render | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
 | **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
 | **Acceptance corpus** — eleven `tests/corpus/` skills driven through the real pipeline with §25 verdicts asserted in CI: the §10.4.1 false-positive guard (`legit-credential-reader`), the §13.5 tier-model regression (`file-selective`), and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at N = 6, 12 and 20 alike) all proven; the §13.5.2 peripheral report (class + exact path), the timeout state, and the `unused` half of Declared-vs-Observed surface in `summary.json` and both reports | done (WP-20) |

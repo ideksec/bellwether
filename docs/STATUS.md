@@ -409,6 +409,26 @@ unchanged (the demo matrix is unpriced and spends 6 min of its 60). spec-notes c
 reasoning for not composing the cost gate as `not_evaluable`: either reading would demote the
 proven live `ready` on a matrix whose spend is fully recorded.
 
+**`bellwether trace` and `bellwether diff` read stored artifacts (§20, §17.1, §17.5).** Both
+were `_not_yet` stubs — `trace` claiming "nothing writes traces to an artifact tree yet", false
+since WP-12. `cli/trace_view.py` locates a trace by the `run_id` its header carries (the id the
+report's evidence links name) under `--out` (optionally one `--eval`), or takes a path, and
+renders one line per action — seq, time, plane, kind, and a per-kind summary (the tool and its
+input, the outcome and duration, the model turn's stop reason and tokens, the path/host/name)
+— with the header's target/coverage and the footer's exit/wall/tokens, or `INCOMPLETE` with the
+reason. `--plane`/`--kind` filter and say how many actions were hidden; an ambiguous id (the
+same run under two evaluations) is refused naming every candidate. `cli/diff.py` compares two
+`summary.json` (an eval id under `--out`, an eval directory, or a file): verdict, each gate by
+name (and gates on one side only), the functional and consistency readings, the tier-1
+capability profile by set difference (core ∪ peripheral, with peripheral read from its §13.5.2
+records — *expansion* is surfaced first as the regression signal), tier-2 sensitive hits, the
+security findings, and spend. §17.5's rule holds: the weighted figures are skipped and named
+under a different `weights_digest`, tier 3 is always named as not diffed, a schema-version
+mismatch is refused, and a different policy or skill is a caveat shown before the table. It
+reports and does not apply `gates.regression`; baseline storage and the gate remain a work
+package. `report` stays a stub with a truthful message (the renderers exist; re-rendering needs
+the figures rebuilt from a stored tree). Tested against the committed demo trees.
+
 ---
 
 ## Where the build is
@@ -448,7 +468,7 @@ proven live `ready` on a matrix whose spend is fully recorded.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1130 tests: 1076 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1148 tests: 1094 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

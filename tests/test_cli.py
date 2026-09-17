@@ -393,9 +393,7 @@ def test_doctor_reports_a_bad_config_as_an_infrastructure_error(tmp_path: Path) 
         ("probe", ["./somewhere"]),
         ("coexistence", []),
         ("init-manifest", ["a-skill"]),
-        ("trace", ["run-1"]),
         ("report", ["eval-1"]),
-        ("diff", ["a", "b"]),
     ],
 )
 def test_unimplemented_commands_exit_three_and_name_their_work_package(

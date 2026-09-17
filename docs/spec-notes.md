@@ -2483,3 +2483,37 @@ spend blocks" setting. The footer's `estimated_cost_usd` stays `None`: pricing i
 composition (where policy can be re-derived from cached traces, §19.2) rather than stamped into the
 trace, so a price correction never invalidates a run. The `summary.json` schema is at `1.1` — a minor
 bump: `cost.usd` is now nullable and `cost.runs_without_footer` / `cost.unpriced_targets` were added.
+
+## §20, §17.5 — `trace` locates a run by its header id; `diff` compares summaries under the comparability table and applies no gate
+
+§20 lists `bellwether trace <RUN_ID>` and `bellwether diff <EVAL_A> <EVAL_B>`; §17.5 asks for
+the diff as ad-hoc comparison and is firm that a silently partial diff is worse than a refused
+one. Three implementation choices are worth recording.
+
+**`trace` searches by the header's `run_id`, not by path arithmetic.** §17.1 files a trace at
+`traces/<scenario>/<target>/<repetition>.arf.jsonl`, but the id a report's evidence links name
+is the `run_id` in the trace's own header, and nothing in that id is guaranteed to encode the
+path. So the command walks the artifact tree (sorted, first line of each file only) and matches
+the header. The same id under two evaluations — a re-run into the same `--out` — is refused
+naming every candidate rather than resolved by order; `--eval` narrows, and a path bypasses the
+search. The one-line summary per action is per-kind and deliberately lossy (80 characters,
+newlines escaped); `--json` carries the full `action` payload.
+
+**`diff` compares `summary.json` only, under §17.5's table, and names what it skips.** The
+comparable set is what the rollup carries: the verdict and gates by name, the functional and
+consistency readings, tier-1 classes by set difference, tier-2 sensitive hits, findings, and
+spend. Two rows of the §17.5 table apply directly: a different `weights_digest` skips the BCI and
+weighted Jaccard (named at the top), and a different schema version refuses outright, since a
+field's meaning may have changed. Tier 3 is always listed as not compared (§4.1: it churns). A
+different policy digest or skill name is a *caveat* rendered before the table, not a refusal —
+"what changed when we moved from model X to model Y" (§17.5) is a legitimate cross-policy,
+cross-target question, and the reader is told the thresholds may differ. Peripheral tier-1
+classes are read from their §13.5.2 records (`{"tier1": ..., "frequency": ...}`), so a class
+moving from core to peripheral is neither an expansion nor a removal.
+
+**`diff` reports; it does not decide.** `gates.regression` (`block_on_capability_expansion`,
+`max_pass_rate_drop`) is a policy applied against a *stored baseline* on the run path (§17.5,
+§18.4). The ad-hoc diff has no policy in hand and no baseline semantics — either side may be
+the newer — so it surfaces tier-1 expansion as the headline signal and leaves the disposition
+to the reader. Baseline storage and the regression gate remain a work package; when they land
+they should compose from `diff_summaries` rather than re-implement the comparison.
