@@ -412,6 +412,14 @@ def run(
             help="Hard per-repetition token ceiling — the cost guard for a live run.",
         ),
     ] = 1_000_000,
+    scenario: Annotated[
+        list[str] | None,
+        typer.Option("--scenario", help="Run only this scenario id (repeatable)."),
+    ] = None,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Run only scenarios carrying this tag (repeatable)."),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -497,6 +505,8 @@ def run(
                 # §7.4: a scenario's also_load_skills resolve to sibling skill directories
                 # beside this one and are offered alongside it.
                 companions_for=companion_resolver(skill_dir),
+                scenario_ids=tuple(scenario or ()),
+                tags=tuple(tag or ()),
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,

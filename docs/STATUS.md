@@ -368,6 +368,15 @@ as plugin-layout staging. The full §7.4 machinery (the `bellwether coexistence`
 trigger-collision matrix, the library baseline and its delta) is still a work package; what
 landed is the loading half every coexistence scenario needs first (spec-notes §7.4).
 
+**`bellwether run --scenario ID` / `--tag TAG` then landed** (§7.2, §20) — the two filters the
+spec's CLI surface lists and `tags` exists for ("used for filtering"), neither of which the `run`
+command exposed. `select_scenarios` narrows the suite: ids select exactly those scenarios, tags
+select every scenario carrying *any* of them, and both together intersect; suite order is
+preserved so the plan list and artifact tree stay deterministic. An id the suite does not define,
+or a filter that selects nothing, **refuses** naming what exists (the suite's ids and tags) — an
+empty selection run to completion would be a clean-looking verdict about no evidence at all, the
+same reflex as refusing a suite with no scenarios. Both options are repeatable.
+
 ---
 
 ## Where the build is
@@ -407,7 +416,7 @@ landed is the loading half every coexistence scenario needs first (spec-notes §
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1094 tests: 1040 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1098 tests: 1044 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

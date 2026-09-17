@@ -696,3 +696,114 @@ def test_run_refuses_companion_skills_on_a_claude_code_target() -> None:
     companion_failures = [f for f in refused if f.gate == "scenario[collide].also_load_skills"]
     assert companion_failures
     assert "api-loop" in companion_failures[0].remedy
+
+
+# ---------------------------------------------------------------------------
+# --scenario / --tag filtering (§7.2, §20)
+# ---------------------------------------------------------------------------
+
+
+def _tagged_suite():  # type: ignore[no-untyped-def]
+    from bellwether.config.models.scenarios import ScenarioSuite
+
+    return ScenarioSuite.model_validate(
+        {
+            "apiVersion": "bellwether/v1",
+            "kind": "ScenarioSuite",
+            "scenarios": [
+                {
+                    "id": "auth",
+                    "expectation": "should_trigger",
+                    "prompt": "p",
+                    "tags": ["security", "fast"],
+                    "assert": [{"skill_activated": True}],
+                },
+                {
+                    "id": "docs",
+                    "expectation": "should_trigger",
+                    "prompt": "p",
+                    "tags": ["docs"],
+                    "assert": [{"skill_activated": True}],
+                },
+                {
+                    "id": "leak",
+                    "expectation": "should_trigger",
+                    "prompt": "p",
+                    "tags": ["security"],
+                    "assert": [{"skill_activated": True}],
+                },
+            ],
+        }
+    )
+
+
+def test_select_scenarios_by_id_tag_and_both() -> None:
+    from bellwether.cli.run import select_scenarios
+
+    suite = _tagged_suite()
+    ids = lambda picked: [s.id for s in picked]  # noqa: E731
+    assert ids(select_scenarios(suite.scenarios)) == ["auth", "docs", "leak"]  # no filter
+    assert ids(select_scenarios(suite.scenarios, scenario_ids=["leak"])) == ["leak"]
+    # A tag selects every scenario carrying it, in suite order.
+    assert ids(select_scenarios(suite.scenarios, tags=["security"])) == ["auth", "leak"]
+    # Any-of across tags; both filters intersect.
+    assert ids(select_scenarios(suite.scenarios, tags=["docs", "fast"])) == ["auth", "docs"]
+    assert ids(
+        select_scenarios(suite.scenarios, scenario_ids=["auth", "docs"], tags=["security"])
+    ) == ["auth"]
+
+
+def test_a_filter_that_selects_nothing_refuses_naming_what_exists() -> None:
+    """An empty selection run to completion would be a clean-looking verdict about no evidence."""
+    from bellwether.cli.run import select_scenarios
+
+    suite = _tagged_suite()
+    with pytest.raises(BellwetherError, match="selects no scenarios") as excinfo:
+        select_scenarios(suite.scenarios, tags=["nonexistent"])
+    assert "security" in str(excinfo.value)  # names the tags that do exist
+    with pytest.raises(BellwetherError, match="does not define"):
+        select_scenarios(suite.scenarios, scenario_ids=["ghost"])
+
+
+def test_run_evaluation_runs_only_the_selected_scenario(tmp_path: Path) -> None:
+    root = tmp_path / "two"
+    (root / "evals").mkdir(parents=True)
+    (root / "SKILL.md").write_text("---\nname: two\ndescription: d.\n---\nb\n", encoding="utf-8")
+    (root / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: ScenarioSuite\n"
+        "scenarios:\n"
+        "  - id: a\n    expectation: should_trigger\n    tags: [keep]\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n'
+        "  - id: b\n    expectation: should_trigger\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n',
+        encoding="utf-8",
+    )
+    (root / "evals" / "manifest.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: SkillManifest\nmetadata:\n  owner: t\n  criticality: low\n",
+        encoding="utf-8",
+    )
+    package = load_skill(root)
+    seen: set[str] = set()
+
+    class _Recording(_ScriptedExecutor):
+        def execute(self, plan: RunPlan) -> ExecutedRun:
+            seen.add(plan.scenario.id)
+            return super().execute(plan)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _Recording(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        tags=["keep"],
+    )
+    assert seen == {"a"}

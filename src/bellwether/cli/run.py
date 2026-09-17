@@ -16,7 +16,7 @@ before it will send the real key (§3.3).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -61,6 +61,7 @@ __all__ = [
     "claude_code_providers",
     "policy_digest",
     "run_evaluation",
+    "select_scenarios",
 ]
 
 #: How the caller supplies the execution half. The production factory builds a
@@ -81,6 +82,44 @@ def policy_digest(policy: Policy) -> str:
     return "sha256:" + stable_hash(policy.model_dump_json())
 
 
+def select_scenarios(
+    scenarios: Sequence[Scenario], *, scenario_ids: Sequence[str] = (), tags: Sequence[str] = ()
+) -> list[Scenario]:
+    """Narrow a suite by ``--scenario ID`` and ``--tag TAG`` (§7.2, §20), or refuse.
+
+    Ids select exactly those scenarios; tags select every scenario carrying *any* of them; both
+    together intersect (an id selection narrowed by tags). Suite order is preserved so the plan
+    list — and the artifact tree — stays deterministic. An id no scenario has, or a filter that
+    selects nothing, refuses naming what exists: an empty selection run to completion would be a
+    clean-looking verdict about no evidence at all.
+    """
+    if not scenario_ids and not tags:
+        return list(scenarios)
+    known = [scenario.id for scenario in scenarios]
+    unknown = sorted(set(scenario_ids) - set(known))
+    if unknown:
+        raise BellwetherError(
+            f"--scenario names {', '.join(unknown)}, which this suite does not define; it defines: "
+            f"{', '.join(known)}"
+        )
+    wanted_ids = set(scenario_ids)
+    wanted_tags = set(tags)
+    selected = [
+        scenario
+        for scenario in scenarios
+        if (not wanted_ids or scenario.id in wanted_ids)
+        and (not wanted_tags or wanted_tags & set(scenario.tags))
+    ]
+    if not selected:
+        available = sorted({tag for scenario in scenarios for tag in scenario.tags})
+        raise BellwetherError(
+            f"the filter selects no scenarios (--scenario {sorted(wanted_ids) or '-'}, --tag "
+            f"{sorted(wanted_tags) or '-'}); the suite's tags are {available or 'none'} and its "
+            f"scenarios are {known}"
+        )
+    return selected
+
+
 def run_evaluation(
     *,
     config: Config,
@@ -96,6 +135,8 @@ def run_evaluation(
     profile_override: str | None = None,
     fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
     companions_for: Callable[[Scenario], tuple[SkillPackage, ...]] | None = None,
+    scenario_ids: Sequence[str] = (),
+    tags: Sequence[str] = (),
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -128,7 +169,10 @@ def run_evaluation(
             f"skill '{package.name}' declares no scenarios (evals/scenarios.yaml), so there is "
             "nothing to run; a scenario suite with no scenarios produces no evidence"
         )
-    scenarios = list(suite.scenarios)
+    # §7.2 / §20: `--scenario ID` and `--tag TAG` narrow the suite. A filter that selects
+    # nothing refuses — an empty selection run to completion would be a clean-looking verdict
+    # about no evidence at all.
+    scenarios = select_scenarios(suite.scenarios, scenario_ids=scenario_ids, tags=tags)
     targets = [rt.target for rt in resolved.targets]
 
     # §16.4 / BW-51: refuse an unsatisfiable policy/target/composition combination *now*,

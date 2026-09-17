@@ -503,3 +503,11 @@ def test_exit_codes_follow_the_spec() -> None:
     """§20: 0 covers ready and conditional; 2 is not_ready; 3 is infrastructure."""
     assert (ExitCode.OK, ExitCode.NOT_READY, ExitCode.INFRASTRUCTURE) == (0, 2, 3)
     assert 1 not in {int(code) for code in ExitCode}
+
+
+def test_run_exposes_the_scenario_and_tag_filters() -> None:
+    """§20 lists `--scenario ID` and `--tag TAG` on `run`; both are repeatable filters."""
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--scenario" in result.output
+    assert "--tag" in result.output
