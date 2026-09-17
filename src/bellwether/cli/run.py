@@ -264,7 +264,6 @@ def run_evaluation(
         targets,
         profile_name=resolved.profile_name,
         multi_turn_scenario_ids=[s.id for s in scenarios if isinstance(s.prompt, list)],
-        companion_scenario_ids=[s.id for s in scenarios if s.also_load_skills],
         deterministic_sampling=deterministic_sampling,
     )
 

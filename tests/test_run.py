@@ -672,30 +672,21 @@ def test_run_refuses_a_multi_turn_scenario_on_a_claude_code_target(tmp_path: Pat
     assert "api-loop" in turn_failures[0].remedy
 
 
-def test_run_refuses_companion_skills_on_a_claude_code_target() -> None:
-    """§7.4 × §16.4: the claude-code harness stages only the skill under test in this build, so
-    companions would be undiscoverable and "which activated" a foregone conclusion — refused
-    before any container rather than run with competitors the harness cannot see."""
+def test_companion_scenarios_are_admitted_on_a_claude_code_target() -> None:
+    """§7.4 × §16.4: companions are now staged beside the skill under test for the CLI to
+    discover (`stage_companions`), so a coexistence scenario no longer fails the preflight on a
+    claude-code target — the refusal that stood while the build staged exactly one skill is
+    gone, and nothing else about the target's admission changed."""
     from bellwether.cli.orchestrator import TargetInfo
     from bellwether.cli.preflight import preflight_failures
 
-    ok = preflight_failures(
-        _config(),
-        _policy().profile("low"),
-        [TargetInfo("api-loop", "anthropic", "frontier")],
-        companion_scenario_ids=["collide"],
-    )
-    assert not any("collide" in f.gate for f in ok)
-
-    refused = preflight_failures(
-        _config(),
-        _policy().profile("low"),
-        [TargetInfo("claude-code", "anthropic", "frontier")],
-        companion_scenario_ids=["collide"],
-    )
-    companion_failures = [f for f in refused if f.gate == "scenario[collide].also_load_skills"]
-    assert companion_failures
-    assert "api-loop" in companion_failures[0].remedy
+    for harness in ("api-loop", "claude-code"):
+        failures = preflight_failures(
+            _config(),
+            _policy().profile("low"),
+            [TargetInfo(harness, "anthropic", "frontier")],
+        )
+        assert not any("also_load_skills" in f.gate for f in failures)
 
 
 # ---------------------------------------------------------------------------

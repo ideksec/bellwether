@@ -364,7 +364,8 @@ host-side, so a companion's own scripts are absent in the container and a call i
 ordinary recorded error. The `claude-code` harness discovers skills from what is staged, and this
 build stages exactly one, so a companion scenario on a `claude-code` target is **refused by the
 §16.4 preflight** (`scenario[<id>].also_load_skills`) — plural staging is the same deferred piece
-as plugin-layout staging. The full §7.4 machinery (the `bellwether coexistence` command, the
+as plugin-layout staging *(since landed: companions are staged for `claude-code`; see the entry
+above)*. The full §7.4 machinery (the `bellwether coexistence` command, the
 trigger-collision matrix, the library baseline and its delta) is still a work package; what
 landed is the loading half every coexistence scenario needs first (spec-notes §7.4).
 
@@ -520,6 +521,22 @@ zero and E[N] as the midpoint (no stopping history exists yet). The CLI prints i
 asks to proceed on an interactive terminal, and proceeds without asking in CI; `--yes` skips
 the prompt, never the estimate. A decline refuses with no container started.
 
+**Companion skills are staged for the `claude-code` harness — §7.4 plural staging.** The
+preflight refusal that stood while the build staged exactly one skill is gone: for a
+`claude-code` target the executor stages every companion a scenario names beside the skill under
+test (`sandbox/staging.py:stage_companions` — the same allowlisted payload, metadata
+normalisation and §3.5 machinery check the primary gets, each under its own slug, bound
+read-only at the same install root), and the api-loop path is unchanged (companions offered
+host-side). The fact the brick rests on — that the CLI discovers *every* directory under
+`<config dir>/skills/` and names each in its init record — is observed against the real CLI in
+the offline suite (both skills reach `skill_offered`, only the skill under test activates), and
+the CI-only executor proof stages a companion through `SandboxRunExecutor` and asserts the same
+from the trace. Two skills that slug to one install directory are refused before anything is
+copied (they would shadow each other and "which activated" would be undecidable); nothing under
+a companion is hashed into the primary's digests, so the run cache and baselines still key on the
+skill under test alone. Plugin-layout staging (a bundle installed whole, `--plugin-dir`) stays
+open: it needs a CLI fact this build has not observed.
+
 ---
 
 ## Where the build is
@@ -559,7 +576,7 @@ the prompt, never the estimate. A decline refuses with no container started.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1216 tests: 1162 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1222 tests: 1168 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

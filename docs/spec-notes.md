@@ -1744,7 +1744,7 @@ N = 4 under a `[2, 4]` override was not a profile look and was mis-keyed as the 
 look. With no override the result is the resolved matrix exactly, so the default path and every
 committed report are byte-identical.
 
-## §7.4, §5 — `also_load_skills` loads sibling skills as offered companions; the CLI harness refuses them
+## §7.4, §5 — `also_load_skills` loads sibling skills as offered companions; the CLI harness refuses them *(refusal since lifted — see "§7.4, §9.1 — Companions are staged for the claude-code harness")*
 
 `Scenario.also_load_skills` carried companion names from WP-1 and the run path never read it, so
 every scenario ran with the primary offered alone and `other_skill_activated` had nothing to
@@ -2697,3 +2697,33 @@ guessed a price would be the one number in the report a reader could not trust.
 `--yes` skips the confirmation prompt, never the estimate. The prompt is asked only on an
 interactive terminal; a CI run proceeds after printing, since there is nobody to answer — the
 mandatory part is the printing. A decline is a refusal with no container started.
+
+## §7.4, §9.1 — Companions are staged for the `claude-code` harness; the preflight refusal is lifted
+
+The entry above refused a companion scenario on a `claude-code` target because the build staged
+exactly one skill and the CLI discovers skills from what is installed. Plural staging now exists:
+`stage_companions` stages each companion the scenario names into its own directory under the run
+(`<run>/companions/<slug>`) with the same `stage_payload` the primary uses — the allowlisted payload
+only, normalised metadata, the §3.5 machinery check — and the executor binds each read-only at
+`<install root>/<slug>` beside the skill under test. Three decisions.
+
+**The fact was observed before it was relied on.** §9.1 says the harness reads
+`~/.claude/skills/`; that one directory is discovered was proven for the primary, but "every
+directory is discovered and named" is a separate CLI fact. The real-CLI offline test installs a
+companion beside the primary and asserts the CLI's init record names both (each reaches the trace
+as `skill_offered`) while only the primary activates; the CI-only executor proof stages a companion
+through `SandboxRunExecutor` and asserts the same from the trace. Discovery is thus *observed* per
+run — a companion the CLI did not list would be visible as a missing `skill_offered`, not assumed
+present.
+
+**Collisions refuse before any copy.** Two skills that slug to one directory would shadow each
+other at the install root and "which activated" would be undecidable; the whole set is checked
+first, naming both skills, so a refusal leaves no half-staged run directory.
+
+**Companions stay out of the primary's digests.** Nothing under a companion is hashed into
+`payload_digest` or `fixture_digest`, matching the api-loop entry: the run cache and baselines key
+on the skill under test, and a companion is scenario context, not payload. The §16.4 clause and
+its `companion_scenario_ids` parameter are removed rather than left inert. Plugin-layout staging
+(a bundle installed whole, the way `--plugin-dir` would) remains open — it needs a CLI fact this
+build has not observed, and the "bundle is not staged" paragraph under §5/§6/§18 still stands.
+

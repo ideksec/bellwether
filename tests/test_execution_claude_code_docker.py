@@ -132,6 +132,18 @@ def skill_dir(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def companion_dir(tmp_path: Path) -> Path:
+    """A §7.4 companion beside the skill under test, staged into the sandbox by the executor."""
+    root = tmp_path / "k8s-debug"
+    (root / "evals").mkdir(parents=True)
+    (root / "SKILL.md").write_text(
+        "---\nname: k8s-debug\ndescription: Debug Kubernetes workloads.\n---\nInspect pods.\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.fixture
 def fixture_source(tmp_path: Path) -> Path:
     source = tmp_path / "fixture"
     source.mkdir()
@@ -140,7 +152,11 @@ def fixture_source(tmp_path: Path) -> Path:
 
 
 def test_the_real_cli_runs_in_the_sandbox_behind_the_proxy(
-    images: tuple[str, str], skill_dir: Path, fixture_source: Path, tmp_path: Path
+    images: tuple[str, str],
+    skill_dir: Path,
+    companion_dir: Path,
+    fixture_source: Path,
+    tmp_path: Path,
 ) -> None:
     sandbox_image, sidecar_image = images
     host_ip = _host_ip_for_containers()
@@ -189,8 +205,16 @@ def test_the_real_cli_runs_in_the_sandbox_behind_the_proxy(
             expectation="should_trigger",
             prompt="Use the demo-skill to take notes.",
             assertions=[AssertionSpec(name="skill_activated", params=True)],
+            also_load_skills=["k8s-debug"],
         )
-        executed = executor.execute(RunPlan(scenario=scenario, target=target, repetition=1))
+        executed = executor.execute(
+            RunPlan(
+                scenario=scenario,
+                target=target,
+                repetition=1,
+                companions=(load_skill(companion_dir),),
+            )
+        )
     finally:
         server.kill()
         server.wait()
@@ -204,6 +228,11 @@ def test_the_real_cli_runs_in_the_sandbox_behind_the_proxy(
     capabilities = trace.header.target.harness_capabilities or {}
     assert capabilities["trigger_metrics_portable"] is True
     assert capabilities["hooks_corroborated"] is True
+
+    # §7.4: the companion was staged beside the skill under test and the CLI discovered both —
+    # its init record names them — while only the skill under test activated.
+    offered = {a.action["skill"] for a in trace.actions_of_kind("skill_offered")}
+    assert {"demo-skill", "k8s-debug"} <= offered, offered
 
     # The harness itself activated the skill and drove the tools; the hook stream agreed.
     assert len(trace.actions_of_kind("skill_activated")) == 1

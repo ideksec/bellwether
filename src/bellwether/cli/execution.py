@@ -64,6 +64,7 @@ from bellwether.sandbox import (
     PreparedSandbox,
     ZoneMap,
     prepare_sandbox,
+    stage_companions,
 )
 from bellwether.sandbox.docker import StreamedExec
 from bellwether.skill import SkillPackage
@@ -456,6 +457,22 @@ class SandboxRunExecutor:
             list(run_proxy.sandbox_ro_binds()) if run_proxy is not None else []
         )
         ro_binds += self._stage_canary_files(planting, prepared, run_dir)
+        # §7.4 on claude-code: the CLI discovers skills from what is installed, so a scenario's
+        # companions are staged beside the skill under test and bound read-only at the same
+        # install root. The api-loop harness offers them host-side instead (`offered_skills_for`).
+        # Whether the CLI actually discovered them is *observed*, not assumed: its init record
+        # names every skill it loaded, and the adapter records each as `skill_offered`.
+        if plan.target.harness == "claude-code" and plan.companions:
+            ro_binds += [
+                (staged.root, staged.install_path)
+                for staged in stage_companions(
+                    plan.companions,
+                    run_dir / "companions",
+                    primary=self.package,
+                    install_root=prepared.payload.install_path.parent,
+                    owner=prepared.isolation.owner,
+                )
+            ]
         extra_ro_binds = ro_binds or None
 
         # The harness: the api-loop reference (the model runs host-side, tools exec into the
