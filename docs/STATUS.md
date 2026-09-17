@@ -150,12 +150,13 @@ reaches `ready`; a flat per-path capability set would fail the consistency gate 
 rendered PR comment, never a bare high BCI, §13.3). The acceptance harness gained per-repetition
 transcripts so `file-selective`'s genuine tier-3 variance is real, not a copy. Five §25 corpus
 skills remain (`benign-chaotic`, `scope-creeper`, `rare-canary-reader`, `slow`, `over-declared`).
-Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
-undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
+Still deferred (work packages, not quick fixes): wiring
 the `credential_read_undeclared` disposition into a scored gate (needs the read-capture plane),
 the blocking static-scan gate (lands with the §15 scanner),
 and hash-pinning the full sidecar dependency closure.
-(`requires.min_bellwether_version` in the preflight has since been closed — see the entry below.)
+(`requires.min_bellwether_version` in the preflight, and the network scope derivation — an
+undeclared-egress host is now scored through the scope gate — have since been closed; see the
+entries below.)
 
 **WP-20 then closed — the v0.1 acceptance corpus is complete** (eleven skills, three slices). The
 last five skills each assert a property the smooth metrics cannot deliver, and building them
@@ -290,6 +291,37 @@ points at the guard that *is* enforced: the per-repetition token ceiling (`bellw
 A real dollar/wall-clock budget gate needs pricing infrastructure (per-model cost) and whole-eval
 aggregation — a later work package; the disclosure is what keeps the gap honest until then.
 
+**Then a larger batch landed three run-path features together.** First, **the network
+assertions evaluate for real** (§12.2, §10.5, §10.6): `no_egress`, `egress_only_to` and
+`no_dns_outside` were catalogue entries stubbed to `not_evaluable` via `_plane_gated` even after
+the recording proxy and controlled resolver made their planes observed. Each is now an absence
+claim gated on its plane being usable for absence (§10.8) — a run without the sidecar still returns
+`not_evaluable` with the coverage reason, never `pass` — and, with the plane observed, decides:
+only `skill_attributed` flows are the skill's egress (§10.5.0; the model API and declared harness
+infrastructure never are), a default-deny **block counts as an egress the skill made** (evidence of
+intent, with the block's own action as evidence — the index now records blocked flows with their
+host, and `dns_blocked` seqs), and host matching is the proxy's label-boundary rule so a lookalike
+cannot pose as a declared host. Second, **the Declared-vs-Observed table gained its `network`
+area** (§12.5): a skill-attributed or blocked flow no `network.egress_allow` entry covers is
+`exceeded` and so blocks the scope gate; an empty allowlist is the declaration that the skill makes
+no network calls, under which every skill flow is `exceeded`; a declared host nothing reached is
+`unused` only where the plane could have seen a use, else `not_evaluable`. This closes the "an
+undeclared-egress violation is not yet scored" gap without touching the `scope=None` outcome split —
+the three now-false "still stubbed" comments were corrected to state the real reason for that split
+(an auto-derived absence assertion on an unobserved plane would drag a clean outcome to
+`not_evaluable`; the table records that row as `not_evaluable` on its own). Third,
+**per-scenario fixtures** (§7.2): `Scenario.fixture`/`defaults.fixture` existed in the model but
+were ignored — `_run_fixture` materialised the whole `evals/fixtures/` as every run's workspace.
+`cli/fixtures.py` resolves a name per scenario (`evals/fixtures/<name>/`, then the repository's
+`.bellwether/fixtures/<name>/`, `empty` for a bare workspace), `plan_matrix` stamps the resolved
+path and name on every `RunPlan` (resolved once per scenario, refusing on a missing name *before*
+any plan or container), the executor reads `plan.fixture`, and the trace header records
+`sandbox.fixture`. One shape is honoured deliberately: every shipped skill uses a flat
+`evals/fixtures/` with a `fixture:` label that names no subdirectory, so a name that matches no
+directory but sits beside a flat tree resolves to that tree — exactly what the proven live runs
+used. A name that resolves nowhere refuses rather than silently running on an empty workspace.
+Demo reports unchanged (byte-compare holds), corpus verdicts unchanged (spec-notes §12.5, §7.2).
+
 ---
 
 ## Where the build is
@@ -329,7 +361,7 @@ aggregation — a later work package; the disclosure is what keeps the gap hones
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1055 tests: 1001 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1074 tests: 1020 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -553,8 +585,10 @@ end with an injected scripted executor (`benign-stable` → `conditional`, the f
 and the command's refusal paths (no skill, missing config, no daemon, unset key, placeholder model)
 exit 3 with a clear reason. A **real container run from the CLI against a live model is now proven on
 CI** (PR #45: standup-summariser, 6× under Haiku, proxy observing egress, verdict `ready` posted).
-The declared scope is still intentionally not applied — its auto-derived egress/DNS assertions want
-the DNS plane observed too, which lands with the resolver-wiring brick.
+The declared scope was, at this point, still intentionally not applied — its auto-derived egress/DNS
+assertions wanted the DNS plane observed too. (Since closed: declared scope applies on the live path
+as the Declared-vs-Observed table, and the `no_egress` / `egress_only_to` / `no_dns_outside`
+assertions now evaluate for real against the observed planes — see the entries at the top.)
 
 ### What WP-12 built
 
@@ -966,13 +1000,14 @@ This section keeps the **granular** run-path gaps; the top-of-file "What's next 
 is the authoritative sequence, and the two agree. The live-container CLI run against a real model is
 **done** (PR #45 reached `ready`); what remains under it is polish and the other planes:
 
-1. **Residual run-path gaps (now that the live run itself is proven).** The declared **scope is still
-   not applied** — its auto-derived egress/DNS assertions want the DNS plane observed, so it comes
-   online with the resolver-wiring brick; until then the driver passes `scope=None`. Also open:
-   `RunLimits` derived from the profile rather than the defaults; **per-scenario fixtures** (the
-   executor takes one fixture per run, so a skill whose scenarios need different starting trees is not
-   yet expressible); and wiring the precondition check, weight validation, the §21 enforced-settings
-   refusal, and the FIFO sink writer into `doctor`/`run` — see the table below.
+1. **Residual run-path gaps (now that the live run itself is proven).** Most of this item has since
+   closed: declared scope applies on the live path as the Declared-vs-Observed table (BW-47), the
+   network area of that table is scored (an undeclared egress host blocks the scope gate), the
+   `no_egress` / `egress_only_to` / `no_dns_outside` assertions evaluate for real, **per-scenario
+   fixtures** are expressible (`fixture: <name>` resolves per scenario and rides on each `RunPlan`),
+   and the precondition check, weight validation, §21 refusal and FIFO sink are wired into
+   `doctor`/`run`. Still open here: `RunLimits` derived from the profile rather than the defaults
+   (entangled with the not-yet-composed budget gate — see the table below).
 2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
    decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53

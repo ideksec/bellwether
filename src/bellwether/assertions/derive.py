@@ -42,7 +42,9 @@ ScopeStatus = Literal["supported", "exceeded", "unused", "not_evaluable"]
 class ScopeEntry:
     """One row of the Declared vs Observed table."""
 
-    area: Literal["tools", "filesystem.read", "filesystem.write", "processes", "credentials"]
+    area: Literal[
+        "tools", "filesystem.read", "filesystem.write", "network", "processes", "credentials"
+    ]
     #: The declared entry (a tool name, a glob) — or, for an ``exceeded`` row, the
     #: observed tier-3 target that no declaration covers.
     subject: str
@@ -98,6 +100,7 @@ def evaluate_scope(
     entries.extend(_tool_rows(scope, index))
     entries.extend(_filesystem_read_rows(scope, index, absorbed))
     entries.extend(_filesystem_write_rows(scope, index, absorbed))
+    entries.extend(_network_rows(scope, index))
     entries.extend(_process_rows(scope, index))
     entries.extend(_credential_rows(scope, index))
 
@@ -259,6 +262,72 @@ def _filesystem_write_rows(
     return rows
 
 
+def _network_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
+    """The network area of the table, judged against ``network.egress_allow`` (§12.5).
+
+    Observed egress is the skill's own traffic on Plane D: permitted flows the proxy
+    classified ``skill_attributed`` (the model API and declared harness infrastructure are
+    never the skill's, §10.5.0) plus every default-deny block, which is an attempt to reach a
+    host the run refused — evidence of intent, so it is judged exactly like a flow that got
+    through. A host no declared entry covers is ``exceeded``; an empty allowlist is the
+    declaration that the skill makes no network calls, so under it *every* skill flow is
+    ``exceeded``. Declared hosts nothing reached are ``unused`` only where the plane could have
+    seen a use — an unobserved or partial plane makes that ``not_evaluable`` (§10.8).
+    """
+    declared = list(scope.network.egress_allow)
+    observed = [
+        (flow.seq, flow.host)
+        for flow in (*index.egress_requests, *index.egress_blocked_flows)
+        if flow.egress_class == "skill_attributed" or flow in index.egress_blocked_flows
+    ]
+
+    rows: list[ScopeEntry] = []
+    used: set[str] = set()
+    for seq, host in observed:
+        match = next((entry for entry in declared if _host_within(host, entry)), None)
+        if match is None:
+            rows.append(
+                ScopeEntry(
+                    area="network",
+                    subject=host,
+                    status="exceeded",
+                    reason=(
+                        "egress to a host no declared entry covers"
+                        if declared
+                        else "egress from a skill whose manifest declares no network calls"
+                    ),
+                    evidence=(seq,),
+                )
+            )
+        else:
+            used.add(match)
+    for entry in declared:
+        if entry in used:
+            rows.append(
+                ScopeEntry(
+                    area="network", subject=entry, status="supported", reason="declared and used"
+                )
+            )
+        else:
+            rows.append(
+                _unused_or_unobservable(
+                    "network",
+                    entry,
+                    index,
+                    plane="egress",
+                    fallback="declared, no skill-attributed egress reached it",
+                )
+            )
+    return rows
+
+
+def _host_within(host: str, declared: str) -> bool:
+    """Label-boundary host match (the recording proxy's rule): the declared host or a
+    subdomain of it, never a lookalike that merely shares a suffix."""
+    host, declared = host.lower(), declared.lower().lstrip(".")
+    return host == declared or host.endswith("." + declared)
+
+
 def _process_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
     if not scope.processes.allow:
         return []
@@ -306,7 +375,7 @@ def _first_match(path: str, declared: list[tuple[str, re.Pattern[str]]]) -> str 
 
 
 def _unused_or_unobservable(
-    area: Literal["filesystem.read", "filesystem.write"],
+    area: Literal["filesystem.read", "filesystem.write", "network"],
     glob: str,
     index: EvidenceIndex,
     *,

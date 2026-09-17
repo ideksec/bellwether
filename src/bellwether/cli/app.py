@@ -426,6 +426,7 @@ def run(
     from dataclasses import replace
 
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
+    from bellwether.cli.fixtures import fixture_resolver
     from bellwether.cli.run import (
         build_proxy_provider,
         build_resolver_provider,
@@ -474,11 +475,24 @@ def run(
                     typer.echo(f"bellwether run [{skill_dir}]: {note}", err=True)
             eval_id = f"{package.name}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}"
             fixture = _run_fixture(skill_dir)
+            # §7.2: each scenario's `fixture:` (or the suite default) resolves to its own
+            # directory — the skill's evals/fixtures/<name>/, the repository's shared
+            # .bellwether/fixtures/<name>/, or `empty` — so scenarios that need different
+            # starting trees are expressible; `fixture` above stays the default for plans
+            # that name none.
+            fixture_for = (
+                fixture_resolver(
+                    skill_dir, package.scenarios, shared_root=config.parent / "fixtures"
+                )
+                if package.scenarios is not None
+                else None
+            )
             result = run_evaluation(
                 config=loaded_config,
                 policy=loaded_policy,
                 package=package,
                 fixture=fixture,
+                fixture_for=fixture_for,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,

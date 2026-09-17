@@ -647,3 +647,152 @@ def test_process_and_credential_declarations_await_their_planes(index: EvidenceI
     credential_row = next(e for e in table.entries if e.area == "credentials")
     assert process_row.status == "not_evaluable" and "WP-18" in process_row.reason
     assert credential_row.status == "not_evaluable" and "WP-16" in credential_row.reason
+
+
+# ---------------------------------------------------------------------------
+# The network assertions, evaluated for real against the observed planes (§12.2, §10.5, §10.6)
+# ---------------------------------------------------------------------------
+
+
+def _egress(
+    seq: int, host: str, egress_class: str = "skill_attributed", *, blocked: bool = False
+) -> Action:
+    payload: dict[str, Any] = {
+        "method": "GET",
+        "scheme": "https",
+        "host": host,
+        "port": 443,
+        "path": "/",
+        "egress_class": egress_class,
+        "headers": {},
+        "request_body_bytes": 0,
+    }
+    if blocked:
+        payload["block_reason"] = "not on the allowlist"
+    return action(seq, "egress", "egress_blocked" if blocked else "egress_request", payload)
+
+
+def _observed_coverage(*, egress: str = "full", dns: str = "full") -> Coverage:
+    base = wp5_coverage()
+    return base.model_copy(
+        update={"egress": PlaneCoverage(fidelity=egress), "dns": PlaneCoverage(fidelity=dns)}  # type: ignore[arg-type]
+    )
+
+
+def _index_with(*extra: Action, egress: str = "full", dns: str = "full") -> EvidenceIndex:
+    return index_of(
+        make_trace(
+            [*session_actions(), *extra], coverage=_observed_coverage(egress=egress, dns=dns)
+        )
+    )
+
+
+def test_no_egress_passes_on_an_observed_clean_run_and_fails_on_skill_egress() -> None:
+    """With the recording proxy in the composition the claim is decidable: model-API and
+    harness-infrastructure flows are never the skill's (§10.5.0), a skill-attributed flow is."""
+    clean = _index_with(_egress(9, "api.anthropic.com", "model_api"))
+    assert evaluate(spec("no_egress"), clean).status == "pass"
+
+    dirty = _index_with(_egress(9, "exfil.example", "skill_attributed"))
+    result = evaluate(spec("no_egress"), dirty)
+    assert result.status == "fail"
+    assert result.evidence == (9,)
+    assert "exfil.example" in result.reason
+
+
+def test_a_blocked_egress_attempt_fails_no_egress_as_evidence_of_intent() -> None:
+    """A default-deny block is an attempt the skill made to leave (§10.5.0) — it counts
+    against the claim exactly like a flow that got through, with the block as evidence."""
+    index = _index_with(_egress(9, "evil.example", "blocked", blocked=True))
+    result = evaluate(spec("no_egress"), index)
+    assert result.status == "fail"
+    assert result.evidence == (9,)
+
+
+def test_no_egress_stays_not_evaluable_on_a_partial_plane() -> None:
+    """An absence claim needs the plane usable for absence (§10.8): partial coverage
+    watched only part of the domain, so it cannot witness that nothing left."""
+    index = _index_with(egress="partial")
+    assert evaluate(spec("no_egress"), index).status == "not_evaluable"
+
+
+def test_egress_only_to_accepts_declared_hosts_and_subdomains_but_not_lookalikes() -> None:
+    """Label-boundary matching, the proxy's own rule: `api.example.com` is within
+    `example.com`, `example.com.evil.test` is not."""
+    within = _index_with(_egress(9, "api.example.com"))
+    assert evaluate(spec("egress_only_to", ["example.com"]), within).status == "pass"
+
+    lookalike = _index_with(_egress(9, "example.com.evil.test"))
+    result = evaluate(spec("egress_only_to", ["example.com"]), lookalike)
+    assert result.status == "fail"
+    assert result.evidence == (9,)
+
+    blocked = _index_with(_egress(9, "example.com", "blocked", blocked=True))
+    # A blocked attempt can never have been "only to" the declared set — the proxy refused it.
+    assert evaluate(spec("egress_only_to", ["example.com"]), blocked).status == "fail"
+
+
+def test_no_dns_outside_fails_on_a_resolver_refused_lookup() -> None:
+    """The controlled resolver answers a name outside its allowlist with NXDOMAIN and records
+    dns_blocked (§10.6) — evidence of intent, like an egress block."""
+    clean = _index_with()
+    assert evaluate(spec("no_dns_outside"), clean).status == "pass"
+
+    refused = _index_with(action(9, "dns", "dns_blocked", {"name": "c2.evil.test"}))
+    result = evaluate(spec("no_dns_outside"), refused)
+    assert result.status == "fail"
+    assert result.evidence == (9,)
+
+    assert evaluate(spec("no_dns_outside"), _index_with(dns="partial")).status == "not_evaluable"
+
+
+# ---------------------------------------------------------------------------
+# The network area of the Declared vs Observed table (§12.5)
+# ---------------------------------------------------------------------------
+
+
+def _network_scope(*hosts: str) -> DeclaredScope:
+    return DeclaredScope.model_validate({"network": {"egress_allow": list(hosts)}})
+
+
+def _network_rows_of(scope: DeclaredScope, index: EvidenceIndex) -> dict[str, str]:
+    return {
+        entry.subject: entry.status
+        for entry in evaluate_scope(scope, index).entries
+        if entry.area == "network"
+    }
+
+
+def test_undeclared_egress_is_exceeded_in_the_network_area() -> None:
+    """The row that makes an undeclared egress host flow into the scope gate: a
+    skill-attributed flow no declared entry covers is `exceeded`, with the flow as evidence."""
+    index = _index_with(_egress(9, "api.example.com"), _egress(10, "exfil.example"))
+    rows = _network_rows_of(_network_scope("example.com"), index)
+    assert rows == {"example.com": "supported", "exfil.example": "exceeded"}
+    exceeded = next(
+        e
+        for e in evaluate_scope(_network_scope("example.com"), index).entries
+        if e.status == "exceeded"
+    )
+    assert exceeded.evidence == (10,)
+
+
+def test_an_empty_allowlist_declares_no_network_so_any_skill_egress_is_exceeded() -> None:
+    """An empty `egress_allow` is a declaration that the skill makes no network calls (§12.5),
+    not an absence of one — so under it every skill flow is exceeded, while the model API's own
+    traffic (never the skill's, §10.5.0) is not."""
+    index = _index_with(_egress(9, "api.anthropic.com", "model_api"), _egress(10, "exfil.example"))
+    assert _network_rows_of(_network_scope(), index) == {"exfil.example": "exceeded"}
+
+
+def test_a_declared_host_nothing_reached_is_unused_only_where_the_plane_could_see() -> None:
+    """`unused` is an absence claim (§10.8): with the plane observed at full fidelity a declared
+    host nothing reached is over-declared; with the plane partial or absent it is
+    not_evaluable, never a false `unused`."""
+    observed = _index_with()
+    assert _network_rows_of(_network_scope("example.com"), observed) == {"example.com": "unused"}
+
+    unobserved = _index_with(egress="partial")
+    assert _network_rows_of(_network_scope("example.com"), unobserved) == {
+        "example.com": "not_evaluable"
+    }

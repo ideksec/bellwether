@@ -25,6 +25,7 @@ from bellwether.cli.execution import SandboxRunExecutor
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
 from bellwether.cli.dns_run import DnsResolverProvider
+from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.cli.orchestrator import (
     EvalResult,
     RunExecutor,
@@ -40,6 +41,7 @@ from bellwether.cli.run_plan import resolve_run
 from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
+from bellwether.config.models.scenarios import Scenario
 from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
 from bellwether.harness import (
@@ -91,6 +93,7 @@ def run_evaluation(
     created_at: str,
     bellwether_version: str,
     profile_override: str | None = None,
+    fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -169,14 +172,19 @@ def run_evaluation(
         return client, model_id_by_slug[slug]
 
     executor = make_executor(package, fixture, client_factory)
-    plans = plan_matrix(scenarios, targets, repetitions=resolved.n_max)
+    # §7.2: with a resolver, each scenario's fixture is resolved here — before the executor and
+    # any container — and stamped on its plans; a missing named fixture refuses at this point.
+    plans = plan_matrix(scenarios, targets, repetitions=resolved.n_max, fixture_for=fixture_for)
     # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
-    # assertions: `scope=None` keeps the scenario assertions deciding each run's outcome (the
-    # scope's network/write *derivations* are still stubbed to not_evaluable — §10.5 — and would
-    # otherwise drag a clean run there), while `declared_scope` feeds the manifest's scope into the
-    # `scope` gate so a skill that reads or acts outside its manifest is caught and blocked. This is
-    # the same split the demo uses; passing `scope=None` alone (the old first-light shortcut) left the
-    # `scope` gate reporting a false "within scope" for every live run (BW-47).
+    # assertions: `scope=None` keeps the scenario's own assertions deciding each run's outcome,
+    # while `declared_scope` feeds the manifest's scope into the `scope` gate — every area of the
+    # table, tools, filesystem reads and writes, and network egress alike — so a skill that reads,
+    # writes, or reaches a host outside its manifest is caught and blocked there. The split is
+    # deliberate: an auto-derived absence assertion on a plane a run cannot observe would drag an
+    # otherwise-clean outcome to not_evaluable, whereas the table records that row as
+    # not_evaluable on its own. This is the same split the demo uses; passing `scope=None` alone
+    # (the old first-light shortcut) left the `scope` gate reporting a false "within scope" for
+    # every live run (BW-47).
     declared_scope = package.manifest.declared_scope if package.manifest is not None else None
     weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
     readings = drive_evaluation(

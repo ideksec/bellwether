@@ -543,3 +543,58 @@ def test_run_refuses_a_manifest_denied_tool_weighted_zero(tmp_path: Path) -> Non
             created_at="2026-08-05T12:00:00Z",
             bellwether_version="0.1.0",
         )
+
+
+def test_run_evaluation_stamps_each_scenarios_fixture_on_its_plans(tmp_path: Path) -> None:
+    """§7.2 on the real path: with a resolver, every plan carries its scenario's own fixture and
+    name, which the executor reads (and records as `sandbox.fixture`) — so a skill whose
+    scenarios need different starting trees is expressible end to end."""
+    from bellwether.cli.fixtures import fixture_resolver
+
+    root = tmp_path / "two-fixtures"
+    (root / "evals" / "fixtures" / "alpha").mkdir(parents=True)
+    (root / "evals" / "fixtures" / "beta").mkdir(parents=True)
+    (root / "SKILL.md").write_text(
+        "---\nname: two-fixtures\ndescription: d.\n---\nb\n", encoding="utf-8"
+    )
+    (root / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: ScenarioSuite\n"
+        "scenarios:\n"
+        "  - id: a\n    expectation: should_trigger\n    fixture: alpha\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n'
+        "  - id: b\n    expectation: should_trigger\n    fixture: beta\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n',
+        encoding="utf-8",
+    )
+    (root / "evals" / "manifest.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: SkillManifest\nmetadata:\n  owner: t\n  criticality: low\n",
+        encoding="utf-8",
+    )
+    package = load_skill(root)
+    seen: list[tuple[str, str | None, Path | None]] = []
+
+    class _Recording(_ScriptedExecutor):
+        def execute(self, plan: RunPlan) -> ExecutedRun:
+            seen.append((plan.scenario.id, plan.fixture_name, plan.fixture))
+            return super().execute(plan)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _Recording(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "default-fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        fixture_for=fixture_resolver(root, package.scenarios),  # type: ignore[arg-type]
+    )
+    assert {(s, n, p) for s, n, p in seen} == {
+        ("a", "alpha", root / "evals" / "fixtures" / "alpha"),
+        ("b", "beta", root / "evals" / "fixtures" / "beta"),
+    }

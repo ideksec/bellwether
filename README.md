@@ -94,9 +94,11 @@ composed from eight gates, and these are the checks that can actually move a ski
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
 - **consistency** — the behaviour is stable across runs (Wilson/BCI, risk-weighted capability
   Jaccard, modal-trajectory share, mean edit distance, and a rare-high-risk-capability check);
-- **scope** — declared-vs-observed: a skill that calls a tool, or reads a path, outside its
-  `manifest.yaml` is flagged and blocked. *This now runs on the live path, not only in the demo* —
-  earlier builds deferred it and rendered a false "within scope" for every run;
+- **scope** — declared-vs-observed: a skill that calls a tool, reads or writes a path, or reaches
+  a network host outside its `manifest.yaml` is flagged and blocked (an empty `egress_allow`
+  declares "no network calls", so any egress the skill makes is out of scope). *This runs on the
+  live path, not only in the demo* — earlier builds deferred it and rendered a false "within scope"
+  for every run;
 - **security_runtime.egress** — egress to a host outside the default-deny allowlist, from what the
   recording proxy observed;
 - **security_runtime.canaries** — a planted canary appearing at any non-model destination (final
@@ -233,7 +235,7 @@ Bellwether is designed to be dropped into a repository that *contains* skills:
 │       └── evals/               # ALL Bellwether machinery lives here
 │           ├── manifest.yaml    # declared scope
 │           ├── scenarios.yaml   # scenario definitions
-│           └── fixtures/
+│           └── fixtures/        # per-scenario: `fixture: <name>` → fixtures/<name>/
 └── .github/workflows/bellwether.yml
 ```
 

@@ -26,7 +26,7 @@ configuration) surfaces the gap without blocking, exactly as §25 prescribes.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -42,6 +42,7 @@ from bellwether.assertions import (
     trace_inconsistencies,
 )
 from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_artifact_tree
+from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
@@ -139,6 +140,13 @@ class RunPlan:
     scenario: Scenario
     target: TargetInfo
     repetition: int
+    #: The workspace fixture this scenario starts from (§7.2), resolved per scenario by
+    #: :func:`plan_matrix` when a resolver is supplied; ``None`` means the executor's default.
+    #: Carried on the plan because the fixture is part of *what* to run, and a matrix whose
+    #: scenarios need different starting trees is not expressible otherwise.
+    fixture: Path | None = None
+    #: The name the scenario gave (recorded in the trace header as ``sandbox.fixture``).
+    fixture_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +243,7 @@ def plan_matrix(
     targets: Sequence[TargetInfo],
     *,
     repetitions: int,
+    fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
 ) -> list[RunPlan]:
     """Expand the (scenario × target × repetition) matrix into ordered run plans (§4).
 
@@ -250,21 +259,35 @@ def plan_matrix(
             f"a repetition set needs at least two runs (repetition is mandatory; a single run is an "
             f"anecdote, §13.2), got repetitions={repetitions}"
         )
-    return [
-        RunPlan(scenario=scenario, target=target, repetition=rep)
-        for scenario in scenarios
-        for target in targets
-        for rep in range(1, repetitions + 1)
-    ]
+    # Resolve each scenario's fixture once, not once per repetition: a missing fixture must
+    # refuse before any plan is built, and every repetition of a scenario shares its tree.
+    plans: list[RunPlan] = []
+    for scenario in scenarios:
+        resolved = fixture_for(scenario) if fixture_for is not None else None
+        fixture = resolved.path if resolved is not None else None
+        fixture_name = resolved.name if resolved is not None else None
+        plans.extend(
+            RunPlan(
+                scenario=scenario,
+                target=target,
+                repetition=rep,
+                fixture=fixture,
+                fixture_name=fixture_name,
+            )
+            for target in targets
+            for rep in range(1, repetitions + 1)
+        )
+    return plans
 
 
 def scope_exceeded_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str, ...]:
     """The capabilities one run exercised outside its declared scope (§12.5).
 
-    Computed off the run *outcome*, so a declared-scope violation blocks the scope gate without the
-    scope's network/write *derivations* — which are still stubbed to ``not_evaluable`` (§10.5) —
-    dragging an otherwise-clean run to ``not_evaluable``. This is the same split the demo uses, now
-    shared so the live run path enforces declared scope identically rather than skipping it.
+    Computed off the Declared-vs-Observed table rather than the run *outcome*, so a declared-scope
+    violation — a tool, read, write, or network host outside the manifest — blocks the scope gate
+    without an auto-derived absence assertion on an unobserved plane dragging an otherwise-clean
+    outcome to ``not_evaluable``. This is the same split the demo uses, now shared so the live run
+    path enforces declared scope identically rather than skipping it.
     """
     return tuple(sorted(entry.subject for entry in scope_table_of(executed, declared).exceeded()))
 
@@ -308,10 +331,11 @@ def drive_evaluation(
 
     ``declared_scope`` enables the declared-vs-observed check (§12.5) on the live path: it is
     evaluated separately from ``scope`` (which drives the outcome assertions) so a scope violation
-    blocks the ``scope`` gate without the still-stubbed network/write derivations turning a clean run
-    ``not_evaluable``. Passing it is what makes ``bellwether run`` catch a skill that reads outside
-    its manifest — the same enforcement the demo path already applies. Absent it, the ``scope`` gate
-    reflects only what the outcome assertions saw, and reports ``pass`` only when nothing violated.
+    blocks the ``scope`` gate without an auto-derived absence assertion on an unobserved plane
+    turning a clean run ``not_evaluable``. Passing it is what makes ``bellwether run`` catch a skill
+    that reads, writes, or reaches a network host outside its manifest — the same enforcement the
+    demo path already applies. Absent it, the ``scope`` gate reflects only what the outcome
+    assertions saw, and reports ``pass`` only when nothing violated.
 
     Readings come back in first-seen ``(scenario, target)`` order, matching :func:`plan_matrix`, so
     the verdict and the artifact tree are deterministic regardless of how the plans interleave.

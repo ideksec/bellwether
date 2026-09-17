@@ -368,9 +368,11 @@ class SandboxRunExecutor:
             else frozenset()
         )
 
+        # §7.2: the plan carries the scenario's own fixture where the matrix resolved one; the
+        # executor's default is the fallback for callers that plan without a resolver.
         prepared = prepare_sandbox(
             self.package,
-            self.fixture,
+            plan.fixture if plan.fixture is not None else self.fixture,
             run_dir,
             rng=self._sandbox_rng(plan),
             zones=self.zones,
@@ -566,6 +568,7 @@ class SandboxRunExecutor:
                 ),
                 sandbox=SandboxRef(
                     image=self.backend.image,
+                    fixture=plan.fixture_name,
                     workspace_root=str(prepared.identifiers.workspace_root),
                 ),
                 identity=self._identity_block(planting, canaries),

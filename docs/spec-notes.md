@@ -1619,7 +1619,7 @@ git-credential file, and an env-var token) at sandbox setup and scan every evide
   invariant on the real artifact — a skill reads `$INTERNAL_API_TOKEN` and leaks it, yet the trace
   JSONL holds only the fingerprint.
 
-## §12.5, §16.2 — Declared manifest scope is enforced on the live `run` path, decoupled from the stubbed network derivations
+## §12.5, §16.2 — Declared manifest scope is enforced on the live `run` path, decoupled from the outcome assertions
 
 The first-light `run` scored each run against the scenario assertions and passed `scope=None` into
 the driver, deferring declared-scope enforcement "until the egress plane lands in the executor." But
@@ -1646,6 +1646,59 @@ only a capability observed outside a *declared* allow-list is flagged `exceeded`
 differential: a transcript that calls an undeclared `read` surfaces `scope_exceeded=("read",)` with
 the declared scope threaded in and an empty tuple without it, so a revert of the driver change fails
 the test (`() == ('read',)`).
+
+**The network derivations then became real, and the split above was kept for its true reason.**
+`no_egress`, `egress_only_to` and `no_dns_outside` sat in the catalogue as `_plane_gated` stubs —
+`not_evaluable` even with the recording proxy and controlled resolver observing their planes. They
+now evaluate: each is an absence claim gated on `plane_reason(…, for_absence=True)` (§10.8), so a
+run without the sidecar still returns `not_evaluable` carrying the coverage reason and never `pass`;
+with the plane observed, the skill's egress is the `skill_attributed` permitted flows (§10.5.0 — the
+model API and declared harness infrastructure are never the skill's traffic) **plus every
+default-deny block**, which is an attempt the skill made to reach a host the run refused — evidence
+of intent, judged exactly like a flow that got through, with the block's own action as evidence (the
+`EvidenceIndex` now records blocked flows with their host, and `dns_blocked` seqs). A blocked
+attempt therefore always fails `egress_only_to`: the proxy refused it precisely because it lay outside
+what the run permitted. Host matching is the proxy's own label-boundary rule, so `example.com.evil.test`
+is not within `example.com`. The Declared-vs-Observed table gained a matching `network` area: a
+skill flow no `network.egress_allow` entry covers is `exceeded` (and so blocks the scope gate); an
+empty allowlist is the declaration that the skill makes no network calls (§12.5), under which every
+skill flow is `exceeded`; a declared host nothing reached is `unused` only where the plane could
+have seen a use, else `not_evaluable`.
+
+With the derivations real, `scope=None` on the live path is no longer "because they are stubbed" —
+the three comments that said so were corrected. The split stands on its own merit: an auto-derived
+*absence* assertion on a plane a run cannot observe would mark the whole outcome `not_evaluable`
+and block the evidence gate for a benign skill, whereas the table records that row as
+`not_evaluable` by itself and lets the other areas score. The outcome stays the scenario's own
+assertions; the manifest's scope, every area of it, feeds the scope gate through the table.
+
+## §7.2, §9.1 — Per-scenario fixtures resolve by name, honouring the flat legacy layout
+
+`Scenario.fixture` and `defaults.fixture` were in the model from WP-1 and ignored: `bellwether run`
+materialised the whole `evals/fixtures/` directory as every run's workspace, so a skill whose
+scenarios need different starting trees was not expressible, and the `fixture: python-repo` /
+`fixture: empty` the spec's own examples use did nothing. `cli/fixtures.py` now resolves a name per
+scenario — `evals/fixtures/<name>/` (the §5 scenario-specific fixture), then the repository's shared
+`.bellwether/fixtures/<name>/`, with `empty` reserved for a bare workspace — and `plan_matrix` stamps
+the resolved path and name on every `RunPlan`. Two decisions worth recording.
+
+Resolution happens **once per scenario, in `plan_matrix`, before any container**: a missing named
+fixture refuses while planning, not on the sixth repetition, and every repetition of a scenario
+shares its tree (the fixture is part of *what* to run, so it rides on the plan rather than being a
+second executor argument). The executor reads `plan.fixture`, falling back to its default for callers
+that plan without a resolver, and the trace header records `sandbox.fixture` (§11.1's `"fixture":
+"python-repo"`), which it had never carried.
+
+The **legacy flat layout is honoured deliberately.** Every shipped skill was written against the
+first cut: their `evals/fixtures/` is a flat tree (`standup/…`, `README.md`) while their `fixture:`
+is a label (`standup-repo`, `readme-repo`) naming no subdirectory — and the proven live runs (PR #45,
+PR #65) were made against exactly that flat tree. So a name that matches no directory but sits beside
+a flat `evals/fixtures/` resolves to the flat tree, with the label recorded as the name. This keeps
+every proven run byte-identical in what it materialises while giving new skills the spec's named
+layout. A name that resolves nowhere is **refused**, not silently replaced by an empty workspace —
+a run on the wrong starting tree would produce a clean-looking verdict about a scenario that never
+ran as designed, the signature failure mode again — and the refusal names the scenario, the name,
+where it looked, and the `fixture: empty` remedy.
 
 ## §10.4.2, §12.6 — The egress canary scan folds case on the host/SNI, matching how the host is recorded
 
