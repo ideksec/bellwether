@@ -210,7 +210,7 @@ class _ScriptedExecutor:
         )
         footer = RunFooter(
             ended_at=dt.datetime(2026, 8, 5, 12, 5, 0, tzinfo=dt.UTC),
-            wall_clock_ms=300_000,
+            wall_clock_ms=30_000,
             exit_reason=exit_reason_from_events(events),
             tokens=token_totals_from_events(events),
         )
@@ -543,3 +543,493 @@ def test_run_refuses_a_manifest_denied_tool_weighted_zero(tmp_path: Path) -> Non
             created_at="2026-08-05T12:00:00Z",
             bellwether_version="0.1.0",
         )
+
+
+def test_run_evaluation_stamps_each_scenarios_fixture_on_its_plans(tmp_path: Path) -> None:
+    """§7.2 on the real path: with a resolver, every plan carries its scenario's own fixture and
+    name, which the executor reads (and records as `sandbox.fixture`) — so a skill whose
+    scenarios need different starting trees is expressible end to end."""
+    from bellwether.cli.fixtures import fixture_resolver
+
+    root = tmp_path / "two-fixtures"
+    (root / "evals" / "fixtures" / "alpha").mkdir(parents=True)
+    (root / "evals" / "fixtures" / "beta").mkdir(parents=True)
+    (root / "SKILL.md").write_text(
+        "---\nname: two-fixtures\ndescription: d.\n---\nb\n", encoding="utf-8"
+    )
+    (root / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: ScenarioSuite\n"
+        "scenarios:\n"
+        "  - id: a\n    expectation: should_trigger\n    fixture: alpha\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n'
+        "  - id: b\n    expectation: should_trigger\n    fixture: beta\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n',
+        encoding="utf-8",
+    )
+    (root / "evals" / "manifest.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: SkillManifest\nmetadata:\n  owner: t\n  criticality: low\n",
+        encoding="utf-8",
+    )
+    package = load_skill(root)
+    seen: list[tuple[str, str | None, Path | None]] = []
+
+    class _Recording(_ScriptedExecutor):
+        def execute(self, plan: RunPlan) -> ExecutedRun:
+            seen.append((plan.scenario.id, plan.fixture_name, plan.fixture))
+            return super().execute(plan)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _Recording(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "default-fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        fixture_for=fixture_resolver(root, package.scenarios),  # type: ignore[arg-type]
+    )
+    assert {(s, n, p) for s, n, p in seen} == {
+        ("a", "alpha", root / "evals" / "fixtures" / "alpha"),
+        ("b", "beta", root / "evals" / "fixtures" / "beta"),
+    }
+
+
+def test_run_evaluation_honours_a_scenarios_own_look_schedule(tmp_path: Path) -> None:
+    """§7.2 end to end: a scenario with `looks: [2, 4]` / `n_max: 4` runs four times (not the
+    profile's twenty) and its set is aggregated under its own schedule, which the reading records
+    so the summary counts "stopped at look k" against the schedule that actually ran."""
+    root = tmp_path / "short"
+    (root / "evals").mkdir(parents=True)
+    (root / "SKILL.md").write_text("---\nname: short\ndescription: d.\n---\nb\n", encoding="utf-8")
+    (root / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: ScenarioSuite\n"
+        "scenarios:\n"
+        "  - id: quick\n    expectation: should_trigger\n    looks: [2, 4]\n    n_max: 4\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n',
+        encoding="utf-8",
+    )
+    (root / "evals" / "manifest.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: SkillManifest\nmetadata:\n  owner: t\n  criticality: low\n",
+        encoding="utf-8",
+    )
+    package = load_skill(root)
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    result = run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+    assert holder["exec"].calls == 4  # the scenario's n_max, not the profile's 20
+    # The summary counts "stopped at look k" against the schedule the set actually ran: under
+    # [2, 4] the one set is keyed "1" or "2". Before per-set schedules a stop at N = 4 — not a
+    # profile look — was mis-keyed as the profile's last look, "3".
+    stopped = result.summary.matrix.sets_stopped_at_look
+    assert sum(stopped.values()) == 1
+    assert set(stopped) <= {"1", "2"}
+
+
+def test_run_refuses_a_multi_turn_scenario_on_a_claude_code_target(tmp_path: Path) -> None:
+    """§7.3 × §16.4: the claude-code harness runs one prompt per session in this build, so a
+    turn-list scenario on it is refused before any container — never flattened into one turn."""
+    from bellwether.cli.orchestrator import TargetInfo
+    from bellwether.cli.preflight import preflight_failures
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("api-loop", "anthropic", "frontier")],
+        multi_turn_scenario_ids=["chat"],
+    )
+    assert not any("chat" in f.gate for f in failures)  # api-loop runs multi-turn fine
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("claude-code", "anthropic", "frontier")],
+        multi_turn_scenario_ids=["chat"],
+    )
+    turn_failures = [f for f in failures if f.gate == "scenario[chat].prompt"]
+    assert turn_failures
+    assert "multi-turn" in turn_failures[0].remedy
+    assert "api-loop" in turn_failures[0].remedy
+
+
+def test_run_refuses_companion_skills_on_a_claude_code_target() -> None:
+    """§7.4 × §16.4: the claude-code harness stages only the skill under test in this build, so
+    companions would be undiscoverable and "which activated" a foregone conclusion — refused
+    before any container rather than run with competitors the harness cannot see."""
+    from bellwether.cli.orchestrator import TargetInfo
+    from bellwether.cli.preflight import preflight_failures
+
+    ok = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("api-loop", "anthropic", "frontier")],
+        companion_scenario_ids=["collide"],
+    )
+    assert not any("collide" in f.gate for f in ok)
+
+    refused = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("claude-code", "anthropic", "frontier")],
+        companion_scenario_ids=["collide"],
+    )
+    companion_failures = [f for f in refused if f.gate == "scenario[collide].also_load_skills"]
+    assert companion_failures
+    assert "api-loop" in companion_failures[0].remedy
+
+
+# ---------------------------------------------------------------------------
+# --scenario / --tag filtering (§7.2, §20)
+# ---------------------------------------------------------------------------
+
+
+def _tagged_suite():  # type: ignore[no-untyped-def]
+    from bellwether.config.models.scenarios import ScenarioSuite
+
+    return ScenarioSuite.model_validate(
+        {
+            "apiVersion": "bellwether/v1",
+            "kind": "ScenarioSuite",
+            "scenarios": [
+                {
+                    "id": "auth",
+                    "expectation": "should_trigger",
+                    "prompt": "p",
+                    "tags": ["security", "fast"],
+                    "assert": [{"skill_activated": True}],
+                },
+                {
+                    "id": "docs",
+                    "expectation": "should_trigger",
+                    "prompt": "p",
+                    "tags": ["docs"],
+                    "assert": [{"skill_activated": True}],
+                },
+                {
+                    "id": "leak",
+                    "expectation": "should_trigger",
+                    "prompt": "p",
+                    "tags": ["security"],
+                    "assert": [{"skill_activated": True}],
+                },
+            ],
+        }
+    )
+
+
+def test_select_scenarios_by_id_tag_and_both() -> None:
+    from bellwether.cli.run import select_scenarios
+
+    suite = _tagged_suite()
+    ids = lambda picked: [s.id for s in picked]  # noqa: E731
+    assert ids(select_scenarios(suite.scenarios)) == ["auth", "docs", "leak"]  # no filter
+    assert ids(select_scenarios(suite.scenarios, scenario_ids=["leak"])) == ["leak"]
+    # A tag selects every scenario carrying it, in suite order.
+    assert ids(select_scenarios(suite.scenarios, tags=["security"])) == ["auth", "leak"]
+    # Any-of across tags; both filters intersect.
+    assert ids(select_scenarios(suite.scenarios, tags=["docs", "fast"])) == ["auth", "docs"]
+    assert ids(
+        select_scenarios(suite.scenarios, scenario_ids=["auth", "docs"], tags=["security"])
+    ) == ["auth"]
+
+
+def test_a_filter_that_selects_nothing_refuses_naming_what_exists() -> None:
+    """An empty selection run to completion would be a clean-looking verdict about no evidence."""
+    from bellwether.cli.run import select_scenarios
+
+    suite = _tagged_suite()
+    with pytest.raises(BellwetherError, match="selects no scenarios") as excinfo:
+        select_scenarios(suite.scenarios, tags=["nonexistent"])
+    assert "security" in str(excinfo.value)  # names the tags that do exist
+    with pytest.raises(BellwetherError, match="does not define"):
+        select_scenarios(suite.scenarios, scenario_ids=["ghost"])
+
+
+def test_run_evaluation_runs_only_the_selected_scenario(tmp_path: Path) -> None:
+    root = tmp_path / "two"
+    (root / "evals").mkdir(parents=True)
+    (root / "SKILL.md").write_text("---\nname: two\ndescription: d.\n---\nb\n", encoding="utf-8")
+    (root / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: ScenarioSuite\n"
+        "scenarios:\n"
+        "  - id: a\n    expectation: should_trigger\n    tags: [keep]\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n'
+        "  - id: b\n    expectation: should_trigger\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n',
+        encoding="utf-8",
+    )
+    (root / "evals" / "manifest.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: SkillManifest\nmetadata:\n  owner: t\n  criticality: low\n",
+        encoding="utf-8",
+    )
+    package = load_skill(root)
+    seen: set[str] = set()
+
+    class _Recording(_ScriptedExecutor):
+        def execute(self, plan: RunPlan) -> ExecutedRun:
+            seen.add(plan.scenario.id)
+            return super().execute(plan)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _Recording(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        tags=["keep"],
+    )
+    assert seen == {"a"}
+
+
+# ---------------------------------------------------------------------------
+# §20 matrix options: --targets, --n-max/--looks, --repetitions (fixed mode)
+# ---------------------------------------------------------------------------
+
+
+def _resolved():  # type: ignore[no-untyped-def]
+    from bellwether.cli.run_plan import resolve_run
+
+    return resolve_run(_config(), _policy(), None, environ=_ENVIRON, profile_override="low")
+
+
+def test_targets_filters_by_alias_and_refuses_when_nothing_matches() -> None:
+    from bellwether.cli.run import apply_matrix_options
+
+    resolved = _resolved()
+    kept = apply_matrix_options(resolved, target_aliases=["frontier"])
+    assert [rt.target.model_alias for rt in kept.targets] == ["frontier"]
+    with pytest.raises(BellwetherError, match="frontier"):
+        apply_matrix_options(resolved, target_aliases=["nope"])
+
+
+def test_n_max_and_looks_override_the_matrix_under_the_schedule_rule() -> None:
+    from bellwether.cli.run import apply_matrix_options
+
+    resolved = _resolved()  # low profile: looks [6, 12, 20], n_max 20
+    assert apply_matrix_options(resolved, n_max_override=12).looks == (6, 12)
+    both = apply_matrix_options(resolved, looks_override=[2, 4], n_max_override=4)
+    assert (both.looks, both.n_max) == ((2, 4), 4)
+    only_looks = apply_matrix_options(resolved, looks_override=[3, 9])
+    assert (only_looks.looks, only_looks.n_max) == ((3, 9), 9)  # n_max defaults to the last look
+    with pytest.raises(BellwetherError, match="n_max"):
+        apply_matrix_options(resolved, n_max_override=10)  # not a pre-registered look
+
+
+def test_repetitions_forces_a_single_look_and_excludes_the_other_overrides() -> None:
+    from bellwether.cli.run import apply_matrix_options
+
+    resolved = _resolved()
+    fixed = apply_matrix_options(resolved, repetitions=3)
+    assert (fixed.looks, fixed.n_max) == ((3,), 3)
+    with pytest.raises(BellwetherError, match="cannot be combined"):
+        apply_matrix_options(resolved, repetitions=3, n_max_override=3)
+    with pytest.raises(BellwetherError, match="at least two"):
+        apply_matrix_options(resolved, repetitions=1)
+
+
+def test_fixed_mode_runs_exactly_n_times_and_is_descriptive_only(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """§13.1 / §16.2 rule 6 end to end: `--repetitions 3` runs three times (not the profile's 20)
+    and the verdict is descriptive_only — it can never be `ready`, because a fixed-N run makes no
+    sequential decision and licenses no gate-eligible interval."""
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    result = run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        repetitions=3,
+    )
+    assert holder["exec"].calls == 3
+    assert result.verdict.descriptive_only is True
+    assert result.verdict.verdict != "ready"
+
+
+# ---------------------------------------------------------------------------
+# §16.2 / §19.1: the budget gate on the run path
+# ---------------------------------------------------------------------------
+
+
+def _priced_config() -> Config:
+    from bellwether.config.models.provider import ModelPricing
+
+    return Config(
+        **_API,
+        kind="Config",
+        providers={
+            "anthropic": ProviderConfig(
+                type="anthropic",
+                api_key_env=_KEY_ENV,
+                models={"frontier": "a-real-model-id"},
+                pricing={"frontier": ModelPricing(input_usd_per_mtok=1.0, output_usd_per_mtok=5.0)},
+            )
+        },
+        sandbox=SandboxConfig(image="img@sha256:" + "d" * 64),
+    )
+
+
+def _evaluate_with(package: SkillPackage, tmp_path: Path, *, config: Config, **kwargs):  # type: ignore[no-untyped-def]
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    return run_evaluation(
+        config=config,
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="budget",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        **kwargs,
+    )
+
+
+def test_an_unpriced_matrix_composes_the_wall_clock_gate_and_discloses_the_cost_gap(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """No pricing: the wall-clock half is decided from the footers (20 runs × 30 s = 10 min,
+    within 60), the cost half is not composed, and the verdict *says so* — the token usage is
+    still in summary.cost, with usd null rather than a zero that would read as free."""
+    result, _ = _evaluate(package, tmp_path)
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.wall_clock"].status == "pass"
+    assert gates["budget.wall_clock"].per_target[0].observed == "10.00 min"
+    assert "budget.cost" not in gates
+    assert any("budget.cost not composed" in note for note in result.verdict.notes)
+    assert any("anthropic/frontier" in note for note in result.verdict.notes)
+    cost = result.summary.cost
+    assert cost is not None
+    assert cost.usd is None
+    assert cost.unpriced_targets == ("anthropic/frontier",)
+    assert cost.runs_without_footer == 0
+    assert cost.wall_clock_s == 600.0
+    # 20 runs × (120 + 90 input, 40 + 10 output) from the scripted transcript
+    assert cost.tokens["input"] == 20 * 210
+    assert cost.tokens["output"] == 20 * 50
+
+
+def test_a_priced_matrix_composes_the_cost_gate_from_reported_tokens(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """With every alias priced, reported tokens become dollars at the configured rate:
+    20 × (210 × $1 + 50 × $5) per million = $0.0092, within the profile's $25."""
+    result = _evaluate_with(package, tmp_path, config=_priced_config())
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.cost"].status == "pass"
+    assert gates["budget.cost"].per_target[0].observed == "$0.0092"
+    assert not any("budget.cost not composed" in note for note in result.verdict.notes)
+    assert result.summary.cost is not None
+    assert result.summary.cost.usd == 0.0092
+    assert result.summary.cost.unpriced_targets == ()
+    # Otherwise the same verdict as the unpriced path: conditional on the unobserved planes.
+    assert result.verdict.verdict == "conditional"
+
+
+def test_budget_usd_overrides_the_profile_ceiling_and_can_block(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """`--budget-usd 0` is the explicit "any priced spend blocks" setting (§20)."""
+    result = _evaluate_with(package, tmp_path, config=_priced_config(), budget_usd=0.0)
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.cost"].status == "block"
+    assert gates["budget.cost"].per_target[0].threshold == "≤ $0.00"
+    assert result.verdict.verdict == "not_ready"
+    assert result.exit_code == 2
+
+
+def test_a_negative_budget_usd_is_refused(package: SkillPackage, tmp_path: Path) -> None:
+    with pytest.raises(BellwetherError, match="--budget-usd must be zero or positive"):
+        _evaluate_with(package, tmp_path, config=_priced_config(), budget_usd=-1.0)
+
+
+def test_budget_usd_is_ignored_on_an_unpriced_matrix_but_the_note_carries_it(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """An override on an unpriced matrix enforces nothing — and the note names the figure that
+    is not enforced, so the flag is never mistaken for a control that took effect."""
+    result = _evaluate_with(package, tmp_path, config=_config(), budget_usd=0.5)
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert "budget.cost" not in gates
+    assert any("max_cost_usd 0.50 is not enforced" in note for note in result.verdict.notes)
+
+
+def test_a_matrix_over_its_wall_clock_ceiling_is_not_ready(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """The shipped low profile allows 60 min; 20 runs at 4 min each is 80 — the gate blocks
+    on what the footers recorded, and the summary shows the spend that did it."""
+
+    class _Slow(_ScriptedExecutor):
+        def execute(self, plan: RunPlan) -> ExecutedRun:
+            executed = super().execute(plan)
+            trace = executed.trace
+            assert trace.footer is not None
+            footer = trace.footer.model_copy(update={"wall_clock_ms": 4 * 60_000})
+            from dataclasses import replace as _replace
+
+            return _replace(executed, trace=_replace(trace, footer=footer))
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _Slow(pkg, tmp_path, client_factory)
+
+    result = run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="slow",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.wall_clock"].status == "block"
+    assert gates["budget.wall_clock"].per_target[0].observed == "80.00 min"
+    assert result.verdict.verdict == "not_ready"
+    assert result.summary.cost is not None
+    assert result.summary.cost.wall_clock_s == 4800.0

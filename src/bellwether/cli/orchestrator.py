@@ -26,8 +26,8 @@ configuration) surfaces the gap without blocking, exactly as §25 prescribes.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -42,9 +42,11 @@ from bellwether.assertions import (
     trace_inconsistencies,
 )
 from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_artifact_tree
+from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
-from bellwether.config.models.scenarios import AssertionSpec, Scenario
+from bellwether.config.models.provider import ModelPricing
+from bellwether.config.models.scenarios import AssertionSpec, Scenario, ScenarioDefaults
 from bellwether.constants import (
     DEFAULT_CAPABILITY_WEIGHTS,
     NOISE_FLOOR_CALIBRATED_AT,
@@ -65,6 +67,7 @@ from bellwether.metrics import (
 from bellwether.report import (
     CapabilityProfileSummary,
     ConsistencySummary,
+    CostSummary,
     Figures,
     FunctionalSummary,
     GateSummary,
@@ -82,6 +85,7 @@ from bellwether.report import (
     render_pr_comment,
     render_summary_json,
 )
+from bellwether.skill import SkillPackage
 from bellwether.trace import (
     Action,
     NormalizationContext,
@@ -109,7 +113,9 @@ __all__ = [
     "aggregate",
     "analyse_run",
     "build_figures",
+    "consistent_schedule",
     "drive_evaluation",
+    "effective_schedule",
     "orchestrate",
     "plan_matrix",
     "resolve_capability_weights",
@@ -139,6 +145,17 @@ class RunPlan:
     scenario: Scenario
     target: TargetInfo
     repetition: int
+    #: The workspace fixture this scenario starts from (§7.2), resolved per scenario by
+    #: :func:`plan_matrix` when a resolver is supplied; ``None`` means the executor's default.
+    #: Carried on the plan because the fixture is part of *what* to run, and a matrix whose
+    #: scenarios need different starting trees is not expressible otherwise.
+    fixture: Path | None = None
+    #: The name the scenario gave (recorded in the trace header as ``sandbox.fixture``).
+    fixture_name: str | None = None
+    #: The skills loaded alongside the one under test (§7.4 ``also_load_skills``), resolved per
+    #: scenario by :func:`plan_matrix`; offered through the harness beside the primary so an
+    #: assertion on *which* skill activated has competitors to observe.
+    companions: tuple[SkillPackage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -228,6 +245,73 @@ class AnalysedRun:
     #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
     #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
     scope_unused: tuple[str, ...] = ()
+    #: The footer's ``wall_clock_ms`` — what this run spent, as the executor measured it.
+    #: ``None`` on an incomplete trace (no footer): the duration is then *unobserved*, and the
+    #: budget gate treats it as such rather than counting it as zero (§16.2, §19.1).
+    wall_clock_ms: int | None = None
+    #: The footer's token totals by kind (``input``/``output``/``cache_read``/``cache_write``),
+    #: the reported usage the cost gate prices (§9.3). ``None`` on an incomplete trace.
+    tokens: Mapping[str, int] | None = None
+
+
+def effective_schedule(
+    scenario: Scenario,
+    defaults: ScenarioDefaults | None,
+    *,
+    looks: Sequence[int],
+    n_max: int,
+) -> tuple[tuple[int, ...], int]:
+    """The sequential schedule one scenario runs under (§7.2, §13.1).
+
+    The scenario's own ``looks``/``n_max`` win, then the suite's ``defaults``, then the resolved
+    matrix (the manifest override or the profile). The manifest override's consistency rule is
+    applied per scenario: the looks must be strictly increasing and the last look must equal
+    ``n_max``. Where only ``n_max`` is overridden, the inherited looks are truncated to those at
+    or below it — unambiguous when ``n_max`` sits on a pre-registered look — and refused
+    otherwise, because inventing a decision point at ``n_max`` would change the Pocock
+    correction the design was pre-registered with. With no override at all the result is the
+    resolved matrix exactly, so the default path is unchanged.
+    """
+    chosen_n = scenario.n_max
+    if chosen_n is None and defaults is not None:
+        chosen_n = defaults.n_max
+    if chosen_n is None:
+        chosen_n = n_max
+    chosen_looks: list[int]
+    if scenario.looks:
+        chosen_looks = list(scenario.looks)
+    elif defaults is not None and defaults.looks:
+        chosen_looks = list(defaults.looks)
+    else:
+        chosen_looks = list(looks)
+    return consistent_schedule(chosen_looks, chosen_n, subject=f"scenario {scenario.id!r}")
+
+
+def consistent_schedule(
+    looks: Sequence[int], n_max: int, *, subject: str
+) -> tuple[tuple[int, ...], int]:
+    """Apply the §13.1 schedule rule to a candidate ``(looks, n_max)``, or refuse.
+
+    The rule the manifest override, a scenario's own override, and the CLI's ``--looks``/
+    ``--n-max`` all share: looks strictly increasing and unique, and the last look equal to
+    ``n_max``. Looks above ``n_max`` are dropped — unambiguous when ``n_max`` sits on a
+    pre-registered look — and any other mismatch refuses, because inventing a decision point at
+    ``n_max`` would change the number of looks and so the Pocock correction the design was
+    pre-registered with. ``subject`` names whose schedule is being checked in the message.
+    """
+    chosen = list(looks)
+    if chosen != sorted(set(chosen)):
+        raise BellwetherError(
+            f"{subject}: looks must be strictly increasing and unique, got {chosen}"
+        )
+    effective = [look for look in chosen if look <= n_max]
+    if not effective or effective[-1] != n_max:
+        raise BellwetherError(
+            f"{subject}: n_max {n_max} is not the last look of its schedule {chosen} (§13.1); "
+            "set looks and n_max together so the last look equals n_max (e.g. looks: [6, 12] "
+            "with n_max: 12), or choose an n_max that is a pre-registered look"
+        )
+    return tuple(effective), n_max
 
 
 def plan_matrix(
@@ -235,6 +319,9 @@ def plan_matrix(
     targets: Sequence[TargetInfo],
     *,
     repetitions: int,
+    fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
+    n_max_for: Callable[[Scenario], int] | None = None,
+    companions_for: Callable[[Scenario], tuple[SkillPackage, ...]] | None = None,
 ) -> list[RunPlan]:
     """Expand the (scenario × target × repetition) matrix into ordered run plans (§4).
 
@@ -250,21 +337,45 @@ def plan_matrix(
             f"a repetition set needs at least two runs (repetition is mandatory; a single run is an "
             f"anecdote, §13.2), got repetitions={repetitions}"
         )
-    return [
-        RunPlan(scenario=scenario, target=target, repetition=rep)
-        for scenario in scenarios
-        for target in targets
-        for rep in range(1, repetitions + 1)
-    ]
+    # Resolve each scenario's fixture once, not once per repetition: a missing fixture must
+    # refuse before any plan is built, and every repetition of a scenario shares its tree.
+    plans: list[RunPlan] = []
+    for scenario in scenarios:
+        # §7.2: a scenario may override the matrix's n_max; the same floor applies to it.
+        reps = n_max_for(scenario) if n_max_for is not None else repetitions
+        if reps < 2:
+            raise BellwetherError(
+                f"scenario {scenario.id!r} would run {reps} time(s); a repetition set needs at "
+                "least two runs (repetition is mandatory; a single run is an anecdote, §13.2)"
+            )
+        resolved = fixture_for(scenario) if fixture_for is not None else None
+        fixture = resolved.path if resolved is not None else None
+        fixture_name = resolved.name if resolved is not None else None
+        # §7.4: companions resolve once per scenario too — a missing competitor refuses here.
+        companions = companions_for(scenario) if companions_for is not None else ()
+        plans.extend(
+            RunPlan(
+                scenario=scenario,
+                target=target,
+                repetition=rep,
+                fixture=fixture,
+                fixture_name=fixture_name,
+                companions=companions,
+            )
+            for target in targets
+            for rep in range(1, reps + 1)
+        )
+    return plans
 
 
 def scope_exceeded_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str, ...]:
     """The capabilities one run exercised outside its declared scope (§12.5).
 
-    Computed off the run *outcome*, so a declared-scope violation blocks the scope gate without the
-    scope's network/write *derivations* — which are still stubbed to ``not_evaluable`` (§10.5) —
-    dragging an otherwise-clean run to ``not_evaluable``. This is the same split the demo uses, now
-    shared so the live run path enforces declared scope identically rather than skipping it.
+    Computed off the Declared-vs-Observed table rather than the run *outcome*, so a declared-scope
+    violation — a tool, read, write, or network host outside the manifest — blocks the scope gate
+    without an auto-derived absence assertion on an unobserved plane dragging an otherwise-clean
+    outcome to ``not_evaluable``. This is the same split the demo uses, now shared so the live run
+    path enforces declared scope identically rather than skipping it.
     """
     return tuple(sorted(entry.subject for entry in scope_table_of(executed, declared).exceeded()))
 
@@ -297,6 +408,7 @@ def drive_evaluation(
     declared_scope: DeclaredScope | None = None,
     platform_baseline_t3: frozenset[str] = frozenset(),
     weights: Mapping[str, int] | None = None,
+    looks_for: Callable[[str], Sequence[int]] | None = None,
 ) -> list[SetReading]:
     """Run every plan through the executor and roll each repetition set into a reading.
 
@@ -308,10 +420,11 @@ def drive_evaluation(
 
     ``declared_scope`` enables the declared-vs-observed check (§12.5) on the live path: it is
     evaluated separately from ``scope`` (which drives the outcome assertions) so a scope violation
-    blocks the ``scope`` gate without the still-stubbed network/write derivations turning a clean run
-    ``not_evaluable``. Passing it is what makes ``bellwether run`` catch a skill that reads outside
-    its manifest — the same enforcement the demo path already applies. Absent it, the ``scope`` gate
-    reflects only what the outcome assertions saw, and reports ``pass`` only when nothing violated.
+    blocks the ``scope`` gate without an auto-derived absence assertion on an unobserved plane
+    turning a clean run ``not_evaluable``. Passing it is what makes ``bellwether run`` catch a skill
+    that reads, writes, or reaches a network host outside its manifest — the same enforcement the
+    demo path already applies. Absent it, the ``scope`` gate reflects only what the outcome
+    assertions saw, and reports ``pass`` only when nothing violated.
 
     Readings come back in first-seen ``(scenario, target)`` order, matching :func:`plan_matrix`, so
     the verdict and the artifact tree are deterministic regardless of how the plans interleave.
@@ -321,7 +434,14 @@ def drive_evaluation(
     yield a figure the sequential design does not license — so it is refused rather than quietly
     reported, the same reflex as the rest of the pipeline.
     """
-    first_look = profile.matrix.looks[0] if profile.matrix.looks else 1
+
+    # §7.2: a scenario may carry its own look schedule; each set is aggregated — and held to
+    # its first-look floor — under the schedule its scenario actually ran.
+    def looks_of(scenario_id: str) -> list[int]:
+        if looks_for is not None:
+            return list(looks_for(scenario_id))
+        return list(profile.matrix.looks)
+
     analysed_by_set: dict[tuple[str, str], list[AnalysedRun]] = {}
     order: list[tuple[str, str, TargetInfo]] = []
     for plan in plans:
@@ -340,10 +460,12 @@ def drive_evaluation(
             )
         analysed_by_set[set_key].append(run)
     for scenario_id, slug, _target in order:
+        set_looks = looks_of(scenario_id)
+        first_look = set_looks[0] if set_looks else 1
         count = len(analysed_by_set[(scenario_id, slug)])
         if count < first_look:
             raise BellwetherError(
-                f"repetition set {scenario_id!r} on {slug!r} has {count} run(s), below the profile's "
+                f"repetition set {scenario_id!r} on {slug!r} has {count} run(s), below its "
                 f"first look of {first_look} (§13.1); a set that never reaches its earliest decision "
                 "point cannot be aggregated into a licensed figure"
             )
@@ -354,6 +476,7 @@ def drive_evaluation(
             analysed_by_set[(scenario_id, slug)],
             profile=profile,
             weights=weights,
+            looks=looks_of(scenario_id),
         )
         for scenario_id, slug, target in order
     ]
@@ -474,6 +597,17 @@ def analyse_run(
         canary_without_read=index.canary_without_read_present,
         exit_reason=trace.exit_reason,
         scope_unused=scope_unused,
+        wall_clock_ms=trace.footer.wall_clock_ms if trace.footer is not None else None,
+        tokens=(
+            {
+                "input": trace.footer.tokens.input,
+                "output": trace.footer.tokens.output,
+                "cache_read": trace.footer.tokens.cache_read,
+                "cache_write": trace.footer.tokens.cache_write,
+            }
+            if trace.footer is not None
+            else None
+        ),
     )
 
 
@@ -576,6 +710,10 @@ class SetReading:
     #: instrument cannot distinguish this set from identical input, so the report renders
     #: the qualitative label and withholds the precise figure (§13.4).
     trajectory_at_noise_floor: bool = False
+    #: The look schedule this set was aggregated under (§13.1) — the profile's, or the
+    #: scenario's own override (§7.2). Carried so the summary counts "stopped at look k"
+    #: against the schedule the set actually ran, not the profile's.
+    looks: tuple[int, ...] = ()
     #: The credentials plane supported an absence claim on *every* run in the set — same
     #: completeness bar as the other security gates: one unobserved run leaves the
     #: model-channel evidence incomplete and the canary-reads gate defers.
@@ -615,6 +753,14 @@ class SetReading:
     #: Runs by §12.7 outcome, so the matrix counts are exact rather than reconstructed.
     n_not_evaluable: int = 0
     n_excluded_quality: int = 0
+    #: Wall clock summed over the runs whose trace carries a footer (§19.1). A footerless
+    #: run contributes nothing here and is counted in ``n_wall_clock_unobserved`` instead, so
+    #: the figure is a *lower bound* whenever that count is non-zero — never a total that
+    #: quietly omits the run it could not measure.
+    wall_clock_ms_observed: int = 0
+    n_wall_clock_unobserved: int = 0
+    #: Token usage by kind, summed over the footered runs (§9.3). Same lower-bound reading.
+    tokens: Mapping[str, int] = field(default_factory=dict)
 
 
 #: §13.5.2: the configured ``max_rare_capability_risk`` severity maps to a risk-weight
@@ -637,8 +783,8 @@ def aggregate(
 
     The sequential design — the look schedule and the Pocock ``boundary_z`` — comes from
     ``profile.matrix``, so a configured non-default schedule is scored with its own
-    correction rather than the hard-coded three-look constant (``looks`` overrides only for
-    tests).
+    correction rather than the hard-coded three-look constant. ``looks`` overrides the
+    schedule for one set — how a scenario's own §7.2 ``looks``/``n_max`` reach the metrics.
     """
     look_points = list(looks) if looks is not None else list(profile.matrix.looks)
     boundary_z = profile.matrix.boundary_z
@@ -698,6 +844,13 @@ def aggregate(
     # incomplete egress picture, so the gate defers rather than passing on partial evidence.
     egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
     egress_blocked = any(run.egress_blocked for run in runs)
+    # §19.1: spend is read from the footers. A footerless run is counted, not skipped, so the
+    # budget gate knows the sums are lower bounds.
+    tokens_total: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    for run in runs:
+        if run.tokens is not None:
+            for kind in tokens_total:
+                tokens_total[kind] += int(run.tokens.get(kind, 0))
     return SetReading(
         scenario_id=scenario_id,
         target=target,
@@ -731,6 +884,7 @@ def aggregate(
         canary_leaked=any(run.canary_leaked for run in runs),
         dns_observed=len(runs) > 0 and all(run.dns_observed for run in runs),
         dns_blocked=any(run.dns_blocked for run in runs),
+        looks=tuple(look_points),
         trace_inconsistencies=tuple(
             sorted({reason for run in runs for reason in run.trace_inconsistencies})
         ),
@@ -747,6 +901,11 @@ def aggregate(
         n_timed_out=sum(1 for run in runs if run.exit_reason == "timeout"),
         n_not_evaluable=stability.denominators.n_not_evaluable,
         n_excluded_quality=stability.denominators.n_excluded_quality,
+        wall_clock_ms_observed=sum(
+            run.wall_clock_ms for run in runs if run.wall_clock_ms is not None
+        ),
+        n_wall_clock_unobserved=sum(1 for run in runs if run.wall_clock_ms is None),
+        tokens=tokens_total,
     )
 
 
@@ -1130,6 +1289,158 @@ class EvalResult:
     exit_code: int
 
 
+#: The per-target label the budget gates carry. A budget is a claim about the whole matrix
+#: — one ceiling on what the evaluation spent — so its result is one row, not one per
+#: target, and the row says so rather than borrowing a target slug.
+BUDGET_SCOPE = "matrix"
+
+
+@dataclass(frozen=True)
+class BudgetReading:
+    """What the evaluation spent, read from the footers of every run in every set (§19.1).
+
+    ``wall_clock_ms`` and ``tokens`` are sums over the runs that carry a footer; ``n_unobserved``
+    counts the runs that do not, which makes both sums lower bounds whenever it is non-zero.
+    ``cost_usd`` is priced from ``tokens`` only when every target in the matrix has configured
+    pricing; otherwise it is ``None`` and ``unpriced`` names the targets that lack it, so an
+    unpriced matrix is disclosed rather than charged at a guessed rate.
+    """
+
+    wall_clock_ms: int
+    n_unobserved: int
+    tokens: Mapping[str, int]
+    cost_usd: float | None
+    unpriced: tuple[str, ...]
+
+
+def budget_reading(
+    readings: Sequence[SetReading],
+    *,
+    pricing_for: Callable[[TargetInfo], ModelPricing | None] | None = None,
+) -> BudgetReading:
+    """Sum the spend across the matrix and price it where pricing exists."""
+    tokens: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    unpriced: set[str] = set()
+    cost = 0.0
+    for reading in readings:
+        for kind in tokens:
+            tokens[kind] += int(reading.tokens.get(kind, 0))
+        pricing = pricing_for(reading.target) if pricing_for is not None else None
+        if pricing is None:
+            unpriced.add(f"{reading.target.provider}/{reading.target.model_alias}")
+        else:
+            cost += pricing.cost_usd(reading.tokens)
+    return BudgetReading(
+        wall_clock_ms=sum(r.wall_clock_ms_observed for r in readings),
+        n_unobserved=sum(r.n_wall_clock_unobserved for r in readings),
+        tokens=tokens,
+        cost_usd=None if unpriced else cost,
+        unpriced=tuple(sorted(unpriced)),
+    )
+
+
+def _minutes(ms: int) -> str:
+    return f"{ms / 60_000:.2f} min"
+
+
+def _budget_result(status: str, observed: str, threshold: str, reason: str) -> TargetGateResult:
+    return TargetGateResult(
+        target=BUDGET_SCOPE,
+        status=status,  # type: ignore[arg-type]
+        observed=observed,
+        threshold=threshold,
+        reason=reason,
+    )
+
+
+def _budget_wall_clock_result(
+    spend: BudgetReading, profile: ProfileSpec, *, per_run_cap_ms: int | None
+) -> TargetGateResult:
+    """The wall-clock half of the budget gate (§16.2, §19.1), from observed run durations.
+
+    The footers are the record of what each run spent. A matrix whose observed total already
+    exceeds the ceiling blocks — a lower bound above the line is enough. A matrix with every
+    run footered and under the line passes. A matrix with a footerless run has an unobserved
+    duration: it still passes where the per-run wall-clock cap the executor enforced bounds
+    the unknown (observed + unobserved × cap ≤ ceiling), and defers otherwise — a spend that
+    cannot be bounded is not called within budget.
+    """
+    ceiling_ms = profile.gates.budget.max_wall_clock_minutes * 60_000
+    threshold = f"≤ {profile.gates.budget.max_wall_clock_minutes} min"
+    if spend.wall_clock_ms > ceiling_ms:
+        return _budget_result(
+            "block",
+            _minutes(spend.wall_clock_ms),
+            threshold,
+            f"the matrix spent {_minutes(spend.wall_clock_ms)} of wall clock against a ceiling "
+            f"of {profile.gates.budget.max_wall_clock_minutes} min (max_wall_clock_minutes)",
+        )
+    if spend.n_unobserved == 0:
+        return _budget_result(
+            "pass",
+            _minutes(spend.wall_clock_ms),
+            threshold,
+            f"the matrix spent {_minutes(spend.wall_clock_ms)} of wall clock, within the "
+            f"{profile.gates.budget.max_wall_clock_minutes} min ceiling",
+        )
+    if per_run_cap_ms is not None:
+        bound_ms = spend.wall_clock_ms + spend.n_unobserved * per_run_cap_ms
+        if bound_ms <= ceiling_ms:
+            return _budget_result(
+                "pass",
+                f"≥ {_minutes(spend.wall_clock_ms)}, ≤ {_minutes(bound_ms)}",
+                threshold,
+                f"{spend.n_unobserved} run(s) have no footer, so their duration is unobserved; "
+                f"bounded by the per-run cap of {_minutes(per_run_cap_ms)} each, the matrix "
+                f"spent at most {_minutes(bound_ms)}, within the "
+                f"{profile.gates.budget.max_wall_clock_minutes} min ceiling",
+            )
+    return _budget_result(
+        "not_evaluable",
+        f"≥ {_minutes(spend.wall_clock_ms)}",
+        threshold,
+        f"{spend.n_unobserved} run(s) have no footer, so their duration is unobserved and the "
+        f"matrix total cannot be bounded within the "
+        f"{profile.gates.budget.max_wall_clock_minutes} min ceiling (§10.7)",
+    )
+
+
+def _budget_cost_result(spend: BudgetReading, profile: ProfileSpec) -> TargetGateResult:
+    """The cost half of the budget gate (§16.2, §19.1), from reported token usage × pricing.
+
+    Composed only for a fully priced matrix (the caller checks ``spend.cost_usd``); an
+    unpriced target leaves the gate uncomposed and a verdict note says so. A priced total
+    over the ceiling blocks; a priced total under it passes when every run is footered, and
+    defers when one is not — token usage the trace never recorded is not called free.
+    """
+    ceiling = profile.gates.budget.max_cost_usd
+    cost = spend.cost_usd if spend.cost_usd is not None else 0.0
+    observed = f"${round6(cost):.4f}"
+    threshold = f"≤ ${ceiling:.2f}"
+    if cost > ceiling:
+        return _budget_result(
+            "block",
+            observed,
+            threshold,
+            f"the matrix cost {observed} by reported token usage against a ceiling of "
+            f"${ceiling:.2f} (max_cost_usd)",
+        )
+    if spend.n_unobserved == 0:
+        return _budget_result(
+            "pass",
+            observed,
+            threshold,
+            f"the matrix cost {observed} by reported token usage, within the ${ceiling:.2f} ceiling",
+        )
+    return _budget_result(
+        "not_evaluable",
+        f"≥ {observed}",
+        threshold,
+        f"{spend.n_unobserved} run(s) have no footer, so their token usage is unobserved and "
+        f"the matrix cost cannot be bounded within the ${ceiling:.2f} ceiling (§10.7)",
+    )
+
+
 def _gate(
     name: str,
     results: Sequence[TargetGateResult],
@@ -1168,8 +1479,16 @@ def orchestrate(
     bellwether_version: str,
     out_dir: Path,
     descriptive_only: bool = False,
+    per_run_wall_cap_ms: int | None = None,
+    pricing_for: Callable[[TargetInfo], ModelPricing | None] | None = None,
 ) -> EvalResult:
-    """Compose the verdict from the set readings, render, and write the artifact tree."""
+    """Compose the verdict from the set readings, render, and write the artifact tree.
+
+    ``per_run_wall_cap_ms`` is the per-run wall-clock cap the executor enforced, which lets
+    the budget gate bound a footerless run's duration; ``pricing_for`` resolves a target's
+    configured :class:`ModelPricing`, which is what turns reported tokens into the cost gate.
+    Absent, the cost gate is not composed and the verdict carries a note saying so.
+    """
     gates: list[GateResult] = []
     gates.append(_gate("evidence", [_evidence_result(r, profile) for r in readings], required=True))
     gates.append(
@@ -1212,7 +1531,30 @@ def orchestrate(
         )
     )
 
-    verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only)
+    # §16.2 / §19.1: the budget gate, from what the footers recorded the matrix spending. The
+    # wall-clock half is always composed — every run's duration is either observed or bounded.
+    # The cost half needs pricing; an unpriced target is disclosed as a note, never priced at
+    # a guessed rate and never silently passed.
+    spend = budget_reading(readings, pricing_for=pricing_for)
+    gates.append(
+        _gate(
+            "budget.wall_clock",
+            [_budget_wall_clock_result(spend, profile, per_run_cap_ms=per_run_wall_cap_ms)],
+            required=True,
+        )
+    )
+    notes: list[str] = []
+    if spend.cost_usd is not None:
+        gates.append(_gate("budget.cost", [_budget_cost_result(spend, profile)], required=True))
+    else:
+        notes.append(
+            "budget.cost not composed: no pricing configured for "
+            + ", ".join(spend.unpriced)
+            + f" (providers.<name>.pricing), so max_cost_usd {profile.gates.budget.max_cost_usd:.2f} "
+            "is not enforced on this evaluation; reported token usage is in summary.cost"
+        )
+
+    verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only, notes=notes)
 
     figures = build_figures(readings)
     summary = _build_summary(
@@ -1230,6 +1572,7 @@ def orchestrate(
         created_at=created_at,
         bellwether_version=bellwether_version,
         descriptive_only=descriptive_only,
+        spend=spend,
     )
 
     artifacts = write_artifact_tree(
@@ -1293,6 +1636,7 @@ def _build_summary(
     created_at: str,
     bellwether_version: str,
     descriptive_only: bool,
+    spend: BudgetReading | None = None,
 ) -> Summary:
     primary = _primary(readings)
     targets = sorted({r.target.slug for r in readings})
@@ -1300,11 +1644,12 @@ def _build_summary(
     n_evaluable = sum(r.n_evaluable for r in readings)
     n_completed = sum(r.n_completed for r in readings)
 
-    looks = tuple(profile.matrix.looks)
     # Which pre-registered look each set stopped at, keyed by 1-based look index (§17.2) —
-    # what lets a reader tell a set that resolved at N = 6 from one that ran to N = 20.
+    # what lets a reader tell a set that resolved at N = 6 from one that ran to N = 20. Counted
+    # against the schedule each set actually ran (a scenario may override the profile's, §7.2).
     stopped_at: dict[str, int] = {}
     for reading in readings:
+        looks = reading.looks or tuple(profile.matrix.looks)
         index = looks.index(reading.look) + 1 if reading.look in looks else len(looks)
         key = str(index)
         stopped_at[key] = stopped_at.get(key, 0) + 1
@@ -1375,7 +1720,9 @@ def _build_summary(
         ),
         policy=PolicyRef(profile=profile_name, digest=policy_digest),
         matrix=matrix,
-        verdict=VerdictSummary(status=verdict.verdict, gates=_gate_summaries(gates)),
+        verdict=VerdictSummary(
+            status=verdict.verdict, gates=_gate_summaries(gates), notes=verdict.notes
+        ),
         functional=functional,
         consistency=consistency,
         capability_profile=capability_profile,
@@ -1385,6 +1732,20 @@ def _build_summary(
         # a reader can judge the trajectory figures against the instrument's own jitter.
         noise_floor=NoiseFloor(
             trajectory=NOISE_FLOOR_TRAJECTORY, calibrated_at=NOISE_FLOOR_CALIBRATED_AT
+        ),
+        # §19.1: what the matrix spent, from the footers. `usd` is None on an unpriced
+        # matrix — a zero there would read as free.
+        cost=(
+            CostSummary(
+                usd=None if spend.cost_usd is None else round6(spend.cost_usd),
+                tokens=dict(spend.tokens),
+                cache_read_tokens=int(spend.tokens.get("cache_read", 0)),
+                wall_clock_s=round6(spend.wall_clock_ms / 1000),
+                runs_without_footer=spend.n_unobserved,
+                unpriced_targets=spend.unpriced,
+            )
+            if spend is not None
+            else None
         ),
     )
 

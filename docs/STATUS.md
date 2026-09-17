@@ -150,12 +150,13 @@ reaches `ready`; a flat per-path capability set would fail the consistency gate 
 rendered PR comment, never a bare high BCI, §13.3). The acceptance harness gained per-repetition
 transcripts so `file-selective`'s genuine tier-3 variance is real, not a copy. Five §25 corpus
 skills remain (`benign-chaotic`, `scope-creeper`, `rare-canary-reader`, `slow`, `over-declared`).
-Still deferred (work packages, not quick fixes): the network/write scope *derivations* (an
-undeclared-egress violation is not yet scored — the tool/read declared-vs-observed table is), wiring
+Still deferred (work packages, not quick fixes): wiring
 the `credential_read_undeclared` disposition into a scored gate (needs the read-capture plane),
 the blocking static-scan gate (lands with the §15 scanner),
 and hash-pinning the full sidecar dependency closure.
-(`requires.min_bellwether_version` in the preflight has since been closed — see the entry below.)
+(`requires.min_bellwether_version` in the preflight, and the network scope derivation — an
+undeclared-egress host is now scored through the scope gate — have since been closed; see the
+entries below.)
 
 **WP-20 then closed — the v0.1 acceptance corpus is complete** (eleven skills, three slices). The
 last five skills each assert a property the smooth metrics cannot deliver, and building them
@@ -290,6 +291,144 @@ points at the guard that *is* enforced: the per-repetition token ceiling (`bellw
 A real dollar/wall-clock budget gate needs pricing infrastructure (per-model cost) and whole-eval
 aggregation — a later work package; the disclosure is what keeps the gap honest until then.
 
+**Then a larger batch landed three run-path features together.** First, **the network
+assertions evaluate for real** (§12.2, §10.5, §10.6): `no_egress`, `egress_only_to` and
+`no_dns_outside` were catalogue entries stubbed to `not_evaluable` via `_plane_gated` even after
+the recording proxy and controlled resolver made their planes observed. Each is now an absence
+claim gated on its plane being usable for absence (§10.8) — a run without the sidecar still returns
+`not_evaluable` with the coverage reason, never `pass` — and, with the plane observed, decides:
+only `skill_attributed` flows are the skill's egress (§10.5.0; the model API and declared harness
+infrastructure never are), a default-deny **block counts as an egress the skill made** (evidence of
+intent, with the block's own action as evidence — the index now records blocked flows with their
+host, and `dns_blocked` seqs), and host matching is the proxy's label-boundary rule so a lookalike
+cannot pose as a declared host. Second, **the Declared-vs-Observed table gained its `network`
+area** (§12.5): a skill-attributed or blocked flow no `network.egress_allow` entry covers is
+`exceeded` and so blocks the scope gate; an empty allowlist is the declaration that the skill makes
+no network calls, under which every skill flow is `exceeded`; a declared host nothing reached is
+`unused` only where the plane could have seen a use, else `not_evaluable`. This closes the "an
+undeclared-egress violation is not yet scored" gap without touching the `scope=None` outcome split —
+the three now-false "still stubbed" comments were corrected to state the real reason for that split
+(an auto-derived absence assertion on an unobserved plane would drag a clean outcome to
+`not_evaluable`; the table records that row as `not_evaluable` on its own). Third,
+**per-scenario fixtures** (§7.2): `Scenario.fixture`/`defaults.fixture` existed in the model but
+were ignored — `_run_fixture` materialised the whole `evals/fixtures/` as every run's workspace.
+`cli/fixtures.py` resolves a name per scenario (`evals/fixtures/<name>/`, then the repository's
+`.bellwether/fixtures/<name>/`, `empty` for a bare workspace), `plan_matrix` stamps the resolved
+path and name on every `RunPlan` (resolved once per scenario, refusing on a missing name *before*
+any plan or container), the executor reads `plan.fixture`, and the trace header records
+`sandbox.fixture`. One shape is honoured deliberately: every shipped skill uses a flat
+`evals/fixtures/` with a `fixture:` label that names no subdirectory, so a name that matches no
+directory but sits beside a flat tree resolves to that tree — exactly what the proven live runs
+used. A name that resolves nowhere refuses rather than silently running on an empty workspace.
+Demo reports unchanged (byte-compare holds), corpus verdicts unchanged (spec-notes §12.5, §7.2).
+
+**A second batch then honoured the rest of the per-scenario fields the model already accepted**
+(§7.2, §7.3) — each was parsed and silently ignored. **Multi-turn scenarios run as a preserved
+session** on `api-loop`: a `prompt` list used to be joined with newlines into one prompt, a
+different test entirely; now the first turn opens the conversation and each later user turn is
+appended after the model's reply in the *same* messages, so second-turn drift — the failure mode
+§7.3 names — is observable. Only the last turn's reply is the run's `final_output`; every
+intermediate reply is on the record through its `model_turn` event, so the trace vocabulary is
+untouched. The `claude-code` harness runs one `-p` prompt per session and session continuation
+across turns has not been observed in this build, so a turn-list scenario on a `claude-code`
+target is **refused by the §16.4 preflight** before any container (gate
+`scenario[<id>].prompt`, remedy: an api-loop target), with a last-line-of-defence refusal in the
+executor — never flattened. **Per-scenario `timeout_seconds`** (else the suite default) is now
+the run's wall clock (`run_limits_for` → `RunLimits.wall_seconds`, the bound that actually stops
+both adapters). **Per-scenario `looks`/`n_max`** now reach the sequential design:
+`effective_schedule` settles each scenario's schedule while planning — its own, then the suite
+default, then the resolved matrix — under the manifest override's consistency rule (looks
+strictly increasing, last look equal to `n_max`; an `n_max` that sits on a pre-registered look
+truncates the inherited schedule to it, any other refuses rather than inventing a decision point
+and silently changing the Pocock correction); `plan_matrix` runs each scenario its own number of
+times, `drive_evaluation` aggregates each set under its own schedule and holds it to its own
+first-look floor, `SetReading.looks` carries the schedule the set actually ran, and the summary's
+"stopped at look k" is counted against it — a stop at N = 4 under a `[2, 4]` override used to be
+mis-keyed as the profile's third look. No override reproduces the resolved matrix exactly, so the
+default path — and every committed report — is unchanged (spec-notes §7.2/§7.3).
+
+**Then `also_load_skills` was honoured — §7.4 coexistence loading.** The single most under-tested
+failure mode the spec names is a skill whose description is broad enough to capture activations
+meant for another, and the field that expresses the test (`also_load_skills`) was parsed and
+consumed nowhere: every scenario ran with the primary offered alone, so an assertion on *which*
+skill activated had no competitor to lose to. `cli/companions.py` resolves each name to a
+**sibling** skill directory (`skills/<name>/` beside the skill under test, the one place the §5
+layout gives a name meaning), loads it as a full package, and `plan_matrix` stamps the companions
+on every `RunPlan` — resolved once per scenario, refusing before any run on a name that resolves
+nowhere (a coexistence scenario whose rival is silently absent would report the primary winning
+for the wrong reason) or that names the skill under test itself. The executor offers the primary
+plus its companions through the api-loop harness exactly as it offers the primary — name,
+description, body — so `skill_offered`/`skill_activated` and the existing `other_skill_activated`
+assertion work unchanged. Companions are offered, not staged: on `api-loop` the offer is
+host-side, so a companion's own scripts are absent in the container and a call into them is an
+ordinary recorded error. The `claude-code` harness discovers skills from what is staged, and this
+build stages exactly one, so a companion scenario on a `claude-code` target is **refused by the
+§16.4 preflight** (`scenario[<id>].also_load_skills`) — plural staging is the same deferred piece
+as plugin-layout staging. The full §7.4 machinery (the `bellwether coexistence` command, the
+trigger-collision matrix, the library baseline and its delta) is still a work package; what
+landed is the loading half every coexistence scenario needs first (spec-notes §7.4).
+
+**`bellwether run --scenario ID` / `--tag TAG` then landed** (§7.2, §20) — the two filters the
+spec's CLI surface lists and `tags` exists for ("used for filtering"), neither of which the `run`
+command exposed. `select_scenarios` narrows the suite: ids select exactly those scenarios, tags
+select every scenario carrying *any* of them, and both together intersect; suite order is
+preserved so the plan list and artifact tree stay deterministic. An id the suite does not define,
+or a filter that selects nothing, **refuses** naming what exists (the suite's ids and tags) — an
+empty selection run to completion would be a clean-looking verdict about no evidence at all, the
+same reflex as refusing a suite with no scenarios. Both options are repeatable.
+
+**The rest of the §20 `run` surface followed** — `--targets`, `--n-max`, `--looks`,
+`--repetitions`, and `--strict`. `--targets a,b` narrows the resolved target set by alias and
+refuses when nothing matches, naming the aliases the config defines. `--n-max` / `--looks` override
+the profile's sequential design, and `consistent_schedule` checks the §13.1 invariant once for
+every path that builds a schedule (profile, per-scenario override, and CLI flag alike): looks must
+be strictly increasing and `n_max` must be the schedule's last look, or the run refuses before
+spending. `--repetitions N` is the spec's fixed-N mode: it is exclusive with the sequential flags,
+needs at least two runs, collapses the schedule to a single look, and the report is written in
+`descriptive_only` mode because no early-stop boundary was applied. `--strict` maps `conditional`
+to a non-zero exit through `exit_code_for`, so a pipeline that wants "ready or nothing" gets it
+without parsing the report. The per-scenario override path is unchanged; the CLI flag is the outer
+layer that per-scenario schedules still sit inside.
+
+**The budget gate is composed (§16.2, §19.1)** — the last configured-but-inert control `doctor`
+was disclosing. `gates.budget.max_wall_clock_minutes` and `max_cost_usd` were read nowhere; now
+`orchestrate` sums every run's footer (`wall_clock_ms`, `tokens`) across the matrix into a
+`BudgetReading` and composes two required gates on it. `budget.wall_clock` is always composed:
+over the ceiling blocks; under it with every run footered passes; a footerless run's duration is
+*unobserved* and is bounded by the per-run cap the executor enforced (the scenario's
+`timeout_seconds`) — passing where observed + unobserved × cap fits, deferring otherwise, never
+counted as zero. `budget.cost` prices reported tokens at the new `providers.<name>.pricing.<alias>`
+(USD per million tokens, the four §9.3 kinds priced separately) and is composed only when every
+target in the matrix is priced; an unpriced matrix gets a verdict note naming the aliases and the
+`max_cost_usd` not enforced, `summary.cost.usd: null` (never `0.0`), and a per-profile `doctor`
+row — Bellwether ships no prices, so an unpriced target is disclosed, never guessed. `--budget-usd`
+(§20) overrides the ceiling for one run. The budget is one matrix-wide gate row (`matrix`), not
+one per target. `summary.cost` is filled on every evaluation (tokens, wall clock, footerless
+count, unpriced targets; schema `1.1`); the demo artifacts were regenerated and their verdicts are
+unchanged (the demo matrix is unpriced and spends 6 min of its 60). spec-notes carries the
+reasoning for not composing the cost gate as `not_evaluable`: either reading would demote the
+proven live `ready` on a matrix whose spend is fully recorded.
+
+**`bellwether trace` and `bellwether diff` read stored artifacts (§20, §17.1, §17.5).** Both
+were `_not_yet` stubs — `trace` claiming "nothing writes traces to an artifact tree yet", false
+since WP-12. `cli/trace_view.py` locates a trace by the `run_id` its header carries (the id the
+report's evidence links name) under `--out` (optionally one `--eval`), or takes a path, and
+renders one line per action — seq, time, plane, kind, and a per-kind summary (the tool and its
+input, the outcome and duration, the model turn's stop reason and tokens, the path/host/name)
+— with the header's target/coverage and the footer's exit/wall/tokens, or `INCOMPLETE` with the
+reason. `--plane`/`--kind` filter and say how many actions were hidden; an ambiguous id (the
+same run under two evaluations) is refused naming every candidate. `cli/diff.py` compares two
+`summary.json` (an eval id under `--out`, an eval directory, or a file): verdict, each gate by
+name (and gates on one side only), the functional and consistency readings, the tier-1
+capability profile by set difference (core ∪ peripheral, with peripheral read from its §13.5.2
+records — *expansion* is surfaced first as the regression signal), tier-2 sensitive hits, the
+security findings, and spend. §17.5's rule holds: the weighted figures are skipped and named
+under a different `weights_digest`, tier 3 is always named as not diffed, a schema-version
+mismatch is refused, and a different policy or skill is a caveat shown before the table. It
+reports and does not apply `gates.regression`; baseline storage and the gate remain a work
+package. `report` stays a stub with a truthful message (the renderers exist; re-rendering needs
+the figures rebuilt from a stored tree). Tested against the committed demo trees.
+
 ---
 
 ## Where the build is
@@ -329,7 +468,7 @@ aggregation — a later work package; the disclosure is what keeps the gap hones
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1055 tests: 1001 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1148 tests: 1094 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -553,8 +692,10 @@ end with an injected scripted executor (`benign-stable` → `conditional`, the f
 and the command's refusal paths (no skill, missing config, no daemon, unset key, placeholder model)
 exit 3 with a clear reason. A **real container run from the CLI against a live model is now proven on
 CI** (PR #45: standup-summariser, 6× under Haiku, proxy observing egress, verdict `ready` posted).
-The declared scope is still intentionally not applied — its auto-derived egress/DNS assertions want
-the DNS plane observed too, which lands with the resolver-wiring brick.
+The declared scope was, at this point, still intentionally not applied — its auto-derived egress/DNS
+assertions wanted the DNS plane observed too. (Since closed: declared scope applies on the live path
+as the Declared-vs-Observed table, and the `no_egress` / `egress_only_to` / `no_dns_outside`
+assertions now evaluate for real against the observed planes — see the entries at the top.)
 
 ### What WP-12 built
 
@@ -966,13 +1107,15 @@ This section keeps the **granular** run-path gaps; the top-of-file "What's next 
 is the authoritative sequence, and the two agree. The live-container CLI run against a real model is
 **done** (PR #45 reached `ready`); what remains under it is polish and the other planes:
 
-1. **Residual run-path gaps (now that the live run itself is proven).** The declared **scope is still
-   not applied** — its auto-derived egress/DNS assertions want the DNS plane observed, so it comes
-   online with the resolver-wiring brick; until then the driver passes `scope=None`. Also open:
-   `RunLimits` derived from the profile rather than the defaults; **per-scenario fixtures** (the
-   executor takes one fixture per run, so a skill whose scenarios need different starting trees is not
-   yet expressible); and wiring the precondition check, weight validation, the §21 enforced-settings
-   refusal, and the FIFO sink writer into `doctor`/`run` — see the table below.
+1. **Residual run-path gaps (now that the live run itself is proven).** Most of this item has since
+   closed: declared scope applies on the live path as the Declared-vs-Observed table (BW-47), the
+   network area of that table is scored (an undeclared egress host blocks the scope gate), the
+   `no_egress` / `egress_only_to` / `no_dns_outside` assertions evaluate for real, **per-scenario
+   fixtures** are expressible (`fixture: <name>` resolves per scenario and rides on each `RunPlan`),
+   and the precondition check, weight validation, §21 refusal and FIFO sink are wired into
+   `doctor`/`run`. Still open here: `RunLimits` derived from the profile rather than the defaults
+   (the budget gate is now composed; what remains is deriving the per-run limits from the
+   profile rather than the defaults).
 2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
    decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
@@ -998,7 +1141,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Sink container path drawn per run — **closed** | `sandbox/identifiers.py`, `cli/execution.py` | §3.5: the fixed `/dev/bellwether-events` FIFO path was an instrumentation tell a skill could grep for. It is now `SandboxIdentifiers.event_sink_path`, a bare hex leaf under `/dev` drawn per run from a token independent of the workspace slug; the executor reads it for both the bind and the hook command. Randomisation off returns to the greppable stable path (`STABLE_SINK_CONTAINER_PATH`, the single source the harness fallback also references) for operator findability (spec-notes §3.5). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
 | Live model client — `openai_compatible` variant — **closed** | `harness/live_client.py`, `cli/run.py` | `OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat Completions array (system → leading `system` message, `tool_use` → assistant `tool_calls` with JSON-string arguments, `tool_result` → per-id `tool` messages) and the response back. The §3.3 real-key guard extends to it: pinned to HTTPS on `api.openai.com` plus hosts named in `BELLWETHER_TRUSTED_MODEL_HOSTS` (out-of-checkout config the cli threads in), so a tampered `config.yaml` base_url cannot redirect the key (spec-notes §9.5). |
-| Budget gate not assembled into the verdict | `config/models/policy.py` `BudgetGate`, `cli/orchestrator.py` | `gates.budget.max_cost_usd` / `max_wall_clock_minutes` are configured (the shipped policy sets `25.00`/`60`, `100.00` on `high`) but read nowhere — no budget gate is composed, so neither is enforced. `doctor` now **discloses** this (a `warn` row, pointing at the enforced `--max-tokens` per-repetition ceiling), closing the silent-no-op reading; actually gating a dollar/wall-clock budget needs per-model pricing and whole-eval aggregation — a later work package. |
+| Budget gate — **closed** | `cli/orchestrator.py` (`budget_reading`, `_budget_wall_clock_result`, `_budget_cost_result`), `config/models/provider.py` (`ModelPricing`) | `budget.wall_clock` is composed from every run's footer with a footerless run bounded by the per-run cap or deferred; `budget.cost` prices reported tokens at `providers.<name>.pricing` and is composed only for a fully priced matrix — an unpriced one is disclosed in the verdict notes, `summary.cost` and `doctor`, never guessed. `--budget-usd` overrides the ceiling (spec-notes §16.2/§19.1). |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 

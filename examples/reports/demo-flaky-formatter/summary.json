@@ -59,7 +59,21 @@
     "weights_digest": "sha256:3728fff70ecda1eacc5b1d419049f013bb5dd565b6893d381bde27d97c0d268f",
     "weights_normalised_over": null
   },
-  "cost": null,
+  "cost": {
+    "cache_read_tokens": 0,
+    "runs_without_footer": 0,
+    "tokens": {
+      "cache_read": 0,
+      "cache_write": 0,
+      "input": 8880,
+      "output": 2160
+    },
+    "unpriced_targets": [
+      "scripted/frontier"
+    ],
+    "usd": null,
+    "wall_clock_s": 1200.0
+  },
   "created_at": "2026-01-01T12:00:00Z",
   "crossmodel": null,
   "eval_id": "demo-flaky-formatter",
@@ -117,7 +131,7 @@
     "profile": "medium"
   },
   "regression": null,
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "security": {
     "canary_leaks": [],
     "runtime": {},
@@ -194,9 +208,19 @@
         "required": false,
         "status": "not_evaluable",
         "threshold": "warn"
+      },
+      {
+        "name": "budget.wall_clock",
+        "observed": "20.00 min",
+        "reason": "matrix: the matrix spent 20.00 min of wall clock, within the 60 min ceiling",
+        "required": true,
+        "status": "pass",
+        "threshold": "≤ 60 min"
       }
     ],
-    "notes": [],
+    "notes": [
+      "budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost"
+    ],
     "status": "not_ready"
   }
 }

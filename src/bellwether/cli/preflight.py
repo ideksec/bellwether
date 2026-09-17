@@ -105,6 +105,8 @@ def preflight_failures(
     targets: Sequence[TargetInfo],
     *,
     running_version: str = __version__,
+    multi_turn_scenario_ids: Sequence[str] = (),
+    companion_scenario_ids: Sequence[str] = (),
 ) -> list[PreconditionFailure]:
     """Every reason this profile cannot be satisfied by this composition, or an empty list.
 
@@ -114,6 +116,11 @@ def preflight_failures(
 
     ``running_version`` defaults to the installed Bellwether version and is a parameter only
     so a test can drive the ``min_bellwether_version`` clause against a chosen version.
+    ``multi_turn_scenario_ids`` names the scenarios whose prompt is a turn list (§7.3): a
+    ``claude-code`` target cannot run one — the CLI takes a single prompt and session
+    continuation across turns has not been observed in this build — so the combination is
+    refused here, before a container is paid for, rather than silently flattened into one
+    turn.
     """
     failures: list[PreconditionFailure] = []
     declarations: list[TargetDeclaration] = []
@@ -123,6 +130,35 @@ def preflight_failures(
             failures.append(declared)
         else:
             declarations.append(declared)
+        if target.harness == "claude-code":
+            for scenario_id in multi_turn_scenario_ids:
+                failures.append(
+                    PreconditionFailure(
+                        gate=f"scenario[{scenario_id}].prompt",
+                        target=target.slug,
+                        remedy=(
+                            "this scenario is multi-turn (§7.3) and the claude-code harness runs "
+                            "a single prompt per session in this build; run it on an api-loop "
+                            "target, or make the prompt a single turn"
+                        ),
+                    )
+                )
+            # §7.4: the CLI discovers skills from what is staged into the sandbox, and this
+            # build stages exactly one; companions it cannot see would make "which activated"
+            # a foregone conclusion. Refuse rather than offer a competitor the harness lacks.
+            for scenario_id in companion_scenario_ids:
+                failures.append(
+                    PreconditionFailure(
+                        gate=f"scenario[{scenario_id}].also_load_skills",
+                        target=target.slug,
+                        remedy=(
+                            "this scenario loads companion skills (§7.4) and the claude-code "
+                            "harness stages only the skill under test in this build, so its "
+                            "companions would not be discoverable; run it on an api-loop "
+                            "target, or drop also_load_skills"
+                        ),
+                    )
+                )
     failures.extend(
         check_preconditions(
             profile,
@@ -135,14 +171,26 @@ def preflight_failures(
 
 
 def refuse_on_preflight_failures(
-    config: Config, profile: ProfileSpec, targets: Sequence[TargetInfo], *, profile_name: str
+    config: Config,
+    profile: ProfileSpec,
+    targets: Sequence[TargetInfo],
+    *,
+    profile_name: str,
+    multi_turn_scenario_ids: Sequence[str] = (),
+    companion_scenario_ids: Sequence[str] = (),
 ) -> None:
     """Raise :class:`BellwetherError` in the §16.4 message shape if the matrix cannot start.
 
     Called by ``run_evaluation`` after resolution and before the executor is built, so an
     unsatisfiable policy costs an error message instead of a matrix.
     """
-    failures = preflight_failures(config, profile, targets)
+    failures = preflight_failures(
+        config,
+        profile,
+        targets,
+        multi_turn_scenario_ids=multi_turn_scenario_ids,
+        companion_scenario_ids=companion_scenario_ids,
+    )
     if failures:
         rendered = "\n".join(failure.message(profile_name) for failure in failures)
         raise BellwetherError(

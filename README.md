@@ -72,6 +72,20 @@ container, nothing below it is faked):
 uv run bellwether demo          # writes examples/reports/<eval>/report/report.html
 ```
 
+Two commands read a stored artifact tree back, so the evidence a report points at is a
+command away rather than a JSONL file to parse by hand:
+
+```bash
+# one run's trace, one line per action — the run id is the one the report's evidence links name
+uv run bellwether trace demo-sneaky-exfiltrator-001 --out examples/reports --kind tool_call
+# what changed between two evaluations: verdict, gates, readings, tier-1 capability profile, spend
+uv run bellwether diff demo-benign-note-taker demo-sneaky-exfiltrator --out examples/reports
+```
+
+`diff` follows §17.5: components whose inputs are not comparable are named at the top rather
+than silently skipped, a schema-version mismatch is refused, and tier-1 capability *expansion*
+is surfaced first as the regression signal. It reports; it does not apply the regression gate.
+
 The three are chosen to reach three different verdicts, so the report's shape is visible in
 each: a clean note-taker (`conditional`), a **credential exfiltrator that passes its task but
 reads `~/.aws/credentials`** and is caught by the declared-vs-observed check (`not_ready`),
@@ -88,15 +102,18 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from eight gates, and these are the checks that can actually move a skill off `ready`:
+composed from nine gates (ten on a priced matrix), and these are the checks that can actually move
+a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
 - **consistency** — the behaviour is stable across runs (Wilson/BCI, risk-weighted capability
   Jaccard, modal-trajectory share, mean edit distance, and a rare-high-risk-capability check);
-- **scope** — declared-vs-observed: a skill that calls a tool, or reads a path, outside its
-  `manifest.yaml` is flagged and blocked. *This now runs on the live path, not only in the demo* —
-  earlier builds deferred it and rendered a false "within scope" for every run;
+- **scope** — declared-vs-observed: a skill that calls a tool, reads or writes a path, or reaches
+  a network host outside its `manifest.yaml` is flagged and blocked (an empty `egress_allow`
+  declares "no network calls", so any egress the skill makes is out of scope). *This runs on the
+  live path, not only in the demo* — earlier builds deferred it and rendered a false "within scope"
+  for every run;
 - **security_runtime.egress** — egress to a host outside the default-deny allowlist, from what the
   recording proxy observed;
 - **security_runtime.canaries** — a planted canary appearing at any non-model destination (final
@@ -113,6 +130,15 @@ composed from eight gates, and these are the checks that can actually move a ski
   (info — read-then-send is the legitimate shape), and the gate fires only on the value arriving
   by a path the trace cannot account for. This observes the residual channel the threat model
   names — the allowlisted model API — which cannot be blocked without breaking the evaluation.
+- **budget.wall_clock** — what the matrix spent, summed from every run's footer, against the
+  profile's `max_wall_clock_minutes`. A run with no footer has an *unobserved* duration: it is
+  bounded by the per-run cap where that fits, and otherwise the gate defers rather than counting
+  it as zero;
+- **budget.cost** — reported token usage priced at `providers.<name>.pricing` (USD per million
+  tokens, by kind) against `max_cost_usd`, or `--budget-usd`. Composed only when every target alias
+  in the matrix is priced; otherwise the verdict carries a note naming the unpriced aliases and
+  `summary.cost.usd` is `null` — Bellwether ships no prices, so an unpriced target is disclosed,
+  never charged at a guessed rate.
 
 What is **captured as evidence but does not yet gate** the scored verdict: undeclared
 credential reads (`credential_read_undeclared` — needs the read-capture plane), sensitive-directory
@@ -233,7 +259,7 @@ Bellwether is designed to be dropped into a repository that *contains* skills:
 │       └── evals/               # ALL Bellwether machinery lives here
 │           ├── manifest.yaml    # declared scope
 │           ├── scenarios.yaml   # scenario definitions
-│           └── fixtures/
+│           └── fixtures/        # per-scenario: `fixture: <name>` → fixtures/<name>/
 └── .github/workflows/bellwether.yml
 ```
 
@@ -280,7 +306,8 @@ alone and an unmentioned component would read as one that ran clean.
 | **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files, **and every composed model request** (§10.4.1 read-state grading); a leak gates the verdict (`security_runtime.canaries`), an unread canary in model context gates it too (`security_runtime.canary_reads`); credentials plane `full` | done (WP-16 capture story; corpus skills land with WP-20) |
 | CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |
 | Controlled DNS resolver — default-deny allowlist, NXDOMAIN, query log, canary-in-labels scan; sidecar wired into the executor (`dns.image`), Plane E in the trace; a lookup outside the allowlist gates the verdict (`security_runtime.dns`) | done (WP-15) |
-| Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline diffing (§17.5) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
+| `bellwether trace` (one run's ARF trace, located by run id, filtered by plane/kind) · `bellwether diff` (two evaluations by `summary.json`, under the §17.5 comparability rules) | done — both read stored artifact trees offline |
+| Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) · baseline *storage* and the regression gate (§17.5) · `report` re-render | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
 | **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
 | **Acceptance corpus** — eleven `tests/corpus/` skills driven through the real pipeline with §25 verdicts asserted in CI: the §10.4.1 false-positive guard (`legit-credential-reader`), the §13.5 tier-model regression (`file-selective`), and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at N = 6, 12 and 20 alike) all proven; the §13.5.2 peripheral report (class + exact path), the timeout state, and the `unused` half of Declared-vs-Observed surface in `summary.json` and both reports | done (WP-20) |

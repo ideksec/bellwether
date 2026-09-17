@@ -1619,7 +1619,7 @@ git-credential file, and an env-var token) at sandbox setup and scan every evide
   invariant on the real artifact — a skill reads `$INTERNAL_API_TOKEN` and leaks it, yet the trace
   JSONL holds only the fingerprint.
 
-## §12.5, §16.2 — Declared manifest scope is enforced on the live `run` path, decoupled from the stubbed network derivations
+## §12.5, §16.2 — Declared manifest scope is enforced on the live `run` path, decoupled from the outcome assertions
 
 The first-light `run` scored each run against the scenario assertions and passed `scope=None` into
 the driver, deferring declared-scope enforcement "until the egress plane lands in the executor." But
@@ -1646,6 +1646,137 @@ only a capability observed outside a *declared* allow-list is flagged `exceeded`
 differential: a transcript that calls an undeclared `read` surfaces `scope_exceeded=("read",)` with
 the declared scope threaded in and an empty tuple without it, so a revert of the driver change fails
 the test (`() == ('read',)`).
+
+**The network derivations then became real, and the split above was kept for its true reason.**
+`no_egress`, `egress_only_to` and `no_dns_outside` sat in the catalogue as `_plane_gated` stubs —
+`not_evaluable` even with the recording proxy and controlled resolver observing their planes. They
+now evaluate: each is an absence claim gated on `plane_reason(…, for_absence=True)` (§10.8), so a
+run without the sidecar still returns `not_evaluable` carrying the coverage reason and never `pass`;
+with the plane observed, the skill's egress is the `skill_attributed` permitted flows (§10.5.0 — the
+model API and declared harness infrastructure are never the skill's traffic) **plus every
+default-deny block**, which is an attempt the skill made to reach a host the run refused — evidence
+of intent, judged exactly like a flow that got through, with the block's own action as evidence (the
+`EvidenceIndex` now records blocked flows with their host, and `dns_blocked` seqs). A blocked
+attempt therefore always fails `egress_only_to`: the proxy refused it precisely because it lay outside
+what the run permitted. Host matching is the proxy's own label-boundary rule, so `example.com.evil.test`
+is not within `example.com`. The Declared-vs-Observed table gained a matching `network` area: a
+skill flow no `network.egress_allow` entry covers is `exceeded` (and so blocks the scope gate); an
+empty allowlist is the declaration that the skill makes no network calls (§12.5), under which every
+skill flow is `exceeded`; a declared host nothing reached is `unused` only where the plane could
+have seen a use, else `not_evaluable`.
+
+With the derivations real, `scope=None` on the live path is no longer "because they are stubbed" —
+the three comments that said so were corrected. The split stands on its own merit: an auto-derived
+*absence* assertion on a plane a run cannot observe would mark the whole outcome `not_evaluable`
+and block the evidence gate for a benign skill, whereas the table records that row as
+`not_evaluable` by itself and lets the other areas score. The outcome stays the scenario's own
+assertions; the manifest's scope, every area of it, feeds the scope gate through the table.
+
+## §7.2, §9.1 — Per-scenario fixtures resolve by name, honouring the flat legacy layout
+
+`Scenario.fixture` and `defaults.fixture` were in the model from WP-1 and ignored: `bellwether run`
+materialised the whole `evals/fixtures/` directory as every run's workspace, so a skill whose
+scenarios need different starting trees was not expressible, and the `fixture: python-repo` /
+`fixture: empty` the spec's own examples use did nothing. `cli/fixtures.py` now resolves a name per
+scenario — `evals/fixtures/<name>/` (the §5 scenario-specific fixture), then the repository's shared
+`.bellwether/fixtures/<name>/`, with `empty` reserved for a bare workspace — and `plan_matrix` stamps
+the resolved path and name on every `RunPlan`. Two decisions worth recording.
+
+Resolution happens **once per scenario, in `plan_matrix`, before any container**: a missing named
+fixture refuses while planning, not on the sixth repetition, and every repetition of a scenario
+shares its tree (the fixture is part of *what* to run, so it rides on the plan rather than being a
+second executor argument). The executor reads `plan.fixture`, falling back to its default for callers
+that plan without a resolver, and the trace header records `sandbox.fixture` (§11.1's `"fixture":
+"python-repo"`), which it had never carried.
+
+The **legacy flat layout is honoured deliberately.** Every shipped skill was written against the
+first cut: their `evals/fixtures/` is a flat tree (`standup/…`, `README.md`) while their `fixture:`
+is a label (`standup-repo`, `readme-repo`) naming no subdirectory — and the proven live runs (PR #45,
+PR #65) were made against exactly that flat tree. So a name that matches no directory but sits beside
+a flat `evals/fixtures/` resolves to the flat tree, with the label recorded as the name. This keeps
+every proven run byte-identical in what it materialises while giving new skills the spec's named
+layout. A name that resolves nowhere is **refused**, not silently replaced by an empty workspace —
+a run on the wrong starting tree would produce a clean-looking verdict about a scenario that never
+ran as designed, the signature failure mode again — and the refusal names the scenario, the name,
+where it looked, and the `fixture: empty` remedy.
+
+## §7.2, §7.3, §13.1 — Multi-turn prompts, per-scenario timeouts and per-scenario schedules are honoured
+
+Three more §7.2/§7.3 fields the scenario model accepted from WP-1 and the run path ignored.
+
+**Multi-turn prompts.** A `prompt` list was joined with newlines into a single user turn, which
+tests something else: the model sees every instruction at once, so a skill that behaves on turn
+one and loses its constraints on turn two — the exact failure mode §7.3 exists to catch — is
+invisible. `ApiLoopAdapter.run` now takes `str | Sequence[str]`; the first turn opens the
+conversation, and when the model ends a non-final turn its reply is kept in the messages (via the
+same `_assistant_message` the tool loop uses) and the next user turn follows it, so the session is
+genuinely preserved. Only the last turn's reply becomes `final_output`; each intermediate reply is
+already recorded by its `model_turn` event — so no new event kind enters the §11.3 vocabulary and
+the normalizer, trace, and every downstream consumer are untouched. §7.3's `respond_with: judge`
+mode (a cheap model playing the user) is not built; fixed turn lists are the "at minimum" the spec
+asks for. The `claude-code` harness is different: the CLI is driven with one `-p` prompt, and
+session continuation across turns (`--resume`) has not been observed from a real session in this
+build — the project's rule for every CLI fact. So a turn-list scenario on a `claude-code` target is
+refused by the §16.4 preflight (`scenario[<id>].prompt`, remedy: an api-loop target) before any
+container, with a matching refusal in the executor as the last line of defence. Refusing beats
+flattening: a silently single-turned scenario would produce a clean-looking verdict about a test
+that never ran as written.
+
+**Per-scenario `timeout_seconds`.** §7.2 gives every scenario a hard-kill timeout defaulting to
+900 from the suite; the run path used the generic `RunLimits.wall_seconds` (600) for every run.
+`run_limits_for` now applies the scenario's timeout (else the suite default) to the run's
+`wall_seconds` — the bound that actually stops both adapters (the api-loop deadline and the CLI's
+exec timeout). The sandbox's `timeout_seconds` config stays the outer container-level kill.
+
+**Per-scenario `looks`/`n_max`.** `plan_matrix` ran every scenario the resolved `n_max` times and
+`drive_evaluation` aggregated every set under the profile's looks; a scenario's own §7.2 override
+did nothing. `effective_schedule` settles each scenario's schedule while planning — its own
+`looks`/`n_max`, then the suite `defaults`, then the resolved matrix — and applies the manifest
+override's consistency rule per scenario: looks strictly increasing, last look equal to `n_max`.
+Where only `n_max` is overridden, the inherited looks are truncated to those at or below it, which
+is unambiguous when `n_max` sits on a pre-registered look and **refused** otherwise: inventing a
+decision point at `n_max` would change the number of looks and so the Pocock correction the design
+was pre-registered with (§13.1). `plan_matrix` runs each scenario its own number of times (the
+two-run floor applies per scenario), `drive_evaluation` aggregates each set under its own schedule
+and holds it to its own first-look floor, `SetReading.looks` carries the schedule the set actually
+ran, and the summary's `sets_stopped_at_look` is counted against that schedule — before, a stop at
+N = 4 under a `[2, 4]` override was not a profile look and was mis-keyed as the profile's last
+look. With no override the result is the resolved matrix exactly, so the default path and every
+committed report are byte-identical.
+
+## §7.4, §5 — `also_load_skills` loads sibling skills as offered companions; the CLI harness refuses them
+
+`Scenario.also_load_skills` carried companion names from WP-1 and the run path never read it, so
+every scenario ran with the primary offered alone and `other_skill_activated` had nothing to
+observe. Three decisions.
+
+**A companion name resolves to a sibling directory, and nowhere else.** The §5 layout keeps every
+skill one directory under `skills/`, so `skills/<name>/` beside the skill under test is the one
+place a bare name means something; `cli/companions.py` loads it with the same `load_skill` the
+primary uses (its own frontmatter, body, digests). A name that resolves nowhere **refuses while
+planning**, not on the first run — the same reflex as a missing fixture — because a coexistence
+scenario whose rival is silently absent would report the primary winning every activation for
+the wrong reason, a clean-looking result about a test that never ran as written. Naming the skill
+under test as its own companion refuses too: offered twice, "which activated" is undecidable.
+
+**Companions are offered, not staged.** On `api-loop` the skills are presented host-side
+(`OfferedSkill` name/description/body in the system prompt and the `skill` tool), so offering a
+companion needs no sandbox change and every existing event — `skill_offered` per skill,
+`skill_activated` naming the winner — already carries it; a companion's own `scripts/` are not in
+the container, so a tool call into them is an ordinary error result, recorded. Nothing under a
+companion is hashed into the primary's digests, matching how the run cache and baselines key on
+the skill under test. The `claude-code` harness is different: the CLI discovers skills from
+`~/.claude/skills/`, and this build stages exactly one there, so a companion would be invisible to
+it and "which activated" a foregone conclusion. That combination is refused by the §16.4
+preflight (`scenario[<id>].also_load_skills`, remedy: an api-loop target) rather than run — plural
+staging is the same deferred piece as plugin-layout staging, and lands with it.
+
+**The loading half, not the matrix.** §7.4's full machinery — the scheduled `bellwether
+coexistence` command over the full library, two probe scenarios per skill, the trigger-collision
+matrix and its delta against `_library.coexistence.json` — is a work package of its own. What
+landed is what every coexistence scenario needs first: the competitors actually loaded beside
+the skill under test, with the scenario's own `other_skill_activated` assertions deciding the
+outcome.
 
 ## §10.4.2, §12.6 — The egress canary scan folds case on the host/SNI, matching how the host is recorded
 
@@ -1694,10 +1825,11 @@ a `max_cost_usd` in policy reads as a spending limit and enforces nothing. `doct
 the budget gate does not gate the verdict in this version and points at the one cost control that *is*
 enforced: the per-repetition token ceiling (`bellwether run --max-tokens` →
 `RunLimits.max_total_tokens` → a `budget_exceeded` outcome). Actually gating a dollar or wall-clock
-budget is deferred deliberately, not forgotten: a dollar figure needs per-model pricing (which
+budget was deferred deliberately, not forgotten: a dollar figure needs per-model pricing (which
 Bellwether ships none of — §9.5's no-hard-coded-model discipline extends to prices that go stale), and
-a wall-clock budget needs whole-evaluation aggregation across the matrix, not a per-run bound. Until
-that lands, the disclosure is what keeps the gap honest.
+a wall-clock budget needs whole-evaluation aggregation across the matrix, not a per-run bound. *(Both
+have since landed — see "§16.2, §19.1 — The budget gate is composed from the footers" below; the
+`doctor` row now reports which half is enforced for which profile.)*
 
 ## §22 — The sandbox shells out to the `docker` CLI; the Docker SDK is deliberately absent
 
@@ -2299,3 +2431,89 @@ distinguished only by case, so a genuinely different tool still will not match. 
 scenario portable across the two harnesses, which is the property WP-17's trigger-portable metrics
 depend on. (An earlier revision of this note argued the opposite — that folding case would mask a
 mismatch — before the dual-harness evaluation of one skill made the portability need concrete.)
+
+## §16.2, §19.1, §17.2 — The budget gate is composed from the footers; cost is priced only from configuration, and an unpriced matrix is disclosed rather than guessed
+
+§19.1 asks for a hard `max_cost_usd` "enforced by tracking reported token usage", and §16.2's
+policy carries `max_wall_clock_minutes` beside it. Both are now gates, and three choices in how
+they are composed diverge from the most literal reading.
+
+**The gate is one matrix-wide row, not one per target.** §16.2 rule 2 has every gate evaluate per
+target and take the worst. A budget is a ceiling on what the *evaluation* spent, so the per-target
+shape would either show each target's share against the whole ceiling (misleading: a target at 2 min
+reading `block` because the matrix hit 70) or repeat the matrix total under every slug. The gate
+carries a single result whose target label is `matrix` (`BUDGET_SCOPE`), and the summary/report
+render it like any other gate. `n_and_look` is `None`, as §16.2 already allows for gates that do not
+read a repetition set.
+
+**Spend is read from the footers, and a footerless run is a bound, never a zero.** Every complete
+trace ends in a `run_footer` with `wall_clock_ms` and `tokens` (§11.1, §9.3); the orchestrator sums
+those across every set. A run whose trace has no footer crashed before Bellwether observed an end,
+and its duration and usage are *unobserved* — counting it as zero would let a matrix that spent an
+unknown amount read as within budget. So the sums are lower bounds whenever a footerless run exists:
+a lower bound above the ceiling **blocks** (enough is enough); with every run footered and under the
+line the gate **passes**; and with a footerless run under the line it passes only where the per-run
+wall-clock cap the executor actually enforced (the scenario's `timeout_seconds`, §7.2) bounds the
+unknown — observed + unobserved × cap ≤ ceiling — and otherwise defers as `not_evaluable` (§10.7).
+The cost half has no such bound (the token ceiling is far too loose to be useful), so a footerless run
+under the line defers. `summary.cost.runs_without_footer` says how many runs the figures omit.
+
+**Cost is priced only from configuration, and the cost gate is not composed for an unpriced
+matrix.** Bellwether ships no prices: a literal price in the codebase would rot the moment a provider
+changed it, the same reasoning as the no-hard-coded-model rule (§9.5). Pricing is
+`providers.<name>.pricing.<alias>` — USD per million tokens for `input`, `output`, `cache_read` and
+`cache_write` separately, because §9.3's cache line items make a naive per-token mean wrong on a
+matrix whose first run is a cache miss. Where every target in the matrix is priced, `budget.cost` is
+composed and required. Where any target is not, the gate is **not composed** and the verdict carries
+a note naming the unpriced aliases and the `max_cost_usd` that is therefore not enforced; the summary
+records `cost.usd: null` (never `0.0`, which would read as free) with `unpriced_targets`, and
+`doctor` reports per profile whether the cost half is enforced. This is the same convention the
+other un-built gates already follow (`static`, `quality`, `regression`, `human_review` are not
+composed and `doctor` says so), chosen over composing the gate as `not_evaluable`: a required
+`not_evaluable` would make every unpriced evaluation `not_ready`, and an advisory one would cap it at
+`conditional` — either would demote the proven live `ready` on a matrix whose *spend is fully
+recorded* and only its dollar conversion is missing. Disclosure in three places (verdict note,
+summary, doctor) is the honest reading of "the control is not active", and it is what the
+observation-beats-declaration discipline asks for: the gap is stated, never passed.
+
+`--budget-usd X` (§20) overrides the profile's `max_cost_usd` for one evaluation; on an unpriced
+matrix it enforces nothing and the note names the figure that is not enforced, so the flag is never
+mistaken for a control that took effect. A negative value is refused; zero is the explicit "any priced
+spend blocks" setting. The footer's `estimated_cost_usd` stays `None`: pricing is applied at
+composition (where policy can be re-derived from cached traces, §19.2) rather than stamped into the
+trace, so a price correction never invalidates a run. The `summary.json` schema is at `1.1` — a minor
+bump: `cost.usd` is now nullable and `cost.runs_without_footer` / `cost.unpriced_targets` were added.
+
+## §20, §17.5 — `trace` locates a run by its header id; `diff` compares summaries under the comparability table and applies no gate
+
+§20 lists `bellwether trace <RUN_ID>` and `bellwether diff <EVAL_A> <EVAL_B>`; §17.5 asks for
+the diff as ad-hoc comparison and is firm that a silently partial diff is worse than a refused
+one. Three implementation choices are worth recording.
+
+**`trace` searches by the header's `run_id`, not by path arithmetic.** §17.1 files a trace at
+`traces/<scenario>/<target>/<repetition>.arf.jsonl`, but the id a report's evidence links name
+is the `run_id` in the trace's own header, and nothing in that id is guaranteed to encode the
+path. So the command walks the artifact tree (sorted, first line of each file only) and matches
+the header. The same id under two evaluations — a re-run into the same `--out` — is refused
+naming every candidate rather than resolved by order; `--eval` narrows, and a path bypasses the
+search. The one-line summary per action is per-kind and deliberately lossy (80 characters,
+newlines escaped); `--json` carries the full `action` payload.
+
+**`diff` compares `summary.json` only, under §17.5's table, and names what it skips.** The
+comparable set is what the rollup carries: the verdict and gates by name, the functional and
+consistency readings, tier-1 classes by set difference, tier-2 sensitive hits, findings, and
+spend. Two rows of the §17.5 table apply directly: a different `weights_digest` skips the BCI and
+weighted Jaccard (named at the top), and a different schema version refuses outright, since a
+field's meaning may have changed. Tier 3 is always listed as not compared (§4.1: it churns). A
+different policy digest or skill name is a *caveat* rendered before the table, not a refusal —
+"what changed when we moved from model X to model Y" (§17.5) is a legitimate cross-policy,
+cross-target question, and the reader is told the thresholds may differ. Peripheral tier-1
+classes are read from their §13.5.2 records (`{"tier1": ..., "frequency": ...}`), so a class
+moving from core to peripheral is neither an expansion nor a removal.
+
+**`diff` reports; it does not decide.** `gates.regression` (`block_on_capability_expansion`,
+`max_pass_rate_drop`) is a policy applied against a *stored baseline* on the run path (§17.5,
+§18.4). The ad-hoc diff has no policy in hand and no baseline semantics — either side may be
+the newer — so it surfaces tier-1 expansion as the headline signal and leaves the disposition
+to the reader. Baseline storage and the regression gate remain a work package; when they land
+they should compose from `diff_summaries` rather than re-implement the comparison.

@@ -258,13 +258,24 @@ def doctor(
             }
         )
 
-    # §16.2: the budget gate's thresholds (max_cost_usd, max_wall_clock_minutes) are recorded in
-    # policy — the shipped template presents them as dollar/time ceilings — but this version
-    # assembles no budget gate into the verdict, so neither bound is enforced. That is the same
-    # silent-no-op trap as require_scan: a control that reads as active and does nothing. The live
-    # cost guard that IS enforced is the per-repetition token ceiling (`bellwether run --max-tokens`
-    # → RunLimits.max_total_tokens → a `budget_exceeded` outcome). Surface the gap so a max_cost_usd
-    # in policy is never mistaken for a spending limit.
+    # §16.2 / §19.1: the budget gate is composed from the run footers. The wall-clock half
+    # (max_wall_clock_minutes) is always enforced — every run's duration is observed or bounded
+    # by its per-run cap. The cost half (max_cost_usd) is enforced only where every target alias
+    # in a profile's matrix has `providers.<name>.pricing`; an unpriced alias leaves it
+    # uncomposed and the verdict says so. Report per profile which state it is in, so a
+    # max_cost_usd in policy is never mistaken for a spending limit on an unpriced matrix.
+    _unpriced_by_profile: dict[str, list[str]] = {}
+    for _name, _profile in loaded_policy.profiles.items():
+        _unpriced = sorted(
+            {
+                f"{target.provider}/{target.model_alias}"
+                for target in _profile.matrix.required_targets
+                if target.provider not in loaded_config.providers
+                or loaded_config.providers[target.provider].pricing_for(target.model_alias) is None
+            }
+        )
+        if _unpriced:
+            _unpriced_by_profile[_name] = _unpriced
     _budgets = sorted(
         {
             f"max_cost_usd={profile.gates.budget.max_cost_usd:g}, "
@@ -272,18 +283,38 @@ def doctor(
             for profile in _static_profiles
         }
     )
-    checks.append(
-        {
-            "check": "budget gate (§16.2)",
-            "status": "warn",
-            "detail": (
-                "gates.budget (max_cost_usd, max_wall_clock_minutes) is recorded but does not gate "
-                "the verdict in this version — no dollar or wall-clock budget is enforced. The live "
-                "cost guard that is enforced is the per-repetition token ceiling ('bellwether run "
-                "--max-tokens', a budget_exceeded outcome). Configured: " + "; ".join(_budgets)
-            ),
-        }
-    )
+    if _unpriced_by_profile:
+        _listed = "; ".join(
+            f"{name}: {', '.join(aliases)}"
+            for name, aliases in sorted(_unpriced_by_profile.items())
+        )
+        checks.append(
+            {
+                "check": "budget gate (§16.2)",
+                "status": "warn",
+                "detail": (
+                    "gates.budget.max_wall_clock_minutes is enforced from observed run durations, "
+                    "but max_cost_usd does not gate the verdict for a matrix with an unpriced "
+                    "target alias — the cost gate is composed only where every alias has "
+                    "providers.<name>.pricing (USD per million tokens by kind). Unpriced: "
+                    f"{_listed}. The per-repetition token ceiling ('bellwether run --max-tokens', "
+                    "a budget_exceeded outcome) is enforced regardless. Configured: "
+                    + "; ".join(_budgets)
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "check": "budget gate (§16.2)",
+                "status": "ok",
+                "detail": (
+                    "gates.budget is enforced: max_wall_clock_minutes from observed run durations, "
+                    "max_cost_usd from reported token usage at the configured pricing. "
+                    "Configured: " + "; ".join(_budgets)
+                ),
+            }
+        )
 
     # §16.4 / BW-51: the precondition check, evaluated for real — per profile, against that
     # profile's own matrix targets and the planes this config actually wires. Reported as
@@ -412,6 +443,47 @@ def run(
             help="Hard per-repetition token ceiling — the cost guard for a live run.",
         ),
     ] = 1_000_000,
+    scenario: Annotated[
+        list[str] | None,
+        typer.Option("--scenario", help="Run only this scenario id (repeatable)."),
+    ] = None,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option("--tag", help="Run only scenarios carrying this tag (repeatable)."),
+    ] = None,
+    targets: Annotated[
+        str | None,
+        typer.Option(
+            "--targets", help="Comma-separated model aliases to keep (e.g. frontier,small)."
+        ),
+    ] = None,
+    n_max: Annotated[
+        int | None,
+        typer.Option("--n-max", help="Sequential ceiling, matrix-wide (must be a look point)."),
+    ] = None,
+    looks: Annotated[
+        str | None,
+        typer.Option("--looks", help="Comma-separated look points, matrix-wide (advanced, §13.1)."),
+    ] = None,
+    repetitions: Annotated[
+        int | None,
+        typer.Option(
+            "--repetitions",
+            help="Fixed-N mode: exactly N runs per set; the verdict is descriptive_only and "
+            "cannot be ready (§13.1).",
+        ),
+    ] = None,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
+    ] = False,
+    budget_usd: Annotated[
+        float | None,
+        typer.Option(
+            "--budget-usd",
+            help="Override the profile's max_cost_usd for this evaluation (§19.1); the cost gate "
+            "is composed only where every target alias has providers.<name>.pricing.",
+        ),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -425,7 +497,9 @@ def run(
     import datetime as dt
     from dataclasses import replace
 
+    from bellwether.cli.companions import companion_resolver
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
+    from bellwether.cli.fixtures import fixture_resolver
     from bellwether.cli.run import (
         build_proxy_provider,
         build_resolver_provider,
@@ -443,6 +517,7 @@ def run(
 
     try:
         work = _expand_skill_args(skills)
+        parsed_looks = _parse_looks(looks)
     except BellwetherError as error:
         typer.echo(f"bellwether run: {error}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
@@ -474,11 +549,34 @@ def run(
                     typer.echo(f"bellwether run [{skill_dir}]: {note}", err=True)
             eval_id = f"{package.name}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}"
             fixture = _run_fixture(skill_dir)
+            # §7.2: each scenario's `fixture:` (or the suite default) resolves to its own
+            # directory — the skill's evals/fixtures/<name>/, the repository's shared
+            # .bellwether/fixtures/<name>/, or `empty` — so scenarios that need different
+            # starting trees are expressible; `fixture` above stays the default for plans
+            # that name none.
+            fixture_for = (
+                fixture_resolver(
+                    skill_dir, package.scenarios, shared_root=config.parent / "fixtures"
+                )
+                if package.scenarios is not None
+                else None
+            )
             result = run_evaluation(
                 config=loaded_config,
                 policy=loaded_policy,
                 package=package,
                 fixture=fixture,
+                fixture_for=fixture_for,
+                # §7.4: a scenario's also_load_skills resolve to sibling skill directories
+                # beside this one and are offered alongside it.
+                companions_for=companion_resolver(skill_dir),
+                scenario_ids=tuple(scenario or ()),
+                tags=tuple(tag or ()),
+                target_aliases=_split_csv(targets),
+                n_max_override=n_max,
+                looks_override=parsed_looks,
+                repetitions=repetitions,
+                budget_usd=budget_usd,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -523,7 +621,7 @@ def run(
             typer.echo(f"bellwether run [{skill_dir}]: {error}", err=True)
             raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
 
-        if result.exit_code == 2:
+        if exit_code_for(result.exit_code, result.verdict.verdict, strict=strict) != ExitCode.OK:
             worst = ExitCode.NOT_READY
         results.append(
             {
@@ -692,6 +790,40 @@ def pr_comment(
     )
 
 
+def exit_code_for(result_exit_code: int, verdict: str, *, strict: bool) -> ExitCode:
+    """The §20 exit code for one skill's result.
+
+    ``ready`` and ``conditional`` are 0 and ``not_ready`` is 2 (revision 1 mapped ``conditional``
+    to 1, which every CI system reads as failure — the opposite of the documented default).
+    ``--strict`` promotes ``conditional`` to the failing code for repositories that want the
+    stricter posture; it never touches ``ready``.
+    """
+    if result_exit_code == 2 or (strict and verdict == "conditional"):
+        return ExitCode.NOT_READY
+    return ExitCode.OK
+
+
+def _split_csv(text: str | None) -> tuple[str, ...]:
+    return tuple(part.strip() for part in (text or "").split(",") if part.strip())
+
+
+def _parse_looks(text: str | None) -> tuple[int, ...] | None:
+    """``--looks 6,12,20`` → ``(6, 12, 20)``; a non-integer refuses rather than being dropped."""
+    if text is None:
+        return None
+    looks: list[int] = []
+    for part in _split_csv(text):
+        try:
+            looks.append(int(part))
+        except ValueError:
+            raise BellwetherError(
+                f"--looks expects comma-separated integers (e.g. 6,12,20), got {part!r}"
+            ) from None
+    if not looks:
+        raise BellwetherError("--looks was given but names no look points")
+    return tuple(looks)
+
+
 def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...]]]:
     """Resolve each ``run`` argument to the skill directories it names.
 
@@ -781,14 +913,50 @@ def init_manifest(
 
 @app.command(name="trace")
 def show_trace(
-    run_id: Annotated[str, typer.Argument(help="Run id.")],
+    run: Annotated[
+        str, typer.Argument(help="A run id (from the report's evidence links) or a trace path.")
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory `bellwether run` wrote to.")
+    ] = Path("bellwether-runs"),
+    eval_id: Annotated[
+        str | None, typer.Option("--eval", help="Search only this evaluation's traces.")
+    ] = None,
+    plane: Annotated[
+        list[str] | None,
+        typer.Option("--plane", help="Show only actions from this plane (repeatable)."),
+    ] = None,
+    kind: Annotated[
+        list[str] | None,
+        typer.Option("--kind", help="Show only actions of this kind (repeatable)."),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
-    """Pretty-print or filter one ARF trace."""
-    _not_yet(
-        "trace",
-        "WP-12",
-        "the ARF reader landed in WP-3, but nothing writes traces to an artifact tree yet",
+    """Pretty-print or filter one ARF trace from an artifact tree (§20, §17.1).
+
+    Finds the trace by the ``run_id`` its header carries — the id the report's evidence
+    links name — under ``--out`` (optionally within one ``--eval``), or reads the path given.
+    One line per action: seq, time, plane, kind, and what it did.
+    """
+    from bellwether.cli.trace_view import (
+        TraceFilter,
+        load_trace,
+        locate_trace,
+        render_trace_lines,
+        trace_record,
+    )
+
+    try:
+        path = locate_trace(run, out_dir=out, eval_id=eval_id)
+        trace = load_trace(path)
+    except BellwetherError as error:
+        typer.echo(f"bellwether trace: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    filt = TraceFilter(planes=frozenset(plane or ()), kinds=frozenset(kind or ()))
+    _emit(
+        {"path": str(path), **trace_record(trace, filt)},
+        as_json=json_output,
+        lines=[f"trace    {path}", *render_trace_lines(trace, filt)],
     )
 
 
@@ -798,17 +966,57 @@ def render_report(
     json_output: JsonFlag = False,
 ) -> None:
     """Re-render a report from stored artifacts."""
-    _not_yet("report", "WP-12", "the report renderer has not landed")
+    _not_yet(
+        "report",
+        "a WP-12 follow-on",
+        "the renderers exist (`bellwether run` writes report/pr_comment.md and report.html), but "
+        "re-rendering from a stored tree needs the figures rebuilt from its traces and canonical "
+        "forms, which nothing does yet; `bellwether diff` and `bellwether trace` read stored "
+        "artifacts today",
+    )
 
 
 @app.command()
 def diff(
-    eval_a: Annotated[str, typer.Argument(help="Baseline evaluation id.")],
-    eval_b: Annotated[str, typer.Argument(help="Candidate evaluation id.")],
+    eval_a: Annotated[
+        str,
+        typer.Argument(
+            help="Baseline: an eval id under --out, an eval directory, or a summary.json."
+        ),
+    ],
+    eval_b: Annotated[str, typer.Argument(help="Candidate, same forms.")],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
     json_output: JsonFlag = False,
 ) -> None:
-    """Diff two evaluations."""
-    _not_yet("diff", "v0.2", "baseline diffing has not landed")
+    """Diff two evaluations by their summary.json (§17.5, §20).
+
+    Compares the verdict, every gate, the functional and consistency readings, the tier-1
+    capability profile (expansion is the regression signal), security findings and spend.
+    Components whose inputs are not comparable are named at the top rather than silently
+    skipped; different schema versions are refused. Reports; does not apply the regression gate.
+    """
+    from bellwether.cli.diff import (
+        diff_record,
+        diff_summaries,
+        load_summary,
+        render_diff_markdown,
+        resolve_summary,
+    )
+
+    try:
+        summary_a = load_summary(resolve_summary(eval_a, out_dir=out))
+        summary_b = load_summary(resolve_summary(eval_b, out_dir=out))
+        result = diff_summaries(summary_a, summary_b)
+    except BellwetherError as error:
+        typer.echo(f"bellwether diff: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        diff_record(result),
+        as_json=json_output,
+        lines=[render_diff_markdown(result).rstrip("\n")],
+    )
 
 
 def main() -> None:

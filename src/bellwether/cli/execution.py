@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 from bellwether.capture import (
@@ -41,6 +41,7 @@ from bellwether.cli.dns_run import DnsResolverProvider, RunResolver
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
 from bellwether.config.models.config import SandboxConfig, ZoneConfig
+from bellwether.config.models.scenarios import Scenario, ScenarioDefaults
 from bellwether.determinism import SeededRng, stable_hash
 from bellwether.errors import BellwetherError
 from bellwether.harness import (
@@ -96,6 +97,8 @@ __all__ = [
     "SandboxRunExecutor",
     "isolation_from_config",
     "offered_skill",
+    "offered_skills_for",
+    "run_limits_for",
     "zone_map_from_config",
 ]
 
@@ -127,6 +130,16 @@ def offered_skill(package: SkillPackage) -> OfferedSkill:
     )
 
 
+def offered_skills_for(package: SkillPackage, plan: RunPlan) -> tuple[OfferedSkill, ...]:
+    """The skills the harness offers for one run: the one under test plus its §7.4 companions.
+
+    Companions come from ``plan.companions`` (the scenario's ``also_load_skills``, resolved while
+    planning). Each is offered exactly as the primary is — name, description, body — so the
+    model has real competitors and an assertion on *which* skill activated means something.
+    """
+    return (offered_skill(package), *(offered_skill(companion) for companion in plan.companions))
+
+
 def isolation_from_config(sandbox: SandboxConfig) -> IsolationProfile:
     """Map ``sandbox.*`` config (§21) onto the isolation profile the backend renders (§9.2).
 
@@ -152,6 +165,38 @@ def zone_map_from_config(zones: ZoneConfig) -> ZoneMap:
         workspace=zones.workspace,
         harness_state=zones.harness_state,
         scratch=zones.scratch,
+    )
+
+
+def run_limits_for(
+    base: RunLimits, scenario: Scenario, defaults: ScenarioDefaults | None
+) -> RunLimits:
+    """The per-run limits for one scenario: ``base`` with the scenario's wall clock applied.
+
+    §7.2 gives every scenario a ``timeout_seconds`` ("hard kill", default 900 from the suite's
+    ``defaults``), and the adapter's ``wall_seconds`` is the bound that actually stops a run —
+    the api-loop deadline and the CLI's exec timeout alike. Before this the field was accepted
+    and ignored, every run getting the generic :class:`RunLimits` default regardless of what
+    the scenario asked for. The token ceiling and turn/tool limits stay as ``base`` set them.
+    """
+    timeout = scenario.timeout_seconds
+    if timeout is None and defaults is not None:
+        timeout = defaults.timeout_seconds
+    if timeout is None:
+        return base
+    return replace(base, wall_seconds=float(timeout))
+
+
+def _single_turn_prompt(plan: RunPlan) -> str:
+    """The one prompt a single-turn harness takes, or a controlled refusal for a turn list."""
+    prompt = plan.scenario.prompt
+    if isinstance(prompt, str):
+        return prompt
+    raise BellwetherError(
+        f"scenario {plan.scenario.id!r} is multi-turn ({len(prompt)} turns), which the "
+        f"{plan.target.harness} harness cannot run in this build: the CLI takes a single prompt "
+        "and session continuation across turns has not been observed; use an api-loop target "
+        "for this scenario"
     )
 
 
@@ -368,9 +413,11 @@ class SandboxRunExecutor:
             else frozenset()
         )
 
+        # §7.2: the plan carries the scenario's own fixture where the matrix resolved one; the
+        # executor's default is the fallback for callers that plan without a resolver.
         prepared = prepare_sandbox(
             self.package,
-            self.fixture,
+            plan.fixture if plan.fixture is not None else self.fixture,
             run_dir,
             rng=self._sandbox_rng(plan),
             zones=self.zones,
@@ -442,8 +489,12 @@ class SandboxRunExecutor:
                 extra_ro_binds=extra_ro_binds,
             )
             started_at = dt.datetime.now(dt.UTC)
-            prompt = plan.scenario.prompt
-            prompt_text = prompt if isinstance(prompt, str) else "\n".join(prompt)
+            # §7.2: the scenario's own timeout (else the suite default) is this run's wall clock.
+            limits = run_limits_for(
+                self.limits,
+                plan.scenario,
+                self.package.scenarios.defaults if self.package.scenarios is not None else None,
+            )
             scanner: ModelChannelScanner | None = None
             adapter: ApiLoopAdapter | ClaudeCodeAdapter
             if use_claude_code:
@@ -467,9 +518,18 @@ class SandboxRunExecutor:
                 adapter = ApiLoopAdapter(
                     scanner if scanner is not None else client,
                     SandboxToolset(docker_exec_runner(self.backend, prepared)),
-                    skills=(offered_skill(self.package),),
+                    skills=offered_skills_for(self.package, plan),
                 )
-            events = list(adapter.run(prompt_text, model_id=model_id, limits=self.limits))
+            if isinstance(adapter, ClaudeCodeAdapter):
+                # The CLI is driven with a single `-p` prompt; a multi-turn scenario cannot
+                # preserve a session across turns on this harness in this build (the §16.4
+                # preflight refuses it before any run — this is the last line of defence, so
+                # a list is never silently flattened into one turn).
+                events = list(
+                    adapter.run(_single_turn_prompt(plan), model_id=model_id, limits=limits)
+                )
+            else:
+                events = list(adapter.run(plan.scenario.prompt, model_id=model_id, limits=limits))
             observed_at = dt.datetime.now(dt.UTC)
 
             plane_a = harness_actions(events)
@@ -566,6 +626,7 @@ class SandboxRunExecutor:
                 ),
                 sandbox=SandboxRef(
                     image=self.backend.image,
+                    fixture=plan.fixture_name,
                     workspace_root=str(prepared.identifiers.workspace_root),
                 ),
                 identity=self._identity_block(planting, canaries),

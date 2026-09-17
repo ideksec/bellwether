@@ -48,7 +48,7 @@ __all__ = [
 #: The ``summary.json`` schema version. Bumped on any change to the shape below. A minor
 #: bump adds optional keys; a major bump is a break. Producers stamp it; consumers read it
 #: before trusting anything else in the file.
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 class ReportModel(BaseModel):
@@ -208,10 +208,20 @@ class RegressionSummary(ReportModel):
 
 
 class CostSummary(ReportModel):
-    usd: float = 0.0
+    """What the matrix spent, read from the run footers (§19.1, §17.2).
+
+    ``usd`` is ``None`` on an unpriced matrix — no ``providers.<name>.pricing`` for one of
+    its targets — rather than ``0.0``, because a zero would read as free. ``tokens`` and
+    ``wall_clock_s`` are sums over the footered runs; ``runs_without_footer`` says how many
+    runs they omit, so a non-zero count marks both as lower bounds.
+    """
+
+    usd: float | None = None
     tokens: Mapping[str, int] = Field(default_factory=dict)
     cache_read_tokens: int = 0
     wall_clock_s: float = 0.0
+    runs_without_footer: int = 0
+    unpriced_targets: tuple[str, ...] = ()
 
 
 class NoiseFloor(ReportModel):

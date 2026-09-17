@@ -449,3 +449,43 @@ def test_the_golden_trace_is_complete_and_two_sourced() -> None:
     ]
     assert trace.footer is not None
     assert trace.footer.tokens.total > 0
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn scenarios (§7.3): the session is preserved between user turns
+# ---------------------------------------------------------------------------
+
+
+def test_a_turn_list_runs_as_one_preserved_session_not_one_flattened_prompt() -> None:
+    """§7.3: each later user turn follows the model's reply in the *same* conversation, so a
+    skill that behaves on turn one and drifts on turn two is observable. Before this the
+    executor joined the turns with newlines into a single prompt — a different test entirely."""
+    adapter, client, _ = make_adapter(
+        [
+            ModelTurn(text="first reply", usage=usage()),
+            ModelTurn(text="second reply", usage=usage()),
+        ]
+    )
+    events = list(
+        adapter.run(["do the first thing", "now the second"], model_id="m", limits=RunLimits())
+    )
+
+    # The second request carries the whole preserved session: user, assistant, user.
+    assert len(client.requests) == 2
+    second = client.requests[1].messages
+    assert [m["role"] for m in second] == ["user", "assistant", "user"]
+    assert second[0]["content"] == [{"type": "text", "text": "do the first thing"}]
+    assert second[1]["content"] == [{"type": "text", "text": "first reply"}]
+    assert second[2]["content"] == [{"type": "text", "text": "now the second"}]
+    # Exactly one final output — the last turn's — and a model_turn event per turn.
+    finals = [e for e in events if e.kind == "final_output"]
+    assert [e.data["text"] for e in finals] == ["second reply"]
+    assert sum(1 for e in events if e.kind == "model_turn") == 2
+    assert exit_reason_from_events(events) == "completed"
+
+
+def test_a_single_string_prompt_is_unchanged_by_multi_turn_support() -> None:
+    adapter, client, _ = make_adapter([ModelTurn(text="done", usage=usage())])
+    events = list(adapter.run("just one", model_id="m", limits=RunLimits()))
+    assert len(client.requests) == 1
+    assert [e.data["text"] for e in events if e.kind == "final_output"] == ["done"]

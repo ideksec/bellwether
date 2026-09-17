@@ -16,30 +16,37 @@ before it will send the real key (§3.3).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bellwether.cli.execution import SandboxRunExecutor
+from bellwether.cli.execution import SandboxRunExecutor, run_limits_for
 
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
 from bellwether.cli.dns_run import DnsResolverProvider
+from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.cli.orchestrator import (
     EvalResult,
     RunExecutor,
     RunPlan,
+    TargetInfo,
+    consistent_schedule,
     drive_evaluation,
+    effective_schedule,
     orchestrate,
     plan_matrix,
     resolve_capability_weights,
 )
 from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
-from bellwether.cli.run_plan import resolve_run
+from bellwether.cli.run_plan import ResolvedRun, resolve_run
 from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
+from bellwether.config.models.provider import ModelPricing
+from bellwether.config.models.scenarios import Scenario
 from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
 from bellwether.harness import (
@@ -53,11 +60,14 @@ from bellwether.verdict import validate_capability_weights
 
 __all__ = [
     "ExecutorFactory",
+    "apply_budget_override",
+    "apply_matrix_options",
     "build_proxy_provider",
     "build_resolver_provider",
     "claude_code_providers",
     "policy_digest",
     "run_evaluation",
+    "select_scenarios",
 ]
 
 #: How the caller supplies the execution half. The production factory builds a
@@ -78,6 +88,44 @@ def policy_digest(policy: Policy) -> str:
     return "sha256:" + stable_hash(policy.model_dump_json())
 
 
+def select_scenarios(
+    scenarios: Sequence[Scenario], *, scenario_ids: Sequence[str] = (), tags: Sequence[str] = ()
+) -> list[Scenario]:
+    """Narrow a suite by ``--scenario ID`` and ``--tag TAG`` (§7.2, §20), or refuse.
+
+    Ids select exactly those scenarios; tags select every scenario carrying *any* of them; both
+    together intersect (an id selection narrowed by tags). Suite order is preserved so the plan
+    list — and the artifact tree — stays deterministic. An id no scenario has, or a filter that
+    selects nothing, refuses naming what exists: an empty selection run to completion would be a
+    clean-looking verdict about no evidence at all.
+    """
+    if not scenario_ids and not tags:
+        return list(scenarios)
+    known = [scenario.id for scenario in scenarios]
+    unknown = sorted(set(scenario_ids) - set(known))
+    if unknown:
+        raise BellwetherError(
+            f"--scenario names {', '.join(unknown)}, which this suite does not define; it defines: "
+            f"{', '.join(known)}"
+        )
+    wanted_ids = set(scenario_ids)
+    wanted_tags = set(tags)
+    selected = [
+        scenario
+        for scenario in scenarios
+        if (not wanted_ids or scenario.id in wanted_ids)
+        and (not wanted_tags or wanted_tags & set(scenario.tags))
+    ]
+    if not selected:
+        available = sorted({tag for scenario in scenarios for tag in scenario.tags})
+        raise BellwetherError(
+            f"the filter selects no scenarios (--scenario {sorted(wanted_ids) or '-'}, --tag "
+            f"{sorted(wanted_tags) or '-'}); the suite's tags are {available or 'none'} and its "
+            f"scenarios are {known}"
+        )
+    return selected
+
+
 def run_evaluation(
     *,
     config: Config,
@@ -91,16 +139,42 @@ def run_evaluation(
     created_at: str,
     bellwether_version: str,
     profile_override: str | None = None,
+    fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
+    companions_for: Callable[[Scenario], tuple[SkillPackage, ...]] | None = None,
+    scenario_ids: Sequence[str] = (),
+    tags: Sequence[str] = (),
+    target_aliases: Sequence[str] = (),
+    n_max_override: int | None = None,
+    looks_override: Sequence[int] | None = None,
+    repetitions: int | None = None,
+    budget_usd: float | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
     Everything up to the executor is validated first (§9.5, §16.1) so a misconfigured run fails
     before a single container starts. The scenarios come from the skill's ``evals/scenarios.yaml``;
     a skill with none is refused rather than silently producing an empty, clean-looking result.
+
+    The §20 matrix options: ``target_aliases`` keeps only the resolved targets whose model alias
+    is listed (``--targets frontier,small``); ``n_max_override``/``looks_override`` replace the
+    resolved schedule matrix-wide under the §13.1 consistency rule (``--n-max``/``--looks``); and
+    ``repetitions`` forces **fixed mode** — exactly that many runs per set, a single look at N, and
+    a ``descriptive_only`` verdict that can never be ``ready`` (§13.1, §16.2 rule 6), because a
+    fixed-N run makes no sequential decision and licenses no gate-eligible interval.
+    ``budget_usd`` (``--budget-usd``) overrides the profile's ``gates.budget.max_cost_usd`` for
+    this evaluation; the cost gate it feeds is composed only where every target is priced.
     """
     resolved = resolve_run(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
     )
+    resolved = apply_matrix_options(
+        resolved,
+        target_aliases=target_aliases,
+        n_max_override=n_max_override,
+        looks_override=looks_override,
+        repetitions=repetitions,
+    )
+    resolved = apply_budget_override(resolved, budget_usd=budget_usd)
 
     # §21 / THREAT_MODEL: the settings that bound residual-channel exfiltration and the
     # covert channels (model-API body scanning, the sidecar deployment, the controlled
@@ -123,7 +197,10 @@ def run_evaluation(
             f"skill '{package.name}' declares no scenarios (evals/scenarios.yaml), so there is "
             "nothing to run; a scenario suite with no scenarios produces no evidence"
         )
-    scenarios = list(suite.scenarios)
+    # §7.2 / §20: `--scenario ID` and `--tag TAG` narrow the suite. A filter that selects
+    # nothing refuses — an empty selection run to completion would be a clean-looking verdict
+    # about no evidence at all.
+    scenarios = select_scenarios(suite.scenarios, scenario_ids=scenario_ids, tags=tags)
     targets = [rt.target for rt in resolved.targets]
 
     # §16.4 / BW-51: refuse an unsatisfiable policy/target/composition combination *now*,
@@ -132,7 +209,12 @@ def run_evaluation(
     # resolver), so this refuses exactly the runs that would end not_evaluable-and-blocked
     # after the matrix — and no others.
     refuse_on_preflight_failures(
-        config, resolved.profile, targets, profile_name=resolved.profile_name
+        config,
+        resolved.profile,
+        targets,
+        profile_name=resolved.profile_name,
+        multi_turn_scenario_ids=[s.id for s in scenarios if isinstance(s.prompt, list)],
+        companion_scenario_ids=[s.id for s in scenarios if s.also_load_skills],
     )
 
     # §16.1: a capability class the manifest denies must not be weighted 0. Weight 0 erases it
@@ -169,14 +251,34 @@ def run_evaluation(
         return client, model_id_by_slug[slug]
 
     executor = make_executor(package, fixture, client_factory)
-    plans = plan_matrix(scenarios, targets, repetitions=resolved.n_max)
+    # §7.2: with a resolver, each scenario's fixture is resolved here — before the executor and
+    # any container — and stamped on its plans; a missing named fixture refuses at this point.
+    # Likewise each scenario's sequential schedule (§7.2 `looks`/`n_max`, else the suite default,
+    # else the resolved matrix) is settled now, so an inconsistent override refuses before a run.
+    schedule = {
+        scenario.id: effective_schedule(
+            scenario, suite.defaults, looks=resolved.looks, n_max=resolved.n_max
+        )
+        for scenario in scenarios
+    }
+    plans = plan_matrix(
+        scenarios,
+        targets,
+        repetitions=resolved.n_max,
+        fixture_for=fixture_for,
+        n_max_for=lambda scenario: schedule[scenario.id][1],
+        companions_for=companions_for,
+    )
     # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
-    # assertions: `scope=None` keeps the scenario assertions deciding each run's outcome (the
-    # scope's network/write *derivations* are still stubbed to not_evaluable — §10.5 — and would
-    # otherwise drag a clean run there), while `declared_scope` feeds the manifest's scope into the
-    # `scope` gate so a skill that reads or acts outside its manifest is caught and blocked. This is
-    # the same split the demo uses; passing `scope=None` alone (the old first-light shortcut) left the
-    # `scope` gate reporting a false "within scope" for every live run (BW-47).
+    # assertions: `scope=None` keeps the scenario's own assertions deciding each run's outcome,
+    # while `declared_scope` feeds the manifest's scope into the `scope` gate — every area of the
+    # table, tools, filesystem reads and writes, and network egress alike — so a skill that reads,
+    # writes, or reaches a host outside its manifest is caught and blocked there. The split is
+    # deliberate: an auto-derived absence assertion on a plane a run cannot observe would drag an
+    # otherwise-clean outcome to not_evaluable, whereas the table records that row as
+    # not_evaluable on its own. This is the same split the demo uses; passing `scope=None` alone
+    # (the old first-light shortcut) left the `scope` gate reporting a false "within scope" for
+    # every live run (BW-47).
     declared_scope = package.manifest.declared_scope if package.manifest is not None else None
     weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
     readings = drive_evaluation(
@@ -186,11 +288,23 @@ def run_evaluation(
         scope=None,
         declared_scope=declared_scope,
         weights=weights,
+        looks_for=lambda scenario_id: schedule[scenario_id][0],
     )
 
     criticality = (
         package.manifest.metadata.criticality if package.manifest is not None else "medium"
     )
+    # §19.1: the executor's per-run wall-clock cap (the scenario's timeout, §7.2) is what
+    # bounds a footerless run's duration for the budget gate; pricing resolves per target
+    # alias so reported tokens become dollars only at a configured rate, never a guessed one.
+    per_run_wall_cap_ms = max(
+        int(run_limits_for(RunLimits(), scenario, suite.defaults).wall_seconds * 1000)
+        for scenario in scenarios
+    )
+
+    def pricing_for(target: TargetInfo) -> ModelPricing | None:
+        return config.providers[target.provider].pricing_for(target.model_alias)
+
     return orchestrate(
         skill_name=package.name,
         package_digest=package.package_digest,
@@ -204,7 +318,75 @@ def run_evaluation(
         created_at=created_at,
         bellwether_version=bellwether_version,
         out_dir=out_dir,
+        descriptive_only=repetitions is not None,
+        per_run_wall_cap_ms=per_run_wall_cap_ms,
+        pricing_for=pricing_for,
     )
+
+
+def apply_budget_override(resolved: ResolvedRun, *, budget_usd: float | None) -> ResolvedRun:
+    """Apply ``--budget-usd`` (§20) to the resolved profile's ``gates.budget.max_cost_usd``.
+
+    A negative budget is refused: the gate would block every priced matrix, which is a typo,
+    not an intent. Zero is allowed — it is the explicit "any priced spend blocks" setting.
+    """
+    if budget_usd is None:
+        return resolved
+    if budget_usd < 0:
+        raise BellwetherError(f"--budget-usd must be zero or positive, got {budget_usd:g}")
+    profile = resolved.profile
+    budget = profile.gates.budget.model_copy(update={"max_cost_usd": budget_usd})
+    gates = profile.gates.model_copy(update={"budget": budget})
+    return replace(resolved, profile=profile.model_copy(update={"gates": gates}))
+
+
+def apply_matrix_options(
+    resolved: ResolvedRun,
+    *,
+    target_aliases: Sequence[str] = (),
+    n_max_override: int | None = None,
+    looks_override: Sequence[int] | None = None,
+    repetitions: int | None = None,
+) -> ResolvedRun:
+    """Apply the §20 matrix options to a resolved run, or refuse.
+
+    ``--targets`` filters by model alias and refuses when nothing matches, naming the aliases the
+    matrix has — a silently empty target list would be a run about nothing. ``--repetitions``
+    is exclusive with ``--n-max``/``--looks``: fixed mode *is* a schedule (one look at N), so
+    combining them would be two schedules. ``--n-max``/``--looks`` go through the same §13.1
+    consistency rule as every other schedule override.
+    """
+    if target_aliases:
+        wanted = set(target_aliases)
+        kept = tuple(rt for rt in resolved.targets if rt.target.model_alias in wanted)
+        if not kept:
+            have = sorted({rt.target.model_alias for rt in resolved.targets})
+            raise BellwetherError(
+                f"--targets {sorted(wanted)} matches none of the matrix's model aliases {have}"
+            )
+        resolved = replace(resolved, targets=kept)
+    if repetitions is not None:
+        if n_max_override is not None or looks_override is not None:
+            raise BellwetherError(
+                "--repetitions forces a fixed-N schedule (one look at N) and cannot be combined "
+                "with --n-max or --looks"
+            )
+        if repetitions < 2:
+            raise BellwetherError(
+                f"--repetitions {repetitions}: a repetition set needs at least two runs "
+                "(repetition is mandatory; a single run is an anecdote, §13.2)"
+            )
+        return replace(resolved, looks=(repetitions,), n_max=repetitions)
+    if n_max_override is not None or looks_override is not None:
+        looks = list(looks_override) if looks_override is not None else list(resolved.looks)
+        n_max = (
+            n_max_override
+            if n_max_override is not None
+            else (looks[-1] if looks_override is not None else resolved.n_max)
+        )
+        checked_looks, checked_n = consistent_schedule(looks, n_max, subject="--looks/--n-max")
+        return replace(resolved, looks=checked_looks, n_max=checked_n)
+    return resolved
 
 
 def sandbox_executor_factory(
