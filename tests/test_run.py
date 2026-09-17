@@ -1268,3 +1268,106 @@ def test_a_platform_baseline_for_another_image_is_not_applied_and_the_verdict_sa
         "not applied" in note and "applies_to_image is unset" in note
         for note in result.verdict.notes
     )
+
+
+# ---------------------------------------------------------------------------
+# §19.2: the run cache on the run path
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_evaluation_is_served_from_the_run_cache(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """First run fills the cache (every complete run stored); the second executes nothing,
+    every run is re-filed under the new evaluation with `cached_from`, and the summary counts
+    the replays. The verdict is the same: a cached run is the same observation."""
+    from bellwether.cli.run_cache import RunCache
+
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    def evaluate(eval_id: str):  # type: ignore[no-untyped-def]
+        return run_evaluation(
+            config=_config(),
+            policy=_policy(),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id=eval_id,
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            run_cache=cache,
+        )
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    first = evaluate("first")
+    assert holder["exec"].calls == 20
+    assert first.summary.matrix.runs_cached == 0
+    assert len(list((tmp_path / "cache").iterdir())) == 20
+
+    second = evaluate("second")
+    assert holder["exec"].calls == 0  # nothing executed
+    assert second.summary.matrix.runs_cached == 20
+    assert second.summary.matrix.runs_completed == 20
+    assert second.verdict.verdict == first.verdict.verdict
+    # Re-filed under the new evaluation, provenance kept.
+    trace_path = second.artifacts.traces[0]
+    first_line = trace_path.read_text(encoding="utf-8").splitlines()[0]
+    assert '"eval_id":"second"' in first_line.replace(" ", "")
+    # The scripted executor stamps eval_id "e" on the traces it writes; provenance names it.
+    assert '"cached_from":"e/benign-stable-' in first_line.replace(" ", "")
+
+
+def test_a_changed_model_id_or_no_cache_misses(package: SkillPackage, tmp_path: Path) -> None:
+    from bellwether.cli.run_cache import RunCache
+    from bellwether.config.models.provider import ProviderConfig as _Provider
+
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    def evaluate(eval_id: str, config: Config, use_cache: bool = True):  # type: ignore[no-untyped-def]
+        return run_evaluation(
+            config=config,
+            policy=_policy(),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id=eval_id,
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            run_cache=cache if use_cache else None,
+        )
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    evaluate("fill", _config())
+    assert holder["exec"].calls == 20
+
+    other_model = Config(
+        **_API,
+        kind="Config",
+        providers={
+            "anthropic": _Provider(
+                type="anthropic", api_key_env=_KEY_ENV, models={"frontier": "a-newer-model-id"}
+            )
+        },
+        sandbox=SandboxConfig(image="img@sha256:" + "d" * 64),
+    )
+    changed = evaluate("changed-model", other_model)
+    assert holder["exec"].calls == 20  # a changed model id never hits (§19.2)
+    assert changed.summary.matrix.runs_cached == 0
+
+    bypassed = evaluate("bypassed", _config(), use_cache=False)
+    assert holder["exec"].calls == 20
+    assert bypassed.summary.matrix.runs_cached == 0

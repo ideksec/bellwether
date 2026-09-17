@@ -25,6 +25,7 @@ from bellwether.cli.execution import SandboxRunExecutor, run_limits_for
 
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
+from bellwether import __version__
 from bellwether.cli.baselines import BaselineRecord
 from bellwether.cli.dns_run import DnsResolverProvider
 from bellwether.cli.fixtures import ResolvedFixture
@@ -42,6 +43,12 @@ from bellwether.cli.orchestrator import (
 )
 from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
+from bellwether.cli.run_cache import (
+    CacheKeyInputs,
+    CachingExecutor,
+    RunCache,
+    scenario_content_digest,
+)
 from bellwether.cli.run_plan import ResolvedRun, resolve_run
 from bellwether.config.models.baseline import PlatformBaseline
 from bellwether.config.models.config import Config
@@ -57,6 +64,7 @@ from bellwether.harness import (
     RunLimits,
     build_model_client,
 )
+from bellwether.sandbox import fixture_digest
 from bellwether.skill import SkillPackage
 from bellwether.verdict import validate_capability_weights
 
@@ -155,6 +163,7 @@ def run_evaluation(
     baseline: BaselineRecord | None = None,
     depth: str | None = None,
     platform_baseline: PlatformBaseline | None = None,
+    run_cache: RunCache | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -172,6 +181,11 @@ def run_evaluation(
     this evaluation; the cost gate it feeds is composed only where every target is priced.
     ``baseline`` is the skill's stored §17.5 baseline, when one exists; the regression gate is
     composed against it where the profile asks for the comparison and the key allows it.
+    ``run_cache`` (§19.2), when given, wraps the executor: a plan whose key — payload digest,
+    scenario content, target, fixture digest, harness version, model id, sandbox image, platform
+    baseline version, repetition — matches a live entry is served from the stored trace instead of
+    being executed, and every executed complete run is stored. ``summary.matrix.runs_cached``
+    counts the replays.
     ``platform_baseline`` is the ``.bellwether/platform-baseline.yaml`` document (§12.6): where
     it is keyed to the configured sandbox image its path entries are subtracted from every
     run's capability sets and its version is stamped on the summary; where it is not, nothing
@@ -278,7 +292,7 @@ def run_evaluation(
         )
         return client, model_id_by_slug[slug]
 
-    executor = make_executor(package, fixture, client_factory)
+    executor: RunExecutor = make_executor(package, fixture, client_factory)
     # §7.2: with a resolver, each scenario's fixture is resolved here — before the executor and
     # any container — and stamped on its plans; a missing named fixture refuses at this point.
     # Likewise each scenario's sequential schedule (§7.2 `looks`/`n_max`, else the suite default,
@@ -320,6 +334,44 @@ def run_evaluation(
                 f"platform baseline {platform_baseline.version!r} not applied: {why} (§12.6); "
                 "no infrastructural access was subtracted from the capability sets"
             )
+    if run_cache is not None:
+        # §19.2: the key is formed from what the run *is* — the skill's payload, the scenario's
+        # content, the target and the exact model id, the fixture, the sandbox image, the platform
+        # baseline — plus the repetition index (spec-notes). The harness version is the adapter
+        # shipped with this package for api-loop and the configured pin for claude-code.
+        harness_versions = {
+            name: (
+                __version__ if harness.type == "api-loop" else (harness.version_pin or "unpinned")
+            )
+            for name, harness in config.harnesses.items()
+        }
+        applied_version = applied_baseline.version if applied_baseline is not None else ""
+
+        def inputs_for(plan: RunPlan) -> CacheKeyInputs:
+            return CacheKeyInputs(
+                payload_digest=package.payload_digest,
+                scenario_id=plan.scenario.id,
+                scenario_digest=scenario_content_digest(plan.scenario),
+                target_slug=plan.target.slug,
+                fixture_digest=fixture_digest(
+                    plan.fixture if plan.fixture is not None else fixture
+                ),
+                harness=plan.target.harness,
+                harness_version=harness_versions.get(plan.target.harness, "unknown"),
+                model_id=model_id_by_slug[plan.target.slug],
+                sandbox_image=config.sandbox.image,
+                platform_baseline_version=applied_version,
+                repetition=plan.repetition,
+            )
+
+        executor = CachingExecutor(
+            executor,
+            run_cache,
+            inputs_for,
+            eval_id=eval_id,
+            run_root=out_dir / eval_id / "runs",
+        )
+
     readings = drive_evaluation(
         plans,
         executor,

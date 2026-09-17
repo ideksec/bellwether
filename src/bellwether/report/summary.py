@@ -48,7 +48,7 @@ __all__ = [
 #: The ``summary.json`` schema version. Bumped on any change to the shape below. A minor
 #: bump adds optional keys; a major bump is a break. Producers stamp it; consumers read it
 #: before trusting anything else in the file.
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 
 class ReportModel(BaseModel):
@@ -98,6 +98,10 @@ class MatrixSummary(ReportModel):
     #: §24 requires it counted as a *distinct* state — a skill that never finished is not a
     #: skill that finished wrong — so it is never blended into the assertion-failure count.
     runs_timed_out: int = 0
+    #: Runs served from the §19.2 run cache rather than executed. A cached run is a real,
+    #: earlier observation of the same skill content on the same target; the count travels
+    #: so a reader knows how much of the matrix was re-observed versus replayed.
+    runs_cached: int = 0
     design: Literal["sequential", "fixed"] = "sequential"
     looks: tuple[int, ...] = ()
     boundary_z: float | None = None

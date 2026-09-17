@@ -521,6 +521,14 @@ def run(
     strict: Annotated[
         bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
     ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="Execute every repetition even where the run cache holds a matching trace "
+            "(§19.2); the config's execution.cache and cache_ttl_days govern otherwise.",
+        ),
+    ] = False,
     depth: Annotated[
         str | None,
         typer.Option(
@@ -562,6 +570,7 @@ def run(
         run_evaluation,
         sandbox_executor_factory,
     )
+    from bellwether.cli.run_cache import RunCache, require_cache_root
     from bellwether.determinism import stable_hash
     from bellwether.harness import RunLimits
     from bellwether.skill import load_skill
@@ -601,6 +610,18 @@ def run(
     if not daemon_ok:
         typer.echo(f"bellwether run: the sandbox is unavailable — {daemon_reason}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    # §19.2: the run cache lives beside the artifact trees. Off by --no-cache or config.
+    run_cache: RunCache | None = None
+    if loaded_config.execution.cache and not no_cache:
+        try:
+            run_cache = RunCache(
+                root=require_cache_root(out / ".cache" / "runs"),
+                ttl_days=loaded_config.execution.cache_ttl_days,
+            )
+        except (BellwetherError, OSError) as error:
+            typer.echo(f"bellwether run: {error}", err=True)
+            raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
 
     worst = ExitCode.OK
     results: list[dict[str, Any]] = []
@@ -650,6 +671,7 @@ def run(
                 budget_usd=budget_usd,
                 depth=depth,
                 platform_baseline=platform_baseline,
+                run_cache=run_cache,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -702,6 +724,8 @@ def run(
                 "skill": package.name,
                 "verdict": result.verdict.verdict,
                 "descriptive_only": result.verdict.descriptive_only,
+                "runs_cached": result.summary.matrix.runs_cached,
+                "runs_completed": result.summary.matrix.runs_completed,
                 "artifacts": str(result.artifacts.root),
             }
         )
@@ -714,6 +738,11 @@ def run(
         lines=[
             f"{r['skill']}: {r['verdict']}"
             + (" (descriptive only — fixed-N, cannot be ready)" if r["descriptive_only"] else "")
+            + (
+                f" ({r['runs_cached']} of {r['runs_completed']} runs served from the run cache)"
+                if r["runs_cached"]
+                else ""
+            )
             + f" — {r['artifacts']}"
             for r in results
         ],

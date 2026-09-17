@@ -277,6 +277,10 @@ class RunHeader(ArfModel):
     #: Set where this run replaces one that failed for an infrastructure reason (§13.2).
     retry_of: str | None = None
     attempt: Annotated[int, Field(ge=1)] = 1
+    #: §19.2: set where this run was served from the run cache rather than executed —
+    #: ``<eval_id>/<run_id>`` of the original observation. The trace is the original's,
+    #: re-filed under this evaluation; the provenance travels with it.
+    cached_from: str | None = None
 
     skill: SkillRef
     target: TargetRef

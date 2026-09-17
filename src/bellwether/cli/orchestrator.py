@@ -254,6 +254,8 @@ class AnalysedRun:
     #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
     #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
     scope_unused: tuple[str, ...] = ()
+    #: §19.2: the run was served from the run cache (``header.cached_from`` names the original).
+    cached: bool = False
     #: §12.6 near-misses from the platform-baseline subtraction: a traversal that names a
     #: path under a baseline entry but escapes it. Never absorbed; surfaced as findings.
     baseline_near_misses: tuple[str, ...] = ()
@@ -704,6 +706,7 @@ def analyse_run(
         scope_unused=scope_unused,
         baseline_near_misses=near_misses,
         baseline_absorbed=tuple(sorted(absorbed - frozenset(platform_baseline_t3 - absorbed))),
+        cached=trace.header.cached_from is not None,
         wall_clock_ms=trace.footer.wall_clock_ms if trace.footer is not None else None,
         tokens=(
             {
@@ -860,6 +863,8 @@ class SetReading:
     #: Runs by §12.7 outcome, so the matrix counts are exact rather than reconstructed.
     n_not_evaluable: int = 0
     n_excluded_quality: int = 0
+    #: Runs served from the run cache rather than executed (§19.2).
+    n_cached: int = 0
     #: §12.6 near-misses across the set, de-duplicated and sorted — surfaced in the report
     #: as findings; never absorbed.
     baseline_near_misses: tuple[str, ...] = ()
@@ -1016,6 +1021,7 @@ def aggregate(
         baseline_near_misses=tuple(
             sorted({miss for run in runs for miss in run.baseline_near_misses})
         ),
+        n_cached=sum(1 for run in runs if run.cached),
         baseline_absorbed=tuple(sorted({path for run in runs for path in run.baseline_absorbed})),
         wall_clock_ms_observed=sum(
             run.wall_clock_ms for run in runs if run.wall_clock_ms is not None
@@ -2045,6 +2051,7 @@ def _build_summary(
         # §24: a timeout is a distinct state — counted here beside the others, never
         # blended into the assertion failures it is arithmetically grouped with (§12.7).
         runs_timed_out=sum(r.n_timed_out for r in readings),
+        runs_cached=sum(r.n_cached for r in readings),
         design="sequential",
         looks=looks,
         boundary_z=profile.matrix.boundary_z,

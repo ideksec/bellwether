@@ -577,6 +577,7 @@ def test_run_exposes_the_section_20_matrix_options() -> None:
         "--strict",
         "--budget-usd",
         "--depth",
+        "--no-cache",
     ):
         assert option in names, option
 
