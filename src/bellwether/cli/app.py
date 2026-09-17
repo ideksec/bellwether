@@ -926,11 +926,52 @@ def coexistence(json_output: JsonFlag = False) -> None:
 
 @app.command(name="init-manifest")
 def init_manifest(
-    skill: Annotated[str, typer.Argument(help="Skill to infer a manifest for.")],
+    skill: Annotated[str, typer.Argument(help="Skill directory (the one holding SKILL.md).")],
+    source: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="The observed evaluation: an eval id under --out, an eval directory, or a "
+            "summary.json.",
+        ),
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an existing evals/manifest.yaml.")
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
-    """Infer evals/manifest.yaml from an observed run, marked inferred-not-reviewed."""
-    _not_yet("init-manifest", "WP-9", "inference needs an observed run to infer from")
+    """Infer evals/manifest.yaml from an observed run, marked inferred-not-reviewed (§6.2).
+
+    The declared scope is what the evaluation's capability profile recorded the skill
+    doing — tools, paths read and written, egress hosts, processes — spelled out for a
+    reviewer to tighten. Finding classes (a canary read, a blocked egress, a DNS lookup)
+    are listed in the header as observed-but-not-declared, never laundered into an allowlist.
+    """
+    from bellwether.cli.diff import load_summary, resolve_summary
+    from bellwether.cli.infer_manifest import describe, write_inferred_manifest
+    from bellwether.skill import load_skill
+
+    try:
+        package = load_skill(Path(skill))
+        summary = load_summary(resolve_summary(source, out_dir=out))
+        path, scope = write_inferred_manifest(package, summary, force=force)
+    except BellwetherError as error:
+        typer.echo(f"bellwether init-manifest: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        {
+            "path": str(path),
+            "skill": package.name,
+            "eval_id": summary.eval_id,
+            "declared_scope": scope.as_declared_scope(),
+            "undeclared": [{"class": tier1, "why": why} for tier1, why in scope.undeclared],
+        },
+        as_json=json_output,
+        lines=[f"wrote {path} (INFERRED, NOT REVIEWED — from {summary.eval_id})", *describe(scope)],
+    )
 
 
 @app.command(name="trace")
