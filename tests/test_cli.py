@@ -578,6 +578,7 @@ def test_run_exposes_the_section_20_matrix_options() -> None:
         "--budget-usd",
         "--depth",
         "--no-cache",
+        "--deterministic-sampling",
     ):
         assert option in names, option
 

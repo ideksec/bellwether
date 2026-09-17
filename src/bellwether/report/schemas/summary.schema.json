@@ -432,6 +432,11 @@
           "title": "Design",
           "type": "string"
         },
+        "deterministic_sampling": {
+          "default": false,
+          "title": "Deterministic Sampling",
+          "type": "boolean"
+        },
         "escalation_truncated": {
           "default": false,
           "title": "Escalation Truncated",

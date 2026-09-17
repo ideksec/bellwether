@@ -1371,3 +1371,43 @@ def test_a_changed_model_id_or_no_cache_misses(package: SkillPackage, tmp_path: 
     bypassed = evaluate("bypassed", _config(), use_cache=False)
     assert holder["exec"].calls == 20
     assert bypassed.summary.matrix.runs_cached == 0
+
+
+# ---------------------------------------------------------------------------
+# §20 / §9.3: --deterministic-sampling
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_sampling_is_marked_on_the_summary_and_the_verdict(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result = _evaluate_with(package, tmp_path, config=_config(), deterministic_sampling=True)
+    assert result.summary.matrix.deterministic_sampling is True
+    assert any("deterministic sampling" in note for note in result.verdict.notes)
+    plain = _evaluate_with(package, tmp_path / "plain", config=_config())
+    assert plain.summary.matrix.deterministic_sampling is False
+    assert not any("deterministic sampling" in note for note in plain.verdict.notes)
+
+
+def test_run_refuses_deterministic_sampling_on_a_claude_code_target() -> None:
+    """§20 × §16.4: the CLI exposes no temperature/seed control, so a pinned-sampling run on
+    that harness would be mislabelled as the realistic condition — refused before any container."""
+    from bellwether.cli.orchestrator import TargetInfo
+    from bellwether.cli.preflight import preflight_failures
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("api-loop", "anthropic", "frontier")],
+        deterministic_sampling=True,
+    )
+    assert not any(f.gate == "deterministic_sampling" for f in failures)
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("claude-code", "anthropic", "frontier")],
+        deterministic_sampling=True,
+    )
+    pinned = [f for f in failures if f.gate == "deterministic_sampling"]
+    assert pinned and "api-loop" in pinned[0].remedy

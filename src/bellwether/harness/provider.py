@@ -83,6 +83,23 @@ class ModelTurn:
 
 
 @dataclass(frozen=True)
+class SamplingSpec:
+    """Sampling pinned for a low-variance comparison (§9.3, §20 ``--deterministic-sampling``).
+
+    Bellwether records the provider's own defaults rather than imposing its own; a spec is
+    set only when the operator asks, and the run header marks it so the result is never
+    mistaken for the realistic condition. ``seed`` reaches providers that accept one.
+    """
+
+    temperature: float | None = None
+    seed: int | None = None
+
+    @property
+    def is_deterministic(self) -> bool:
+        return self.temperature is not None and self.temperature == 0
+
+
+@dataclass(frozen=True)
 class ModelRequest:
     """One request to the model: the loop's full conversational state."""
 
@@ -93,6 +110,8 @@ class ModelRequest:
     #: them within one package; the wire shape is the client's concern.
     messages: tuple[dict[str, Any], ...]
     tools: tuple[ToolSpec, ...] = ()
+    #: Sampling to pin, when the operator asked for it; ``None`` leaves the provider's default.
+    sampling: SamplingSpec | None = None
 
 
 class ModelClient(Protocol):

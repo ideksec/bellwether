@@ -52,6 +52,7 @@ from bellwether.harness import (
     OfferedSkill,
     RawHarnessEvent,
     RunLimits,
+    SamplingSpec,
     SandboxToolset,
     claude_code_environment,
     hook_settings,
@@ -73,6 +74,7 @@ from bellwether.trace import (
     PlantedCanary,
     RunFooter,
     RunHeader,
+    Sampling,
     SandboxRef,
     SkillRef,
     TargetRef,
@@ -366,6 +368,9 @@ class SandboxRunExecutor:
     #: §12.6: the platform baseline's version, recorded in every run header where one is
     #: applied so the trace says which infrastructure allowlist its analysis subtracted.
     platform_baseline_version: str | None = None
+    #: §20 ``--deterministic-sampling``: sampling pinned on every api-loop request and marked
+    #: on the run header; ``None`` leaves the provider's defaults (the realistic condition).
+    sampling: SamplingSpec | None = None
     proxy: SidecarProxyProvider | None = None
     resolver: DnsResolverProvider | None = None
     plant_canaries: bool = False
@@ -522,6 +527,7 @@ class SandboxRunExecutor:
                     scanner if scanner is not None else client,
                     SandboxToolset(docker_exec_runner(self.backend, prepared)),
                     skills=offered_skills_for(self.package, plan),
+                    sampling=self.sampling,
                 )
             if isinstance(adapter, ClaudeCodeAdapter):
                 # The CLI is driven with a single `-p` prompt; a multi-turn scenario cannot
@@ -621,6 +627,18 @@ class SandboxRunExecutor:
                     model_alias=plan.target.model_alias,
                     model_id_requested=model_id,
                     model_id_reported=_reported_model_id(events, model_id),
+                    # §9.3: recorded, never silently set — the pinned values where the
+                    # operator asked for them, the provider's defaults (empty) otherwise.
+                    sampling=(
+                        Sampling(temperature=self.sampling.temperature, seed=self.sampling.seed)
+                        if self.sampling is not None and not use_claude_code
+                        else Sampling()
+                    ),
+                    deterministic_sampling=bool(
+                        self.sampling is not None
+                        and self.sampling.is_deterministic
+                        and not use_claude_code
+                    ),
                     harness_capabilities=(
                         adapter.capabilities_record()
                         if isinstance(adapter, ClaudeCodeAdapter)

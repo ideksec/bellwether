@@ -1836,6 +1836,7 @@ def orchestrate(
     baseline: BaselineRecord | None = None,
     platform_baseline_version: str = "",
     extra_notes: Sequence[str] = (),
+    deterministic_sampling: bool = False,
 ) -> EvalResult:
     """Compose the verdict from the set readings, render, and write the artifact tree.
 
@@ -1899,6 +1900,13 @@ def orchestrate(
         )
     )
     notes: list[str] = list(extra_notes)
+    if deterministic_sampling:
+        # §9.3: a temperature-0 run understates real variance; say so where the verdict is read.
+        notes.append(
+            "deterministic sampling: temperature was pinned to 0 for this evaluation, so the "
+            "consistency figures understate real variance and the result is not the realistic "
+            "condition (§9.3)"
+        )
     if spend.cost_usd is not None:
         gates.append(_gate("budget.cost", [_budget_cost_result(spend, profile)], required=True))
     else:
@@ -1955,6 +1963,7 @@ def orchestrate(
         spend=spend,
         regression=regression,
         platform_baseline_version=platform_baseline_version,
+        deterministic_sampling=deterministic_sampling,
     )
 
     artifacts = write_artifact_tree(
@@ -2022,6 +2031,7 @@ def _build_summary(
     spend: BudgetReading | None = None,
     regression: RegressionReading | None = None,
     platform_baseline_version: str = "",
+    deterministic_sampling: bool = False,
 ) -> Summary:
     primary = _primary(readings)
     targets = sorted({r.target.slug for r in readings})
@@ -2053,6 +2063,7 @@ def _build_summary(
         runs_timed_out=sum(r.n_timed_out for r in readings),
         runs_cached=sum(r.n_cached for r in readings),
         design="sequential",
+        deterministic_sampling=deterministic_sampling,
         looks=looks,
         boundary_z=profile.matrix.boundary_z,
         sets_stopped_at_look=dict(sorted(stopped_at.items())),

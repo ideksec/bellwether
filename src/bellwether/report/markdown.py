@@ -184,6 +184,11 @@ def _verdict_header(summary: Summary) -> str:
             "> Fixed-N run (`descriptive_only`): the verdict ceiling is `conditional`, "
             "however clean the gates — the design does not support a sequential `ready`."
         )
+    # The verdict's own notes: what was *not* composed and why (an unpriced cost gate, a
+    # missing baseline, a platform baseline not applied, pinned sampling). A control that did
+    # not run has to be visible where the verdict is read, not only in summary.json.
+    for note in summary.verdict.notes:
+        lines.append(f"> {note}")
     lines += ["", _gate_tally(summary)]
     return "\n".join(lines)
 

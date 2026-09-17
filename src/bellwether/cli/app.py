@@ -521,6 +521,15 @@ def run(
     strict: Annotated[
         bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
     ] = False,
+    deterministic_sampling: Annotated[
+        bool,
+        typer.Option(
+            "--deterministic-sampling",
+            help="Pin temperature to 0 (and a seed where the provider takes one) for a "
+            "low-variance comparison; marked on every run and in the report as not the "
+            "realistic condition (§9.3). Refused on claude-code targets.",
+        ),
+    ] = False,
     no_cache: Annotated[
         bool,
         typer.Option(
@@ -572,7 +581,7 @@ def run(
     )
     from bellwether.cli.run_cache import RunCache, require_cache_root
     from bellwether.determinism import stable_hash
-    from bellwether.harness import RunLimits
+    from bellwether.harness import RunLimits, SamplingSpec
     from bellwether.skill import load_skill
 
     if not skills:
@@ -672,6 +681,7 @@ def run(
                 depth=depth,
                 platform_baseline=platform_baseline,
                 run_cache=run_cache,
+                deterministic_sampling=deterministic_sampling,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -704,6 +714,9 @@ def run(
                     # (§10.4); the env-var channel is delivered and scanned host-side today.
                     plant_canaries=loaded_config.canaries.enabled,
                     platform_baseline_version=applied_version,
+                    sampling=(
+                        SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None
+                    ),
                 ),
                 # The artifact writer appends <eval_id> itself, so the parent is `out`;
                 # passing `out / eval_id` here doubled it and hid the report from pr-comment.

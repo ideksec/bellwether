@@ -103,6 +103,9 @@ class MatrixSummary(ReportModel):
     #: so a reader knows how much of the matrix was re-observed versus replayed.
     runs_cached: int = 0
     design: Literal["sequential", "fixed"] = "sequential"
+    #: §9.3 / §20: sampling was pinned (temperature 0) for a low-variance comparison. Marked
+    #: distinctly because it is not the realistic condition and understates real variance.
+    deterministic_sampling: bool = False
     looks: tuple[int, ...] = ()
     boundary_z: float | None = None
     #: Look index (1-based) → number of repetition sets that stopped there.

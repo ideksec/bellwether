@@ -62,6 +62,7 @@ from bellwether.harness import (
     TRUSTED_MODEL_HOSTS_ENV,
     ModelClient,
     RunLimits,
+    SamplingSpec,
     build_model_client,
 )
 from bellwether.sandbox import fixture_digest
@@ -164,6 +165,7 @@ def run_evaluation(
     depth: str | None = None,
     platform_baseline: PlatformBaseline | None = None,
     run_cache: RunCache | None = None,
+    deterministic_sampling: bool = False,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -257,6 +259,7 @@ def run_evaluation(
         profile_name=resolved.profile_name,
         multi_turn_scenario_ids=[s.id for s in scenarios if isinstance(s.prompt, list)],
         companion_scenario_ids=[s.id for s in scenarios if s.also_load_skills],
+        deterministic_sampling=deterministic_sampling,
     )
 
     # §16.1: a capability class the manifest denies must not be weighted 0. Weight 0 erases it
@@ -416,6 +419,7 @@ def run_evaluation(
         baseline=baseline,
         platform_baseline_version=applied_baseline.version if applied_baseline else "",
         extra_notes=baseline_notes,
+        deterministic_sampling=deterministic_sampling,
     )
 
 
@@ -539,6 +543,7 @@ def sandbox_executor_factory(
     plant_canaries: bool = False,
     provider_base_urls: Mapping[str, str | None] | None = None,
     platform_baseline_version: str | None = None,
+    sampling: SamplingSpec | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -585,6 +590,7 @@ def sandbox_executor_factory(
             plant_canaries=plant_canaries,
             provider_base_urls=dict(provider_base_urls or {}),
             platform_baseline_version=platform_baseline_version,
+            sampling=sampling,
         )
 
     return make

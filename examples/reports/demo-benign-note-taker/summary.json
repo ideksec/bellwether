@@ -92,6 +92,7 @@
     "boundary_z": 2.289,
     "descriptive_only": false,
     "design": "sequential",
+    "deterministic_sampling": false,
     "escalation_truncated": false,
     "looks": [
       6,
