@@ -570,7 +570,15 @@ def test_exit_code_for_maps_verdicts_and_strict_promotes_conditional() -> None:
 
 def test_run_exposes_the_section_20_matrix_options() -> None:
     names = _run_option_names()
-    for option in ("--targets", "--n-max", "--looks", "--repetitions", "--strict", "--budget-usd"):
+    for option in (
+        "--targets",
+        "--n-max",
+        "--looks",
+        "--repetitions",
+        "--strict",
+        "--budget-usd",
+        "--depth",
+    ):
         assert option in names, option
 
 

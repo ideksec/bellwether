@@ -476,6 +476,15 @@ def run(
     strict: Annotated[
         bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
     ] = False,
+    depth: Annotated[
+        str | None,
+        typer.Option(
+            "--depth",
+            help="Preset: quick (one small target, fixed 3, descriptive only), standard "
+            "(frontier+small, looks 6/12), deep (all targets, looks 6/12/20). Exclusive with "
+            "the matrix options (§19.1).",
+        ),
+    ] = None,
     budget_usd: Annotated[
         float | None,
         typer.Option(
@@ -581,6 +590,7 @@ def run(
                 looks_override=parsed_looks,
                 repetitions=repetitions,
                 budget_usd=budget_usd,
+                depth=depth,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -631,14 +641,22 @@ def run(
             {
                 "skill": package.name,
                 "verdict": result.verdict.verdict,
+                "descriptive_only": result.verdict.descriptive_only,
                 "artifacts": str(result.artifacts.root),
             }
         )
 
+    # §19.1 / §16.2 rule 6: a fixed-N run (--repetitions, --depth quick) is descriptive only
+    # and the output header says so, so a quick run is never mistaken for a release gate.
     _emit(
         {"results": results},
         as_json=json_output,
-        lines=[f"{r['skill']}: {r['verdict']} — {r['artifacts']}" for r in results],
+        lines=[
+            f"{r['skill']}: {r['verdict']}"
+            + (" (descriptive only — fixed-N, cannot be ready)" if r["descriptive_only"] else "")
+            + f" — {r['artifacts']}"
+            for r in results
+        ],
     )
     raise typer.Exit(int(worst))
 

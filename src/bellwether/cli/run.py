@@ -60,12 +60,14 @@ from bellwether.skill import SkillPackage
 from bellwether.verdict import validate_capability_weights
 
 __all__ = [
+    "DEPTHS",
     "ExecutorFactory",
     "apply_budget_override",
     "apply_matrix_options",
     "build_proxy_provider",
     "build_resolver_provider",
     "claude_code_providers",
+    "depth_options",
     "policy_digest",
     "run_evaluation",
     "select_scenarios",
@@ -150,6 +152,7 @@ def run_evaluation(
     repetitions: int | None = None,
     budget_usd: float | None = None,
     baseline: BaselineRecord | None = None,
+    depth: str | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -167,7 +170,20 @@ def run_evaluation(
     this evaluation; the cost gate it feeds is composed only where every target is priced.
     ``baseline`` is the skill's stored §17.5 baseline, when one exists; the regression gate is
     composed against it where the profile asks for the comparison and the key allows it.
+    ``depth`` (``--depth quick|standard|deep``, §19.1) is a preset over the matrix options and
+    is exclusive with them: ``quick`` is one ``small`` target at a fixed 3 (descriptive only),
+    ``standard`` is ``frontier`` + ``small`` at looks [6, 12], ``deep`` is every configured
+    target at looks [6, 12, 20].
     """
+    if depth is not None:
+        target_aliases, looks_override, repetitions = depth_options(
+            depth,
+            target_aliases=target_aliases,
+            n_max_override=n_max_override,
+            looks_override=looks_override,
+            repetitions=repetitions,
+        )
+        n_max_override = None
     resolved = resolve_run(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
     )
@@ -177,6 +193,7 @@ def run_evaluation(
         n_max_override=n_max_override,
         looks_override=looks_override,
         repetitions=repetitions,
+        require_every_alias=depth is not None,
     )
     resolved = apply_budget_override(resolved, budget_usd=budget_usd)
 
@@ -329,6 +346,38 @@ def run_evaluation(
     )
 
 
+#: §19.1's tiered depth: (target aliases to keep, look schedule, fixed repetitions).
+#: ``quick`` is fixed-N so it is ``descriptive_only`` and can never return ``ready``.
+DEPTHS: Mapping[str, tuple[tuple[str, ...], tuple[int, ...] | None, int | None]] = {
+    "quick": (("small",), None, 3),
+    "standard": (("frontier", "small"), (6, 12), None),
+    "deep": ((), (6, 12, 20), None),
+}
+
+
+def depth_options(
+    depth: str,
+    *,
+    target_aliases: Sequence[str] = (),
+    n_max_override: int | None = None,
+    looks_override: Sequence[int] | None = None,
+    repetitions: int | None = None,
+) -> tuple[tuple[str, ...], tuple[int, ...] | None, int | None]:
+    """Expand ``--depth`` into the matrix options it presets, or refuse (§19.1, §20).
+
+    A depth is a preset *over* ``--targets``/``--n-max``/``--looks``/``--repetitions``, so
+    naming both is two instructions for one setting and is refused rather than merged.
+    """
+    if depth not in DEPTHS:
+        raise BellwetherError(f"--depth must be one of {', '.join(DEPTHS)}, not {depth!r}")
+    if target_aliases or n_max_override is not None or looks_override is not None or repetitions:
+        raise BellwetherError(
+            f"--depth {depth} presets the targets and the schedule and cannot be combined with "
+            "--targets, --n-max, --looks or --repetitions; drop the preset to set them by hand"
+        )
+    return DEPTHS[depth]
+
+
 def apply_budget_override(resolved: ResolvedRun, *, budget_usd: float | None) -> ResolvedRun:
     """Apply ``--budget-usd`` (§20) to the resolved profile's ``gates.budget.max_cost_usd``.
 
@@ -352,11 +401,14 @@ def apply_matrix_options(
     n_max_override: int | None = None,
     looks_override: Sequence[int] | None = None,
     repetitions: int | None = None,
+    require_every_alias: bool = False,
 ) -> ResolvedRun:
     """Apply the §20 matrix options to a resolved run, or refuse.
 
     ``--targets`` filters by model alias and refuses when nothing matches, naming the aliases the
-    matrix has — a silently empty target list would be a run about nothing. ``--repetitions``
+    matrix has — a silently empty target list would be a run about nothing; with
+    ``require_every_alias`` (a ``--depth`` preset) every named alias must be present, since a
+    preset that silently ran on half its targets would not be the preset. ``--repetitions``
     is exclusive with ``--n-max``/``--looks``: fixed mode *is* a schedule (one look at N), so
     combining them would be two schedules. ``--n-max``/``--looks`` go through the same §13.1
     consistency rule as every other schedule override.
@@ -364,10 +416,16 @@ def apply_matrix_options(
     if target_aliases:
         wanted = set(target_aliases)
         kept = tuple(rt for rt in resolved.targets if rt.target.model_alias in wanted)
-        if not kept:
-            have = sorted({rt.target.model_alias for rt in resolved.targets})
+        have = sorted({rt.target.model_alias for rt in resolved.targets})
+        missing = sorted(wanted - {rt.target.model_alias for rt in kept})
+        if not kept or (require_every_alias and missing):
             raise BellwetherError(
-                f"--targets {sorted(wanted)} matches none of the matrix's model aliases {have}"
+                f"--targets {sorted(wanted)} "
+                + (
+                    f"matches none of the matrix's model aliases {have}"
+                    if not kept
+                    else f"names alias(es) the matrix does not have: {missing} (have {have})"
+                )
             )
         resolved = replace(resolved, targets=kept)
     if repetitions is not None:

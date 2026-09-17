@@ -1098,3 +1098,131 @@ def test_a_baseline_from_another_target_set_is_refused_with_a_note(
     assert "regression" not in {gate.name for gate in result.verdict.gates}
     assert any("different target set" in note for note in result.verdict.notes)
     assert result.summary.regression is None
+
+
+# ---------------------------------------------------------------------------
+# §19.1 / §20: --depth presets
+# ---------------------------------------------------------------------------
+
+
+def test_depth_options_expand_the_presets_and_refuse_a_mix() -> None:
+    from bellwether.cli.run import DEPTHS, depth_options
+
+    assert depth_options("quick") == (("small",), None, 3)
+    assert depth_options("standard") == (("frontier", "small"), (6, 12), None)
+    assert depth_options("deep") == ((), (6, 12, 20), None)
+    assert set(DEPTHS) == {"quick", "standard", "deep"}
+    with pytest.raises(BellwetherError, match="--depth must be one of"):
+        depth_options("thorough")
+    for kwargs in (
+        {"target_aliases": ("small",)},
+        {"n_max_override": 12},
+        {"looks_override": (6, 12)},
+        {"repetitions": 3},
+    ):
+        with pytest.raises(BellwetherError, match="cannot be combined"):
+            depth_options("deep", **kwargs)  # type: ignore[arg-type]
+
+
+def _two_alias_config() -> Config:
+    return Config(
+        **_API,
+        kind="Config",
+        providers={
+            "anthropic": ProviderConfig(
+                type="anthropic",
+                api_key_env=_KEY_ENV,
+                models={"frontier": "a-real-model-id", "small": "a-small-model-id"},
+            )
+        },
+        sandbox=SandboxConfig(image="img@sha256:" + "d" * 64),
+    )
+
+
+def _two_alias_policy() -> Policy:
+    policy = _policy()
+    low = policy.profile("low")
+    matrix = low.matrix.model_copy(
+        update={
+            "required_targets": [
+                Target(harness="api-loop", provider="anthropic", model_alias="frontier"),
+                Target(harness="api-loop", provider="anthropic", model_alias="small"),
+            ]
+        }
+    )
+    return policy.model_copy(
+        update={"profiles": {**policy.profiles, "low": low.model_copy(update={"matrix": matrix})}}
+    )
+
+
+def _evaluate_depth(
+    package: SkillPackage, tmp_path: Path, *, depth: str, policy: Policy, config: Config
+):  # type: ignore[no-untyped-def]
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    result = run_evaluation(
+        config=config,
+        policy=policy,
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id=f"depth-{depth}",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        depth=depth,
+    )
+    return result, holder["exec"]
+
+
+def test_depth_quick_is_one_small_target_at_a_fixed_three_and_descriptive_only(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, executor = _evaluate_depth(
+        package, tmp_path, depth="quick", policy=_two_alias_policy(), config=_two_alias_config()
+    )
+    assert executor.calls == 3  # one target × fixed 3
+    assert result.summary.matrix.target_slugs == ("api-loop-anthropic-small",)
+    assert result.summary.matrix.descriptive_only is True
+    assert result.verdict.descriptive_only is True
+    assert result.verdict.verdict != "ready"
+
+
+def test_depth_standard_runs_frontier_and_small_at_looks_six_and_twelve(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, executor = _evaluate_depth(
+        package, tmp_path, depth="standard", policy=_two_alias_policy(), config=_two_alias_config()
+    )
+    assert executor.calls == 2 * 12
+    assert result.summary.matrix.target_slugs == (
+        "api-loop-anthropic-frontier",
+        "api-loop-anthropic-small",
+    )
+    assert result.summary.matrix.looks == (6, 12)
+    assert result.summary.matrix.descriptive_only is False
+
+
+def test_depth_standard_refuses_a_matrix_missing_one_of_its_aliases(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """The one-alias fixture matrix has `frontier` only: the preset must not silently run on
+    half its targets."""
+    with pytest.raises(BellwetherError, match="names alias\\(es\\) the matrix does not have"):
+        _evaluate_depth(package, tmp_path, depth="standard", policy=_policy(), config=_config())
+
+
+def test_depth_deep_runs_every_configured_target_to_twenty(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, executor = _evaluate_depth(
+        package, tmp_path, depth="deep", policy=_two_alias_policy(), config=_two_alias_config()
+    )
+    assert executor.calls == 2 * 20
+    assert result.summary.matrix.looks == (6, 12, 20)
+    assert len(result.summary.matrix.target_slugs) == 2
