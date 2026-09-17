@@ -60,6 +60,9 @@ class ArtifactTree:
     #: The rendered HTML report (``report/report.html``), when one was produced. Optional
     #: because a caller may want only the machine-readable artifacts.
     report_html: Path | None = None
+    #: The persisted report figures (``metrics/figures.json``), when written — what lets
+    #: ``bellwether report`` re-render the tree without the readings.
+    figures_json: Path | None = None
 
 
 def _write_text(path: Path, text: str) -> Path:
@@ -79,6 +82,7 @@ def write_artifact_tree(
     traces: Mapping[RunKey, str],
     canonicals: Mapping[RunKey, str],
     report_html: str | None = None,
+    figures_json: str | None = None,
 ) -> ArtifactTree:
     """Write ``<out_dir>/<eval_id>/`` per §17.1 and return the paths.
 
@@ -95,6 +99,12 @@ def write_artifact_tree(
     report_html_path = (
         _write_text(root / "report" / "report.html", report_html)
         if report_html is not None
+        else None
+    )
+
+    figures_path = (
+        _write_text(root / "metrics" / "figures.json", figures_json)
+        if figures_json is not None
         else None
     )
 
@@ -116,4 +126,5 @@ def write_artifact_tree(
         traces=tuple(trace_paths),
         canonicals=tuple(canon_paths),
         report_html=report_html_path,
+        figures_json=figures_path,
     )

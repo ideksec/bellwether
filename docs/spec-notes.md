@@ -2515,5 +2515,116 @@ moving from core to peripheral is neither an expansion nor a removal.
 `max_pass_rate_drop`) is a policy applied against a *stored baseline* on the run path (§17.5,
 §18.4). The ad-hoc diff has no policy in hand and no baseline semantics — either side may be
 the newer — so it surfaces tier-1 expansion as the headline signal and leaves the disposition
-to the reader. Baseline storage and the regression gate remain a work package; when they land
-they should compose from `diff_summaries` rather than re-implement the comparison.
+to the reader. Baseline storage and the regression gate have since landed (next entry) and the
+gate's comparison reads the same summary shape `diff_summaries` does.
+
+## §17.5, §18.4 — The baseline record is the whole summary under the key; the gate is composed only where the key allows and says why otherwise
+
+§17.5 describes the baseline file as "a trimmed summary: tier-1 and tier-2 capability
+core/peripheral sets, pass rates, BCI components, coverage". The record written by
+`bellwether baseline set` carries the **whole** `summary.json` under the key instead. Trimming
+would mean a second, hand-maintained shape that has to stay in step with the summary schema and
+with the comparison; carrying the summary means the regression gate and the ad-hoc `diff` read one
+shape, and a field added to the summary is available to both without a migration. The file is
+larger than the spec's sketch (a few kilobytes) and is committed to git as §17.5 asks; the
+`.gitattributes` `merge=ours` rule is written beside it (a repository must still enable the
+driver with `git config merge.ours.driver true`; the rule cannot do that for it).
+
+**The key is derivable from any `summary.json`.** `canon_version`, `platform_baseline_version`
+and `matrix.target_slugs` are stamped on every summary now (schema `1.2`), so a baseline can be
+set from a stored tree without the readings. `traj_planes` is not recorded: nothing in this build
+varies it, and §17.5 lists it as metadata rather than key.
+
+**Composition.** Where `gates.regression.compare_to_baseline` is set and no baseline exists, the
+gate is not composed and the verdict carries a note — the same convention as the unpriced cost
+gate: a required `not_evaluable` would make every never-baselined skill `not_ready`, which is
+not what "no baseline yet" means. A baseline whose key rules the comparison out (another skill,
+another `canon_version`, another target set) likewise leaves the gate uncomposed with the
+reason. Where the key allows, the table applies per component: a different
+`platform_baseline_version` skips the capability sets and sensitive hits (the subtracted
+infrastructure is not the same), a different `weights_digest` skips the BCI. What blocks:
+tier-1 expansion under `block_on_capability_expansion` (a warning otherwise — "policy MAY
+block on it"), and a lower-bound drop beyond `max_pass_rate_drop`, lower bound to lower bound.
+A new tier-2 sensitive-directory hit is "always a finding, never merely a delta": it warns even
+where nothing else moved. A BCI drop is reported in `summary.regression.deltas`, not gated —
+the policy carries no threshold for it. `payload_digest` differing from the baseline's is
+expected, not a mismatch: that is the version-to-version comparison the gate exists for.
+
+## §17.1, §20 — The figures are persisted so `report` re-renders; persisting them found a hash-order bug
+
+`bellwether report <EVAL_ID>` re-renders from stored artifacts. §17.1's tree has no entry for
+the renderers' second input — the figures computed from the readings (strip chart, heatmap,
+cluster list, scope table) — so this build adds `metrics/figures.json`, versioned canonical JSON
+under the tree's `metrics/` directory (§17.1 names that directory for `consistency.json` and
+friends, which do not exist yet). A tree without the file predates persistence and is refused:
+rendering from the summary alone would silently drop the three figures.
+
+Writing the figures to bytes exposed a §24 violation the byte-compare tests had not caught:
+`build_figures` iterated each run's `caps_t1` **frozenset** to build heatmap rows, so their
+order followed the process hash seed. `render_capability_heatmap` sorts, which kept the HTML
+stable, and CI pins `PYTHONHASHSEED=0`, which kept everything else stable — exactly the kind of
+accidental determinism §24 warns against. The rows are sorted at the source now, and the fix
+was proven by rendering the demo under three different seeds.
+
+## §19.1, §20 — `--depth` is a preset over the matrix options and requires every alias it names
+
+§19.1's depth table maps onto the §20 matrix options: `quick` = `--targets small
+--repetitions 3`, `standard` = `--targets frontier,small --looks 6,12`, `deep` = every target
+with `--looks 6,12,20`. It is implemented as exactly that expansion, and is refused in
+combination with any of those options — two instructions for one setting. One deliberate
+strictness: a preset must find every alias it names in the matrix. `standard` on a matrix
+with `frontier` alone would otherwise run one target and report as if it were the two-target
+PR default; refusing and naming the aliases the matrix has keeps the preset meaning what §19.1
+says it means. `quick` is fixed-N, so it is `descriptive_only` and can never return `ready`
+(§13.1, §16.2 rule 6); the run's output line marks it, per §19.1's "the output header MUST say
+so".
+
+## §6.2, §20 — `init-manifest` infers from the capability profile and never declares a finding
+
+§6.2 has Bellwether "infer a scope from observed behaviour on the first run and offer to write
+the file, clearly marked as inferred-not-reviewed". The inference reads a stored evaluation's
+`capability_profile.tier3.expansions` — every tier-1 class the matrix exercised with the exact
+things it touched (§13.5) — rather than re-analysing traces, so it works on any tree and is a
+pure function of the summary. Permission classes map to the manifest's areas: `tool:<name>` →
+`tools.allow`, the read classes → `filesystem.read`, the write and delete classes (including
+`harness_state_write`) → `filesystem.write`, `egress:<host>` → `network.egress_allow`,
+`process:<argv0>` → `processes.allow`. Paths are written verbatim, as globs, for the reviewer
+to generalise; the header says so.
+
+The rule that matters: **a finding is never laundered into a permission.** A `canary_read`, an
+`egress_blocked:<host>`, a `dns:`/`dns_query:` lookup, and any path under a §13.5.4
+sensitive-directory hit are listed in the file's header as observed-but-not-declared, with the
+reason, and left out of the allowlists. For the exfiltrator this is the difference between a
+manifest that documents the credential read as a finding to review and one that quietly
+permits it. The rendered file is parsed back through the manifest loader before it is kept, an
+existing manifest is never replaced without `--force`, and `--force` preserves the reviewed
+`criticality`. `credentials.expects` is always written empty: which credential a skill
+legitimately needs is a human decision (§10.4.1's `legit-credential-reader` distinction).
+
+## §12.6 — The platform baseline is applied per run on the path half; processes and tools wait
+
+`platform-baseline.yaml` (§12.6) was a shipped, loadable document with no reader on the run
+path: `apply_path_baseline` had no callers. It is now applied in `analyse_run`, per run,
+where the document is keyed to the run's own sandbox image (the header's, which is the
+configured one). The glob-aware matcher produces the literal tier-3 set `canonicalize`
+subtracts — the seam WP-8 left for it — so subtraction still happens *before* the capability
+sets are produced (§11.4) and the step sequence still keeps every step. What was absorbed is
+recorded per run and in `summary.security.runtime.baseline_absorbed`: "observed − baseline"
+has to be auditable, or a subtracted access is simply gone. Near-misses (a traversal that
+names an entry but escapes it) are never absorbed and surface as
+`summary.security.runtime.baseline_near_miss`; they remain report findings rather than a
+scored gate in this build, and `doctor` does not yet list them among the inert dispositions
+because they are not a disposition.
+
+Two halves of §12.6 stay unwired, deliberately: **process attribution** (`always` /
+`helpers_of`, evaluated by tree) needs the process plane's parent/child records, which the
+capture layer does not produce yet, and the **tools** list is empty in the shipped default
+because a tool call is agent behaviour until a harness shows otherwise. Scratch-zone paths
+never reach the matcher at all — §10.2 coarsens them to tier 2 before a tier-3 entry could
+match — so a `${TMP}/**` entry is accepted but has nothing to absorb; that is a property of the
+zone rules, not a gap in the wiring.
+
+The applied version is stamped on the run header (`platform_baseline_version`, as §12.6 asks)
+and on the summary, where it is the §17.5 key component. A baseline not keyed to the configured
+image absorbs nothing, and the verdict note and the `doctor` row both carry the document's own
+reason, so "not applied" never reads as "nothing infrastructural happened".

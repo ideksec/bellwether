@@ -57,7 +57,8 @@
     }
   ],
   "notes": [
-    "budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost"
+    "budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost",
+    "regression not composed: no baseline is stored for skill 'flaky-formatter' (set one with `bellwether baseline set` from a reviewed evaluation, §17.5)"
   ],
   "verdict": "not_ready"
 }

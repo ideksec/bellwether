@@ -1033,3 +1033,238 @@ def test_a_matrix_over_its_wall_clock_ceiling_is_not_ready(
     assert result.verdict.verdict == "not_ready"
     assert result.summary.cost is not None
     assert result.summary.cost.wall_clock_s == 4800.0
+
+
+# ---------------------------------------------------------------------------
+# §17.5: the regression gate on the run path
+# ---------------------------------------------------------------------------
+
+
+def test_a_stored_baseline_composes_the_regression_gate(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """First run: no baseline, the gate is not composed and the verdict says so. Set the
+    baseline from that run; the second run composes `regression` and passes (same skill,
+    same behaviour). A baseline whose core omits a class the skill exercises reads as tier-1
+    expansion and blocks under the default policy."""
+    from bellwether.cli.baselines import baseline_from_summary
+
+    first, _ = _evaluate(package, tmp_path)
+    assert "regression" not in {gate.name for gate in first.verdict.gates}
+    assert any("no baseline is stored" in note for note in first.verdict.notes)
+    assert first.summary.regression is None
+
+    baseline = baseline_from_summary(first.summary)
+    second = _evaluate_with(package, tmp_path / "second", config=_config(), baseline=baseline)
+    gates = {gate.name: gate for gate in second.verdict.gates}
+    assert gates["regression"].status == "pass"
+    assert second.summary.regression is not None
+    assert second.summary.regression.baseline_eval_id == "firstlight"
+    assert second.summary.regression.baseline_digest == baseline.digest
+    assert second.summary.regression.deltas["capabilities_added"] == []
+    assert second.verdict.verdict == "conditional"  # unchanged by a clean comparison
+
+    # Tamper: a baseline that never saw `tool:skill` makes this run an expansion.
+    profile = first.summary.capability_profile
+    core = [cap for cap in profile.tier1["core"] if cap != "tool:skill"]  # type: ignore[union-attr]
+    shrunk = first.summary.model_copy(
+        update={
+            "capability_profile": profile.model_copy(
+                update={"tier1": {**profile.tier1, "core": core}}
+            )
+        }
+    )
+    third = _evaluate_with(
+        package, tmp_path / "third", config=_config(), baseline=baseline_from_summary(shrunk)
+    )
+    gates = {gate.name: gate for gate in third.verdict.gates}
+    assert gates["regression"].status == "block"
+    assert "tool:skill" in gates["regression"].per_target[0].reason
+    assert third.verdict.verdict == "not_ready"
+
+
+def test_a_baseline_from_another_target_set_is_refused_with_a_note(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    from bellwether.cli.baselines import baseline_from_summary
+
+    first, _ = _evaluate(package, tmp_path)
+    other = first.summary.model_copy(
+        update={"matrix": first.summary.matrix.model_copy(update={"target_slugs": ("x",)})}
+    )
+    result = _evaluate_with(
+        package, tmp_path / "again", config=_config(), baseline=baseline_from_summary(other)
+    )
+    assert "regression" not in {gate.name for gate in result.verdict.gates}
+    assert any("different target set" in note for note in result.verdict.notes)
+    assert result.summary.regression is None
+
+
+# ---------------------------------------------------------------------------
+# §19.1 / §20: --depth presets
+# ---------------------------------------------------------------------------
+
+
+def test_depth_options_expand_the_presets_and_refuse_a_mix() -> None:
+    from bellwether.cli.run import DEPTHS, depth_options
+
+    assert depth_options("quick") == (("small",), None, 3)
+    assert depth_options("standard") == (("frontier", "small"), (6, 12), None)
+    assert depth_options("deep") == ((), (6, 12, 20), None)
+    assert set(DEPTHS) == {"quick", "standard", "deep"}
+    with pytest.raises(BellwetherError, match="--depth must be one of"):
+        depth_options("thorough")
+    for kwargs in (
+        {"target_aliases": ("small",)},
+        {"n_max_override": 12},
+        {"looks_override": (6, 12)},
+        {"repetitions": 3},
+    ):
+        with pytest.raises(BellwetherError, match="cannot be combined"):
+            depth_options("deep", **kwargs)  # type: ignore[arg-type]
+
+
+def _two_alias_config() -> Config:
+    return Config(
+        **_API,
+        kind="Config",
+        providers={
+            "anthropic": ProviderConfig(
+                type="anthropic",
+                api_key_env=_KEY_ENV,
+                models={"frontier": "a-real-model-id", "small": "a-small-model-id"},
+            )
+        },
+        sandbox=SandboxConfig(image="img@sha256:" + "d" * 64),
+    )
+
+
+def _two_alias_policy() -> Policy:
+    policy = _policy()
+    low = policy.profile("low")
+    matrix = low.matrix.model_copy(
+        update={
+            "required_targets": [
+                Target(harness="api-loop", provider="anthropic", model_alias="frontier"),
+                Target(harness="api-loop", provider="anthropic", model_alias="small"),
+            ]
+        }
+    )
+    return policy.model_copy(
+        update={"profiles": {**policy.profiles, "low": low.model_copy(update={"matrix": matrix})}}
+    )
+
+
+def _evaluate_depth(
+    package: SkillPackage, tmp_path: Path, *, depth: str, policy: Policy, config: Config
+):  # type: ignore[no-untyped-def]
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    result = run_evaluation(
+        config=config,
+        policy=policy,
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id=f"depth-{depth}",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        depth=depth,
+    )
+    return result, holder["exec"]
+
+
+def test_depth_quick_is_one_small_target_at_a_fixed_three_and_descriptive_only(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, executor = _evaluate_depth(
+        package, tmp_path, depth="quick", policy=_two_alias_policy(), config=_two_alias_config()
+    )
+    assert executor.calls == 3  # one target × fixed 3
+    assert result.summary.matrix.target_slugs == ("api-loop-anthropic-small",)
+    assert result.summary.matrix.descriptive_only is True
+    assert result.verdict.descriptive_only is True
+    assert result.verdict.verdict != "ready"
+
+
+def test_depth_standard_runs_frontier_and_small_at_looks_six_and_twelve(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, executor = _evaluate_depth(
+        package, tmp_path, depth="standard", policy=_two_alias_policy(), config=_two_alias_config()
+    )
+    assert executor.calls == 2 * 12
+    assert result.summary.matrix.target_slugs == (
+        "api-loop-anthropic-frontier",
+        "api-loop-anthropic-small",
+    )
+    assert result.summary.matrix.looks == (6, 12)
+    assert result.summary.matrix.descriptive_only is False
+
+
+def test_depth_standard_refuses_a_matrix_missing_one_of_its_aliases(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """The one-alias fixture matrix has `frontier` only: the preset must not silently run on
+    half its targets."""
+    with pytest.raises(BellwetherError, match="names alias\\(es\\) the matrix does not have"):
+        _evaluate_depth(package, tmp_path, depth="standard", policy=_policy(), config=_config())
+
+
+def test_depth_deep_runs_every_configured_target_to_twenty(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, executor = _evaluate_depth(
+        package, tmp_path, depth="deep", policy=_two_alias_policy(), config=_two_alias_config()
+    )
+    assert executor.calls == 2 * 20
+    assert result.summary.matrix.looks == (6, 12, 20)
+    assert len(result.summary.matrix.target_slugs) == 2
+
+
+# ---------------------------------------------------------------------------
+# §12.6: the platform baseline on the run path
+# ---------------------------------------------------------------------------
+
+
+def _platform_baseline(image: str | None):  # type: ignore[no-untyped-def]
+    from bellwether.config.models.baseline import PlatformBaseline
+
+    return PlatformBaseline(
+        api_version="bellwether/v1",
+        kind="PlatformBaseline",
+        version="2026.09.1",
+        applies_to_image=image,
+    )
+
+
+def test_an_applicable_platform_baseline_is_stamped_on_the_summary(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result = _evaluate_with(
+        package,
+        tmp_path,
+        config=_config(),
+        platform_baseline=_platform_baseline("img@sha256:" + "d" * 64),
+    )
+    assert result.summary.platform_baseline_version == "2026.09.1"
+    assert not any("platform baseline" in note for note in result.verdict.notes)
+
+
+def test_a_platform_baseline_for_another_image_is_not_applied_and_the_verdict_says_so(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result = _evaluate_with(
+        package, tmp_path, config=_config(), platform_baseline=_platform_baseline(None)
+    )
+    assert result.summary.platform_baseline_version == ""
+    assert any(
+        "not applied" in note and "applies_to_image is unset" in note
+        for note in result.verdict.notes
+    )

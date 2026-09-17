@@ -175,7 +175,7 @@ def test_committed_schema_matches_the_model() -> None:
 
 def test_summary_carries_the_schema_version() -> None:
     data = json.loads(render_summary_json(make_summary()))
-    assert data["schema_version"] == "1.1"
+    assert data["schema_version"] == "1.2"
 
 
 def test_pr_comment_renders_byte_identical_across_two_invocations() -> None:

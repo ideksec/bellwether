@@ -1,6 +1,6 @@
 {
   "bellwether_version": "0.1.0-demo",
-  "canon_version": "1",
+  "canon_version": "1.0",
   "capability_profile": {
     "rare_high_risk": [],
     "tier1": {
@@ -115,6 +115,9 @@
     "sets_stopped_at_look": {
       "1": 1
     },
+    "target_slugs": [
+      "api-loop-scripted-frontier"
+    ],
     "targets": 1
   },
   "noise_floor": {
@@ -127,7 +130,7 @@
     "profile": "high"
   },
   "regression": null,
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "security": {
     "canary_leaks": [],
     "runtime": {},
@@ -215,7 +218,8 @@
       }
     ],
     "notes": [
-      "budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 100.00 is not enforced on this evaluation; reported token usage is in summary.cost"
+      "budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 100.00 is not enforced on this evaluation; reported token usage is in summary.cost",
+      "regression not composed: no baseline is stored for skill 'sneaky-exfiltrator' (set one with `bellwether baseline set` from a reviewed evaluation, §17.5)"
     ],
     "status": "not_ready"
   }

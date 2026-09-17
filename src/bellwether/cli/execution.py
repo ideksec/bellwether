@@ -363,6 +363,9 @@ class SandboxRunExecutor:
     run_root: Path
     rng_seed: int = 0
     limits: RunLimits = field(default_factory=RunLimits)
+    #: §12.6: the platform baseline's version, recorded in every run header where one is
+    #: applied so the trace says which infrastructure allowlist its analysis subtracted.
+    platform_baseline_version: str | None = None
     proxy: SidecarProxyProvider | None = None
     resolver: DnsResolverProvider | None = None
     plant_canaries: bool = False
@@ -630,6 +633,7 @@ class SandboxRunExecutor:
                     workspace_root=str(prepared.identifiers.workspace_root),
                 ),
                 identity=self._identity_block(planting, canaries),
+                platform_baseline_version=self.platform_baseline_version,
                 coverage=assemble_coverage(
                     harness_events=_harness_events_status(adapter, events),
                     filesystem_writes=filesystem_writes_status(set(zone_diffs)),

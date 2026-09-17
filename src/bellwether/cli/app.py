@@ -29,6 +29,7 @@ from bellwether.config import (
     CONFIG_FILE,
     POLICY_FILE,
     load_config,
+    load_platform_baseline,
     load_policy,
     write_scaffold,
 )
@@ -316,6 +317,50 @@ def doctor(
             }
         )
 
+    # §12.6: the platform baseline is applied only where it is keyed to the configured sandbox
+    # image. Report which state it is in — absent, present-but-not-applicable (with the
+    # document's own reason), or applied — so "no infrastructural access subtracted" is a
+    # stated fact rather than an invisible one.
+    _baseline_file = config.parent / "platform-baseline.yaml"
+    if not _baseline_file.is_file():
+        checks.append(
+            {
+                "check": "platform baseline (§12.6)",
+                "status": "warn",
+                "detail": (
+                    f"{_baseline_file} is absent: no infrastructural allowlist is subtracted, so "
+                    "every harness/toolchain path a run touches counts against the skill's "
+                    "declared scope ('bellwether init' scaffolds one)"
+                ),
+            }
+        )
+    else:
+        try:
+            _platform = load_platform_baseline(_baseline_file)
+            _applicable, _why = _platform.applicable_to(loaded_config.sandbox.image)
+            checks.append(
+                {
+                    "check": "platform baseline (§12.6)",
+                    "status": "ok" if _applicable else "warn",
+                    "detail": (
+                        f"version {_platform.version} applied to {loaded_config.sandbox.image}: "
+                        f"{len(_platform.paths.read)} read / {len(_platform.paths.write)} write "
+                        "entries subtracted from every run's capability sets"
+                        if _applicable
+                        else f"version {_platform.version} present but not applied: {_why}"
+                    ),
+                }
+            )
+        except (BellwetherError, ConfigurationError) as error:
+            checks.append(
+                {
+                    "check": "platform baseline (§12.6)",
+                    "status": "critical",
+                    "detail": f"{_baseline_file} does not load: {error}",
+                }
+            )
+            problems += 1
+
     # §16.4 / BW-51: the precondition check, evaluated for real — per profile, against that
     # profile's own matrix targets and the planes this config actually wires. Reported as
     # `warn`, not `critical`: an unsatisfiable profile is a fact about policy-vs-composition,
@@ -476,6 +521,15 @@ def run(
     strict: Annotated[
         bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
     ] = False,
+    depth: Annotated[
+        str | None,
+        typer.Option(
+            "--depth",
+            help="Preset: quick (one small target, fixed 3, descriptive only), standard "
+            "(frontier+small, looks 6/12), deep (all targets, looks 6/12/20). Exclusive with "
+            "the matrix options (§19.1).",
+        ),
+    ] = None,
     budget_usd: Annotated[
         float | None,
         typer.Option(
@@ -497,6 +551,7 @@ def run(
     import datetime as dt
     from dataclasses import replace
 
+    from bellwether.cli.baselines import read_baseline_for
     from bellwether.cli.companions import companion_resolver
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
     from bellwether.cli.fixtures import fixture_resolver
@@ -525,9 +580,22 @@ def run(
     try:
         loaded_config = load_config(config)
         loaded_policy = load_policy(policy_path)
+        # §12.6: the platform baseline lives beside the config; absent, nothing is subtracted
+        # and the run says so. Present but keyed to another image, likewise — run_evaluation
+        # applies it only where `applies_to_image` matches the configured sandbox image.
+        baseline_file = config.parent / "platform-baseline.yaml"
+        platform_baseline = (
+            load_platform_baseline(baseline_file) if baseline_file.is_file() else None
+        )
     except (BellwetherError, ConfigurationError, OSError) as error:
         typer.echo(f"bellwether run: {error}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    applied_version = (
+        platform_baseline.version
+        if platform_baseline is not None
+        and platform_baseline.applicable_to(loaded_config.sandbox.image)[0]
+        else None
+    )
 
     daemon_ok, daemon_reason = DockerBackend(image=loaded_config.sandbox.image).available()
     if not daemon_ok:
@@ -561,11 +629,14 @@ def run(
                 if package.scenarios is not None
                 else None
             )
+            # §17.5: the skill's stored baseline, beside the config, feeds the regression gate.
+            baseline = read_baseline_for(config.parent / "baselines", package.name)
             result = run_evaluation(
                 config=loaded_config,
                 policy=loaded_policy,
                 package=package,
                 fixture=fixture,
+                baseline=baseline,
                 fixture_for=fixture_for,
                 # §7.4: a scenario's also_load_skills resolve to sibling skill directories
                 # beside this one and are offered alongside it.
@@ -577,6 +648,8 @@ def run(
                 looks_override=parsed_looks,
                 repetitions=repetitions,
                 budget_usd=budget_usd,
+                depth=depth,
+                platform_baseline=platform_baseline,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -608,6 +681,7 @@ def run(
                     # Plant canaries and scan the observed planes for them when config enables it
                     # (§10.4); the env-var channel is delivered and scanned host-side today.
                     plant_canaries=loaded_config.canaries.enabled,
+                    platform_baseline_version=applied_version,
                 ),
                 # The artifact writer appends <eval_id> itself, so the parent is `out`;
                 # passing `out / eval_id` here doubled it and hid the report from pr-comment.
@@ -627,14 +701,22 @@ def run(
             {
                 "skill": package.name,
                 "verdict": result.verdict.verdict,
+                "descriptive_only": result.verdict.descriptive_only,
                 "artifacts": str(result.artifacts.root),
             }
         )
 
+    # §19.1 / §16.2 rule 6: a fixed-N run (--repetitions, --depth quick) is descriptive only
+    # and the output header says so, so a quick run is never mistaken for a release gate.
     _emit(
         {"results": results},
         as_json=json_output,
-        lines=[f"{r['skill']}: {r['verdict']} — {r['artifacts']}" for r in results],
+        lines=[
+            f"{r['skill']}: {r['verdict']}"
+            + (" (descriptive only — fixed-N, cannot be ready)" if r["descriptive_only"] else "")
+            + f" — {r['artifacts']}"
+            for r in results
+        ],
     )
     raise typer.Exit(int(worst))
 
@@ -904,11 +986,52 @@ def coexistence(json_output: JsonFlag = False) -> None:
 
 @app.command(name="init-manifest")
 def init_manifest(
-    skill: Annotated[str, typer.Argument(help="Skill to infer a manifest for.")],
+    skill: Annotated[str, typer.Argument(help="Skill directory (the one holding SKILL.md).")],
+    source: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="The observed evaluation: an eval id under --out, an eval directory, or a "
+            "summary.json.",
+        ),
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an existing evals/manifest.yaml.")
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
-    """Infer evals/manifest.yaml from an observed run, marked inferred-not-reviewed."""
-    _not_yet("init-manifest", "WP-9", "inference needs an observed run to infer from")
+    """Infer evals/manifest.yaml from an observed run, marked inferred-not-reviewed (§6.2).
+
+    The declared scope is what the evaluation's capability profile recorded the skill
+    doing — tools, paths read and written, egress hosts, processes — spelled out for a
+    reviewer to tighten. Finding classes (a canary read, a blocked egress, a DNS lookup)
+    are listed in the header as observed-but-not-declared, never laundered into an allowlist.
+    """
+    from bellwether.cli.diff import load_summary, resolve_summary
+    from bellwether.cli.infer_manifest import describe, write_inferred_manifest
+    from bellwether.skill import load_skill
+
+    try:
+        package = load_skill(Path(skill))
+        summary = load_summary(resolve_summary(source, out_dir=out))
+        path, scope = write_inferred_manifest(package, summary, force=force)
+    except BellwetherError as error:
+        typer.echo(f"bellwether init-manifest: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        {
+            "path": str(path),
+            "skill": package.name,
+            "eval_id": summary.eval_id,
+            "declared_scope": scope.as_declared_scope(),
+            "undeclared": [{"class": tier1, "why": why} for tier1, why in scope.undeclared],
+        },
+        as_json=json_output,
+        lines=[f"wrote {path} (INFERRED, NOT REVIEWED — from {summary.eval_id})", *describe(scope)],
+    )
 
 
 @app.command(name="trace")
@@ -962,17 +1085,37 @@ def show_trace(
 
 @app.command(name="report")
 def render_report(
-    eval_id: Annotated[str, typer.Argument(help="Evaluation id.")],
+    evaluation: Annotated[
+        str, typer.Argument(help="An eval id under --out, or an evaluation directory.")
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
+    fmt: Annotated[str, typer.Option("--format", help="md, html, or all.")] = "all",
+    to: Annotated[
+        Path | None,
+        typer.Option("--to", help="Write here instead of the tree's own report/ directory."),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
-    """Re-render a report from stored artifacts."""
-    _not_yet(
-        "report",
-        "a WP-12 follow-on",
-        "the renderers exist (`bellwether run` writes report/pr_comment.md and report.html), but "
-        "re-rendering from a stored tree needs the figures rebuilt from its traces and canonical "
-        "forms, which nothing does yet; `bellwether diff` and `bellwether trace` read stored "
-        "artifacts today",
+    """Re-render a stored evaluation's report from its artifacts (§17.1, §20).
+
+    Reads ``summary.json`` and ``metrics/figures.json`` and renders the PR comment and the
+    HTML report again — the same renderers ``bellwether run`` used, on the same inputs, so
+    the bytes match what the run wrote. A tree written before the figures were persisted
+    is refused with the reason, never rendered from a guess.
+    """
+    from bellwether.cli.rerender import rerender_tree
+
+    try:
+        written = rerender_tree(evaluation, out_dir=out, fmt=fmt, to=to)
+    except BellwetherError as error:
+        typer.echo(f"bellwether report: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        {"written": [str(path) for path in written]},
+        as_json=json_output,
+        lines=[f"wrote {path}" for path in written],
     )
 
 
@@ -1017,6 +1160,144 @@ def diff(
         as_json=json_output,
         lines=[render_diff_markdown(result).rstrip("\n")],
     )
+
+
+baseline_app = typer.Typer(
+    name="baseline",
+    help="Store, show, or clear a skill's regression baseline (§17.5).",
+    no_args_is_help=True,
+)
+app.add_typer(baseline_app, name="baseline")
+
+_BaselinesDir = Annotated[
+    Path,
+    typer.Option("--baselines", help="The baselines directory (default: .bellwether/baselines)."),
+]
+
+
+@baseline_app.command("set")
+def baseline_set(
+    skill: Annotated[str, typer.Argument(help="Skill name the baseline is for.")],
+    source: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="The evaluation to baseline: an eval id under --out, an eval directory, or "
+            "a summary.json.",
+        ),
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    json_output: JsonFlag = False,
+) -> None:
+    """Write <baselines>/<skill>.baseline.json from an evaluation's summary (§17.5).
+
+    The record is the summary under its baseline key (skill, payload digest, canon version,
+    target set, platform baseline version); the evaluation must be of the named skill.
+    Commit the file: the regression gate reads it on every later run of the skill.
+    """
+    from bellwether.cli.baselines import baseline_from_summary, write_baseline
+    from bellwether.cli.diff import load_summary, resolve_summary
+
+    try:
+        summary = load_summary(resolve_summary(source, out_dir=out))
+        if summary.skill.name != skill:
+            raise BellwetherError(
+                f"{source!r} is an evaluation of skill {summary.skill.name!r}, not {skill!r}; "
+                "a baseline is filed under the skill it was collected for"
+            )
+        record = baseline_from_summary(summary)
+        path = write_baseline(record, baselines)
+    except BellwetherError as error:
+        typer.echo(f"bellwether baseline set: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        {
+            "path": str(path),
+            "skill": skill,
+            "eval_id": record.eval_id,
+            "digest": record.digest,
+            "key": record.key.model_dump(),
+        },
+        as_json=json_output,
+        lines=[
+            f"wrote {path}",
+            f"  baseline of {record.eval_id} (payload {record.key.payload_digest[:19]}…, "
+            f"targets {record.key.target_set_digest[:19]}…); commit it so the regression gate "
+            "reads it",
+        ],
+    )
+
+
+@baseline_app.command("show")
+def baseline_show(
+    skill: Annotated[str, typer.Argument(help="Skill name.")],
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    json_output: JsonFlag = False,
+) -> None:
+    """Show the stored baseline's key, metadata, and headline readings."""
+    from bellwether.cli.baselines import read_baseline_for
+
+    try:
+        record = read_baseline_for(baselines, skill)
+    except BellwetherError as error:
+        typer.echo(f"bellwether baseline show: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    if record is None:
+        typer.echo(
+            f"bellwether baseline show: no baseline for {skill!r} under {baselines}", err=True
+        )
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+    summary = record.summary
+    _emit(
+        {
+            "skill": skill,
+            "eval_id": record.eval_id,
+            "digest": record.digest,
+            "key": record.key.model_dump(),
+            "metadata": record.metadata.model_dump(),
+            "verdict": summary.verdict.status,
+            "lower_bound": summary.functional.lower_bound,
+            "bci": summary.consistency.bci,
+            "tier1": summary.capability_profile.tier1,
+        },
+        as_json=json_output,
+        lines=[
+            f"baseline for {skill}: evaluation {record.eval_id} ({record.metadata.captured_at})",
+            f"  digest            {record.digest}",
+            f"  payload_digest    {record.key.payload_digest}",
+            f"  canon_version     {record.key.canon_version}",
+            f"  target_set_digest {record.key.target_set_digest}",
+            f"  platform_baseline {record.key.platform_baseline_version or '(none)'}",
+            f"  policy            {record.metadata.policy_profile} {record.metadata.policy_digest}",
+            f"  verdict {summary.verdict.status}, lower bound {summary.functional.lower_bound}, "
+            f"BCI {summary.consistency.bci}",
+            f"  tier-1 core {summary.capability_profile.tier1.get('core', [])}",
+        ],
+    )
+
+
+@baseline_app.command("clear")
+def baseline_clear(
+    skill: Annotated[str, typer.Argument(help="Skill name.")],
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    json_output: JsonFlag = False,
+) -> None:
+    """Remove the stored baseline; later runs compose no regression gate until one is set."""
+    from bellwether.cli.baselines import baseline_path
+
+    try:
+        path = baseline_path(baselines, skill)
+    except BellwetherError as error:
+        typer.echo(f"bellwether baseline clear: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    if not path.is_file():
+        typer.echo(f"bellwether baseline clear: no baseline for {skill!r} at {path}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+    path.unlink()
+    _emit({"removed": str(path)}, as_json=json_output, lines=[f"removed {path}"])
 
 
 def main() -> None:

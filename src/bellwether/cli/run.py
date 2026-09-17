@@ -25,6 +25,7 @@ from bellwether.cli.execution import SandboxRunExecutor, run_limits_for
 
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
+from bellwether.cli.baselines import BaselineRecord
 from bellwether.cli.dns_run import DnsResolverProvider
 from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.cli.orchestrator import (
@@ -42,6 +43,7 @@ from bellwether.cli.orchestrator import (
 from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import ResolvedRun, resolve_run
+from bellwether.config.models.baseline import PlatformBaseline
 from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
@@ -59,12 +61,14 @@ from bellwether.skill import SkillPackage
 from bellwether.verdict import validate_capability_weights
 
 __all__ = [
+    "DEPTHS",
     "ExecutorFactory",
     "apply_budget_override",
     "apply_matrix_options",
     "build_proxy_provider",
     "build_resolver_provider",
     "claude_code_providers",
+    "depth_options",
     "policy_digest",
     "run_evaluation",
     "select_scenarios",
@@ -148,6 +152,9 @@ def run_evaluation(
     looks_override: Sequence[int] | None = None,
     repetitions: int | None = None,
     budget_usd: float | None = None,
+    baseline: BaselineRecord | None = None,
+    depth: str | None = None,
+    platform_baseline: PlatformBaseline | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -163,7 +170,27 @@ def run_evaluation(
     fixed-N run makes no sequential decision and licenses no gate-eligible interval.
     ``budget_usd`` (``--budget-usd``) overrides the profile's ``gates.budget.max_cost_usd`` for
     this evaluation; the cost gate it feeds is composed only where every target is priced.
+    ``baseline`` is the skill's stored §17.5 baseline, when one exists; the regression gate is
+    composed against it where the profile asks for the comparison and the key allows it.
+    ``platform_baseline`` is the ``.bellwether/platform-baseline.yaml`` document (§12.6): where
+    it is keyed to the configured sandbox image its path entries are subtracted from every
+    run's capability sets and its version is stamped on the summary; where it is not, nothing
+    is absorbed and the verdict carries the reason, so "baseline not applied" never reads as
+    "nothing infrastructural happened".
+    ``depth`` (``--depth quick|standard|deep``, §19.1) is a preset over the matrix options and
+    is exclusive with them: ``quick`` is one ``small`` target at a fixed 3 (descriptive only),
+    ``standard`` is ``frontier`` + ``small`` at looks [6, 12], ``deep`` is every configured
+    target at looks [6, 12, 20].
     """
+    if depth is not None:
+        target_aliases, looks_override, repetitions = depth_options(
+            depth,
+            target_aliases=target_aliases,
+            n_max_override=n_max_override,
+            looks_override=looks_override,
+            repetitions=repetitions,
+        )
+        n_max_override = None
     resolved = resolve_run(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
     )
@@ -173,6 +200,7 @@ def run_evaluation(
         n_max_override=n_max_override,
         looks_override=looks_override,
         repetitions=repetitions,
+        require_every_alias=depth is not None,
     )
     resolved = apply_budget_override(resolved, budget_usd=budget_usd)
 
@@ -281,6 +309,17 @@ def run_evaluation(
     # every live run (BW-47).
     declared_scope = package.manifest.declared_scope if package.manifest is not None else None
     weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
+    applied_baseline: PlatformBaseline | None = None
+    baseline_notes: list[str] = []
+    if platform_baseline is not None:
+        applicable, why = platform_baseline.applicable_to(config.sandbox.image)
+        if applicable:
+            applied_baseline = platform_baseline
+        else:
+            baseline_notes.append(
+                f"platform baseline {platform_baseline.version!r} not applied: {why} (§12.6); "
+                "no infrastructural access was subtracted from the capability sets"
+            )
     readings = drive_evaluation(
         plans,
         executor,
@@ -289,6 +328,7 @@ def run_evaluation(
         declared_scope=declared_scope,
         weights=weights,
         looks_for=lambda scenario_id: schedule[scenario_id][0],
+        platform_baseline=applied_baseline,
     )
 
     criticality = (
@@ -321,7 +361,42 @@ def run_evaluation(
         descriptive_only=repetitions is not None,
         per_run_wall_cap_ms=per_run_wall_cap_ms,
         pricing_for=pricing_for,
+        baseline=baseline,
+        platform_baseline_version=applied_baseline.version if applied_baseline else "",
+        extra_notes=baseline_notes,
     )
+
+
+#: §19.1's tiered depth: (target aliases to keep, look schedule, fixed repetitions).
+#: ``quick`` is fixed-N so it is ``descriptive_only`` and can never return ``ready``.
+DEPTHS: Mapping[str, tuple[tuple[str, ...], tuple[int, ...] | None, int | None]] = {
+    "quick": (("small",), None, 3),
+    "standard": (("frontier", "small"), (6, 12), None),
+    "deep": ((), (6, 12, 20), None),
+}
+
+
+def depth_options(
+    depth: str,
+    *,
+    target_aliases: Sequence[str] = (),
+    n_max_override: int | None = None,
+    looks_override: Sequence[int] | None = None,
+    repetitions: int | None = None,
+) -> tuple[tuple[str, ...], tuple[int, ...] | None, int | None]:
+    """Expand ``--depth`` into the matrix options it presets, or refuse (§19.1, §20).
+
+    A depth is a preset *over* ``--targets``/``--n-max``/``--looks``/``--repetitions``, so
+    naming both is two instructions for one setting and is refused rather than merged.
+    """
+    if depth not in DEPTHS:
+        raise BellwetherError(f"--depth must be one of {', '.join(DEPTHS)}, not {depth!r}")
+    if target_aliases or n_max_override is not None or looks_override is not None or repetitions:
+        raise BellwetherError(
+            f"--depth {depth} presets the targets and the schedule and cannot be combined with "
+            "--targets, --n-max, --looks or --repetitions; drop the preset to set them by hand"
+        )
+    return DEPTHS[depth]
 
 
 def apply_budget_override(resolved: ResolvedRun, *, budget_usd: float | None) -> ResolvedRun:
@@ -347,11 +422,14 @@ def apply_matrix_options(
     n_max_override: int | None = None,
     looks_override: Sequence[int] | None = None,
     repetitions: int | None = None,
+    require_every_alias: bool = False,
 ) -> ResolvedRun:
     """Apply the §20 matrix options to a resolved run, or refuse.
 
     ``--targets`` filters by model alias and refuses when nothing matches, naming the aliases the
-    matrix has — a silently empty target list would be a run about nothing. ``--repetitions``
+    matrix has — a silently empty target list would be a run about nothing; with
+    ``require_every_alias`` (a ``--depth`` preset) every named alias must be present, since a
+    preset that silently ran on half its targets would not be the preset. ``--repetitions``
     is exclusive with ``--n-max``/``--looks``: fixed mode *is* a schedule (one look at N), so
     combining them would be two schedules. ``--n-max``/``--looks`` go through the same §13.1
     consistency rule as every other schedule override.
@@ -359,10 +437,16 @@ def apply_matrix_options(
     if target_aliases:
         wanted = set(target_aliases)
         kept = tuple(rt for rt in resolved.targets if rt.target.model_alias in wanted)
-        if not kept:
-            have = sorted({rt.target.model_alias for rt in resolved.targets})
+        have = sorted({rt.target.model_alias for rt in resolved.targets})
+        missing = sorted(wanted - {rt.target.model_alias for rt in kept})
+        if not kept or (require_every_alias and missing):
             raise BellwetherError(
-                f"--targets {sorted(wanted)} matches none of the matrix's model aliases {have}"
+                f"--targets {sorted(wanted)} "
+                + (
+                    f"matches none of the matrix's model aliases {have}"
+                    if not kept
+                    else f"names alias(es) the matrix does not have: {missing} (have {have})"
+                )
             )
         resolved = replace(resolved, targets=kept)
     if repetitions is not None:
@@ -402,6 +486,7 @@ def sandbox_executor_factory(
     randomize_identifiers: bool = True,
     plant_canaries: bool = False,
     provider_base_urls: Mapping[str, str | None] | None = None,
+    platform_baseline_version: str | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -447,6 +532,7 @@ def sandbox_executor_factory(
             randomize_identifiers=randomize_identifiers,
             plant_canaries=plant_canaries,
             provider_base_urls=dict(provider_base_urls or {}),
+            platform_baseline_version=platform_baseline_version,
         )
 
     return make

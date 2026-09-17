@@ -48,7 +48,7 @@ __all__ = [
 #: The ``summary.json`` schema version. Bumped on any change to the shape below. A minor
 #: bump adds optional keys; a major bump is a break. Producers stamp it; consumers read it
 #: before trusting anything else in the file.
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 
 class ReportModel(BaseModel):
@@ -84,6 +84,10 @@ class MatrixSummary(ReportModel):
 
     scenarios: int
     targets: int
+    #: The target slugs (``harness-provider-alias``) the matrix ran, sorted — what the §17.5
+    #: baseline key's ``target_set_digest`` is derived from, so a baseline collected on
+    #: frontier+small is never compared with one collected on frontier alone.
+    target_slugs: tuple[str, ...] = ()
     runs_planned: int
     runs_completed: int
     runs_evaluable: int
@@ -203,8 +207,18 @@ class SecuritySummary(ReportModel):
 
 
 class RegressionSummary(ReportModel):
+    """The §17.5 comparison against the stored baseline, as the regression gate read it.
+
+    ``baseline_digest`` identifies the baseline record compared against; ``deltas`` carries
+    what changed (tier-1 classes added/removed, sensitive hits added, the lower-bound and
+    BCI movements) and ``skipped`` names the components the §17.5 table ruled incomparable
+    — a silently partial comparison is worse than a refused one.
+    """
+
     baseline_digest: str = ""
+    baseline_eval_id: str = ""
     deltas: Mapping[str, object] = Field(default_factory=dict)
+    skipped: tuple[str, ...] = ()
 
 
 class CostSummary(ReportModel):

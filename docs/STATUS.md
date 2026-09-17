@@ -425,9 +425,65 @@ records — *expansion* is surfaced first as the regression signal), tier-2 sens
 security findings, and spend. §17.5's rule holds: the weighted figures are skipped and named
 under a different `weights_digest`, tier 3 is always named as not diffed, a schema-version
 mismatch is refused, and a different policy or skill is a caveat shown before the table. It
-reports and does not apply `gates.regression`; baseline storage and the gate remain a work
-package. `report` stays a stub with a truthful message (the renderers exist; re-rendering needs
-the figures rebuilt from a stored tree). Tested against the committed demo trees.
+reports and does not apply `gates.regression` (the gate has since landed — below). `report`
+was left a stub here (the figures had to be persisted first — also below). Tested against the
+committed demo trees.
+
+**Baselines and the regression gate landed (§17.5, §18.4).** `bellwether baseline set|show|clear`
+files an evaluation's summary at `.bellwether/baselines/<skill>.baseline.json` under the §17.5
+key — skill, payload digest at capture, canon version, target-set digest, platform baseline
+version — with `weights_digest` and the policy as metadata beside the key (policy is applied at
+comparison time; a threshold tweak must not invalidate every baseline). `run` reads the skill's
+baseline and composes a required `regression` gate: tier-1 expansion blocks under
+`block_on_capability_expansion` (warns otherwise), a lower-bound drop beyond
+`max_pass_rate_drop` blocks (lower bound to lower bound, never point estimates), a new
+sensitive-directory hit warns. The comparability table holds component by component: a
+different canon version or target set refuses with a verdict note, a different platform
+baseline skips the capability sets, a different weights digest skips the BCI. No baseline
+leaves the gate uncomposed with a note. `summary.regression` carries the deltas and what was
+skipped; the summary now stamps `canon_version`, `platform_baseline_version` and
+`matrix.target_slugs` so the key is derivable from any `summary.json` (schema `1.2`). A
+`merge=ours` `.gitattributes` is written beside the baselines. The record carries the whole
+summary rather than a hand-trimmed subset so the same `diff_summaries` the ad-hoc `diff` uses
+is what the gate reads — one comparison, two callers (spec-notes §17.5).
+
+**`bellwether report <EVAL_ID>` re-renders a stored tree.** The figures the renderers take are
+now persisted as `metrics/figures.json` (versioned canonical JSON, `report/persist.py`), so the
+PR comment and the HTML report are re-rendered byte-for-byte from `summary.json` + the figures;
+a tree written before the figures were persisted is refused with the reason. Persisting them
+**exposed a §24 determinism bug**: `build_figures` iterated a `frozenset` for the heatmap rows,
+so their order followed the process hash seed — the HTML renderer happened to sort, which hid
+it, and CI's `PYTHONHASHSEED=0` would never have caught it. The rows are sorted at the source
+now, proven identical across three hash seeds. The committed demo trees carry the figures.
+
+**`--depth quick|standard|deep` (§19.1)** presets the matrix options: `quick` is one `small`
+target at a fixed 3 (descriptive only — can never be `ready`, and the run output says so),
+`standard` is `frontier` + `small` at looks [6, 12], `deep` is every configured target at
+[6, 12, 20]. A preset is exclusive with `--targets`/`--n-max`/`--looks`/`--repetitions`, and
+every alias it names must be in the matrix — a preset that silently ran on half its targets
+would not be the preset.
+
+**`bellwether init-manifest <SKILL> --from EVAL` (§6.2)** infers `evals/manifest.yaml` from an
+observed run: the capability profile's tier-3 expansions become `tools.allow`,
+`filesystem.read/write`, `network.egress_allow` and `processes.allow`, under an
+`INFERRED, NOT REVIEWED` header a reviewer tightens. Finding classes are never laundered into
+an allowlist — a canary read, a blocked egress, a DNS lookup, and any path under a §13.5.4
+sensitive-directory hit (the exfiltrator's `~/.aws/credentials`) are listed in the header as
+observed-but-not-declared. The file is parsed back through the manifest loader before it lands;
+an existing manifest is kept unless `--force`, which preserves its reviewed criticality.
+
+**The platform baseline is applied on the run path (§12.6).** `platform-baseline.yaml` was a
+shipped document nothing read — `apply_path_baseline` had no callers, so every
+harness/toolchain path a run touched counted against the skill's declared scope. `run` now
+loads it beside the config and, where it is keyed to the configured sandbox image,
+`analyse_run` applies its path entries to each run — the glob-aware, near-miss-flagging
+matcher feeding the literal subtraction set — before the capability sets are produced. Absorbed
+paths are recorded per run and in `summary.security.runtime.baseline_absorbed` (the audit
+trail of "observed − baseline"); a traversal that names an entry but escapes it is never
+absorbed and surfaces as `baseline_near_miss`. A baseline not keyed to the image absorbs
+nothing and the verdict says why; the applied version is stamped on the run header and the
+summary. `doctor` reports absent / present-but-not-applied / applied. Processes and tools stay
+unwired: attribution by tree needs the process plane, and the shipped tools list is empty.
 
 ---
 
@@ -468,7 +524,7 @@ the figures rebuilt from a stored tree). Tested against the committed demo trees
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1148 tests: 1094 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1198 tests: 1144 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -607,7 +663,7 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    **every v0.1 work package is built**; what is left for the v0.1 line is the live proof of the
    second harness and the loose ends below.
 
-Loose ends to fold in along the way: WP-14's **live doctor interception probe** (small; do it with
+Loose ends to fold in along the way: **process and tool attribution against the platform baseline** (the path half is wired; §10.3 process trees need the process plane), WP-14's **live doctor interception probe** (small; do it with
 the DNS/canary work), and **plugin-layout staging** — installing an Agent Plugin bundle whole, in the
 layout a real client uses (`--plugin-dir`), rather than each skill as a bare directory
 (spec-notes §5/§6/§18).

@@ -33,6 +33,7 @@ from bellwether.report.figures import (
 )
 from bellwether.report.html import render_html_report
 from bellwether.report.markdown import Figures, ScopeRow, render_pr_comment
+from bellwether.report.persist import FIGURES_VERSION, figures_from_json, render_figures_json
 from bellwether.report.summary import (
     SCHEMA_VERSION,
     CapabilityProfileSummary,
@@ -56,6 +57,7 @@ from bellwether.report.summary import (
 )
 
 __all__ = [
+    "FIGURES_VERSION",
     "SCHEMA_VERSION",
     "STRIP_GLYPHS",
     "CapabilityProfileSummary",
@@ -80,7 +82,9 @@ __all__ = [
     "TrajectoryCluster",
     "VerdictSummary",
     "default_limitations",
+    "figures_from_json",
     "render_capability_heatmap",
+    "render_figures_json",
     "render_html_report",
     "render_pr_comment",
     "render_strip_chart",

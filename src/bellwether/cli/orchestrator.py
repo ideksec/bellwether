@@ -31,10 +31,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
+from bellwether import CANON_VERSION
 from bellwether.assertions import (
     EvidenceIndex,
+    ObservedPath,
     RunOutcome,
     ScopeTable,
+    apply_path_baseline,
     derive_assertions,
     evaluate_all,
     evaluate_scope,
@@ -42,7 +45,9 @@ from bellwether.assertions import (
     trace_inconsistencies,
 )
 from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_artifact_tree
+from bellwether.cli.baselines import BaselineRecord, target_set_digest
 from bellwether.cli.fixtures import ResolvedFixture
+from bellwether.config.models.baseline import PlatformBaseline
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
 from bellwether.config.models.provider import ModelPricing
@@ -74,6 +79,7 @@ from bellwether.report import (
     MatrixSummary,
     NoiseFloor,
     PolicyRef,
+    RegressionSummary,
     ScopeRow,
     SecuritySummary,
     SkillRef,
@@ -81,6 +87,7 @@ from bellwether.report import (
     Summary,
     VerdictSummary,
     default_limitations,
+    render_figures_json,
     render_html_report,
     render_pr_comment,
     render_summary_json,
@@ -112,10 +119,12 @@ __all__ = [
     "TargetInfo",
     "aggregate",
     "analyse_run",
+    "baseline_absorption",
     "build_figures",
     "consistent_schedule",
     "drive_evaluation",
     "effective_schedule",
+    "observed_paths",
     "orchestrate",
     "plan_matrix",
     "resolve_capability_weights",
@@ -245,6 +254,12 @@ class AnalysedRun:
     #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
     #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
     scope_unused: tuple[str, ...] = ()
+    #: §12.6 near-misses from the platform-baseline subtraction: a traversal that names a
+    #: path under a baseline entry but escapes it. Never absorbed; surfaced as findings.
+    baseline_near_misses: tuple[str, ...] = ()
+    #: The tier-3 paths the platform baseline absorbed for this run — the audit trail for
+    #: "observed − baseline", so a subtracted access is inspectable rather than gone.
+    baseline_absorbed: tuple[str, ...] = ()
     #: The footer's ``wall_clock_ms`` — what this run spent, as the executor measured it.
     #: ``None`` on an incomplete trace (no footer): the duration is then *unobserved*, and the
     #: budget gate treats it as such rather than counting it as zero (§16.2, §19.1).
@@ -409,6 +424,7 @@ def drive_evaluation(
     platform_baseline_t3: frozenset[str] = frozenset(),
     weights: Mapping[str, int] | None = None,
     looks_for: Callable[[str], Sequence[int]] | None = None,
+    platform_baseline: PlatformBaseline | None = None,
 ) -> list[SetReading]:
     """Run every plan through the executor and roll each repetition set into a reading.
 
@@ -450,7 +466,13 @@ def drive_evaluation(
             analysed_by_set[set_key] = []
             order.append((plan.scenario.id, plan.target.slug, plan.target))
         executed = executor.execute(plan)
-        run = analyse_run(plan, executed, scope=scope, platform_baseline_t3=platform_baseline_t3)
+        run = analyse_run(
+            plan,
+            executed,
+            scope=scope,
+            platform_baseline_t3=platform_baseline_t3,
+            platform_baseline=platform_baseline,
+        )
         if declared_scope is not None:
             table = scope_table_of(executed, declared_scope)
             run = replace(
@@ -514,17 +536,100 @@ def _verify_trace_matches_plan(trace: Trace, plan: RunPlan) -> None:
         )
 
 
+_BASELINE_READ_CLASSES = frozenset({"workspace_read", "outside_workspace_read"})
+_BASELINE_WRITE_CLASSES = frozenset(
+    {"workspace_write", "outside_workspace_write", "workspace_delete", "harness_state_write"}
+)
+
+
+def _raw_path(action: Action, context: NormalizationContext) -> str | None:
+    """The path as the skill spelled it, placeholder-normalised but with traversal kept.
+
+    The capability's tier 3 is the *resolved* form; §12.6's near-miss rule needs the named
+    form too, because ``~/.cache/../.aws/credentials`` must never resolve into
+    ``${HOME}/.cache/**``. Relative tool paths resolve against the workspace root, as the
+    tool descriptions say they do.
+    """
+    payload = action.action
+    spelled: object = payload.get("path")
+    if spelled is None and isinstance(payload.get("input"), Mapping):
+        tool_input = payload["input"]
+        spelled = tool_input.get("path") or tool_input.get("file_path")
+    if not isinstance(spelled, str) or not spelled:
+        return None
+    absolute = (
+        spelled if spelled.startswith("/") else f"{context.workspace_root.rstrip('/')}/{spelled}"
+    )
+    return context.normalize_path(absolute)
+
+
+def observed_paths(
+    actions: Sequence[Action], context: NormalizationContext
+) -> tuple[list[ObservedPath], list[ObservedPath]]:
+    """Every filesystem access in a run as ``(reads, writes)`` of :class:`ObservedPath`."""
+    reads: list[ObservedPath] = []
+    writes: list[ObservedPath] = []
+    for action in actions:
+        capability = capability_for(action, context)
+        if capability is None or capability.tier3 is None:
+            continue
+        if capability.tier1 in _BASELINE_READ_CLASSES:
+            bucket = reads
+        elif capability.tier1 in _BASELINE_WRITE_CLASSES:
+            bucket = writes
+        else:
+            continue
+        raw = _raw_path(action, context) or capability.tier3
+        bucket.append(ObservedPath(raw=raw, resolved=capability.tier3))
+    return reads, writes
+
+
+def baseline_absorption(
+    actions: Sequence[Action],
+    context: NormalizationContext,
+    baseline: PlatformBaseline,
+    *,
+    sandbox_image: str,
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Apply the platform baseline's path entries to one run (§12.6).
+
+    Returns the absorbed tier-3 set — the ``platform_baseline_t3`` canonicalisation
+    subtracts — and the near-miss details. Absorbs nothing where the baseline is not keyed
+    to this run's image; the caller has already surfaced that reason.
+    """
+    reads, writes = observed_paths(actions, context)
+    read_app = apply_path_baseline(reads, baseline, access="read", sandbox_image=sandbox_image)
+    write_app = apply_path_baseline(writes, baseline, access="write", sandbox_image=sandbox_image)
+    near = tuple(sorted({miss.detail for miss in (*read_app.near_misses, *write_app.near_misses)}))
+    return read_app.absorbed | write_app.absorbed, near
+
+
 def analyse_run(
     plan: RunPlan,
     executed: ExecutedRun,
     *,
     scope: DeclaredScope | None,
     platform_baseline_t3: frozenset[str] = frozenset(),
+    platform_baseline: PlatformBaseline | None = None,
 ) -> AnalysedRun:
-    """Turn one executed run into its per-run reading (§12.7 outcome + §11.4 canonical)."""
+    """Turn one executed run into its per-run reading (§12.7 outcome + §11.4 canonical).
+
+    ``platform_baseline`` (§12.6), when given and keyed to this run's image, subtracts the
+    infrastructural paths it names from the capability sets *before* they are produced —
+    the glob-aware matcher feeding the literal ``platform_baseline_t3`` set — and records
+    what it absorbed and what it suspiciously almost absorbed.
+    """
     _verify_trace_matches_plan(executed.trace, plan)
     trace = executed.trace
     context = executed.context
+    absorbed: frozenset[str] = frozenset(platform_baseline_t3)
+    near_misses: tuple[str, ...] = ()
+    if platform_baseline is not None:
+        matched, near_misses = baseline_absorption(
+            trace.actions, context, platform_baseline, sandbox_image=trace.header.sandbox.image
+        )
+        absorbed = absorbed | matched
+    platform_baseline_t3 = absorbed
     index = EvidenceIndex.from_trace(trace, context, workspace=Path(context.workspace_root))
 
     specs: list[AssertionSpec] = list(plan.scenario.assertions)
@@ -597,6 +702,8 @@ def analyse_run(
         canary_without_read=index.canary_without_read_present,
         exit_reason=trace.exit_reason,
         scope_unused=scope_unused,
+        baseline_near_misses=near_misses,
+        baseline_absorbed=tuple(sorted(absorbed - frozenset(platform_baseline_t3 - absorbed))),
         wall_clock_ms=trace.footer.wall_clock_ms if trace.footer is not None else None,
         tokens=(
             {
@@ -753,6 +860,11 @@ class SetReading:
     #: Runs by §12.7 outcome, so the matrix counts are exact rather than reconstructed.
     n_not_evaluable: int = 0
     n_excluded_quality: int = 0
+    #: §12.6 near-misses across the set, de-duplicated and sorted — surfaced in the report
+    #: as findings; never absorbed.
+    baseline_near_misses: tuple[str, ...] = ()
+    #: Tier-3 paths the platform baseline absorbed in any run of the set (the audit trail).
+    baseline_absorbed: tuple[str, ...] = ()
     #: Wall clock summed over the runs whose trace carries a footer (§19.1). A footerless
     #: run contributes nothing here and is counted in ``n_wall_clock_unobserved`` instead, so
     #: the figure is a *lower bound* whenever that count is non-zero — never a total that
@@ -901,6 +1013,10 @@ def aggregate(
         n_timed_out=sum(1 for run in runs if run.exit_reason == "timeout"),
         n_not_evaluable=stability.denominators.n_not_evaluable,
         n_excluded_quality=stability.denominators.n_excluded_quality,
+        baseline_near_misses=tuple(
+            sorted({miss for run in runs for miss in run.baseline_near_misses})
+        ),
+        baseline_absorbed=tuple(sorted({path for run in runs for path in run.baseline_absorbed})),
         wall_clock_ms_observed=sum(
             run.wall_clock_ms for run in runs if run.wall_clock_ms is not None
         ),
@@ -1441,6 +1557,236 @@ def _budget_cost_result(spend: BudgetReading, profile: ProfileSpec) -> TargetGat
     )
 
 
+@dataclass(frozen=True)
+class RegressionReading:
+    """The §17.5 comparison of this evaluation against its stored baseline.
+
+    ``composed`` is False where the key rules the baseline incomparable (a different
+    ``canon_version`` or ``target_set_digest``, or a different skill); ``notes`` then says
+    why and the gate is not composed. Otherwise the deltas are read and ``skipped`` names
+    the components the table ruled out (capability sets under a different
+    ``platform_baseline_version``, the weighted figures under a different
+    ``weights_digest``).
+    """
+
+    composed: bool
+    notes: tuple[str, ...]
+    skipped: tuple[str, ...] = ()
+    capabilities_added: tuple[str, ...] = ()
+    capabilities_removed: tuple[str, ...] = ()
+    sensitive_hits_added: tuple[str, ...] = ()
+    lower_bound_before: float | None = None
+    lower_bound_after: float | None = None
+    bci_before: float | None = None
+    bci_after: float | None = None
+    baseline_digest: str = ""
+    baseline_eval_id: str = ""
+
+    @property
+    def lower_bound_drop(self) -> float | None:
+        if self.lower_bound_before is None or self.lower_bound_after is None:
+            return None
+        return round6(self.lower_bound_before - self.lower_bound_after)
+
+    @property
+    def bci_drop(self) -> float | None:
+        if self.bci_before is None or self.bci_after is None:
+            return None
+        return round6(self.bci_before - self.bci_after)
+
+
+def regression_reading(
+    readings: Sequence[SetReading],
+    baseline: BaselineRecord,
+    *,
+    skill_name: str,
+    platform_baseline_version: str,
+) -> RegressionReading:
+    """Compare the current readings with a stored baseline under the §17.5 key rules."""
+    key = baseline.key
+    where = f"baseline {baseline.eval_id!r}"
+    if key.skill_name != skill_name:
+        return RegressionReading(
+            composed=False,
+            notes=(
+                f"regression not composed: {where} is for skill {key.skill_name!r}, not "
+                f"{skill_name!r}",
+            ),
+        )
+    if key.canon_version != CANON_VERSION:
+        return RegressionReading(
+            composed=False,
+            notes=(
+                f"regression not composed: {where} was captured under canon_version "
+                f"{key.canon_version!r}; this build canonicalises under {CANON_VERSION!r} and "
+                "nothing is comparable across that change (§17.5) — re-set the baseline",
+            ),
+        )
+    slugs = sorted({reading.target.slug for reading in readings})
+    if key.target_set_digest != target_set_digest(slugs):
+        return RegressionReading(
+            composed=False,
+            notes=(
+                f"regression not composed: {where} was captured on a different target set "
+                f"(this run: {', '.join(slugs)}); nothing but per-target rates is comparable "
+                "across a target-set change, so the comparison is refused (§17.5)",
+            ),
+        )
+
+    skipped: list[str] = []
+    notes: list[str] = []
+    before = baseline.summary
+    primary = _primary(readings)
+
+    capabilities_added: tuple[str, ...] = ()
+    capabilities_removed: tuple[str, ...] = ()
+    sensitive_added: tuple[str, ...] = ()
+    if key.platform_baseline_version != platform_baseline_version:
+        skipped.append(
+            "capability sets and sensitive hits: platform_baseline_version differs "
+            f"({key.platform_baseline_version!r} vs {platform_baseline_version!r}), so the "
+            "subtracted infrastructure is not the same (§17.5)"
+        )
+    else:
+        now_t1 = {cap for reading in readings for run in reading.runs for cap in run.caps_t1}
+        then_t1 = _tier1_classes_of(before)
+        capabilities_added = tuple(sorted(now_t1 - then_t1))
+        capabilities_removed = tuple(sorted(then_t1 - now_t1))
+        now_hits = {hit for reading in readings for hit in reading.sensitive_hits}
+        then_hits = _sensitive_hits_of(before)
+        sensitive_added = tuple(sorted(now_hits - then_hits))
+
+    bci_before: float | None = None
+    bci_after: float | None = None
+    if baseline.metadata.weights_digest != primary.weights_digest:
+        skipped.append(
+            "BCI and weighted Jaccard: weights_digest differs, so the risk-weighted figures "
+            "are not comparable (§17.5)"
+        )
+    else:
+        bci_before = before.consistency.bci
+        bci_after = primary.bci
+
+    return RegressionReading(
+        composed=True,
+        notes=tuple(notes),
+        skipped=tuple(skipped),
+        capabilities_added=capabilities_added,
+        capabilities_removed=capabilities_removed,
+        sensitive_hits_added=sensitive_added,
+        lower_bound_before=before.functional.lower_bound,
+        lower_bound_after=primary.lower_bound,
+        bci_before=bci_before,
+        bci_after=bci_after,
+        baseline_digest=baseline.digest,
+        baseline_eval_id=baseline.eval_id,
+    )
+
+
+def _tier1_classes_of(summary: Summary) -> set[str]:
+    tier1 = summary.capability_profile.tier1
+    classes: set[str] = set()
+    for group in ("core", "peripheral"):
+        value = tier1.get(group)
+        if not isinstance(value, (list, tuple)):
+            continue
+        for item in value:
+            if isinstance(item, str):
+                classes.add(item)
+            elif isinstance(item, Mapping) and isinstance(item.get("tier1"), str):
+                classes.add(item["tier1"])
+    return classes
+
+
+def _sensitive_hits_of(summary: Summary) -> set[str]:
+    value = summary.capability_profile.tier2.get("sensitive_hits")
+    return {str(item) for item in value} if isinstance(value, (list, tuple)) else set()
+
+
+def _regression_result(reading: RegressionReading, profile: ProfileSpec) -> TargetGateResult:
+    """The regression gate (§17.5, §16.2): tier-1 expansion and a pass-rate drop.
+
+    Expansion blocks under ``block_on_capability_expansion`` and warns otherwise; a
+    lower-bound drop beyond ``max_pass_rate_drop`` blocks (lower bound to lower bound,
+    never point estimate to point estimate); a new sensitive-directory hit is always a
+    finding, so it warns even where nothing else moved. A BCI drop is reported, not gated.
+    """
+    gates = profile.gates.regression
+    problems: list[str] = []
+    status = "pass"
+
+    def escalate(to: str) -> None:
+        nonlocal status
+        order = {"pass": 0, "warn": 1, "block": 2}
+        if order[to] > order[status]:
+            status = to
+
+    if reading.capabilities_added:
+        added = ", ".join(reading.capabilities_added)
+        if gates.block_on_capability_expansion:
+            escalate("block")
+            problems.append(f"tier-1 capability expansion: {added} (block_on_capability_expansion)")
+        else:
+            escalate("warn")
+            problems.append(f"tier-1 capability expansion: {added}")
+    if reading.sensitive_hits_added:
+        escalate("warn")
+        problems.append(
+            "new sensitive-directory hit(s): " + ", ".join(reading.sensitive_hits_added)
+        )
+    drop = reading.lower_bound_drop
+    if drop is not None and drop > gates.max_pass_rate_drop:
+        escalate("block")
+        problems.append(
+            f"pass-rate lower bound dropped {drop} ({reading.lower_bound_before} → "
+            f"{reading.lower_bound_after}) against max_pass_rate_drop {gates.max_pass_rate_drop}"
+        )
+    observed = (
+        f"tier-1 +{len(reading.capabilities_added)}/−{len(reading.capabilities_removed)}, "
+        f"lower bound {reading.lower_bound_before} → {reading.lower_bound_after}"
+    )
+    if reading.bci_drop is not None:
+        observed += f", BCI {reading.bci_before} → {reading.bci_after}"
+    threshold = (
+        f"no tier-1 expansion ({'block' if gates.block_on_capability_expansion else 'warn'}), "
+        f"lower-bound drop ≤ {gates.max_pass_rate_drop}"
+    )
+    reason = (
+        "; ".join(problems)
+        if problems
+        else f"no regression against baseline {reading.baseline_eval_id!r}"
+    )
+    if reading.skipped:
+        reason += "; not compared: " + " | ".join(reading.skipped)
+    return _budget_result(status, observed, threshold, reason)
+
+
+def regression_summary(reading: RegressionReading) -> RegressionSummary:
+    """The machine-readable form of the comparison for ``summary.regression`` (§17.2)."""
+    deltas: dict[str, object] = {
+        "capabilities_added": list(reading.capabilities_added),
+        "capabilities_removed": list(reading.capabilities_removed),
+        "sensitive_hits_added": list(reading.sensitive_hits_added),
+        "lower_bound": {
+            "before": reading.lower_bound_before,
+            "after": reading.lower_bound_after,
+            "drop": reading.lower_bound_drop,
+        },
+    }
+    if reading.bci_drop is not None:
+        deltas["bci"] = {
+            "before": reading.bci_before,
+            "after": reading.bci_after,
+            "drop": reading.bci_drop,
+        }
+    return RegressionSummary(
+        baseline_digest=reading.baseline_digest,
+        baseline_eval_id=reading.baseline_eval_id,
+        deltas=deltas,
+        skipped=reading.skipped,
+    )
+
+
 def _gate(
     name: str,
     results: Sequence[TargetGateResult],
@@ -1481,6 +1827,9 @@ def orchestrate(
     descriptive_only: bool = False,
     per_run_wall_cap_ms: int | None = None,
     pricing_for: Callable[[TargetInfo], ModelPricing | None] | None = None,
+    baseline: BaselineRecord | None = None,
+    platform_baseline_version: str = "",
+    extra_notes: Sequence[str] = (),
 ) -> EvalResult:
     """Compose the verdict from the set readings, render, and write the artifact tree.
 
@@ -1543,7 +1892,7 @@ def orchestrate(
             required=True,
         )
     )
-    notes: list[str] = []
+    notes: list[str] = list(extra_notes)
     if spend.cost_usd is not None:
         gates.append(_gate("budget.cost", [_budget_cost_result(spend, profile)], required=True))
     else:
@@ -1553,6 +1902,31 @@ def orchestrate(
             + f" (providers.<name>.pricing), so max_cost_usd {profile.gates.budget.max_cost_usd:.2f} "
             "is not enforced on this evaluation; reported token usage is in summary.cost"
         )
+
+    # §17.5: the regression gate, against the stored baseline where one exists and the
+    # profile asks for the comparison. No baseline, or one the key rules incomparable,
+    # leaves the gate uncomposed with a note — never a silent pass.
+    regression: RegressionReading | None = None
+    if profile.gates.regression.compare_to_baseline:
+        if baseline is None:
+            notes.append(
+                f"regression not composed: no baseline is stored for skill {skill_name!r} "
+                "(set one with `bellwether baseline set` from a reviewed evaluation, §17.5)"
+            )
+        else:
+            regression = regression_reading(
+                readings,
+                baseline,
+                skill_name=skill_name,
+                platform_baseline_version=platform_baseline_version,
+            )
+            notes.extend(regression.notes)
+            if regression.composed:
+                gates.append(
+                    _gate("regression", [_regression_result(regression, profile)], required=True)
+                )
+            else:
+                regression = None
 
     verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only, notes=notes)
 
@@ -1573,6 +1947,8 @@ def orchestrate(
         bellwether_version=bellwether_version,
         descriptive_only=descriptive_only,
         spend=spend,
+        regression=regression,
+        platform_baseline_version=platform_baseline_version,
     )
 
     artifacts = write_artifact_tree(
@@ -1582,6 +1958,7 @@ def orchestrate(
         verdict_json=_verdict_json(verdict),
         pr_comment=render_pr_comment(summary, figures),
         report_html=render_html_report(summary, figures),
+        figures_json=render_figures_json(figures),
         traces={run.key: run.trace_jsonl for r in readings for run in r.runs},
         canonicals={run.key: run.canonical_json for r in readings for run in r.runs},
     )
@@ -1637,6 +2014,8 @@ def _build_summary(
     bellwether_version: str,
     descriptive_only: bool,
     spend: BudgetReading | None = None,
+    regression: RegressionReading | None = None,
+    platform_baseline_version: str = "",
 ) -> Summary:
     primary = _primary(readings)
     targets = sorted({r.target.slug for r in readings})
@@ -1656,6 +2035,7 @@ def _build_summary(
     matrix = MatrixSummary(
         scenarios=len(scenarios),
         targets=len(targets),
+        target_slugs=tuple(targets),
         runs_planned=n_completed,
         runs_completed=n_completed,
         runs_evaluable=n_evaluable,
@@ -1705,9 +2085,18 @@ def _build_summary(
     inconsistencies = sorted(
         {reason for reading in readings for reason in reading.trace_inconsistencies}
     )
-    security = SecuritySummary(
-        runtime={"trace_inconsistency": inconsistencies} if inconsistencies else {}
-    )
+    runtime: dict[str, object] = {}
+    if inconsistencies:
+        runtime["trace_inconsistency"] = inconsistencies
+    # §12.6: a traversal that names a baseline entry but escapes it is a finding, and the
+    # absorbed paths are the audit trail of what "observed − baseline" subtracted.
+    near_misses = sorted({miss for reading in readings for miss in reading.baseline_near_misses})
+    if near_misses:
+        runtime["baseline_near_miss"] = near_misses
+    absorbed = sorted({path for reading in readings for path in reading.baseline_absorbed})
+    if absorbed:
+        runtime["baseline_absorbed"] = absorbed
+    security = SecuritySummary(runtime=runtime)
     return Summary(
         eval_id=eval_id,
         created_at=created_at,
@@ -1719,6 +2108,9 @@ def _build_summary(
             criticality=criticality,  # type: ignore[arg-type]
         ),
         policy=PolicyRef(profile=profile_name, digest=policy_digest),
+        # §17.5: the two key components a baseline is filed under, beside the target set.
+        canon_version=CANON_VERSION,
+        platform_baseline_version=platform_baseline_version,
         matrix=matrix,
         verdict=VerdictSummary(
             status=verdict.verdict, gates=_gate_summaries(gates), notes=verdict.notes
@@ -1747,6 +2139,7 @@ def _build_summary(
             if spend is not None
             else None
         ),
+        regression=regression_summary(regression) if regression is not None else None,
     )
 
 
@@ -1855,7 +2248,12 @@ def build_figures(readings: Sequence[SetReading]) -> Figures:
             key = ("core" if cap in core else "peripheral", cap)
             caps_seen.setdefault(key, [False] * len(primary.runs))
             caps_seen[key][index] = True
-    for (tier1, cap), hits in caps_seen.items():
+    # §24: `caps_t1` is a frozenset, whose iteration order follows the process hash seed;
+    # the rows are sorted here so the persisted figures — and every render of them — carry
+    # the same order on every machine (core before peripheral, then by class name).
+    for (tier1, cap), hits in sorted(
+        caps_seen.items(), key=lambda item: (item[0][0] != "core", item[0][1])
+    ):
         heatmap.append(
             CapabilityRow(
                 tier1_class=tier1, capability=cap, exercised=tuple(hits), high_risk=cap in rare
