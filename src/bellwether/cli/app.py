@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import enum
 import os
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 
 from bellwether import __version__
+from bellwether.cli.estimate import RunEstimate, render_estimate
 from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS, TargetInfo
 from bellwether.cli.preflight import available_planes, preflight_failures
 from bellwether.config import (
@@ -521,6 +524,15 @@ def run(
     strict: Annotated[
         bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
     ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            help="Skip the confirmation after the pre-flight estimate (§19.1) — never the "
+            "estimate itself. Without it, an interactive terminal is asked to proceed; a "
+            "non-interactive run (CI) proceeds after printing the estimate.",
+        ),
+    ] = False,
     deterministic_sampling: Annotated[
         bool,
         typer.Option(
@@ -682,6 +694,8 @@ def run(
                 platform_baseline=platform_baseline,
                 run_cache=run_cache,
                 deterministic_sampling=deterministic_sampling,
+                max_tokens_per_run=max_tokens,
+                on_estimate=_estimate_gate(yes),
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -912,6 +926,24 @@ def pr_comment(
         as_json=json_output,
         lines=[f"{action} comment on {context.slug}#{context.number}"],
     )
+
+
+def _estimate_gate(yes: bool) -> Callable[[RunEstimate], bool]:
+    """Print the §19.1 estimate (always) and ask to proceed (only on an interactive terminal).
+
+    The estimate goes to stderr so a ``--json`` result on stdout stays machine-readable. On a
+    terminal without ``--yes`` the operator is asked; in CI there is nobody to ask, so the run
+    proceeds after the estimate is printed — the flag skips the prompt, never the figures.
+    """
+
+    def gate(estimate: RunEstimate) -> bool:
+        for line in render_estimate(estimate):
+            typer.echo(line, err=True)
+        if yes or not sys.stdin.isatty():
+            return True
+        return bool(typer.confirm("Proceed with the run?", default=False, err=True))
+
+    return gate
 
 
 def exit_code_for(result_exit_code: int, verdict: str, *, strict: bool) -> ExitCode:

@@ -1411,3 +1411,53 @@ def test_run_refuses_deterministic_sampling_on_a_claude_code_target() -> None:
     )
     pinned = [f for f in failures if f.gate == "deterministic_sampling"]
     assert pinned and "api-loop" in pinned[0].remedy
+
+
+# ---------------------------------------------------------------------------
+# §19.1: the pre-flight estimate
+# ---------------------------------------------------------------------------
+
+
+def test_the_estimate_is_offered_before_anything_runs_and_a_decline_refuses(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    from bellwether.cli.estimate import RunEstimate
+
+    seen: list[RunEstimate] = []
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    def evaluate(accept: bool):  # type: ignore[no-untyped-def]
+        def gate(estimate: RunEstimate) -> bool:
+            seen.append(estimate)
+            return accept
+
+        return run_evaluation(
+            config=_config(),
+            policy=_policy(),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id="estimate",
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            max_tokens_per_run=50_000,
+            on_estimate=gate,
+        )
+
+    with pytest.raises(BellwetherError, match="declined at the pre-flight estimate"):
+        evaluate(accept=False)
+    assert holder["exec"].calls == 0  # nothing executed
+    estimate = seen[-1]
+    # The low profile: one scenario × one target, looks [6, 12, 20].
+    assert (estimate.best_runs, estimate.expected_runs, estimate.worst_runs) == (6, 12, 20)
+    assert estimate.max_tokens_per_run == 50_000
+    assert estimate.cost_ceiling_usd is None  # the fixture config prices nothing
+
+    evaluate(accept=True)
+    assert holder["exec"].calls == 20

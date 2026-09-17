@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from bellwether import __version__
 from bellwether.cli.baselines import BaselineRecord
 from bellwether.cli.dns_run import DnsResolverProvider
+from bellwether.cli.estimate import RunEstimate, estimate_run
 from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.cli.orchestrator import (
     EvalResult,
@@ -166,6 +167,8 @@ def run_evaluation(
     platform_baseline: PlatformBaseline | None = None,
     run_cache: RunCache | None = None,
     deterministic_sampling: bool = False,
+    max_tokens_per_run: int = 1_000_000,
+    on_estimate: Callable[[RunEstimate], bool] | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -183,6 +186,9 @@ def run_evaluation(
     this evaluation; the cost gate it feeds is composed only where every target is priced.
     ``baseline`` is the skill's stored §17.5 baseline, when one exists; the regression gate is
     composed against it where the profile asks for the comparison and the key allows it.
+    ``on_estimate`` receives the §19.1 pre-flight estimate after the matrix is planned and
+    before anything is executed; returning False declines the run, which is refused with no
+    container started. ``max_tokens_per_run`` is the per-repetition cap the estimate prices.
     ``run_cache`` (§19.2), when given, wraps the executor: a plan whose key — payload digest,
     scenario content, target, fixture digest, harness version, model id, sandbox image, platform
     baseline version, repetition — matches a live entry is served from the stored trace instead of
@@ -314,6 +320,24 @@ def run_evaluation(
         n_max_for=lambda scenario: schedule[scenario.id][1],
         companions_for=companions_for,
     )
+
+    def pricing_for(target: TargetInfo) -> ModelPricing | None:
+        return config.providers[target.provider].pricing_for(target.model_alias)
+
+    # §19.1: the pre-flight estimate is mandatory and comes before anything is spent. The
+    # caller shows it and may decline; a decline is a refusal with no container started.
+    estimate = estimate_run(
+        schedules=schedule,
+        targets=targets,
+        max_tokens_per_run=max_tokens_per_run,
+        pricing_for=pricing_for,
+        baseline=baseline,
+        fixed_mode=repetitions is not None,
+    )
+    if on_estimate is not None and not on_estimate(estimate):
+        raise BellwetherError(
+            "run declined at the pre-flight estimate (§19.1); nothing was executed"
+        )
     # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
     # assertions: `scope=None` keeps the scenario's own assertions deciding each run's outcome,
     # while `declared_scope` feeds the manifest's scope into the `scope` gate — every area of the
@@ -396,9 +420,6 @@ def run_evaluation(
         int(run_limits_for(RunLimits(), scenario, suite.defaults).wall_seconds * 1000)
         for scenario in scenarios
     )
-
-    def pricing_for(target: TargetInfo) -> ModelPricing | None:
-        return config.providers[target.provider].pricing_for(target.model_alias)
 
     return orchestrate(
         skill_name=package.name,
