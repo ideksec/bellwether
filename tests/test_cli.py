@@ -542,12 +542,21 @@ def test_exit_codes_follow_the_spec() -> None:
     assert 1 not in {int(code) for code in ExitCode}
 
 
+def _run_option_names() -> set[str]:
+    """The option names `run` registers, read from the click command rather than the rendered
+    help — rich wraps and colours `--help` by terminal width, so a substring check on the text
+    passes locally and fails on a narrow CI runner."""
+    import typer.main
+
+    run_command = typer.main.get_command(app).commands["run"]  # type: ignore[attr-defined]
+    return {opt for param in run_command.params for opt in param.opts}
+
+
 def test_run_exposes_the_scenario_and_tag_filters() -> None:
     """§20 lists `--scenario ID` and `--tag TAG` on `run`; both are repeatable filters."""
-    result = runner.invoke(app, ["run", "--help"])
-    assert result.exit_code == 0
-    assert "--scenario" in result.output
-    assert "--tag" in result.output
+    names = _run_option_names()
+    assert "--scenario" in names
+    assert "--tag" in names
 
 
 def test_exit_code_for_maps_verdicts_and_strict_promotes_conditional() -> None:
@@ -563,10 +572,9 @@ def test_exit_code_for_maps_verdicts_and_strict_promotes_conditional() -> None:
 
 
 def test_run_exposes_the_section_20_matrix_options() -> None:
-    result = runner.invoke(app, ["run", "--help"])
-    assert result.exit_code == 0
+    names = _run_option_names()
     for option in ("--targets", "--n-max", "--looks", "--repetitions", "--strict", "--budget-usd"):
-        assert option in result.output, option
+        assert option in names, option
 
 
 def test_looks_parsing_refuses_a_non_integer() -> None:
