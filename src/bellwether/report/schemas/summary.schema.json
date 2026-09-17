@@ -493,6 +493,14 @@
           "title": "Sets Stopped At Look",
           "type": "object"
         },
+        "target_slugs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Slugs",
+          "type": "array"
+        },
         "targets": {
           "title": "Targets",
           "type": "integer"
@@ -548,16 +556,30 @@
     },
     "RegressionSummary": {
       "additionalProperties": false,
+      "description": "The §17.5 comparison against the stored baseline, as the regression gate read it.\n\n``baseline_digest`` identifies the baseline record compared against; ``deltas`` carries\nwhat changed (tier-1 classes added/removed, sensitive hits added, the lower-bound and\nBCI movements) and ``skipped`` names the components the §17.5 table ruled incomparable\n— a silently partial comparison is worse than a refused one.",
       "properties": {
         "baseline_digest": {
           "default": "",
           "title": "Baseline Digest",
           "type": "string"
         },
+        "baseline_eval_id": {
+          "default": "",
+          "title": "Baseline Eval Id",
+          "type": "string"
+        },
         "deltas": {
           "additionalProperties": true,
           "title": "Deltas",
           "type": "object"
+        },
+        "skipped": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Skipped",
+          "type": "array"
         }
       },
       "title": "RegressionSummary",
@@ -752,7 +774,7 @@
       "default": null
     },
     "schema_version": {
-      "default": "1.1",
+      "default": "1.2",
       "title": "Schema Version",
       "type": "string"
     },
@@ -780,6 +802,6 @@
     "security",
     "limitations"
   ],
-  "title": "Bellwether summary.json (schema 1.1)",
+  "title": "Bellwether summary.json (schema 1.2)",
   "type": "object"
 }

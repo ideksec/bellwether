@@ -1033,3 +1033,68 @@ def test_a_matrix_over_its_wall_clock_ceiling_is_not_ready(
     assert result.verdict.verdict == "not_ready"
     assert result.summary.cost is not None
     assert result.summary.cost.wall_clock_s == 4800.0
+
+
+# ---------------------------------------------------------------------------
+# §17.5: the regression gate on the run path
+# ---------------------------------------------------------------------------
+
+
+def test_a_stored_baseline_composes_the_regression_gate(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """First run: no baseline, the gate is not composed and the verdict says so. Set the
+    baseline from that run; the second run composes `regression` and passes (same skill,
+    same behaviour). A baseline whose core omits a class the skill exercises reads as tier-1
+    expansion and blocks under the default policy."""
+    from bellwether.cli.baselines import baseline_from_summary
+
+    first, _ = _evaluate(package, tmp_path)
+    assert "regression" not in {gate.name for gate in first.verdict.gates}
+    assert any("no baseline is stored" in note for note in first.verdict.notes)
+    assert first.summary.regression is None
+
+    baseline = baseline_from_summary(first.summary)
+    second = _evaluate_with(package, tmp_path / "second", config=_config(), baseline=baseline)
+    gates = {gate.name: gate for gate in second.verdict.gates}
+    assert gates["regression"].status == "pass"
+    assert second.summary.regression is not None
+    assert second.summary.regression.baseline_eval_id == "firstlight"
+    assert second.summary.regression.baseline_digest == baseline.digest
+    assert second.summary.regression.deltas["capabilities_added"] == []
+    assert second.verdict.verdict == "conditional"  # unchanged by a clean comparison
+
+    # Tamper: a baseline that never saw `tool:skill` makes this run an expansion.
+    profile = first.summary.capability_profile
+    core = [cap for cap in profile.tier1["core"] if cap != "tool:skill"]  # type: ignore[union-attr]
+    shrunk = first.summary.model_copy(
+        update={
+            "capability_profile": profile.model_copy(
+                update={"tier1": {**profile.tier1, "core": core}}
+            )
+        }
+    )
+    third = _evaluate_with(
+        package, tmp_path / "third", config=_config(), baseline=baseline_from_summary(shrunk)
+    )
+    gates = {gate.name: gate for gate in third.verdict.gates}
+    assert gates["regression"].status == "block"
+    assert "tool:skill" in gates["regression"].per_target[0].reason
+    assert third.verdict.verdict == "not_ready"
+
+
+def test_a_baseline_from_another_target_set_is_refused_with_a_note(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    from bellwether.cli.baselines import baseline_from_summary
+
+    first, _ = _evaluate(package, tmp_path)
+    other = first.summary.model_copy(
+        update={"matrix": first.summary.matrix.model_copy(update={"target_slugs": ("x",)})}
+    )
+    result = _evaluate_with(
+        package, tmp_path / "again", config=_config(), baseline=baseline_from_summary(other)
+    )
+    assert "regression" not in {gate.name for gate in result.verdict.gates}
+    assert any("different target set" in note for note in result.verdict.notes)
+    assert result.summary.regression is None

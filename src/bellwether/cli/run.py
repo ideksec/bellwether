@@ -25,6 +25,7 @@ from bellwether.cli.execution import SandboxRunExecutor, run_limits_for
 
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
+from bellwether.cli.baselines import BaselineRecord
 from bellwether.cli.dns_run import DnsResolverProvider
 from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.cli.orchestrator import (
@@ -148,6 +149,7 @@ def run_evaluation(
     looks_override: Sequence[int] | None = None,
     repetitions: int | None = None,
     budget_usd: float | None = None,
+    baseline: BaselineRecord | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -163,6 +165,8 @@ def run_evaluation(
     fixed-N run makes no sequential decision and licenses no gate-eligible interval.
     ``budget_usd`` (``--budget-usd``) overrides the profile's ``gates.budget.max_cost_usd`` for
     this evaluation; the cost gate it feeds is composed only where every target is priced.
+    ``baseline`` is the skill's stored §17.5 baseline, when one exists; the regression gate is
+    composed against it where the profile asks for the comparison and the key allows it.
     """
     resolved = resolve_run(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
@@ -321,6 +325,7 @@ def run_evaluation(
         descriptive_only=repetitions is not None,
         per_run_wall_cap_ms=per_run_wall_cap_ms,
         pricing_for=pricing_for,
+        baseline=baseline,
     )
 
 

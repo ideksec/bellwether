@@ -110,7 +110,9 @@ def test_reports_are_byte_identical_across_runs(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("eval_id", [case.eval_id for case in default_cases()])
-@pytest.mark.parametrize("relative", ["summary.json", "verdict.json", "report/report.html"])
+@pytest.mark.parametrize(
+    "relative", ["summary.json", "verdict.json", "report/report.html", "metrics/figures.json"]
+)
 def test_committed_reports_match_a_fresh_regeneration(
     tmp_path: Path, eval_id: str, relative: str
 ) -> None:

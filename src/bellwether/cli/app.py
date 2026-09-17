@@ -497,6 +497,7 @@ def run(
     import datetime as dt
     from dataclasses import replace
 
+    from bellwether.cli.baselines import read_baseline_for
     from bellwether.cli.companions import companion_resolver
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
     from bellwether.cli.fixtures import fixture_resolver
@@ -561,11 +562,14 @@ def run(
                 if package.scenarios is not None
                 else None
             )
+            # §17.5: the skill's stored baseline, beside the config, feeds the regression gate.
+            baseline = read_baseline_for(config.parent / "baselines", package.name)
             result = run_evaluation(
                 config=loaded_config,
                 policy=loaded_policy,
                 package=package,
                 fixture=fixture,
+                baseline=baseline,
                 fixture_for=fixture_for,
                 # §7.4: a scenario's also_load_skills resolve to sibling skill directories
                 # beside this one and are offered alongside it.
@@ -962,17 +966,37 @@ def show_trace(
 
 @app.command(name="report")
 def render_report(
-    eval_id: Annotated[str, typer.Argument(help="Evaluation id.")],
+    evaluation: Annotated[
+        str, typer.Argument(help="An eval id under --out, or an evaluation directory.")
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
+    fmt: Annotated[str, typer.Option("--format", help="md, html, or all.")] = "all",
+    to: Annotated[
+        Path | None,
+        typer.Option("--to", help="Write here instead of the tree's own report/ directory."),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
-    """Re-render a report from stored artifacts."""
-    _not_yet(
-        "report",
-        "a WP-12 follow-on",
-        "the renderers exist (`bellwether run` writes report/pr_comment.md and report.html), but "
-        "re-rendering from a stored tree needs the figures rebuilt from its traces and canonical "
-        "forms, which nothing does yet; `bellwether diff` and `bellwether trace` read stored "
-        "artifacts today",
+    """Re-render a stored evaluation's report from its artifacts (§17.1, §20).
+
+    Reads ``summary.json`` and ``metrics/figures.json`` and renders the PR comment and the
+    HTML report again — the same renderers ``bellwether run`` used, on the same inputs, so
+    the bytes match what the run wrote. A tree written before the figures were persisted
+    is refused with the reason, never rendered from a guess.
+    """
+    from bellwether.cli.rerender import rerender_tree
+
+    try:
+        written = rerender_tree(evaluation, out_dir=out, fmt=fmt, to=to)
+    except BellwetherError as error:
+        typer.echo(f"bellwether report: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        {"written": [str(path) for path in written]},
+        as_json=json_output,
+        lines=[f"wrote {path}" for path in written],
     )
 
 
@@ -1017,6 +1041,144 @@ def diff(
         as_json=json_output,
         lines=[render_diff_markdown(result).rstrip("\n")],
     )
+
+
+baseline_app = typer.Typer(
+    name="baseline",
+    help="Store, show, or clear a skill's regression baseline (§17.5).",
+    no_args_is_help=True,
+)
+app.add_typer(baseline_app, name="baseline")
+
+_BaselinesDir = Annotated[
+    Path,
+    typer.Option("--baselines", help="The baselines directory (default: .bellwether/baselines)."),
+]
+
+
+@baseline_app.command("set")
+def baseline_set(
+    skill: Annotated[str, typer.Argument(help="Skill name the baseline is for.")],
+    source: Annotated[
+        str,
+        typer.Option(
+            "--from",
+            help="The evaluation to baseline: an eval id under --out, an eval directory, or "
+            "a summary.json.",
+        ),
+    ],
+    out: Annotated[
+        Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
+    ] = Path("bellwether-runs"),
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    json_output: JsonFlag = False,
+) -> None:
+    """Write <baselines>/<skill>.baseline.json from an evaluation's summary (§17.5).
+
+    The record is the summary under its baseline key (skill, payload digest, canon version,
+    target set, platform baseline version); the evaluation must be of the named skill.
+    Commit the file: the regression gate reads it on every later run of the skill.
+    """
+    from bellwether.cli.baselines import baseline_from_summary, write_baseline
+    from bellwether.cli.diff import load_summary, resolve_summary
+
+    try:
+        summary = load_summary(resolve_summary(source, out_dir=out))
+        if summary.skill.name != skill:
+            raise BellwetherError(
+                f"{source!r} is an evaluation of skill {summary.skill.name!r}, not {skill!r}; "
+                "a baseline is filed under the skill it was collected for"
+            )
+        record = baseline_from_summary(summary)
+        path = write_baseline(record, baselines)
+    except BellwetherError as error:
+        typer.echo(f"bellwether baseline set: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    _emit(
+        {
+            "path": str(path),
+            "skill": skill,
+            "eval_id": record.eval_id,
+            "digest": record.digest,
+            "key": record.key.model_dump(),
+        },
+        as_json=json_output,
+        lines=[
+            f"wrote {path}",
+            f"  baseline of {record.eval_id} (payload {record.key.payload_digest[:19]}…, "
+            f"targets {record.key.target_set_digest[:19]}…); commit it so the regression gate "
+            "reads it",
+        ],
+    )
+
+
+@baseline_app.command("show")
+def baseline_show(
+    skill: Annotated[str, typer.Argument(help="Skill name.")],
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    json_output: JsonFlag = False,
+) -> None:
+    """Show the stored baseline's key, metadata, and headline readings."""
+    from bellwether.cli.baselines import read_baseline_for
+
+    try:
+        record = read_baseline_for(baselines, skill)
+    except BellwetherError as error:
+        typer.echo(f"bellwether baseline show: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    if record is None:
+        typer.echo(
+            f"bellwether baseline show: no baseline for {skill!r} under {baselines}", err=True
+        )
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+    summary = record.summary
+    _emit(
+        {
+            "skill": skill,
+            "eval_id": record.eval_id,
+            "digest": record.digest,
+            "key": record.key.model_dump(),
+            "metadata": record.metadata.model_dump(),
+            "verdict": summary.verdict.status,
+            "lower_bound": summary.functional.lower_bound,
+            "bci": summary.consistency.bci,
+            "tier1": summary.capability_profile.tier1,
+        },
+        as_json=json_output,
+        lines=[
+            f"baseline for {skill}: evaluation {record.eval_id} ({record.metadata.captured_at})",
+            f"  digest            {record.digest}",
+            f"  payload_digest    {record.key.payload_digest}",
+            f"  canon_version     {record.key.canon_version}",
+            f"  target_set_digest {record.key.target_set_digest}",
+            f"  platform_baseline {record.key.platform_baseline_version or '(none)'}",
+            f"  policy            {record.metadata.policy_profile} {record.metadata.policy_digest}",
+            f"  verdict {summary.verdict.status}, lower bound {summary.functional.lower_bound}, "
+            f"BCI {summary.consistency.bci}",
+            f"  tier-1 core {summary.capability_profile.tier1.get('core', [])}",
+        ],
+    )
+
+
+@baseline_app.command("clear")
+def baseline_clear(
+    skill: Annotated[str, typer.Argument(help="Skill name.")],
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    json_output: JsonFlag = False,
+) -> None:
+    """Remove the stored baseline; later runs compose no regression gate until one is set."""
+    from bellwether.cli.baselines import baseline_path
+
+    try:
+        path = baseline_path(baselines, skill)
+    except BellwetherError as error:
+        typer.echo(f"bellwether baseline clear: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    if not path.is_file():
+        typer.echo(f"bellwether baseline clear: no baseline for {skill!r} at {path}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+    path.unlink()
+    _emit({"removed": str(path)}, as_json=json_output, lines=[f"removed {path}"])
 
 
 def main() -> None:
