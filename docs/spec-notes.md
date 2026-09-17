@@ -2628,3 +2628,72 @@ The applied version is stamped on the run header (`platform_baseline_version`, a
 and on the summary, where it is the §17.5 key component. A baseline not keyed to the configured
 image absorbs nothing, and the verdict note and the `doctor` row both carry the document's own
 reason, so "not applied" never reads as "nothing infrastructural happened".
+
+## §19.2 — The run cache key adds the model id and the repetition index; a hit is re-filed with provenance
+
+§19.2's run-cache key is `(payload_digest, scenario_content_digest, target, fixture_digest,
+harness_version, sandbox_image, platform_baseline_version)`. This build's key has two more
+components. The **model id** is there because §19.2 also says "never cache across a changed
+model ID, even where the alias is unchanged" — the alias is part of `target`, the id is not, so
+the rule has to be in the key. The **repetition index** is the divergence worth a note: with the
+spec's key alone, every repetition of a set would resolve to the same entry and a cached set
+would be one run replayed N times — a set that agrees with itself by construction, which is
+the opposite of what a repetition set is for. Keying on `(…, repetition)` keeps N distinct
+observations. `harness_version` is the package version for api-loop (the adapter ships with
+it) and the configured `version_pin` (or `unpinned`) for claude-code, whose real CLI version is
+only known once a container has run; a cache entry cannot depend on something learned after the
+lookup.
+
+**A hit is re-filed, not copied.** The cached trace's header carries the original evaluation's
+`run_id`, `eval_id` and `scenario_id`; replaying it verbatim would file an artifact under the
+wrong evaluation and, after a scenario rename (which the content key deliberately survives),
+under the wrong scenario id. The replay rewrites those three identity fields for the new
+evaluation and sets the new header field `cached_from` (`<eval_id>/<run_id>` of the original)
+so the provenance is explicit rather than lost. Actions and the footer are the original's,
+byte for byte — the observation is not touched. `arf_version` is unchanged: the field is
+optional with a default, and an older reader ignores it.
+
+**What is never cached:** an incomplete trace, or one whose exit reason is `sandbox_error`,
+`harness_error` or `cancelled` — §13.2's infrastructure failures are retried, and a cached
+failure would be replayed forever. `execution.cache_ttl_days` expires entries so drift is still
+detected. The analysis cache §19.2 also names is not built: canonicalisation is cheap enough
+that re-deriving it from a stored trace costs nothing worth caching.
+
+## §9.3, §20 — `--deterministic-sampling` is a per-request pin, recorded and marked, and refused where it cannot be honoured
+
+§9.3 has Bellwether record the provider's sampling defaults rather than impose its own, and §20
+lists `--deterministic-sampling` for a low-variance comparison. The flag is a `SamplingSpec`
+on the api-loop adapter, sent on every request: `temperature` to both providers, `seed` only
+to the Chat Completions API (the Messages API takes none, so it is not sent). Without the flag
+no sampling field is on the wire at all — the realistic condition stays the default. The run
+header records the pinned values in `target.sampling` and sets `deterministic_sampling`, the
+summary marks the matrix, and the verdict carries a note, because a temperature-0 run
+understates the variance the consistency figures exist to measure. On a claude-code target the
+CLI exposes no temperature or seed control, so the §16.4 preflight refuses the flag there rather
+than record a "deterministic" run that was nothing of the kind.
+
+**The verdict's notes are rendered.** Until now `verdict.notes` (the unpriced cost gate, a
+missing baseline, a platform baseline not applied) reached only `summary.json`; a reader of the
+PR comment never saw that a control had not run. Both renderers now show them under the
+verdict header — §16.2's "a control that did nothing must read as one that did nothing" has to
+hold on the surface people actually read.
+
+## §19.1 — The pre-flight estimate prices a ceiling and a baseline-drawn expectation, and never guesses
+
+§19.1 makes the estimate mandatory and prescribes a cost formula with three multipliers and an
+`E[N]` from the repository's stopping history. This build prints the estimate before anything
+is spent and states, in the estimate itself, which parts of the formula it cannot fill. The run
+counts come from the schedules the sets will actually run: best is every set stopping at its
+first look, worst is every set at `n_max`, expected is the **midpoint look** — §19.1's default
+for a skill with no history, and this build keeps no stopping-history store, so it is always the
+midpoint and the estimate says so. The judge and A/B terms are zero because neither subsystem
+exists. The dollar figures are two: a **ceiling** — the per-repetition token cap priced as input
+tokens for every worst-case run, a bound rather than a forecast (output tokens cost more per
+token but are a small share of a run, and the cap bounds the total) — and an **expected** cost
+drawn from the skill's stored baseline's observed tokens per run where one exists. With any
+target unpriced there is no dollar figure at all, only the enforced token cap: an estimate that
+guessed a price would be the one number in the report a reader could not trust.
+
+`--yes` skips the confirmation prompt, never the estimate. The prompt is asked only on an
+interactive terminal; a CI run proceeds after printing, since there is nobody to answer — the
+mandatory part is the printing. A decline is a refusal with no container started.

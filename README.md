@@ -98,6 +98,12 @@ uv run bellwether init-manifest skills/my-skill --from <eval-id>
 `bellwether run --depth quick|standard|deep` presets the matrix (§19.1): `quick` is one `small`
 target at a fixed 3 and is descriptive only — it can never return `ready`, and the output says so.
 
+Every `run` prints a pre-flight estimate first (§19.1) — run counts and, where every target alias
+has `providers.<name>.pricing`, a cost ceiling — and asks to proceed on a terminal (`--yes` skips
+the prompt). Repetitions whose key matches a stored trace are served from `<out>/.cache/runs`
+instead of being paid for again (§19.2; `--no-cache` to force execution), and the summary says
+how many were replayed.
+
 The three are chosen to reach three different verdicts, so the report's shape is visible in
 each: a clean note-taker (`conditional`), a **credential exfiltrator that passes its task but
 reads `~/.aws/credentials`** and is caught by the declared-vs-observed check (`not_ready`),
@@ -327,6 +333,9 @@ alone and an unmentioned component would read as one that ran clean.
 | Baselines and the regression gate (§17.5): `bellwether baseline set\|show\|clear`, the `regression` gate on `run` (tier-1 expansion, lower-bound drop, new sensitive hit) under the component-level comparability table | done |
 | `bellwether init-manifest` (§6.2): a manifest inferred from an observed run, marked inferred-not-reviewed, finding classes never laundered into an allowlist | done |
 | Platform baseline (§12.6) applied on the run path: path entries subtracted per run, near-misses surfaced, absorbed paths recorded | done — paths; process/tool attribution waits on the process plane |
+| Run cache (§19.2): stored traces reused instead of repetitions paid for again, keyed on payload/scenario content/target/fixture/harness/model id/image/platform baseline plus the repetition index; `--no-cache`, `execution.cache_ttl_days`; replays re-filed with `cached_from` provenance and counted in the summary | done |
+| Pre-flight estimate (§19.1): matrix size, best/expected/worst run counts, token cap, cost range where priced; printed before anything is spent; `--yes` skips the prompt, never the estimate | done |
+| `--deterministic-sampling` (§9.3, §20): temperature pinned on every api-loop request, recorded on the header and marked in the report; refused on claude-code | done |
 | Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
 | **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
