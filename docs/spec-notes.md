@@ -1700,6 +1700,50 @@ a run on the wrong starting tree would produce a clean-looking verdict about a s
 ran as designed, the signature failure mode again — and the refusal names the scenario, the name,
 where it looked, and the `fixture: empty` remedy.
 
+## §7.2, §7.3, §13.1 — Multi-turn prompts, per-scenario timeouts and per-scenario schedules are honoured
+
+Three more §7.2/§7.3 fields the scenario model accepted from WP-1 and the run path ignored.
+
+**Multi-turn prompts.** A `prompt` list was joined with newlines into a single user turn, which
+tests something else: the model sees every instruction at once, so a skill that behaves on turn
+one and loses its constraints on turn two — the exact failure mode §7.3 exists to catch — is
+invisible. `ApiLoopAdapter.run` now takes `str | Sequence[str]`; the first turn opens the
+conversation, and when the model ends a non-final turn its reply is kept in the messages (via the
+same `_assistant_message` the tool loop uses) and the next user turn follows it, so the session is
+genuinely preserved. Only the last turn's reply becomes `final_output`; each intermediate reply is
+already recorded by its `model_turn` event — so no new event kind enters the §11.3 vocabulary and
+the normalizer, trace, and every downstream consumer are untouched. §7.3's `respond_with: judge`
+mode (a cheap model playing the user) is not built; fixed turn lists are the "at minimum" the spec
+asks for. The `claude-code` harness is different: the CLI is driven with one `-p` prompt, and
+session continuation across turns (`--resume`) has not been observed from a real session in this
+build — the project's rule for every CLI fact. So a turn-list scenario on a `claude-code` target is
+refused by the §16.4 preflight (`scenario[<id>].prompt`, remedy: an api-loop target) before any
+container, with a matching refusal in the executor as the last line of defence. Refusing beats
+flattening: a silently single-turned scenario would produce a clean-looking verdict about a test
+that never ran as written.
+
+**Per-scenario `timeout_seconds`.** §7.2 gives every scenario a hard-kill timeout defaulting to
+900 from the suite; the run path used the generic `RunLimits.wall_seconds` (600) for every run.
+`run_limits_for` now applies the scenario's timeout (else the suite default) to the run's
+`wall_seconds` — the bound that actually stops both adapters (the api-loop deadline and the CLI's
+exec timeout). The sandbox's `timeout_seconds` config stays the outer container-level kill.
+
+**Per-scenario `looks`/`n_max`.** `plan_matrix` ran every scenario the resolved `n_max` times and
+`drive_evaluation` aggregated every set under the profile's looks; a scenario's own §7.2 override
+did nothing. `effective_schedule` settles each scenario's schedule while planning — its own
+`looks`/`n_max`, then the suite `defaults`, then the resolved matrix — and applies the manifest
+override's consistency rule per scenario: looks strictly increasing, last look equal to `n_max`.
+Where only `n_max` is overridden, the inherited looks are truncated to those at or below it, which
+is unambiguous when `n_max` sits on a pre-registered look and **refused** otherwise: inventing a
+decision point at `n_max` would change the number of looks and so the Pocock correction the design
+was pre-registered with (§13.1). `plan_matrix` runs each scenario its own number of times (the
+two-run floor applies per scenario), `drive_evaluation` aggregates each set under its own schedule
+and holds it to its own first-look floor, `SetReading.looks` carries the schedule the set actually
+ran, and the summary's `sets_stopped_at_look` is counted against that schedule — before, a stop at
+N = 4 under a `[2, 4]` override was not a profile look and was mis-keyed as the profile's last
+look. With no override the result is the resolved matrix exactly, so the default path and every
+committed report are byte-identical.
+
 ## §10.4.2, §12.6 — The egress canary scan folds case on the host/SNI, matching how the host is recorded
 
 The non-model egress scan joined the request's path, host, and SNI into one line and scanned it

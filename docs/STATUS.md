@@ -322,6 +322,31 @@ directory but sits beside a flat tree resolves to that tree — exactly what the
 used. A name that resolves nowhere refuses rather than silently running on an empty workspace.
 Demo reports unchanged (byte-compare holds), corpus verdicts unchanged (spec-notes §12.5, §7.2).
 
+**A second batch then honoured the rest of the per-scenario fields the model already accepted**
+(§7.2, §7.3) — each was parsed and silently ignored. **Multi-turn scenarios run as a preserved
+session** on `api-loop`: a `prompt` list used to be joined with newlines into one prompt, a
+different test entirely; now the first turn opens the conversation and each later user turn is
+appended after the model's reply in the *same* messages, so second-turn drift — the failure mode
+§7.3 names — is observable. Only the last turn's reply is the run's `final_output`; every
+intermediate reply is on the record through its `model_turn` event, so the trace vocabulary is
+untouched. The `claude-code` harness runs one `-p` prompt per session and session continuation
+across turns has not been observed in this build, so a turn-list scenario on a `claude-code`
+target is **refused by the §16.4 preflight** before any container (gate
+`scenario[<id>].prompt`, remedy: an api-loop target), with a last-line-of-defence refusal in the
+executor — never flattened. **Per-scenario `timeout_seconds`** (else the suite default) is now
+the run's wall clock (`run_limits_for` → `RunLimits.wall_seconds`, the bound that actually stops
+both adapters). **Per-scenario `looks`/`n_max`** now reach the sequential design:
+`effective_schedule` settles each scenario's schedule while planning — its own, then the suite
+default, then the resolved matrix — under the manifest override's consistency rule (looks
+strictly increasing, last look equal to `n_max`; an `n_max` that sits on a pre-registered look
+truncates the inherited schedule to it, any other refuses rather than inventing a decision point
+and silently changing the Pocock correction); `plan_matrix` runs each scenario its own number of
+times, `drive_evaluation` aggregates each set under its own schedule and holds it to its own
+first-look floor, `SetReading.looks` carries the schedule the set actually ran, and the summary's
+"stopped at look k" is counted against it — a stop at N = 4 under a `[2, 4]` override used to be
+mis-keyed as the profile's third look. No override reproduces the resolved matrix exactly, so the
+default path — and every committed report — is unchanged (spec-notes §7.2/§7.3).
+
 ---
 
 ## Where the build is
@@ -361,7 +386,7 @@ Demo reports unchanged (byte-compare holds), corpus verdicts unchanged (spec-not
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1074 tests: 1020 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1088 tests: 1034 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

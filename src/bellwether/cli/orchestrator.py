@@ -45,7 +45,7 @@ from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_ar
 from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
-from bellwether.config.models.scenarios import AssertionSpec, Scenario
+from bellwether.config.models.scenarios import AssertionSpec, Scenario, ScenarioDefaults
 from bellwether.constants import (
     DEFAULT_CAPABILITY_WEIGHTS,
     NOISE_FLOOR_CALIBRATED_AT,
@@ -111,6 +111,7 @@ __all__ = [
     "analyse_run",
     "build_figures",
     "drive_evaluation",
+    "effective_schedule",
     "orchestrate",
     "plan_matrix",
     "resolve_capability_weights",
@@ -238,12 +239,58 @@ class AnalysedRun:
     scope_unused: tuple[str, ...] = ()
 
 
+def effective_schedule(
+    scenario: Scenario,
+    defaults: ScenarioDefaults | None,
+    *,
+    looks: Sequence[int],
+    n_max: int,
+) -> tuple[tuple[int, ...], int]:
+    """The sequential schedule one scenario runs under (§7.2, §13.1).
+
+    The scenario's own ``looks``/``n_max`` win, then the suite's ``defaults``, then the resolved
+    matrix (the manifest override or the profile). The manifest override's consistency rule is
+    applied per scenario: the looks must be strictly increasing and the last look must equal
+    ``n_max``. Where only ``n_max`` is overridden, the inherited looks are truncated to those at
+    or below it — unambiguous when ``n_max`` sits on a pre-registered look — and refused
+    otherwise, because inventing a decision point at ``n_max`` would change the Pocock
+    correction the design was pre-registered with. With no override at all the result is the
+    resolved matrix exactly, so the default path is unchanged.
+    """
+    chosen_n = scenario.n_max
+    if chosen_n is None and defaults is not None:
+        chosen_n = defaults.n_max
+    if chosen_n is None:
+        chosen_n = n_max
+    chosen_looks: list[int]
+    if scenario.looks:
+        chosen_looks = list(scenario.looks)
+    elif defaults is not None and defaults.looks:
+        chosen_looks = list(defaults.looks)
+    else:
+        chosen_looks = list(looks)
+    if chosen_looks != sorted(set(chosen_looks)):
+        raise BellwetherError(
+            f"scenario {scenario.id!r}: looks must be strictly increasing and unique, got "
+            f"{chosen_looks}"
+        )
+    effective = [look for look in chosen_looks if look <= chosen_n]
+    if not effective or effective[-1] != chosen_n:
+        raise BellwetherError(
+            f"scenario {scenario.id!r}: n_max {chosen_n} is not the last look of its schedule "
+            f"{chosen_looks} (§13.1); set looks and n_max together so the last look equals n_max "
+            "(e.g. looks: [6, 12] with n_max: 12), or choose an n_max that is a pre-registered look"
+        )
+    return tuple(effective), chosen_n
+
+
 def plan_matrix(
     scenarios: Sequence[Scenario],
     targets: Sequence[TargetInfo],
     *,
     repetitions: int,
     fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
+    n_max_for: Callable[[Scenario], int] | None = None,
 ) -> list[RunPlan]:
     """Expand the (scenario × target × repetition) matrix into ordered run plans (§4).
 
@@ -263,6 +310,13 @@ def plan_matrix(
     # refuse before any plan is built, and every repetition of a scenario shares its tree.
     plans: list[RunPlan] = []
     for scenario in scenarios:
+        # §7.2: a scenario may override the matrix's n_max; the same floor applies to it.
+        reps = n_max_for(scenario) if n_max_for is not None else repetitions
+        if reps < 2:
+            raise BellwetherError(
+                f"scenario {scenario.id!r} would run {reps} time(s); a repetition set needs at "
+                "least two runs (repetition is mandatory; a single run is an anecdote, §13.2)"
+            )
         resolved = fixture_for(scenario) if fixture_for is not None else None
         fixture = resolved.path if resolved is not None else None
         fixture_name = resolved.name if resolved is not None else None
@@ -275,7 +329,7 @@ def plan_matrix(
                 fixture_name=fixture_name,
             )
             for target in targets
-            for rep in range(1, repetitions + 1)
+            for rep in range(1, reps + 1)
         )
     return plans
 
@@ -320,6 +374,7 @@ def drive_evaluation(
     declared_scope: DeclaredScope | None = None,
     platform_baseline_t3: frozenset[str] = frozenset(),
     weights: Mapping[str, int] | None = None,
+    looks_for: Callable[[str], Sequence[int]] | None = None,
 ) -> list[SetReading]:
     """Run every plan through the executor and roll each repetition set into a reading.
 
@@ -345,7 +400,14 @@ def drive_evaluation(
     yield a figure the sequential design does not license — so it is refused rather than quietly
     reported, the same reflex as the rest of the pipeline.
     """
-    first_look = profile.matrix.looks[0] if profile.matrix.looks else 1
+
+    # §7.2: a scenario may carry its own look schedule; each set is aggregated — and held to
+    # its first-look floor — under the schedule its scenario actually ran.
+    def looks_of(scenario_id: str) -> list[int]:
+        if looks_for is not None:
+            return list(looks_for(scenario_id))
+        return list(profile.matrix.looks)
+
     analysed_by_set: dict[tuple[str, str], list[AnalysedRun]] = {}
     order: list[tuple[str, str, TargetInfo]] = []
     for plan in plans:
@@ -364,10 +426,12 @@ def drive_evaluation(
             )
         analysed_by_set[set_key].append(run)
     for scenario_id, slug, _target in order:
+        set_looks = looks_of(scenario_id)
+        first_look = set_looks[0] if set_looks else 1
         count = len(analysed_by_set[(scenario_id, slug)])
         if count < first_look:
             raise BellwetherError(
-                f"repetition set {scenario_id!r} on {slug!r} has {count} run(s), below the profile's "
+                f"repetition set {scenario_id!r} on {slug!r} has {count} run(s), below its "
                 f"first look of {first_look} (§13.1); a set that never reaches its earliest decision "
                 "point cannot be aggregated into a licensed figure"
             )
@@ -378,6 +442,7 @@ def drive_evaluation(
             analysed_by_set[(scenario_id, slug)],
             profile=profile,
             weights=weights,
+            looks=looks_of(scenario_id),
         )
         for scenario_id, slug, target in order
     ]
@@ -600,6 +665,10 @@ class SetReading:
     #: instrument cannot distinguish this set from identical input, so the report renders
     #: the qualitative label and withholds the precise figure (§13.4).
     trajectory_at_noise_floor: bool = False
+    #: The look schedule this set was aggregated under (§13.1) — the profile's, or the
+    #: scenario's own override (§7.2). Carried so the summary counts "stopped at look k"
+    #: against the schedule the set actually ran, not the profile's.
+    looks: tuple[int, ...] = ()
     #: The credentials plane supported an absence claim on *every* run in the set — same
     #: completeness bar as the other security gates: one unobserved run leaves the
     #: model-channel evidence incomplete and the canary-reads gate defers.
@@ -661,8 +730,8 @@ def aggregate(
 
     The sequential design — the look schedule and the Pocock ``boundary_z`` — comes from
     ``profile.matrix``, so a configured non-default schedule is scored with its own
-    correction rather than the hard-coded three-look constant (``looks`` overrides only for
-    tests).
+    correction rather than the hard-coded three-look constant. ``looks`` overrides the
+    schedule for one set — how a scenario's own §7.2 ``looks``/``n_max`` reach the metrics.
     """
     look_points = list(looks) if looks is not None else list(profile.matrix.looks)
     boundary_z = profile.matrix.boundary_z
@@ -755,6 +824,7 @@ def aggregate(
         canary_leaked=any(run.canary_leaked for run in runs),
         dns_observed=len(runs) > 0 and all(run.dns_observed for run in runs),
         dns_blocked=any(run.dns_blocked for run in runs),
+        looks=tuple(look_points),
         trace_inconsistencies=tuple(
             sorted({reason for run in runs for reason in run.trace_inconsistencies})
         ),
@@ -1324,11 +1394,12 @@ def _build_summary(
     n_evaluable = sum(r.n_evaluable for r in readings)
     n_completed = sum(r.n_completed for r in readings)
 
-    looks = tuple(profile.matrix.looks)
     # Which pre-registered look each set stopped at, keyed by 1-based look index (§17.2) —
-    # what lets a reader tell a set that resolved at N = 6 from one that ran to N = 20.
+    # what lets a reader tell a set that resolved at N = 6 from one that ran to N = 20. Counted
+    # against the schedule each set actually ran (a scenario may override the profile's, §7.2).
     stopped_at: dict[str, int] = {}
     for reading in readings:
+        looks = reading.looks or tuple(profile.matrix.looks)
         index = looks.index(reading.look) + 1 if reading.look in looks else len(looks)
         key = str(index)
         stopped_at[key] = stopped_at.get(key, 0) + 1

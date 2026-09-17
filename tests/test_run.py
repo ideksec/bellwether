@@ -598,3 +598,75 @@ def test_run_evaluation_stamps_each_scenarios_fixture_on_its_plans(tmp_path: Pat
         ("a", "alpha", root / "evals" / "fixtures" / "alpha"),
         ("b", "beta", root / "evals" / "fixtures" / "beta"),
     }
+
+
+def test_run_evaluation_honours_a_scenarios_own_look_schedule(tmp_path: Path) -> None:
+    """§7.2 end to end: a scenario with `looks: [2, 4]` / `n_max: 4` runs four times (not the
+    profile's twenty) and its set is aggregated under its own schedule, which the reading records
+    so the summary counts "stopped at look k" against the schedule that actually ran."""
+    root = tmp_path / "short"
+    (root / "evals").mkdir(parents=True)
+    (root / "SKILL.md").write_text("---\nname: short\ndescription: d.\n---\nb\n", encoding="utf-8")
+    (root / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: ScenarioSuite\n"
+        "scenarios:\n"
+        "  - id: quick\n    expectation: should_trigger\n    looks: [2, 4]\n    n_max: 4\n"
+        '    prompt: "go"\n    assert:\n      - skill_activated: true\n',
+        encoding="utf-8",
+    )
+    (root / "evals" / "manifest.yaml").write_text(
+        "apiVersion: bellwether/v1\nkind: SkillManifest\nmetadata:\n  owner: t\n  criticality: low\n",
+        encoding="utf-8",
+    )
+    package = load_skill(root)
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    result = run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="e",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+    assert holder["exec"].calls == 4  # the scenario's n_max, not the profile's 20
+    # The summary counts "stopped at look k" against the schedule the set actually ran: under
+    # [2, 4] the one set is keyed "1" or "2". Before per-set schedules a stop at N = 4 — not a
+    # profile look — was mis-keyed as the profile's last look, "3".
+    stopped = result.summary.matrix.sets_stopped_at_look
+    assert sum(stopped.values()) == 1
+    assert set(stopped) <= {"1", "2"}
+
+
+def test_run_refuses_a_multi_turn_scenario_on_a_claude_code_target(tmp_path: Path) -> None:
+    """§7.3 × §16.4: the claude-code harness runs one prompt per session in this build, so a
+    turn-list scenario on it is refused before any container — never flattened into one turn."""
+    from bellwether.cli.orchestrator import TargetInfo
+    from bellwether.cli.preflight import preflight_failures
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("api-loop", "anthropic", "frontier")],
+        multi_turn_scenario_ids=["chat"],
+    )
+    assert not any("chat" in f.gate for f in failures)  # api-loop runs multi-turn fine
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("claude-code", "anthropic", "frontier")],
+        multi_turn_scenario_ids=["chat"],
+    )
+    turn_failures = [f for f in failures if f.gate == "scenario[chat].prompt"]
+    assert turn_failures
+    assert "multi-turn" in turn_failures[0].remedy
+    assert "api-loop" in turn_failures[0].remedy

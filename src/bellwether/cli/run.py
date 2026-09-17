@@ -31,6 +31,7 @@ from bellwether.cli.orchestrator import (
     RunExecutor,
     RunPlan,
     drive_evaluation,
+    effective_schedule,
     orchestrate,
     plan_matrix,
     resolve_capability_weights,
@@ -135,7 +136,11 @@ def run_evaluation(
     # resolver), so this refuses exactly the runs that would end not_evaluable-and-blocked
     # after the matrix — and no others.
     refuse_on_preflight_failures(
-        config, resolved.profile, targets, profile_name=resolved.profile_name
+        config,
+        resolved.profile,
+        targets,
+        profile_name=resolved.profile_name,
+        multi_turn_scenario_ids=[s.id for s in scenarios if isinstance(s.prompt, list)],
     )
 
     # §16.1: a capability class the manifest denies must not be weighted 0. Weight 0 erases it
@@ -174,7 +179,21 @@ def run_evaluation(
     executor = make_executor(package, fixture, client_factory)
     # §7.2: with a resolver, each scenario's fixture is resolved here — before the executor and
     # any container — and stamped on its plans; a missing named fixture refuses at this point.
-    plans = plan_matrix(scenarios, targets, repetitions=resolved.n_max, fixture_for=fixture_for)
+    # Likewise each scenario's sequential schedule (§7.2 `looks`/`n_max`, else the suite default,
+    # else the resolved matrix) is settled now, so an inconsistent override refuses before a run.
+    schedule = {
+        scenario.id: effective_schedule(
+            scenario, suite.defaults, looks=resolved.looks, n_max=resolved.n_max
+        )
+        for scenario in scenarios
+    }
+    plans = plan_matrix(
+        scenarios,
+        targets,
+        repetitions=resolved.n_max,
+        fixture_for=fixture_for,
+        n_max_for=lambda scenario: schedule[scenario.id][1],
+    )
     # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
     # assertions: `scope=None` keeps the scenario's own assertions deciding each run's outcome,
     # while `declared_scope` feeds the manifest's scope into the `scope` gate — every area of the
@@ -194,6 +213,7 @@ def run_evaluation(
         scope=None,
         declared_scope=declared_scope,
         weights=weights,
+        looks_for=lambda scenario_id: schedule[scenario_id][0],
     )
 
     criticality = (

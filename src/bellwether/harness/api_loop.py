@@ -26,7 +26,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 from bellwether.determinism import stable_hash
@@ -110,7 +110,15 @@ class ApiLoopAdapter:
 
     # -- the loop -----------------------------------------------------------
 
-    def run(self, prompt: str, *, model_id: str, limits: RunLimits) -> Iterator[RawHarnessEvent]:
+    def run(
+        self, prompt: str | Sequence[str], *, model_id: str, limits: RunLimits
+    ) -> Iterator[RawHarnessEvent]:
+        # §7.3: a list of turns is a multi-turn scenario. The first turn opens the
+        # conversation; each later one is appended after the model ends a turn, with the
+        # session preserved (the model's reply stays in the messages), so second-turn drift —
+        # a skill that behaves on turn one and then loses its constraints — is observable.
+        turns = [prompt] if isinstance(prompt, str) else list(prompt)
+        pending_turns = turns[1:]
         deadline = time.monotonic() + limits.wall_seconds
         tool_calls_made = 0
         tokens_used = 0
@@ -124,7 +132,7 @@ class ApiLoopAdapter:
 
         system = self._system_prompt()
         messages: list[dict[str, object]] = [
-            {"role": "user", "content": [{"type": "text", "text": prompt}]}
+            {"role": "user", "content": [{"type": "text", "text": turns[0]}]}
         ]
         loaded_skills: set[str] = set()
 
@@ -168,6 +176,19 @@ class ApiLoopAdapter:
                 return
 
             if not model_turn.tool_calls:
+                if pending_turns:
+                    # The model ended a non-final turn: keep its reply in the conversation,
+                    # follow it with the next user turn, and continue. Only the last turn's
+                    # reply is the run's final output; every intermediate reply is already on
+                    # the record through its model_turn event.
+                    messages.append(_assistant_message(model_turn))
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": pending_turns.pop(0)}],
+                        }
+                    )
+                    continue
                 yield RawHarnessEvent(
                     ts=self._clock(),
                     kind="final_output",
