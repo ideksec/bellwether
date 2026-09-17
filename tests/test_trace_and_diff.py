@@ -1,10 +1,12 @@
 """`bellwether trace` and `bellwether diff` — reading stored artifacts (§20, §17.1, §17.5).
 
-Both commands work on the committed demo trees under ``examples/reports/``, which the demo
-byte-compare test already pins, so these assert against real artifacts rather than fixtures
-built to match. The diff's §17.5 discipline is the point: what is not comparable is named at
-the top, a schema-version mismatch is refused, and tier-1 expansion is surfaced as the
-regression signal rather than buried in a table.
+Both commands work on the demo trees. `diff` reads the committed ``examples/reports/``
+summaries, which the demo byte-compare test already pins. `trace` needs the per-run traces,
+which the committed tree deliberately omits (``.gitignore``: only the rendered outputs are
+kept), so the trace tests regenerate the demo into a temporary tree once per module — the
+same `generate_demo` the byte-compare test drives. The diff's §17.5 discipline is the point:
+what is not comparable is named at the top, a schema-version mismatch is refused, and tier-1
+expansion is surfaced as the regression signal rather than buried in a table.
 """
 
 from __future__ import annotations
@@ -32,7 +34,8 @@ from bellwether.cli.trace_view import (
 )
 from bellwether.errors import BellwetherError
 
-_REPORTS = Path(__file__).resolve().parent.parent / "examples" / "reports"
+_ROOT = Path(__file__).resolve().parent.parent
+_REPORTS = _ROOT / "examples" / "reports"
 _BENIGN = "demo-benign-note-taker"
 _SNEAKY = "demo-sneaky-exfiltrator"
 _FLAKY = "demo-flaky-formatter"
@@ -41,33 +44,45 @@ _SNEAKY_RUN = "demo-sneaky-exfiltrator-001"
 runner = CliRunner()
 
 
+@pytest.fixture(scope="module")
+def tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A full demo artifact tree — traces included — generated once for this module."""
+    from bellwether.cli.demo import generate_demo
+
+    base = tmp_path_factory.mktemp("demo")
+    generate_demo(
+        skills_root=_ROOT / "examples" / "skills", out_dir=base / "out", tmp_dir=base / "traces"
+    )
+    return base / "out"
+
+
 # ---------------------------------------------------------------------------
 # trace
 # ---------------------------------------------------------------------------
 
 
-def test_locate_finds_a_trace_by_its_header_run_id() -> None:
-    path = locate_trace(_SNEAKY_RUN, out_dir=_REPORTS)
+def test_locate_finds_a_trace_by_its_header_run_id(tree: Path) -> None:
+    path = locate_trace(_SNEAKY_RUN, out_dir=tree)
     assert path.name == "1.arf.jsonl"
     assert path.parent.parent.parent.parent.name == _SNEAKY
 
 
-def test_locate_narrows_to_one_evaluation() -> None:
-    assert locate_trace(_SNEAKY_RUN, out_dir=_REPORTS, eval_id=_SNEAKY).is_file()
+def test_locate_narrows_to_one_evaluation(tree: Path) -> None:
+    assert locate_trace(_SNEAKY_RUN, out_dir=tree, eval_id=_SNEAKY).is_file()
     with pytest.raises(BellwetherError, match="no trace with run_id"):
-        locate_trace(_SNEAKY_RUN, out_dir=_REPORTS, eval_id=_BENIGN)
+        locate_trace(_SNEAKY_RUN, out_dir=tree, eval_id=_BENIGN)
 
 
-def test_locate_takes_a_path_directly() -> None:
-    path = next((_REPORTS / _BENIGN / "traces").glob("**/2.arf.jsonl"))
+def test_locate_takes_a_path_directly(tree: Path) -> None:
+    path = next((tree / _BENIGN / "traces").glob("**/2.arf.jsonl"))
     assert locate_trace(str(path), out_dir=Path("/nonexistent")) == path
 
 
-def test_locate_refuses_a_missing_id_naming_what_it_searched() -> None:
+def test_locate_refuses_a_missing_id_naming_what_it_searched(tree: Path) -> None:
     with pytest.raises(
         BellwetherError, match=r"no trace with run_id 'nope'.*trace file\(s\) searched"
     ):
-        locate_trace("nope", out_dir=_REPORTS)
+        locate_trace("nope", out_dir=tree)
 
 
 def test_locate_refuses_an_absent_artifact_directory(tmp_path: Path) -> None:
@@ -75,9 +90,9 @@ def test_locate_refuses_an_absent_artifact_directory(tmp_path: Path) -> None:
         locate_trace("anything", out_dir=tmp_path / "missing")
 
 
-def test_locate_refuses_an_ambiguous_id_naming_every_candidate(tmp_path: Path) -> None:
+def test_locate_refuses_an_ambiguous_id_naming_every_candidate(tree: Path, tmp_path: Path) -> None:
     """The same run_id under two evaluations: picking one silently would show the wrong run."""
-    source = locate_trace(_SNEAKY_RUN, out_dir=_REPORTS)
+    source = locate_trace(_SNEAKY_RUN, out_dir=tree)
     for eval_name in ("a", "b"):
         target = tmp_path / eval_name / "traces" / "s" / "t" / "1.arf.jsonl"
         target.parent.mkdir(parents=True)
@@ -88,8 +103,8 @@ def test_locate_refuses_an_ambiguous_id_naming_every_candidate(tmp_path: Path) -
     assert str(tmp_path / "b") in str(caught.value)
 
 
-def test_render_lists_every_action_with_its_summary() -> None:
-    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=_REPORTS))
+def test_render_lists_every_action_with_its_summary(tree: Path) -> None:
+    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=tree))
     lines = render_trace_lines(trace)
     assert lines[0] == f"run      {_SNEAKY_RUN}"
     assert any("coverage" in line and "harness_events=full" in line for line in lines)
@@ -98,8 +113,8 @@ def test_render_lists_every_action_with_its_summary() -> None:
     assert lines[-1].startswith("ended") and "exit completed" in lines[-1]
 
 
-def test_filters_keep_only_the_named_kinds_and_say_how_many_were_hidden() -> None:
-    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=_REPORTS))
+def test_filters_keep_only_the_named_kinds_and_say_how_many_were_hidden(tree: Path) -> None:
+    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=tree))
     lines = render_trace_lines(trace, TraceFilter(kinds=frozenset({"tool_call"})))
     body = [line for line in lines if "  harness  " in line]
     assert body and all("tool_call" in line for line in body)
@@ -109,8 +124,8 @@ def test_filters_keep_only_the_named_kinds_and_say_how_many_were_hidden() -> Non
     assert record["actions_total"] == len(trace.actions)
 
 
-def test_summarise_action_covers_the_common_kinds() -> None:
-    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=_REPORTS))
+def test_summarise_action_covers_the_common_kinds(tree: Path) -> None:
+    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=tree))
     by_kind = {action.kind: summarise_action(action) for action in trace.actions}
     assert by_kind["skill_offered"] == "sneaky-exfiltrator"
     assert by_kind["model_turn"].startswith("stop=")
@@ -118,8 +133,8 @@ def test_summarise_action_covers_the_common_kinds() -> None:
     assert by_kind["final_output"] == "Wrote summary.md."
 
 
-def test_trace_record_is_json_serialisable_and_complete() -> None:
-    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=_REPORTS))
+def test_trace_record_is_json_serialisable_and_complete(tree: Path) -> None:
+    trace = load_trace(locate_trace(_SNEAKY_RUN, out_dir=tree))
     record = trace_record(trace)
     json.dumps(record)
     assert record["complete"] is True
@@ -127,8 +142,8 @@ def test_trace_record_is_json_serialisable_and_complete() -> None:
     assert record["target"]["model_alias"] == "frontier"
 
 
-def test_render_marks_an_incomplete_trace(tmp_path: Path) -> None:
-    source = locate_trace(_SNEAKY_RUN, out_dir=_REPORTS)
+def test_render_marks_an_incomplete_trace(tree: Path, tmp_path: Path) -> None:
+    source = locate_trace(_SNEAKY_RUN, out_dir=tree)
     lines = source.read_text(encoding="utf-8").splitlines()
     truncated = tmp_path / "cut.arf.jsonl"
     truncated.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")  # drop the footer
@@ -136,15 +151,15 @@ def test_render_marks_an_incomplete_trace(tmp_path: Path) -> None:
     assert rendered[-1].startswith("INCOMPLETE:")
 
 
-def test_trace_command_end_to_end() -> None:
+def test_trace_command_end_to_end(tree: Path) -> None:
     result = runner.invoke(
-        app, ["trace", _SNEAKY_RUN, "--out", str(_REPORTS), "--kind", "tool_call", "--json"]
+        app, ["trace", _SNEAKY_RUN, "--out", str(tree), "--kind", "tool_call", "--json"]
     )
     assert result.exit_code == ExitCode.OK, result.output
     payload = json.loads(result.output)
     assert payload["run_id"] == _SNEAKY_RUN
     assert {action["kind"] for action in payload["actions"]} == {"tool_call"}
-    missing = runner.invoke(app, ["trace", "nope", "--out", str(_REPORTS)])
+    missing = runner.invoke(app, ["trace", "nope", "--out", str(tree)])
     assert missing.exit_code == ExitCode.INFRASTRUCTURE
     assert "no trace with run_id" in missing.output
 
