@@ -1226,3 +1226,45 @@ def test_depth_deep_runs_every_configured_target_to_twenty(
     assert executor.calls == 2 * 20
     assert result.summary.matrix.looks == (6, 12, 20)
     assert len(result.summary.matrix.target_slugs) == 2
+
+
+# ---------------------------------------------------------------------------
+# §12.6: the platform baseline on the run path
+# ---------------------------------------------------------------------------
+
+
+def _platform_baseline(image: str | None):  # type: ignore[no-untyped-def]
+    from bellwether.config.models.baseline import PlatformBaseline
+
+    return PlatformBaseline(
+        api_version="bellwether/v1",
+        kind="PlatformBaseline",
+        version="2026.09.1",
+        applies_to_image=image,
+    )
+
+
+def test_an_applicable_platform_baseline_is_stamped_on_the_summary(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result = _evaluate_with(
+        package,
+        tmp_path,
+        config=_config(),
+        platform_baseline=_platform_baseline("img@sha256:" + "d" * 64),
+    )
+    assert result.summary.platform_baseline_version == "2026.09.1"
+    assert not any("platform baseline" in note for note in result.verdict.notes)
+
+
+def test_a_platform_baseline_for_another_image_is_not_applied_and_the_verdict_says_so(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result = _evaluate_with(
+        package, tmp_path, config=_config(), platform_baseline=_platform_baseline(None)
+    )
+    assert result.summary.platform_baseline_version == ""
+    assert any(
+        "not applied" in note and "applies_to_image is unset" in note
+        for note in result.verdict.notes
+    )

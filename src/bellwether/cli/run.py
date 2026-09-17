@@ -43,6 +43,7 @@ from bellwether.cli.orchestrator import (
 from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.cli.run_plan import ResolvedRun, resolve_run
+from bellwether.config.models.baseline import PlatformBaseline
 from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
@@ -153,6 +154,7 @@ def run_evaluation(
     budget_usd: float | None = None,
     baseline: BaselineRecord | None = None,
     depth: str | None = None,
+    platform_baseline: PlatformBaseline | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -170,6 +172,11 @@ def run_evaluation(
     this evaluation; the cost gate it feeds is composed only where every target is priced.
     ``baseline`` is the skill's stored §17.5 baseline, when one exists; the regression gate is
     composed against it where the profile asks for the comparison and the key allows it.
+    ``platform_baseline`` is the ``.bellwether/platform-baseline.yaml`` document (§12.6): where
+    it is keyed to the configured sandbox image its path entries are subtracted from every
+    run's capability sets and its version is stamped on the summary; where it is not, nothing
+    is absorbed and the verdict carries the reason, so "baseline not applied" never reads as
+    "nothing infrastructural happened".
     ``depth`` (``--depth quick|standard|deep``, §19.1) is a preset over the matrix options and
     is exclusive with them: ``quick`` is one ``small`` target at a fixed 3 (descriptive only),
     ``standard`` is ``frontier`` + ``small`` at looks [6, 12], ``deep`` is every configured
@@ -302,6 +309,17 @@ def run_evaluation(
     # every live run (BW-47).
     declared_scope = package.manifest.declared_scope if package.manifest is not None else None
     weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
+    applied_baseline: PlatformBaseline | None = None
+    baseline_notes: list[str] = []
+    if platform_baseline is not None:
+        applicable, why = platform_baseline.applicable_to(config.sandbox.image)
+        if applicable:
+            applied_baseline = platform_baseline
+        else:
+            baseline_notes.append(
+                f"platform baseline {platform_baseline.version!r} not applied: {why} (§12.6); "
+                "no infrastructural access was subtracted from the capability sets"
+            )
     readings = drive_evaluation(
         plans,
         executor,
@@ -310,6 +328,7 @@ def run_evaluation(
         declared_scope=declared_scope,
         weights=weights,
         looks_for=lambda scenario_id: schedule[scenario_id][0],
+        platform_baseline=applied_baseline,
     )
 
     criticality = (
@@ -343,6 +362,8 @@ def run_evaluation(
         per_run_wall_cap_ms=per_run_wall_cap_ms,
         pricing_for=pricing_for,
         baseline=baseline,
+        platform_baseline_version=applied_baseline.version if applied_baseline else "",
+        extra_notes=baseline_notes,
     )
 
 
@@ -465,6 +486,7 @@ def sandbox_executor_factory(
     randomize_identifiers: bool = True,
     plant_canaries: bool = False,
     provider_base_urls: Mapping[str, str | None] | None = None,
+    platform_baseline_version: str | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -510,6 +532,7 @@ def sandbox_executor_factory(
             randomize_identifiers=randomize_identifiers,
             plant_canaries=plant_canaries,
             provider_base_urls=dict(provider_base_urls or {}),
+            platform_baseline_version=platform_baseline_version,
         )
 
     return make

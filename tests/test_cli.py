@@ -589,3 +589,37 @@ def test_looks_parsing_refuses_a_non_integer() -> None:
     assert _parse_looks(None) is None
     with pytest.raises(BellwetherError, match="integers"):
         _parse_looks("6,twelve")
+
+
+def test_doctor_reports_the_platform_baseline_state(tmp_path: Path) -> None:
+    """§12.6: the scaffolded baseline has applies_to_image unset, so it is present but not
+    applied (warn, with the document's own reason); keyed to the configured image it is ok."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    config_path = tmp_path / ".bellwether" / "config.yaml"
+    policy_path = tmp_path / ".bellwether" / "policy.yaml"
+    baseline_path = tmp_path / ".bellwether" / "platform-baseline.yaml"
+
+    def doctor() -> dict[str, dict[str, str]]:
+        result = runner.invoke(
+            app, ["doctor", "--config", str(config_path), "--policy", str(policy_path), "--json"]
+        )
+        return {check["check"]: check for check in json.loads(result.output)["checks"]}
+
+    row = doctor()["platform baseline (§12.6)"]
+    assert row["status"] == "warn"
+    assert "not applied" in row["detail"] and "applies_to_image is unset" in row["detail"]
+
+    import yaml
+
+    image = yaml.safe_load(config_path.read_text(encoding="utf-8"))["sandbox"]["image"]
+    text = baseline_path.read_text(encoding="utf-8").replace(
+        "applies_to_image: null", f"applies_to_image: {image!r}"
+    )
+    baseline_path.write_text(text, encoding="utf-8")
+    row = doctor()["platform baseline (§12.6)"]
+    assert row["status"] == "ok", row
+    assert "subtracted from every run" in row["detail"]
+
+    baseline_path.unlink()
+    row = doctor()["platform baseline (§12.6)"]
+    assert row["status"] == "warn" and "absent" in row["detail"]

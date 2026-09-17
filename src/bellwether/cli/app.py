@@ -29,6 +29,7 @@ from bellwether.config import (
     CONFIG_FILE,
     POLICY_FILE,
     load_config,
+    load_platform_baseline,
     load_policy,
     write_scaffold,
 )
@@ -316,6 +317,50 @@ def doctor(
             }
         )
 
+    # §12.6: the platform baseline is applied only where it is keyed to the configured sandbox
+    # image. Report which state it is in — absent, present-but-not-applicable (with the
+    # document's own reason), or applied — so "no infrastructural access subtracted" is a
+    # stated fact rather than an invisible one.
+    _baseline_file = config.parent / "platform-baseline.yaml"
+    if not _baseline_file.is_file():
+        checks.append(
+            {
+                "check": "platform baseline (§12.6)",
+                "status": "warn",
+                "detail": (
+                    f"{_baseline_file} is absent: no infrastructural allowlist is subtracted, so "
+                    "every harness/toolchain path a run touches counts against the skill's "
+                    "declared scope ('bellwether init' scaffolds one)"
+                ),
+            }
+        )
+    else:
+        try:
+            _platform = load_platform_baseline(_baseline_file)
+            _applicable, _why = _platform.applicable_to(loaded_config.sandbox.image)
+            checks.append(
+                {
+                    "check": "platform baseline (§12.6)",
+                    "status": "ok" if _applicable else "warn",
+                    "detail": (
+                        f"version {_platform.version} applied to {loaded_config.sandbox.image}: "
+                        f"{len(_platform.paths.read)} read / {len(_platform.paths.write)} write "
+                        "entries subtracted from every run's capability sets"
+                        if _applicable
+                        else f"version {_platform.version} present but not applied: {_why}"
+                    ),
+                }
+            )
+        except (BellwetherError, ConfigurationError) as error:
+            checks.append(
+                {
+                    "check": "platform baseline (§12.6)",
+                    "status": "critical",
+                    "detail": f"{_baseline_file} does not load: {error}",
+                }
+            )
+            problems += 1
+
     # §16.4 / BW-51: the precondition check, evaluated for real — per profile, against that
     # profile's own matrix targets and the planes this config actually wires. Reported as
     # `warn`, not `critical`: an unsatisfiable profile is a fact about policy-vs-composition,
@@ -535,9 +580,22 @@ def run(
     try:
         loaded_config = load_config(config)
         loaded_policy = load_policy(policy_path)
+        # §12.6: the platform baseline lives beside the config; absent, nothing is subtracted
+        # and the run says so. Present but keyed to another image, likewise — run_evaluation
+        # applies it only where `applies_to_image` matches the configured sandbox image.
+        baseline_file = config.parent / "platform-baseline.yaml"
+        platform_baseline = (
+            load_platform_baseline(baseline_file) if baseline_file.is_file() else None
+        )
     except (BellwetherError, ConfigurationError, OSError) as error:
         typer.echo(f"bellwether run: {error}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    applied_version = (
+        platform_baseline.version
+        if platform_baseline is not None
+        and platform_baseline.applicable_to(loaded_config.sandbox.image)[0]
+        else None
+    )
 
     daemon_ok, daemon_reason = DockerBackend(image=loaded_config.sandbox.image).available()
     if not daemon_ok:
@@ -591,6 +649,7 @@ def run(
                 repetitions=repetitions,
                 budget_usd=budget_usd,
                 depth=depth,
+                platform_baseline=platform_baseline,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -622,6 +681,7 @@ def run(
                     # Plant canaries and scan the observed planes for them when config enables it
                     # (§10.4); the env-var channel is delivered and scanned host-side today.
                     plant_canaries=loaded_config.canaries.enabled,
+                    platform_baseline_version=applied_version,
                 ),
                 # The artifact writer appends <eval_id> itself, so the parent is `out`;
                 # passing `out / eval_id` here doubled it and hid the report from pr-comment.
