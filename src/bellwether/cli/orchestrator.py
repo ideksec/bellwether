@@ -83,6 +83,7 @@ from bellwether.report import (
     render_pr_comment,
     render_summary_json,
 )
+from bellwether.skill import SkillPackage
 from bellwether.trace import (
     Action,
     NormalizationContext,
@@ -148,6 +149,10 @@ class RunPlan:
     fixture: Path | None = None
     #: The name the scenario gave (recorded in the trace header as ``sandbox.fixture``).
     fixture_name: str | None = None
+    #: The skills loaded alongside the one under test (§7.4 ``also_load_skills``), resolved per
+    #: scenario by :func:`plan_matrix`; offered through the harness beside the primary so an
+    #: assertion on *which* skill activated has competitors to observe.
+    companions: tuple[SkillPackage, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -291,6 +296,7 @@ def plan_matrix(
     repetitions: int,
     fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
     n_max_for: Callable[[Scenario], int] | None = None,
+    companions_for: Callable[[Scenario], tuple[SkillPackage, ...]] | None = None,
 ) -> list[RunPlan]:
     """Expand the (scenario × target × repetition) matrix into ordered run plans (§4).
 
@@ -320,6 +326,8 @@ def plan_matrix(
         resolved = fixture_for(scenario) if fixture_for is not None else None
         fixture = resolved.path if resolved is not None else None
         fixture_name = resolved.name if resolved is not None else None
+        # §7.4: companions resolve once per scenario too — a missing competitor refuses here.
+        companions = companions_for(scenario) if companions_for is not None else ()
         plans.extend(
             RunPlan(
                 scenario=scenario,
@@ -327,6 +335,7 @@ def plan_matrix(
                 repetition=rep,
                 fixture=fixture,
                 fixture_name=fixture_name,
+                companions=companions,
             )
             for target in targets
             for rep in range(1, reps + 1)

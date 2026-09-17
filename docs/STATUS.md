@@ -347,6 +347,27 @@ first-look floor, `SetReading.looks` carries the schedule the set actually ran, 
 mis-keyed as the profile's third look. No override reproduces the resolved matrix exactly, so the
 default path — and every committed report — is unchanged (spec-notes §7.2/§7.3).
 
+**Then `also_load_skills` was honoured — §7.4 coexistence loading.** The single most under-tested
+failure mode the spec names is a skill whose description is broad enough to capture activations
+meant for another, and the field that expresses the test (`also_load_skills`) was parsed and
+consumed nowhere: every scenario ran with the primary offered alone, so an assertion on *which*
+skill activated had no competitor to lose to. `cli/companions.py` resolves each name to a
+**sibling** skill directory (`skills/<name>/` beside the skill under test, the one place the §5
+layout gives a name meaning), loads it as a full package, and `plan_matrix` stamps the companions
+on every `RunPlan` — resolved once per scenario, refusing before any run on a name that resolves
+nowhere (a coexistence scenario whose rival is silently absent would report the primary winning
+for the wrong reason) or that names the skill under test itself. The executor offers the primary
+plus its companions through the api-loop harness exactly as it offers the primary — name,
+description, body — so `skill_offered`/`skill_activated` and the existing `other_skill_activated`
+assertion work unchanged. Companions are offered, not staged: on `api-loop` the offer is
+host-side, so a companion's own scripts are absent in the container and a call into them is an
+ordinary recorded error. The `claude-code` harness discovers skills from what is staged, and this
+build stages exactly one, so a companion scenario on a `claude-code` target is **refused by the
+§16.4 preflight** (`scenario[<id>].also_load_skills`) — plural staging is the same deferred piece
+as plugin-layout staging. The full §7.4 machinery (the `bellwether coexistence` command, the
+trigger-collision matrix, the library baseline and its delta) is still a work package; what
+landed is the loading half every coexistence scenario needs first (spec-notes §7.4).
+
 ---
 
 ## Where the build is
@@ -386,7 +407,7 @@ default path — and every committed report — is unchanged (spec-notes §7.2/�
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1088 tests: 1034 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1094 tests: 1040 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

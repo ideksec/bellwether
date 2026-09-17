@@ -425,6 +425,7 @@ def run(
     import datetime as dt
     from dataclasses import replace
 
+    from bellwether.cli.companions import companion_resolver
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
     from bellwether.cli.fixtures import fixture_resolver
     from bellwether.cli.run import (
@@ -493,6 +494,9 @@ def run(
                 package=package,
                 fixture=fixture,
                 fixture_for=fixture_for,
+                # §7.4: a scenario's also_load_skills resolve to sibling skill directories
+                # beside this one and are offered alongside it.
+                companions_for=companion_resolver(skill_dir),
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,

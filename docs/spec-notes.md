@@ -1744,6 +1744,40 @@ N = 4 under a `[2, 4]` override was not a profile look and was mis-keyed as the 
 look. With no override the result is the resolved matrix exactly, so the default path and every
 committed report are byte-identical.
 
+## §7.4, §5 — `also_load_skills` loads sibling skills as offered companions; the CLI harness refuses them
+
+`Scenario.also_load_skills` carried companion names from WP-1 and the run path never read it, so
+every scenario ran with the primary offered alone and `other_skill_activated` had nothing to
+observe. Three decisions.
+
+**A companion name resolves to a sibling directory, and nowhere else.** The §5 layout keeps every
+skill one directory under `skills/`, so `skills/<name>/` beside the skill under test is the one
+place a bare name means something; `cli/companions.py` loads it with the same `load_skill` the
+primary uses (its own frontmatter, body, digests). A name that resolves nowhere **refuses while
+planning**, not on the first run — the same reflex as a missing fixture — because a coexistence
+scenario whose rival is silently absent would report the primary winning every activation for
+the wrong reason, a clean-looking result about a test that never ran as written. Naming the skill
+under test as its own companion refuses too: offered twice, "which activated" is undecidable.
+
+**Companions are offered, not staged.** On `api-loop` the skills are presented host-side
+(`OfferedSkill` name/description/body in the system prompt and the `skill` tool), so offering a
+companion needs no sandbox change and every existing event — `skill_offered` per skill,
+`skill_activated` naming the winner — already carries it; a companion's own `scripts/` are not in
+the container, so a tool call into them is an ordinary error result, recorded. Nothing under a
+companion is hashed into the primary's digests, matching how the run cache and baselines key on
+the skill under test. The `claude-code` harness is different: the CLI discovers skills from
+`~/.claude/skills/`, and this build stages exactly one there, so a companion would be invisible to
+it and "which activated" a foregone conclusion. That combination is refused by the §16.4
+preflight (`scenario[<id>].also_load_skills`, remedy: an api-loop target) rather than run — plural
+staging is the same deferred piece as plugin-layout staging, and lands with it.
+
+**The loading half, not the matrix.** §7.4's full machinery — the scheduled `bellwether
+coexistence` command over the full library, two probe scenarios per skill, the trigger-collision
+matrix and its delta against `_library.coexistence.json` — is a work package of its own. What
+landed is what every coexistence scenario needs first: the competitors actually loaded beside
+the skill under test, with the scenario's own `other_skill_activated` assertions deciding the
+outcome.
+
 ## §10.4.2, §12.6 — The egress canary scan folds case on the host/SNI, matching how the host is recorded
 
 The non-model egress scan joined the request's path, host, and SNI into one line and scanned it

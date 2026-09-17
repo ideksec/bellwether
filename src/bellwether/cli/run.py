@@ -95,6 +95,7 @@ def run_evaluation(
     bellwether_version: str,
     profile_override: str | None = None,
     fixture_for: Callable[[Scenario], ResolvedFixture] | None = None,
+    companions_for: Callable[[Scenario], tuple[SkillPackage, ...]] | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -141,6 +142,7 @@ def run_evaluation(
         targets,
         profile_name=resolved.profile_name,
         multi_turn_scenario_ids=[s.id for s in scenarios if isinstance(s.prompt, list)],
+        companion_scenario_ids=[s.id for s in scenarios if s.also_load_skills],
     )
 
     # §16.1: a capability class the manifest denies must not be weighted 0. Weight 0 erases it
@@ -193,6 +195,7 @@ def run_evaluation(
         repetitions=resolved.n_max,
         fixture_for=fixture_for,
         n_max_for=lambda scenario: schedule[scenario.id][1],
+        companions_for=companions_for,
     )
     # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
     # assertions: `scope=None` keeps the scenario's own assertions deciding each run's outcome,

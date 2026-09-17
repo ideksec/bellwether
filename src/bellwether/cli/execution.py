@@ -97,6 +97,7 @@ __all__ = [
     "SandboxRunExecutor",
     "isolation_from_config",
     "offered_skill",
+    "offered_skills_for",
     "run_limits_for",
     "zone_map_from_config",
 ]
@@ -127,6 +128,16 @@ def offered_skill(package: SkillPackage) -> OfferedSkill:
         description=description or "",
         body=package.parsed.body,
     )
+
+
+def offered_skills_for(package: SkillPackage, plan: RunPlan) -> tuple[OfferedSkill, ...]:
+    """The skills the harness offers for one run: the one under test plus its §7.4 companions.
+
+    Companions come from ``plan.companions`` (the scenario's ``also_load_skills``, resolved while
+    planning). Each is offered exactly as the primary is — name, description, body — so the
+    model has real competitors and an assertion on *which* skill activated means something.
+    """
+    return (offered_skill(package), *(offered_skill(companion) for companion in plan.companions))
 
 
 def isolation_from_config(sandbox: SandboxConfig) -> IsolationProfile:
@@ -507,7 +518,7 @@ class SandboxRunExecutor:
                 adapter = ApiLoopAdapter(
                     scanner if scanner is not None else client,
                     SandboxToolset(docker_exec_runner(self.backend, prepared)),
-                    skills=(offered_skill(self.package),),
+                    skills=offered_skills_for(self.package, plan),
                 )
             if isinstance(adapter, ClaudeCodeAdapter):
                 # The CLI is driven with a single `-p` prompt; a multi-turn scenario cannot

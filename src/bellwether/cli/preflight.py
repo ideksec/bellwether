@@ -106,6 +106,7 @@ def preflight_failures(
     *,
     running_version: str = __version__,
     multi_turn_scenario_ids: Sequence[str] = (),
+    companion_scenario_ids: Sequence[str] = (),
 ) -> list[PreconditionFailure]:
     """Every reason this profile cannot be satisfied by this composition, or an empty list.
 
@@ -142,6 +143,22 @@ def preflight_failures(
                         ),
                     )
                 )
+            # §7.4: the CLI discovers skills from what is staged into the sandbox, and this
+            # build stages exactly one; companions it cannot see would make "which activated"
+            # a foregone conclusion. Refuse rather than offer a competitor the harness lacks.
+            for scenario_id in companion_scenario_ids:
+                failures.append(
+                    PreconditionFailure(
+                        gate=f"scenario[{scenario_id}].also_load_skills",
+                        target=target.slug,
+                        remedy=(
+                            "this scenario loads companion skills (§7.4) and the claude-code "
+                            "harness stages only the skill under test in this build, so its "
+                            "companions would not be discoverable; run it on an api-loop "
+                            "target, or drop also_load_skills"
+                        ),
+                    )
+                )
     failures.extend(
         check_preconditions(
             profile,
@@ -160,6 +177,7 @@ def refuse_on_preflight_failures(
     *,
     profile_name: str,
     multi_turn_scenario_ids: Sequence[str] = (),
+    companion_scenario_ids: Sequence[str] = (),
 ) -> None:
     """Raise :class:`BellwetherError` in the §16.4 message shape if the matrix cannot start.
 
@@ -167,7 +185,11 @@ def refuse_on_preflight_failures(
     unsatisfiable policy costs an error message instead of a matrix.
     """
     failures = preflight_failures(
-        config, profile, targets, multi_turn_scenario_ids=multi_turn_scenario_ids
+        config,
+        profile,
+        targets,
+        multi_turn_scenario_ids=multi_turn_scenario_ids,
+        companion_scenario_ids=companion_scenario_ids,
     )
     if failures:
         rendered = "\n".join(failure.message(profile_name) for failure in failures)
