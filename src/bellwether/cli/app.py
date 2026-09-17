@@ -258,13 +258,24 @@ def doctor(
             }
         )
 
-    # §16.2: the budget gate's thresholds (max_cost_usd, max_wall_clock_minutes) are recorded in
-    # policy — the shipped template presents them as dollar/time ceilings — but this version
-    # assembles no budget gate into the verdict, so neither bound is enforced. That is the same
-    # silent-no-op trap as require_scan: a control that reads as active and does nothing. The live
-    # cost guard that IS enforced is the per-repetition token ceiling (`bellwether run --max-tokens`
-    # → RunLimits.max_total_tokens → a `budget_exceeded` outcome). Surface the gap so a max_cost_usd
-    # in policy is never mistaken for a spending limit.
+    # §16.2 / §19.1: the budget gate is composed from the run footers. The wall-clock half
+    # (max_wall_clock_minutes) is always enforced — every run's duration is observed or bounded
+    # by its per-run cap. The cost half (max_cost_usd) is enforced only where every target alias
+    # in a profile's matrix has `providers.<name>.pricing`; an unpriced alias leaves it
+    # uncomposed and the verdict says so. Report per profile which state it is in, so a
+    # max_cost_usd in policy is never mistaken for a spending limit on an unpriced matrix.
+    _unpriced_by_profile: dict[str, list[str]] = {}
+    for _name, _profile in loaded_policy.profiles.items():
+        _unpriced = sorted(
+            {
+                f"{target.provider}/{target.model_alias}"
+                for target in _profile.matrix.required_targets
+                if target.provider not in loaded_config.providers
+                or loaded_config.providers[target.provider].pricing_for(target.model_alias) is None
+            }
+        )
+        if _unpriced:
+            _unpriced_by_profile[_name] = _unpriced
     _budgets = sorted(
         {
             f"max_cost_usd={profile.gates.budget.max_cost_usd:g}, "
@@ -272,18 +283,38 @@ def doctor(
             for profile in _static_profiles
         }
     )
-    checks.append(
-        {
-            "check": "budget gate (§16.2)",
-            "status": "warn",
-            "detail": (
-                "gates.budget (max_cost_usd, max_wall_clock_minutes) is recorded but does not gate "
-                "the verdict in this version — no dollar or wall-clock budget is enforced. The live "
-                "cost guard that is enforced is the per-repetition token ceiling ('bellwether run "
-                "--max-tokens', a budget_exceeded outcome). Configured: " + "; ".join(_budgets)
-            ),
-        }
-    )
+    if _unpriced_by_profile:
+        _listed = "; ".join(
+            f"{name}: {', '.join(aliases)}"
+            for name, aliases in sorted(_unpriced_by_profile.items())
+        )
+        checks.append(
+            {
+                "check": "budget gate (§16.2)",
+                "status": "warn",
+                "detail": (
+                    "gates.budget.max_wall_clock_minutes is enforced from observed run durations, "
+                    "but max_cost_usd does not gate the verdict for a matrix with an unpriced "
+                    "target alias — the cost gate is composed only where every alias has "
+                    "providers.<name>.pricing (USD per million tokens by kind). Unpriced: "
+                    f"{_listed}. The per-repetition token ceiling ('bellwether run --max-tokens', "
+                    "a budget_exceeded outcome) is enforced regardless. Configured: "
+                    + "; ".join(_budgets)
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "check": "budget gate (§16.2)",
+                "status": "ok",
+                "detail": (
+                    "gates.budget is enforced: max_wall_clock_minutes from observed run durations, "
+                    "max_cost_usd from reported token usage at the configured pricing. "
+                    "Configured: " + "; ".join(_budgets)
+                ),
+            }
+        )
 
     # §16.4 / BW-51: the precondition check, evaluated for real — per profile, against that
     # profile's own matrix targets and the planes this config actually wires. Reported as
@@ -445,6 +476,14 @@ def run(
     strict: Annotated[
         bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
     ] = False,
+    budget_usd: Annotated[
+        float | None,
+        typer.Option(
+            "--budget-usd",
+            help="Override the profile's max_cost_usd for this evaluation (§19.1); the cost gate "
+            "is composed only where every target alias has providers.<name>.pricing.",
+        ),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -537,6 +576,7 @@ def run(
                 n_max_override=n_max,
                 looks_override=parsed_looks,
                 repetitions=repetitions,
+                budget_usd=budget_usd,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,

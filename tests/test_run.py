@@ -210,7 +210,7 @@ class _ScriptedExecutor:
         )
         footer = RunFooter(
             ended_at=dt.datetime(2026, 8, 5, 12, 5, 0, tzinfo=dt.UTC),
-            wall_clock_ms=300_000,
+            wall_clock_ms=30_000,
             exit_reason=exit_reason_from_events(events),
             tokens=token_totals_from_events(events),
         )
@@ -883,3 +883,153 @@ def test_fixed_mode_runs_exactly_n_times_and_is_descriptive_only(
     assert holder["exec"].calls == 3
     assert result.verdict.descriptive_only is True
     assert result.verdict.verdict != "ready"
+
+
+# ---------------------------------------------------------------------------
+# §16.2 / §19.1: the budget gate on the run path
+# ---------------------------------------------------------------------------
+
+
+def _priced_config() -> Config:
+    from bellwether.config.models.provider import ModelPricing
+
+    return Config(
+        **_API,
+        kind="Config",
+        providers={
+            "anthropic": ProviderConfig(
+                type="anthropic",
+                api_key_env=_KEY_ENV,
+                models={"frontier": "a-real-model-id"},
+                pricing={"frontier": ModelPricing(input_usd_per_mtok=1.0, output_usd_per_mtok=5.0)},
+            )
+        },
+        sandbox=SandboxConfig(image="img@sha256:" + "d" * 64),
+    )
+
+
+def _evaluate_with(package: SkillPackage, tmp_path: Path, *, config: Config, **kwargs):  # type: ignore[no-untyped-def]
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    return run_evaluation(
+        config=config,
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="budget",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        **kwargs,
+    )
+
+
+def test_an_unpriced_matrix_composes_the_wall_clock_gate_and_discloses_the_cost_gap(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """No pricing: the wall-clock half is decided from the footers (20 runs × 30 s = 10 min,
+    within 60), the cost half is not composed, and the verdict *says so* — the token usage is
+    still in summary.cost, with usd null rather than a zero that would read as free."""
+    result, _ = _evaluate(package, tmp_path)
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.wall_clock"].status == "pass"
+    assert gates["budget.wall_clock"].per_target[0].observed == "10.00 min"
+    assert "budget.cost" not in gates
+    assert any("budget.cost not composed" in note for note in result.verdict.notes)
+    assert any("anthropic/frontier" in note for note in result.verdict.notes)
+    cost = result.summary.cost
+    assert cost is not None
+    assert cost.usd is None
+    assert cost.unpriced_targets == ("anthropic/frontier",)
+    assert cost.runs_without_footer == 0
+    assert cost.wall_clock_s == 600.0
+    # 20 runs × (120 + 90 input, 40 + 10 output) from the scripted transcript
+    assert cost.tokens["input"] == 20 * 210
+    assert cost.tokens["output"] == 20 * 50
+
+
+def test_a_priced_matrix_composes_the_cost_gate_from_reported_tokens(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """With every alias priced, reported tokens become dollars at the configured rate:
+    20 × (210 × $1 + 50 × $5) per million = $0.0092, within the profile's $25."""
+    result = _evaluate_with(package, tmp_path, config=_priced_config())
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.cost"].status == "pass"
+    assert gates["budget.cost"].per_target[0].observed == "$0.0092"
+    assert not any("budget.cost not composed" in note for note in result.verdict.notes)
+    assert result.summary.cost is not None
+    assert result.summary.cost.usd == 0.0092
+    assert result.summary.cost.unpriced_targets == ()
+    # Otherwise the same verdict as the unpriced path: conditional on the unobserved planes.
+    assert result.verdict.verdict == "conditional"
+
+
+def test_budget_usd_overrides_the_profile_ceiling_and_can_block(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """`--budget-usd 0` is the explicit "any priced spend blocks" setting (§20)."""
+    result = _evaluate_with(package, tmp_path, config=_priced_config(), budget_usd=0.0)
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.cost"].status == "block"
+    assert gates["budget.cost"].per_target[0].threshold == "≤ $0.00"
+    assert result.verdict.verdict == "not_ready"
+    assert result.exit_code == 2
+
+
+def test_a_negative_budget_usd_is_refused(package: SkillPackage, tmp_path: Path) -> None:
+    with pytest.raises(BellwetherError, match="--budget-usd must be zero or positive"):
+        _evaluate_with(package, tmp_path, config=_priced_config(), budget_usd=-1.0)
+
+
+def test_budget_usd_is_ignored_on_an_unpriced_matrix_but_the_note_carries_it(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """An override on an unpriced matrix enforces nothing — and the note names the figure that
+    is not enforced, so the flag is never mistaken for a control that took effect."""
+    result = _evaluate_with(package, tmp_path, config=_config(), budget_usd=0.5)
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert "budget.cost" not in gates
+    assert any("max_cost_usd 0.50 is not enforced" in note for note in result.verdict.notes)
+
+
+def test_a_matrix_over_its_wall_clock_ceiling_is_not_ready(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """The shipped low profile allows 60 min; 20 runs at 4 min each is 80 — the gate blocks
+    on what the footers recorded, and the summary shows the spend that did it."""
+
+    class _Slow(_ScriptedExecutor):
+        def execute(self, plan: RunPlan) -> ExecutedRun:
+            executed = super().execute(plan)
+            trace = executed.trace
+            assert trace.footer is not None
+            footer = trace.footer.model_copy(update={"wall_clock_ms": 4 * 60_000})
+            from dataclasses import replace as _replace
+
+            return _replace(executed, trace=_replace(trace, footer=footer))
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _Slow(pkg, tmp_path, client_factory)
+
+    result = run_evaluation(
+        config=_config(),
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="slow",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+    gates = {gate.name: gate for gate in result.verdict.gates}
+    assert gates["budget.wall_clock"].status == "block"
+    assert gates["budget.wall_clock"].per_target[0].observed == "80.00 min"
+    assert result.verdict.verdict == "not_ready"
+    assert result.summary.cost is not None
+    assert result.summary.cost.wall_clock_s == 4800.0

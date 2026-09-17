@@ -27,7 +27,7 @@ configuration) surfaces the gap without blocking, exactly as §25 prescribes.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -45,6 +45,7 @@ from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_ar
 from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
+from bellwether.config.models.provider import ModelPricing
 from bellwether.config.models.scenarios import AssertionSpec, Scenario, ScenarioDefaults
 from bellwether.constants import (
     DEFAULT_CAPABILITY_WEIGHTS,
@@ -66,6 +67,7 @@ from bellwether.metrics import (
 from bellwether.report import (
     CapabilityProfileSummary,
     ConsistencySummary,
+    CostSummary,
     Figures,
     FunctionalSummary,
     GateSummary,
@@ -243,6 +245,13 @@ class AnalysedRun:
     #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
     #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
     scope_unused: tuple[str, ...] = ()
+    #: The footer's ``wall_clock_ms`` — what this run spent, as the executor measured it.
+    #: ``None`` on an incomplete trace (no footer): the duration is then *unobserved*, and the
+    #: budget gate treats it as such rather than counting it as zero (§16.2, §19.1).
+    wall_clock_ms: int | None = None
+    #: The footer's token totals by kind (``input``/``output``/``cache_read``/``cache_write``),
+    #: the reported usage the cost gate prices (§9.3). ``None`` on an incomplete trace.
+    tokens: Mapping[str, int] | None = None
 
 
 def effective_schedule(
@@ -588,6 +597,17 @@ def analyse_run(
         canary_without_read=index.canary_without_read_present,
         exit_reason=trace.exit_reason,
         scope_unused=scope_unused,
+        wall_clock_ms=trace.footer.wall_clock_ms if trace.footer is not None else None,
+        tokens=(
+            {
+                "input": trace.footer.tokens.input,
+                "output": trace.footer.tokens.output,
+                "cache_read": trace.footer.tokens.cache_read,
+                "cache_write": trace.footer.tokens.cache_write,
+            }
+            if trace.footer is not None
+            else None
+        ),
     )
 
 
@@ -733,6 +753,14 @@ class SetReading:
     #: Runs by §12.7 outcome, so the matrix counts are exact rather than reconstructed.
     n_not_evaluable: int = 0
     n_excluded_quality: int = 0
+    #: Wall clock summed over the runs whose trace carries a footer (§19.1). A footerless
+    #: run contributes nothing here and is counted in ``n_wall_clock_unobserved`` instead, so
+    #: the figure is a *lower bound* whenever that count is non-zero — never a total that
+    #: quietly omits the run it could not measure.
+    wall_clock_ms_observed: int = 0
+    n_wall_clock_unobserved: int = 0
+    #: Token usage by kind, summed over the footered runs (§9.3). Same lower-bound reading.
+    tokens: Mapping[str, int] = field(default_factory=dict)
 
 
 #: §13.5.2: the configured ``max_rare_capability_risk`` severity maps to a risk-weight
@@ -816,6 +844,13 @@ def aggregate(
     # incomplete egress picture, so the gate defers rather than passing on partial evidence.
     egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
     egress_blocked = any(run.egress_blocked for run in runs)
+    # §19.1: spend is read from the footers. A footerless run is counted, not skipped, so the
+    # budget gate knows the sums are lower bounds.
+    tokens_total: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    for run in runs:
+        if run.tokens is not None:
+            for kind in tokens_total:
+                tokens_total[kind] += int(run.tokens.get(kind, 0))
     return SetReading(
         scenario_id=scenario_id,
         target=target,
@@ -866,6 +901,11 @@ def aggregate(
         n_timed_out=sum(1 for run in runs if run.exit_reason == "timeout"),
         n_not_evaluable=stability.denominators.n_not_evaluable,
         n_excluded_quality=stability.denominators.n_excluded_quality,
+        wall_clock_ms_observed=sum(
+            run.wall_clock_ms for run in runs if run.wall_clock_ms is not None
+        ),
+        n_wall_clock_unobserved=sum(1 for run in runs if run.wall_clock_ms is None),
+        tokens=tokens_total,
     )
 
 
@@ -1249,6 +1289,158 @@ class EvalResult:
     exit_code: int
 
 
+#: The per-target label the budget gates carry. A budget is a claim about the whole matrix
+#: — one ceiling on what the evaluation spent — so its result is one row, not one per
+#: target, and the row says so rather than borrowing a target slug.
+BUDGET_SCOPE = "matrix"
+
+
+@dataclass(frozen=True)
+class BudgetReading:
+    """What the evaluation spent, read from the footers of every run in every set (§19.1).
+
+    ``wall_clock_ms`` and ``tokens`` are sums over the runs that carry a footer; ``n_unobserved``
+    counts the runs that do not, which makes both sums lower bounds whenever it is non-zero.
+    ``cost_usd`` is priced from ``tokens`` only when every target in the matrix has configured
+    pricing; otherwise it is ``None`` and ``unpriced`` names the targets that lack it, so an
+    unpriced matrix is disclosed rather than charged at a guessed rate.
+    """
+
+    wall_clock_ms: int
+    n_unobserved: int
+    tokens: Mapping[str, int]
+    cost_usd: float | None
+    unpriced: tuple[str, ...]
+
+
+def budget_reading(
+    readings: Sequence[SetReading],
+    *,
+    pricing_for: Callable[[TargetInfo], ModelPricing | None] | None = None,
+) -> BudgetReading:
+    """Sum the spend across the matrix and price it where pricing exists."""
+    tokens: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
+    unpriced: set[str] = set()
+    cost = 0.0
+    for reading in readings:
+        for kind in tokens:
+            tokens[kind] += int(reading.tokens.get(kind, 0))
+        pricing = pricing_for(reading.target) if pricing_for is not None else None
+        if pricing is None:
+            unpriced.add(f"{reading.target.provider}/{reading.target.model_alias}")
+        else:
+            cost += pricing.cost_usd(reading.tokens)
+    return BudgetReading(
+        wall_clock_ms=sum(r.wall_clock_ms_observed for r in readings),
+        n_unobserved=sum(r.n_wall_clock_unobserved for r in readings),
+        tokens=tokens,
+        cost_usd=None if unpriced else cost,
+        unpriced=tuple(sorted(unpriced)),
+    )
+
+
+def _minutes(ms: int) -> str:
+    return f"{ms / 60_000:.2f} min"
+
+
+def _budget_result(status: str, observed: str, threshold: str, reason: str) -> TargetGateResult:
+    return TargetGateResult(
+        target=BUDGET_SCOPE,
+        status=status,  # type: ignore[arg-type]
+        observed=observed,
+        threshold=threshold,
+        reason=reason,
+    )
+
+
+def _budget_wall_clock_result(
+    spend: BudgetReading, profile: ProfileSpec, *, per_run_cap_ms: int | None
+) -> TargetGateResult:
+    """The wall-clock half of the budget gate (§16.2, §19.1), from observed run durations.
+
+    The footers are the record of what each run spent. A matrix whose observed total already
+    exceeds the ceiling blocks — a lower bound above the line is enough. A matrix with every
+    run footered and under the line passes. A matrix with a footerless run has an unobserved
+    duration: it still passes where the per-run wall-clock cap the executor enforced bounds
+    the unknown (observed + unobserved × cap ≤ ceiling), and defers otherwise — a spend that
+    cannot be bounded is not called within budget.
+    """
+    ceiling_ms = profile.gates.budget.max_wall_clock_minutes * 60_000
+    threshold = f"≤ {profile.gates.budget.max_wall_clock_minutes} min"
+    if spend.wall_clock_ms > ceiling_ms:
+        return _budget_result(
+            "block",
+            _minutes(spend.wall_clock_ms),
+            threshold,
+            f"the matrix spent {_minutes(spend.wall_clock_ms)} of wall clock against a ceiling "
+            f"of {profile.gates.budget.max_wall_clock_minutes} min (max_wall_clock_minutes)",
+        )
+    if spend.n_unobserved == 0:
+        return _budget_result(
+            "pass",
+            _minutes(spend.wall_clock_ms),
+            threshold,
+            f"the matrix spent {_minutes(spend.wall_clock_ms)} of wall clock, within the "
+            f"{profile.gates.budget.max_wall_clock_minutes} min ceiling",
+        )
+    if per_run_cap_ms is not None:
+        bound_ms = spend.wall_clock_ms + spend.n_unobserved * per_run_cap_ms
+        if bound_ms <= ceiling_ms:
+            return _budget_result(
+                "pass",
+                f"≥ {_minutes(spend.wall_clock_ms)}, ≤ {_minutes(bound_ms)}",
+                threshold,
+                f"{spend.n_unobserved} run(s) have no footer, so their duration is unobserved; "
+                f"bounded by the per-run cap of {_minutes(per_run_cap_ms)} each, the matrix "
+                f"spent at most {_minutes(bound_ms)}, within the "
+                f"{profile.gates.budget.max_wall_clock_minutes} min ceiling",
+            )
+    return _budget_result(
+        "not_evaluable",
+        f"≥ {_minutes(spend.wall_clock_ms)}",
+        threshold,
+        f"{spend.n_unobserved} run(s) have no footer, so their duration is unobserved and the "
+        f"matrix total cannot be bounded within the "
+        f"{profile.gates.budget.max_wall_clock_minutes} min ceiling (§10.7)",
+    )
+
+
+def _budget_cost_result(spend: BudgetReading, profile: ProfileSpec) -> TargetGateResult:
+    """The cost half of the budget gate (§16.2, §19.1), from reported token usage × pricing.
+
+    Composed only for a fully priced matrix (the caller checks ``spend.cost_usd``); an
+    unpriced target leaves the gate uncomposed and a verdict note says so. A priced total
+    over the ceiling blocks; a priced total under it passes when every run is footered, and
+    defers when one is not — token usage the trace never recorded is not called free.
+    """
+    ceiling = profile.gates.budget.max_cost_usd
+    cost = spend.cost_usd if spend.cost_usd is not None else 0.0
+    observed = f"${round6(cost):.4f}"
+    threshold = f"≤ ${ceiling:.2f}"
+    if cost > ceiling:
+        return _budget_result(
+            "block",
+            observed,
+            threshold,
+            f"the matrix cost {observed} by reported token usage against a ceiling of "
+            f"${ceiling:.2f} (max_cost_usd)",
+        )
+    if spend.n_unobserved == 0:
+        return _budget_result(
+            "pass",
+            observed,
+            threshold,
+            f"the matrix cost {observed} by reported token usage, within the ${ceiling:.2f} ceiling",
+        )
+    return _budget_result(
+        "not_evaluable",
+        f"≥ {observed}",
+        threshold,
+        f"{spend.n_unobserved} run(s) have no footer, so their token usage is unobserved and "
+        f"the matrix cost cannot be bounded within the ${ceiling:.2f} ceiling (§10.7)",
+    )
+
+
 def _gate(
     name: str,
     results: Sequence[TargetGateResult],
@@ -1287,8 +1479,16 @@ def orchestrate(
     bellwether_version: str,
     out_dir: Path,
     descriptive_only: bool = False,
+    per_run_wall_cap_ms: int | None = None,
+    pricing_for: Callable[[TargetInfo], ModelPricing | None] | None = None,
 ) -> EvalResult:
-    """Compose the verdict from the set readings, render, and write the artifact tree."""
+    """Compose the verdict from the set readings, render, and write the artifact tree.
+
+    ``per_run_wall_cap_ms`` is the per-run wall-clock cap the executor enforced, which lets
+    the budget gate bound a footerless run's duration; ``pricing_for`` resolves a target's
+    configured :class:`ModelPricing`, which is what turns reported tokens into the cost gate.
+    Absent, the cost gate is not composed and the verdict carries a note saying so.
+    """
     gates: list[GateResult] = []
     gates.append(_gate("evidence", [_evidence_result(r, profile) for r in readings], required=True))
     gates.append(
@@ -1331,7 +1531,30 @@ def orchestrate(
         )
     )
 
-    verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only)
+    # §16.2 / §19.1: the budget gate, from what the footers recorded the matrix spending. The
+    # wall-clock half is always composed — every run's duration is either observed or bounded.
+    # The cost half needs pricing; an unpriced target is disclosed as a note, never priced at
+    # a guessed rate and never silently passed.
+    spend = budget_reading(readings, pricing_for=pricing_for)
+    gates.append(
+        _gate(
+            "budget.wall_clock",
+            [_budget_wall_clock_result(spend, profile, per_run_cap_ms=per_run_wall_cap_ms)],
+            required=True,
+        )
+    )
+    notes: list[str] = []
+    if spend.cost_usd is not None:
+        gates.append(_gate("budget.cost", [_budget_cost_result(spend, profile)], required=True))
+    else:
+        notes.append(
+            "budget.cost not composed: no pricing configured for "
+            + ", ".join(spend.unpriced)
+            + f" (providers.<name>.pricing), so max_cost_usd {profile.gates.budget.max_cost_usd:.2f} "
+            "is not enforced on this evaluation; reported token usage is in summary.cost"
+        )
+
+    verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only, notes=notes)
 
     figures = build_figures(readings)
     summary = _build_summary(
@@ -1349,6 +1572,7 @@ def orchestrate(
         created_at=created_at,
         bellwether_version=bellwether_version,
         descriptive_only=descriptive_only,
+        spend=spend,
     )
 
     artifacts = write_artifact_tree(
@@ -1412,6 +1636,7 @@ def _build_summary(
     created_at: str,
     bellwether_version: str,
     descriptive_only: bool,
+    spend: BudgetReading | None = None,
 ) -> Summary:
     primary = _primary(readings)
     targets = sorted({r.target.slug for r in readings})
@@ -1495,7 +1720,9 @@ def _build_summary(
         ),
         policy=PolicyRef(profile=profile_name, digest=policy_digest),
         matrix=matrix,
-        verdict=VerdictSummary(status=verdict.verdict, gates=_gate_summaries(gates)),
+        verdict=VerdictSummary(
+            status=verdict.verdict, gates=_gate_summaries(gates), notes=verdict.notes
+        ),
         functional=functional,
         consistency=consistency,
         capability_profile=capability_profile,
@@ -1505,6 +1732,20 @@ def _build_summary(
         # a reader can judge the trajectory figures against the instrument's own jitter.
         noise_floor=NoiseFloor(
             trajectory=NOISE_FLOOR_TRAJECTORY, calibrated_at=NOISE_FLOOR_CALIBRATED_AT
+        ),
+        # §19.1: what the matrix spent, from the footers. `usd` is None on an unpriced
+        # matrix — a zero there would read as free.
+        cost=(
+            CostSummary(
+                usd=None if spend.cost_usd is None else round6(spend.cost_usd),
+                tokens=dict(spend.tokens),
+                cache_read_tokens=int(spend.tokens.get("cache_read", 0)),
+                wall_clock_s=round6(spend.wall_clock_ms / 1000),
+                runs_without_footer=spend.n_unobserved,
+                unpriced_targets=spend.unpriced,
+            )
+            if spend is not None
+            else None
         ),
     )
 

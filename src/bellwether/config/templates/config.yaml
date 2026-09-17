@@ -19,6 +19,13 @@ providers:
       frontier: "<fill in current model id>"
       mid: "<fill in current model id>"
       small: "<fill in current model id>"
+    # Optional, per alias: USD per million tokens by kind (§9.3, §19.1). This is what lets
+    # the cost gate (gates.budget.max_cost_usd) price reported token usage. Without an entry
+    # for every alias the matrix runs, the cost gate is not composed and the verdict says so —
+    # an unpriced target is disclosed, never charged at a guessed rate. Prices are yours to
+    # keep current; nothing here is hard-coded.
+    # pricing:
+    #   frontier: {input_usd_per_mtok: 0, output_usd_per_mtok: 0, cache_read_usd_per_mtok: 0, cache_write_usd_per_mtok: 0}
 
   # An OpenAI-compatible endpoint (OpenAI itself, or a gateway/local server that speaks the
   # Chat Completions API). base_url is required — the type exists so the endpoint can vary.

@@ -48,8 +48,16 @@
       "reason": "api-loop-scripted-frontier: the model-API channel was not scanned at absence-supporting fidelity for every run in this set, so unread canaries in model context are not observed and the gate cannot be decided (§10.4.1, §10.8)",
       "required": false,
       "status": "not_evaluable"
+    },
+    {
+      "name": "budget.wall_clock",
+      "reason": "matrix: the matrix spent 20.00 min of wall clock, within the 60 min ceiling",
+      "required": true,
+      "status": "pass"
     }
   ],
-  "notes": [],
+  "notes": [
+    "budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost"
+  ],
   "verdict": "not_ready"
 }

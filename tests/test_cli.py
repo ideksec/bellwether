@@ -191,14 +191,14 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert json.loads(result.output)["blocking_problems"] == 0
 
 
-def test_doctor_warns_that_the_budget_gate_does_not_enforce_a_spending_limit(
+def test_doctor_warns_that_the_cost_gate_is_not_composed_for_an_unpriced_matrix(
     tmp_path: Path,
 ) -> None:
-    """§16.2: the shipped policy presents gates.budget.max_cost_usd / max_wall_clock_minutes as
-    dollar/time ceilings, but no budget gate is assembled into the verdict — neither is enforced.
-    A configured control that reads as active and does nothing is the require_scan trap; doctor
-    surfaces it and points at the token ceiling that IS enforced, so a max_cost_usd there is never
-    mistaken for a spending limit."""
+    """§16.2 / §19.1: the budget gate is composed from the footers now — the wall-clock half
+    always, the cost half only where every target alias has `providers.<name>.pricing`. The
+    fresh scaffold prices nothing, so doctor names the unpriced aliases per profile and says
+    max_cost_usd does not gate there; the per-repetition token ceiling is named as the guard
+    that is enforced regardless."""
     runner.invoke(app, ["init", str(tmp_path)])
     result = runner.invoke(
         app,
@@ -216,11 +216,48 @@ def test_doctor_warns_that_the_budget_gate_does_not_enforce_a_spending_limit(
     assert "budget gate (§16.2)" in checks
     budget = checks["budget gate (§16.2)"]
     assert budget["status"] == "warn"
+    assert "max_wall_clock_minutes is enforced" in budget["detail"]
     assert "does not gate" in budget["detail"]
+    assert "anthropic/frontier" in budget["detail"]  # names the unpriced alias
     assert "--max-tokens" in budget["detail"]  # points at the guard that is enforced
-    assert "max_cost_usd" in budget["detail"]  # names the inert field
+    assert "max_cost_usd" in budget["detail"]
     # Advisory, not blocking — the gap is disclosed, not treated as a failure.
     assert payload["blocking_problems"] == 0
+
+
+def test_doctor_reports_the_budget_gate_enforced_once_every_alias_is_priced(
+    tmp_path: Path,
+) -> None:
+    runner.invoke(app, ["init", str(tmp_path)])
+    config_path = tmp_path / ".bellwether" / "config.yaml"
+    text = config_path.read_text(encoding="utf-8")
+    priced = text.replace(
+        '      small: "<fill in current model id>"\n',
+        '      small: "<fill in current model id>"\n'
+        "    pricing:\n"
+        "      frontier: {input_usd_per_mtok: 3, output_usd_per_mtok: 15}\n"
+        "      mid: {input_usd_per_mtok: 1, output_usd_per_mtok: 5}\n"
+        "      small: {input_usd_per_mtok: 0.8, output_usd_per_mtok: 4}\n",
+        1,
+    )
+    assert priced != text
+    config_path.write_text(priced, encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    payload = json.loads(result.output)
+    checks = {check["check"]: check for check in payload["checks"]}
+    budget = checks["budget gate (§16.2)"]
+    assert budget["status"] == "ok", budget
+    assert "max_cost_usd from reported token usage" in budget["detail"]
 
 
 def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> None:
@@ -528,7 +565,7 @@ def test_exit_code_for_maps_verdicts_and_strict_promotes_conditional() -> None:
 def test_run_exposes_the_section_20_matrix_options() -> None:
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    for option in ("--targets", "--n-max", "--looks", "--repetitions", "--strict"):
+    for option in ("--targets", "--n-max", "--looks", "--repetitions", "--strict", "--budget-usd"):
         assert option in result.output, option
 
 

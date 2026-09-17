@@ -1825,10 +1825,11 @@ a `max_cost_usd` in policy reads as a spending limit and enforces nothing. `doct
 the budget gate does not gate the verdict in this version and points at the one cost control that *is*
 enforced: the per-repetition token ceiling (`bellwether run --max-tokens` →
 `RunLimits.max_total_tokens` → a `budget_exceeded` outcome). Actually gating a dollar or wall-clock
-budget is deferred deliberately, not forgotten: a dollar figure needs per-model pricing (which
+budget was deferred deliberately, not forgotten: a dollar figure needs per-model pricing (which
 Bellwether ships none of — §9.5's no-hard-coded-model discipline extends to prices that go stale), and
-a wall-clock budget needs whole-evaluation aggregation across the matrix, not a per-run bound. Until
-that lands, the disclosure is what keeps the gap honest.
+a wall-clock budget needs whole-evaluation aggregation across the matrix, not a per-run bound. *(Both
+have since landed — see "§16.2, §19.1 — The budget gate is composed from the footers" below; the
+`doctor` row now reports which half is enforced for which profile.)*
 
 ## §22 — The sandbox shells out to the `docker` CLI; the Docker SDK is deliberately absent
 
@@ -2430,3 +2431,55 @@ distinguished only by case, so a genuinely different tool still will not match. 
 scenario portable across the two harnesses, which is the property WP-17's trigger-portable metrics
 depend on. (An earlier revision of this note argued the opposite — that folding case would mask a
 mismatch — before the dual-harness evaluation of one skill made the portability need concrete.)
+
+## §16.2, §19.1, §17.2 — The budget gate is composed from the footers; cost is priced only from configuration, and an unpriced matrix is disclosed rather than guessed
+
+§19.1 asks for a hard `max_cost_usd` "enforced by tracking reported token usage", and §16.2's
+policy carries `max_wall_clock_minutes` beside it. Both are now gates, and three choices in how
+they are composed diverge from the most literal reading.
+
+**The gate is one matrix-wide row, not one per target.** §16.2 rule 2 has every gate evaluate per
+target and take the worst. A budget is a ceiling on what the *evaluation* spent, so the per-target
+shape would either show each target's share against the whole ceiling (misleading: a target at 2 min
+reading `block` because the matrix hit 70) or repeat the matrix total under every slug. The gate
+carries a single result whose target label is `matrix` (`BUDGET_SCOPE`), and the summary/report
+render it like any other gate. `n_and_look` is `None`, as §16.2 already allows for gates that do not
+read a repetition set.
+
+**Spend is read from the footers, and a footerless run is a bound, never a zero.** Every complete
+trace ends in a `run_footer` with `wall_clock_ms` and `tokens` (§11.1, §9.3); the orchestrator sums
+those across every set. A run whose trace has no footer crashed before Bellwether observed an end,
+and its duration and usage are *unobserved* — counting it as zero would let a matrix that spent an
+unknown amount read as within budget. So the sums are lower bounds whenever a footerless run exists:
+a lower bound above the ceiling **blocks** (enough is enough); with every run footered and under the
+line the gate **passes**; and with a footerless run under the line it passes only where the per-run
+wall-clock cap the executor actually enforced (the scenario's `timeout_seconds`, §7.2) bounds the
+unknown — observed + unobserved × cap ≤ ceiling — and otherwise defers as `not_evaluable` (§10.7).
+The cost half has no such bound (the token ceiling is far too loose to be useful), so a footerless run
+under the line defers. `summary.cost.runs_without_footer` says how many runs the figures omit.
+
+**Cost is priced only from configuration, and the cost gate is not composed for an unpriced
+matrix.** Bellwether ships no prices: a literal price in the codebase would rot the moment a provider
+changed it, the same reasoning as the no-hard-coded-model rule (§9.5). Pricing is
+`providers.<name>.pricing.<alias>` — USD per million tokens for `input`, `output`, `cache_read` and
+`cache_write` separately, because §9.3's cache line items make a naive per-token mean wrong on a
+matrix whose first run is a cache miss. Where every target in the matrix is priced, `budget.cost` is
+composed and required. Where any target is not, the gate is **not composed** and the verdict carries
+a note naming the unpriced aliases and the `max_cost_usd` that is therefore not enforced; the summary
+records `cost.usd: null` (never `0.0`, which would read as free) with `unpriced_targets`, and
+`doctor` reports per profile whether the cost half is enforced. This is the same convention the
+other un-built gates already follow (`static`, `quality`, `regression`, `human_review` are not
+composed and `doctor` says so), chosen over composing the gate as `not_evaluable`: a required
+`not_evaluable` would make every unpriced evaluation `not_ready`, and an advisory one would cap it at
+`conditional` — either would demote the proven live `ready` on a matrix whose *spend is fully
+recorded* and only its dollar conversion is missing. Disclosure in three places (verdict note,
+summary, doctor) is the honest reading of "the control is not active", and it is what the
+observation-beats-declaration discipline asks for: the gap is stated, never passed.
+
+`--budget-usd X` (§20) overrides the profile's `max_cost_usd` for one evaluation; on an unpriced
+matrix it enforces nothing and the note names the figure that is not enforced, so the flag is never
+mistaken for a control that took effect. A negative value is refused; zero is the explicit "any priced
+spend blocks" setting. The footer's `estimated_cost_usd` stays `None`: pricing is applied at
+composition (where policy can be re-derived from cached traces, §19.2) rather than stamped into the
+trace, so a price correction never invalidates a run. The `summary.json` schema is at `1.1` — a minor
+bump: `cost.usd` is now nullable and `cost.runs_without_footer` / `cost.unpriced_targets` were added.

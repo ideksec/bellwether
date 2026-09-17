@@ -21,7 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from bellwether.cli.execution import SandboxRunExecutor
+from bellwether.cli.execution import SandboxRunExecutor, run_limits_for
 
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
@@ -31,6 +31,7 @@ from bellwether.cli.orchestrator import (
     EvalResult,
     RunExecutor,
     RunPlan,
+    TargetInfo,
     consistent_schedule,
     drive_evaluation,
     effective_schedule,
@@ -44,6 +45,7 @@ from bellwether.cli.run_plan import ResolvedRun, resolve_run
 from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
+from bellwether.config.models.provider import ModelPricing
 from bellwether.config.models.scenarios import Scenario
 from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
@@ -58,6 +60,7 @@ from bellwether.verdict import validate_capability_weights
 
 __all__ = [
     "ExecutorFactory",
+    "apply_budget_override",
     "apply_matrix_options",
     "build_proxy_provider",
     "build_resolver_provider",
@@ -144,6 +147,7 @@ def run_evaluation(
     n_max_override: int | None = None,
     looks_override: Sequence[int] | None = None,
     repetitions: int | None = None,
+    budget_usd: float | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -157,6 +161,8 @@ def run_evaluation(
     ``repetitions`` forces **fixed mode** — exactly that many runs per set, a single look at N, and
     a ``descriptive_only`` verdict that can never be ``ready`` (§13.1, §16.2 rule 6), because a
     fixed-N run makes no sequential decision and licenses no gate-eligible interval.
+    ``budget_usd`` (``--budget-usd``) overrides the profile's ``gates.budget.max_cost_usd`` for
+    this evaluation; the cost gate it feeds is composed only where every target is priced.
     """
     resolved = resolve_run(
         config, policy, package.manifest, environ=environ, profile_override=profile_override
@@ -168,6 +174,7 @@ def run_evaluation(
         looks_override=looks_override,
         repetitions=repetitions,
     )
+    resolved = apply_budget_override(resolved, budget_usd=budget_usd)
 
     # §21 / THREAT_MODEL: the settings that bound residual-channel exfiltration and the
     # covert channels (model-API body scanning, the sidecar deployment, the controlled
@@ -287,6 +294,17 @@ def run_evaluation(
     criticality = (
         package.manifest.metadata.criticality if package.manifest is not None else "medium"
     )
+    # §19.1: the executor's per-run wall-clock cap (the scenario's timeout, §7.2) is what
+    # bounds a footerless run's duration for the budget gate; pricing resolves per target
+    # alias so reported tokens become dollars only at a configured rate, never a guessed one.
+    per_run_wall_cap_ms = max(
+        int(run_limits_for(RunLimits(), scenario, suite.defaults).wall_seconds * 1000)
+        for scenario in scenarios
+    )
+
+    def pricing_for(target: TargetInfo) -> ModelPricing | None:
+        return config.providers[target.provider].pricing_for(target.model_alias)
+
     return orchestrate(
         skill_name=package.name,
         package_digest=package.package_digest,
@@ -301,7 +319,25 @@ def run_evaluation(
         bellwether_version=bellwether_version,
         out_dir=out_dir,
         descriptive_only=repetitions is not None,
+        per_run_wall_cap_ms=per_run_wall_cap_ms,
+        pricing_for=pricing_for,
     )
+
+
+def apply_budget_override(resolved: ResolvedRun, *, budget_usd: float | None) -> ResolvedRun:
+    """Apply ``--budget-usd`` (§20) to the resolved profile's ``gates.budget.max_cost_usd``.
+
+    A negative budget is refused: the gate would block every priced matrix, which is a typo,
+    not an intent. Zero is allowed — it is the explicit "any priced spend blocks" setting.
+    """
+    if budget_usd is None:
+        return resolved
+    if budget_usd < 0:
+        raise BellwetherError(f"--budget-usd must be zero or positive, got {budget_usd:g}")
+    profile = resolved.profile
+    budget = profile.gates.budget.model_copy(update={"max_cost_usd": budget_usd})
+    gates = profile.gates.model_copy(update={"budget": budget})
+    return replace(resolved, profile=profile.model_copy(update={"gates": gates}))
 
 
 def apply_matrix_options(

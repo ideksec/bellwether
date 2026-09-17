@@ -390,6 +390,25 @@ to a non-zero exit through `exit_code_for`, so a pipeline that wants "ready or n
 without parsing the report. The per-scenario override path is unchanged; the CLI flag is the outer
 layer that per-scenario schedules still sit inside.
 
+**The budget gate is composed (§16.2, §19.1)** — the last configured-but-inert control `doctor`
+was disclosing. `gates.budget.max_wall_clock_minutes` and `max_cost_usd` were read nowhere; now
+`orchestrate` sums every run's footer (`wall_clock_ms`, `tokens`) across the matrix into a
+`BudgetReading` and composes two required gates on it. `budget.wall_clock` is always composed:
+over the ceiling blocks; under it with every run footered passes; a footerless run's duration is
+*unobserved* and is bounded by the per-run cap the executor enforced (the scenario's
+`timeout_seconds`) — passing where observed + unobserved × cap fits, deferring otherwise, never
+counted as zero. `budget.cost` prices reported tokens at the new `providers.<name>.pricing.<alias>`
+(USD per million tokens, the four §9.3 kinds priced separately) and is composed only when every
+target in the matrix is priced; an unpriced matrix gets a verdict note naming the aliases and the
+`max_cost_usd` not enforced, `summary.cost.usd: null` (never `0.0`), and a per-profile `doctor`
+row — Bellwether ships no prices, so an unpriced target is disclosed, never guessed. `--budget-usd`
+(§20) overrides the ceiling for one run. The budget is one matrix-wide gate row (`matrix`), not
+one per target. `summary.cost` is filled on every evaluation (tokens, wall clock, footerless
+count, unpriced targets; schema `1.1`); the demo artifacts were regenerated and their verdicts are
+unchanged (the demo matrix is unpriced and spends 6 min of its 60). spec-notes carries the
+reasoning for not composing the cost gate as `not_evaluable`: either reading would demote the
+proven live `ready` on a matrix whose spend is fully recorded.
+
 ---
 
 ## Where the build is
@@ -429,7 +448,7 @@ layer that per-scenario schedules still sit inside.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1105 tests: 1051 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1130 tests: 1076 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -1075,7 +1094,8 @@ is the authoritative sequence, and the two agree. The live-container CLI run aga
    fixtures** are expressible (`fixture: <name>` resolves per scenario and rides on each `RunPlan`),
    and the precondition check, weight validation, §21 refusal and FIFO sink are wired into
    `doctor`/`run`. Still open here: `RunLimits` derived from the profile rather than the defaults
-   (entangled with the not-yet-composed budget gate — see the table below).
+   (the budget gate is now composed; what remains is deriving the per-run limits from the
+   profile rather than the defaults).
 2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
    decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
@@ -1101,7 +1121,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Sink container path drawn per run — **closed** | `sandbox/identifiers.py`, `cli/execution.py` | §3.5: the fixed `/dev/bellwether-events` FIFO path was an instrumentation tell a skill could grep for. It is now `SandboxIdentifiers.event_sink_path`, a bare hex leaf under `/dev` drawn per run from a token independent of the workspace slug; the executor reads it for both the bind and the hook command. Randomisation off returns to the greppable stable path (`STABLE_SINK_CONTAINER_PATH`, the single source the harness fallback also references) for operator findability (spec-notes §3.5). |
 | The claude-code adapter's live-model proof — **landed** | `.github/workflows/bellwether-claude-code.yml`, `examples/live/config-claude-code.yaml` | The first labelled `claude-code` live run happened on PR #65 and reached **`ready`** — 8 gates pass, functional 6/6, DNS clean — exercising a real model, the live dual-sidecar topology, and a cloud runner's networking. It found five environment defects the CI-only scripted proof could not plus one dual-harness tool-name-casing fix (spec-notes §9.4/§10.6), all resolved. The claude-code harness is now proven live end to end. |
 | Live model client — `openai_compatible` variant — **closed** | `harness/live_client.py`, `cli/run.py` | `OpenAiCompatibleClient` translates the loop's Anthropic content-block messages into the Chat Completions array (system → leading `system` message, `tool_use` → assistant `tool_calls` with JSON-string arguments, `tool_result` → per-id `tool` messages) and the response back. The §3.3 real-key guard extends to it: pinned to HTTPS on `api.openai.com` plus hosts named in `BELLWETHER_TRUSTED_MODEL_HOSTS` (out-of-checkout config the cli threads in), so a tampered `config.yaml` base_url cannot redirect the key (spec-notes §9.5). |
-| Budget gate not assembled into the verdict | `config/models/policy.py` `BudgetGate`, `cli/orchestrator.py` | `gates.budget.max_cost_usd` / `max_wall_clock_minutes` are configured (the shipped policy sets `25.00`/`60`, `100.00` on `high`) but read nowhere — no budget gate is composed, so neither is enforced. `doctor` now **discloses** this (a `warn` row, pointing at the enforced `--max-tokens` per-repetition ceiling), closing the silent-no-op reading; actually gating a dollar/wall-clock budget needs per-model pricing and whole-eval aggregation — a later work package. |
+| Budget gate — **closed** | `cli/orchestrator.py` (`budget_reading`, `_budget_wall_clock_result`, `_budget_cost_result`), `config/models/provider.py` (`ModelPricing`) | `budget.wall_clock` is composed from every run's footer with a footerless run bounded by the per-run cap or deferred; `budget.cost` prices reported tokens at `providers.<name>.pricing` and is composed only for a fully priced matrix — an unpriced one is disclosed in the verdict notes, `summary.cost` and `doctor`, never guessed. `--budget-usd` overrides the ceiling (spec-notes §16.2/§19.1). |
 | `pids_limit` exit reason never produced | `sandbox/docker.py` | Docker gives no distinct exit code; needs another signal to distinguish it from `harness_error`. |
 | Held-out probe set (§7.6, §3.5) | — | Must not appear in `--help`, the README, or the public corpus when it lands. |
 

@@ -88,7 +88,8 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from eight gates, and these are the checks that can actually move a skill off `ready`:
+composed from nine gates (ten on a priced matrix), and these are the checks that can actually move
+a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
@@ -115,6 +116,15 @@ composed from eight gates, and these are the checks that can actually move a ski
   (info — read-then-send is the legitimate shape), and the gate fires only on the value arriving
   by a path the trace cannot account for. This observes the residual channel the threat model
   names — the allowlisted model API — which cannot be blocked without breaking the evaluation.
+- **budget.wall_clock** — what the matrix spent, summed from every run's footer, against the
+  profile's `max_wall_clock_minutes`. A run with no footer has an *unobserved* duration: it is
+  bounded by the per-run cap where that fits, and otherwise the gate defers rather than counting
+  it as zero;
+- **budget.cost** — reported token usage priced at `providers.<name>.pricing` (USD per million
+  tokens, by kind) against `max_cost_usd`, or `--budget-usd`. Composed only when every target alias
+  in the matrix is priced; otherwise the verdict carries a note naming the unpriced aliases and
+  `summary.cost.usd` is `null` — Bellwether ships no prices, so an unpriced target is disclosed,
+  never charged at a guessed rate.
 
 What is **captured as evidence but does not yet gate** the scored verdict: undeclared
 credential reads (`credential_read_undeclared` — needs the read-capture plane), sensitive-directory

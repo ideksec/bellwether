@@ -176,10 +176,16 @@
     },
     "CostSummary": {
       "additionalProperties": false,
+      "description": "What the matrix spent, read from the run footers (§19.1, §17.2).\n\n``usd`` is ``None`` on an unpriced matrix — no ``providers.<name>.pricing`` for one of\nits targets — rather than ``0.0``, because a zero would read as free. ``tokens`` and\n``wall_clock_s`` are sums over the footered runs; ``runs_without_footer`` says how many\nruns they omit, so a non-zero count marks both as lower bounds.",
       "properties": {
         "cache_read_tokens": {
           "default": 0,
           "title": "Cache Read Tokens",
+          "type": "integer"
+        },
+        "runs_without_footer": {
+          "default": 0,
+          "title": "Runs Without Footer",
           "type": "integer"
         },
         "tokens": {
@@ -189,10 +195,25 @@
           "title": "Tokens",
           "type": "object"
         },
+        "unpriced_targets": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Unpriced Targets",
+          "type": "array"
+        },
         "usd": {
-          "default": 0.0,
-          "title": "Usd",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Usd"
         },
         "wall_clock_s": {
           "default": 0.0,
@@ -731,7 +752,7 @@
       "default": null
     },
     "schema_version": {
-      "default": "1.0",
+      "default": "1.1",
       "title": "Schema Version",
       "type": "string"
     },
@@ -759,6 +780,6 @@
     "security",
     "limitations"
   ],
-  "title": "Bellwether summary.json (schema 1.0)",
+  "title": "Bellwether summary.json (schema 1.1)",
   "type": "object"
 }

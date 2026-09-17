@@ -17,7 +17,7 @@ from bellwether.config.models.common import API_VERSION, Criticality, Document, 
 from bellwether.config.models.config import Config, EnforcedSetting
 from bellwether.config.models.manifest import DeclaredScope, SkillManifest
 from bellwether.config.models.policy import Gates, Policy, ProfileSpec
-from bellwether.config.models.provider import ProviderConfig
+from bellwether.config.models.provider import ModelPricing, ProviderConfig
 from bellwether.config.models.scenarios import AssertionSpec, Scenario, ScenarioSuite
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "Document",
     "EnforcedSetting",
     "Gates",
+    "ModelPricing",
     "PlatformBaseline",
     "Policy",
     "ProfileSpec",
