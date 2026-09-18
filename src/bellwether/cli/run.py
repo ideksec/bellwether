@@ -49,6 +49,7 @@ from bellwether.cli.run_cache import (
     CachingExecutor,
     RunCache,
     cache_version_for,
+    observability_key,
     render_sampling,
     scenario_content_digest,
 )
@@ -140,6 +141,15 @@ def select_scenarios(
             f"scenarios are {known}"
         )
     return selected
+
+
+class RunDeclinedError(BellwetherError):
+    """The operator declined the §19.1 pre-flight estimate; nothing was executed.
+
+    A distinct type because a decline is a *choice*, not a failure: the CLI gives it its own
+    exit code rather than the infrastructure one, which would read as a broken environment in a
+    script that only sees the status.
+    """
 
 
 def run_evaluation(
@@ -337,7 +347,7 @@ def run_evaluation(
         cache_enabled=run_cache is not None,
     )
     if on_estimate is not None and not on_estimate(estimate):
-        raise BellwetherError(
+        raise RunDeclinedError(
             "run declined at the pre-flight estimate (§19.1); nothing was executed"
         )
     # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
@@ -380,6 +390,9 @@ def run_evaluation(
         sampling_key = render_sampling(
             SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None
         )
+        # What this configuration can watch, and the limits it runs under: a trace captured
+        # with no proxy is a different observation from one captured behind it (§19.2).
+        observability = observability_key(config)
 
         def inputs_for(plan: RunPlan) -> CacheKeyInputs | None:
             harness_version = harness_versions.get(plan.target.harness)
@@ -401,6 +414,7 @@ def run_evaluation(
                 repetition=plan.repetition,
                 sampling=sampling_key,
                 companion_digests=tuple(c.payload_digest for c in plan.companions),
+                observability=observability,
             )
 
         caching = CachingExecutor(
@@ -584,6 +598,7 @@ def sandbox_executor_factory(
     randomize_identifiers: bool = True,
     plant_canaries: bool = False,
     provider_base_urls: Mapping[str, str | None] | None = None,
+    provider_types: Mapping[str, str] | None = None,
     platform_baseline_version: str | None = None,
     sampling: SamplingSpec | None = None,
 ) -> ExecutorFactory:
@@ -631,6 +646,7 @@ def sandbox_executor_factory(
             randomize_identifiers=randomize_identifiers,
             plant_canaries=plant_canaries,
             provider_base_urls=dict(provider_base_urls or {}),
+            provider_types=dict(provider_types or {}),
             platform_baseline_version=platform_baseline_version,
             sampling=sampling,
         )

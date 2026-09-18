@@ -54,6 +54,7 @@ from bellwether.harness import (
     RunLimits,
     SamplingSpec,
     SandboxToolset,
+    applied_sampling,
     claude_code_environment,
     hook_settings,
 )
@@ -188,6 +189,11 @@ def run_limits_for(
     if timeout is None:
         return base
     return replace(base, wall_seconds=float(timeout))
+
+
+def _sampling_record(spec: SamplingSpec) -> Sampling:
+    """The trace's sampling block for an already-narrowed spec (§9.3)."""
+    return Sampling(temperature=spec.temperature, seed=spec.seed)
 
 
 def _single_turn_prompt(plan: RunPlan) -> str:
@@ -390,6 +396,9 @@ class SandboxRunExecutor:
     #: ``claude-code`` target whose CLI talks to the API from inside the sandbox and needs to
     #: be pointed at the same endpoint the proxy allowlists as ``model_api``.
     provider_base_urls: Mapping[str, str | None] = field(default_factory=dict)
+    #: Provider name → configured type (``anthropic`` / ``openai_compatible``). Read only to
+    #: record the sampling a provider actually sends (§9.3); unknown names claim nothing.
+    provider_types: Mapping[str, str] = field(default_factory=dict)
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
@@ -644,18 +653,20 @@ class SandboxRunExecutor:
                     model_alias=plan.target.model_alias,
                     model_id_requested=model_id,
                     model_id_reported=_reported_model_id(events, model_id),
-                    # §9.3: recorded, never silently set — the pinned values where the
-                    # operator asked for them, the provider's defaults (empty) otherwise.
-                    sampling=(
-                        Sampling(temperature=self.sampling.temperature, seed=self.sampling.seed)
-                        if self.sampling is not None and not use_claude_code
-                        else Sampling()
+                    # §9.3: recorded, never silently set — and recorded as *applied*, not as
+                    # asked for: a provider whose API takes no seed gets none sent, so the
+                    # header must not claim one (observation beats declaration).
+                    sampling=_sampling_record(
+                        applied_sampling(
+                            self.sampling if not use_claude_code else None,
+                            self.provider_types.get(plan.target.provider),
+                        )
                     ),
-                    deterministic_sampling=bool(
-                        self.sampling is not None
-                        and self.sampling.is_deterministic
-                        and not use_claude_code
-                    ),
+                    # True only where the pin was actually applied, not merely requested.
+                    deterministic_sampling=applied_sampling(
+                        self.sampling if not use_claude_code else None,
+                        self.provider_types.get(plan.target.provider),
+                    ).is_deterministic,
                     harness_capabilities=(
                         adapter.capabilities_record()
                         if isinstance(adapter, ClaudeCodeAdapter)

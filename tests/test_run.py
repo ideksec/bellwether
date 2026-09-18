@@ -1347,6 +1347,38 @@ def test_pinned_sampling_never_hits_a_trace_recorded_at_provider_defaults(
     assert again.summary.matrix.runs_cached == 20
 
 
+def test_wiring_the_proxy_misses_the_cache(package: SkillPackage, tmp_path: Path) -> None:
+    """§19.2 × §10.5: a trace captured with no proxy is not the same observation as one captured
+    behind it. Replaying the networkless run after the operator wired egress would leave the
+    plane not_evaluable while the report implied it had been watched — the one failure mode this
+    project exists to prevent."""
+    from bellwether.cli.run_cache import RunCache
+    from bellwether.config.models.config import EgressConfig
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+
+    networkless = _config()
+    assert networkless.egress.image == ""
+    first = _evaluate_with(package, tmp_path, config=networkless, run_cache=cache)
+    assert first.summary.matrix.runs_cached == 0
+    again = _evaluate_with(package, tmp_path, config=networkless, run_cache=cache)
+    assert again.summary.matrix.runs_cached == 20
+
+    observed = networkless.model_copy(
+        update={"egress": EgressConfig(image="proxy@sha256:" + "e" * 64)}
+    )
+    wired = _evaluate_with(package, tmp_path, config=observed, run_cache=cache)
+    assert wired.summary.matrix.runs_cached == 0
+
+    # And turning canary planting off is a different observation too (§10.4).
+    no_canaries = observed.model_copy(
+        update={"canaries": observed.canaries.model_copy(update={"enabled": False})}
+    )
+    uncanaried = _evaluate_with(package, tmp_path, config=no_canaries, run_cache=cache)
+    assert uncanaried.summary.matrix.runs_cached == 0
+
+
 def test_a_changed_companion_misses_the_cache(package: SkillPackage, tmp_path: Path) -> None:
     """A companion's content reaches the run (offered on api-loop, staged on claude-code) while
     only its *name* is in the scenario's content digest, so its payload digest is in the key."""
@@ -1508,7 +1540,11 @@ def test_the_estimate_is_offered_before_anything_runs_and_a_decline_refuses(
             on_estimate=gate,
         )
 
-    with pytest.raises(BellwetherError, match="declined at the pre-flight estimate"):
+    from bellwether.cli.run import RunDeclinedError
+
+    # A decline is the operator's choice, not a failure: its own type, which the CLI maps to
+    # its own exit code rather than the infrastructure one (§19.1).
+    with pytest.raises(RunDeclinedError, match="declined at the pre-flight estimate"):
         evaluate(accept=False)
     assert holder["exec"].calls == 0  # nothing executed
     estimate = seen[-1]

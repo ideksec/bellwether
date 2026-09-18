@@ -4,9 +4,10 @@ Design rules from §20 that are load-bearing:
 
 * every command supports ``--json`` for machine consumption;
 * exit code 0 covers ``ready`` **and** ``conditional``, 2 is ``not_ready``, 3 is an
-  infrastructure error. Revision 1 mapped ``conditional`` to 1, which — since every CI
-  system treats non-zero as failure — made it block by default, the opposite of the
-  documented recommendation. The nuance belongs in per-gate commit statuses;
+  infrastructure error, 4 is a declined §19.1 estimate. Revision 1 mapped ``conditional``
+  to 1, which — since every CI system treats non-zero as failure — made it block by
+  default, the opposite of the documented recommendation. The nuance belongs in per-gate
+  commit statuses;
 * ``--strict`` promotes ``conditional`` to exit 2.
 
 Commands whose work package has not landed exit 3 and name the package, rather than
@@ -55,6 +56,10 @@ class ExitCode(enum.IntEnum):
 
     INFRASTRUCTURE = 3
     """Could not evaluate: the environment, not the skill, is the problem."""
+
+    DECLINED = 4
+    """The operator declined the §19.1 pre-flight estimate. Nothing was executed — a choice,
+    not a failure, so a script can tell it from a broken environment."""
 
 
 app = typer.Typer(
@@ -585,6 +590,7 @@ def run(
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
     from bellwether.cli.fixtures import fixture_resolver
     from bellwether.cli.run import (
+        RunDeclinedError,
         build_proxy_provider,
         build_resolver_provider,
         claude_code_providers,
@@ -716,6 +722,11 @@ def run(
                         name: provider.base_url
                         for name, provider in loaded_config.providers.items()
                     },
+                    # §9.3: the header records the sampling a provider actually sends, so the
+                    # executor needs each provider's type, not just its endpoint.
+                    provider_types={
+                        name: provider.type for name, provider in loaded_config.providers.items()
+                    },
                     # Wired only when dns.image is set; otherwise None and DNS stays not_evaluable
                     # (§10.6). When both are on, the resolver shares the proxy's internal bridge.
                     resolver=build_resolver_provider(loaded_config),
@@ -740,6 +751,11 @@ def run(
                 bellwether_version=__version__,
                 profile_override=profile,
             )
+        except RunDeclinedError as error:
+            # §19.1: a decline is the operator's choice and nothing was executed, so it gets
+            # its own code rather than reading as a broken environment.
+            typer.echo(f"bellwether run [{skill_dir}]: {error}", err=True)
+            raise typer.Exit(ExitCode.DECLINED) from None
         except (BellwetherError, ConfigurationError) as error:
             typer.echo(f"bellwether run [{skill_dir}]: {error}", err=True)
             raise typer.Exit(ExitCode.INFRASTRUCTURE) from None

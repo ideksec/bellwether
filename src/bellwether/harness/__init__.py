@@ -60,6 +60,7 @@ from bellwether.harness.provider import (
     ToolCallRequest,
     ToolSpec,
     TurnUsage,
+    applied_sampling,
     resolve_model,
 )
 from bellwether.harness.tools import ExecResult, SandboxExec, SandboxToolset, ToolOutcome
@@ -99,6 +100,7 @@ __all__ = [
     "ToolSpec",
     "TurnUsage",
     "anthropic_request_body",
+    "applied_sampling",
     "build_model_client",
     "claude_code_argv",
     "claude_code_environment",

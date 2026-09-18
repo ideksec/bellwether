@@ -13,6 +13,8 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+import pytest
+
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan, TargetInfo
 from bellwether.cli.run_cache import (
     CACHE_FORMAT,
@@ -21,10 +23,11 @@ from bellwether.cli.run_cache import (
     RunCache,
     cache_key,
     cache_version_for,
+    observability_key,
     render_sampling,
     scenario_content_digest,
 )
-from bellwether.config.models.config import HarnessConfig
+from bellwether.config.models.config import Config, HarnessConfig
 from bellwether.config.models.scenarios import Scenario
 from bellwether.harness import SamplingSpec
 from bellwether.trace import NormalizationContext, read_trace, write_trace
@@ -84,8 +87,60 @@ def test_the_key_ignores_the_scenario_id_and_follows_the_spec_components() -> No
         {"sampling": "temperature=0.0,seed=0"},
         # A companion's content reaches the run; only its name is in the scenario digest.
         {"companion_digests": ("sha256:" + "f" * 64,)},
+        # What the run could watch, and the limits it ran under.
+        {"observability": "sha256:" + "0" * 64},
     ):
         assert cache_key(_inputs(**change)) != base, change
+
+
+def _config(**overrides: object) -> Config:
+    data: dict[str, object] = {
+        "apiVersion": "bellwether/v1",
+        "kind": "Config",
+        "sandbox": {"image": "img@sha256:" + "d" * 64},
+    }
+    data.update(overrides)
+    return Config.model_validate(data)
+
+
+def test_wiring_a_plane_changes_the_observability_key() -> None:
+    """The spec's key names the sandbox image, which says what is *inside* the container and
+    nothing about what watches it. Turning a plane on must miss: replaying a networkless trace
+    afterwards would leave egress or DNS not_evaluable while the operator believed otherwise."""
+    base = observability_key(_config())
+    for change in (
+        {"egress": {"image": "proxy@sha256:" + "e" * 64}},
+        {"egress": {"allowlist": ["example.test"]}},
+        {"dns": {"image": "resolver@sha256:" + "e" * 64}},
+        {"dns": {"allowlist": ["example.test"]}},
+        {"canaries": {"enabled": False}},
+        {"capture": {"filesystem_writes": "off"}},
+        {"capture": {"process": "off"}},
+        {"sandbox": {"image": "img@sha256:" + "d" * 64, "memory": "4g"}},
+        {"sandbox": {"image": "img@sha256:" + "d" * 64, "pids_limit": 256}},
+        {"sandbox": {"image": "img@sha256:" + "d" * 64, "timeout_seconds": 120}},
+    ):
+        assert observability_key(_config(**change)) != base, change
+    # Stable for an unchanged configuration (§24): the same settings key the same way.
+    assert observability_key(_config()) == base
+
+
+@pytest.mark.parametrize("exit_reason", ["timeout", "oom", "pids_limit", "budget_exceeded"])
+def test_an_operator_limit_outcome_is_never_stored(exit_reason: str, tmp_path: Path) -> None:
+    """Each of these is decided by a bound the key cannot carry — the token cap, the suite's
+    timeout defaults, the sandbox memory and process limits — so a cached one would be replayed
+    unchanged after the operator raised the very limit that produced it (§12.7, §19.2)."""
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    key = cache_key(_inputs())
+    assert cache.store(key, _executed(exit_reason, tmp_path), _inputs()) is None
+    assert cache.lookup(key) is None
+
+
+def test_a_completed_run_is_still_stored(tmp_path: Path) -> None:
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    key = cache_key(_inputs())
+    assert cache.store(key, _executed("completed", tmp_path), _inputs()) is not None
+    assert cache.lookup(key) is not None
 
 
 def test_sampling_renders_empty_for_provider_defaults_and_pinned_otherwise() -> None:
@@ -117,18 +172,6 @@ def _executed(exit_reason: str, tmp_path: Path) -> ExecutedRun:
         context=NormalizationContext(workspace_root="/work/ws", home="/home/agent", tmp="/tmp"),
         trace_jsonl=path.read_text(encoding="utf-8"),
     )
-
-
-def test_a_budget_exceeded_run_is_never_stored(tmp_path: Path) -> None:
-    """The token cap is not in the key, so a cached ``budget_exceeded`` trace would be replayed
-    after the operator raised the cap — an operator limit is never cached (§12.7, §19.2)."""
-    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
-    assert cache.store(cache_key(_inputs()), _executed("budget_exceeded", tmp_path), _inputs()) is (
-        None
-    )
-    assert cache.lookup(cache_key(_inputs())) is None
-    stored = cache.store(cache_key(_inputs()), _executed("completed", tmp_path), _inputs())
-    assert stored is not None and cache.lookup(cache_key(_inputs())) is not None
 
 
 class _CountingExecutor:

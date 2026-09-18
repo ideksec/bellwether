@@ -89,3 +89,55 @@ def test_the_api_loop_pins_sampling_on_every_request() -> None:
     plain = ScriptedClient([ModelTurn(text="done", usage=TurnUsage(input=1, output=1))])
     list(ApiLoopAdapter(plain, SandboxToolset(_Exec())).run("go", model_id="m", limits=RunLimits()))
     assert all(request.sampling is None for request in plain.requests)
+
+
+# ---------------------------------------------------------------------------
+# §9.3: the header records the sampling that was *applied*, not what was asked for
+# ---------------------------------------------------------------------------
+
+
+def test_applied_sampling_keeps_only_what_the_provider_sends() -> None:
+    """The Messages API takes no seed, so a run against it must not record one: a header
+    claiming a pinned seed the provider never accepted is a false observation."""
+    from bellwether.harness import SamplingSpec, applied_sampling
+
+    asked = SamplingSpec(temperature=0.0, seed=0)
+
+    anthropic = applied_sampling(asked, "anthropic")
+    assert anthropic.temperature == 0.0
+    assert anthropic.seed is None
+    assert anthropic.is_deterministic
+
+    openai = applied_sampling(asked, "openai_compatible")
+    assert (openai.temperature, openai.seed) == (0.0, 0)
+
+    # No pin asked for, a harness that owns its sampling, or a provider type nothing is known
+    # about: the provider's defaults are what is recorded, and nothing is claimed.
+    assert applied_sampling(None, "anthropic") == SamplingSpec()
+    assert applied_sampling(asked, None) == SamplingSpec()
+    assert applied_sampling(asked, "some-future-provider") == SamplingSpec()
+
+
+def test_the_anthropic_body_matches_what_applied_sampling_reports() -> None:
+    """The narrowing is only honest if it agrees with the request builder. Assert against the
+    real body rather than trusting the table beside it."""
+    from bellwether.harness import (
+        ModelRequest,
+        SamplingSpec,
+        anthropic_request_body,
+        applied_sampling,
+        openai_request_body,
+    )
+
+    asked = SamplingSpec(temperature=0.0, seed=7)
+    request = ModelRequest(model_id="m", system="s", messages=(), tools=(), sampling=asked)
+
+    anthropic = anthropic_request_body(request, max_tokens=100)
+    reported = applied_sampling(asked, "anthropic")
+    assert ("temperature" in anthropic) is (reported.temperature is not None)
+    assert ("seed" in anthropic) is (reported.seed is not None)
+
+    openai = openai_request_body(request, max_tokens=100)
+    reported_openai = applied_sampling(asked, "openai_compatible")
+    assert ("temperature" in openai) is (reported_openai.temperature is not None)
+    assert ("seed" in openai) is (reported_openai.seed is not None)

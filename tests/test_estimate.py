@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bellwether.cli.baselines import baseline_from_summary
 from bellwether.cli.diff import load_summary
 from bellwether.cli.estimate import estimate_run, render_estimate
@@ -59,8 +61,8 @@ def test_a_priced_matrix_gets_a_ceiling_and_a_baseline_gives_an_expected_cost() 
         max_tokens_per_run=1_000_000,
         pricing_for=lambda _t: _PRICE,
     )
-    # 20 runs × 1M tokens × $1/M as input
-    assert priced.cost_ceiling_usd == 20.0
+    # 20 runs × 1M tokens at the dearest rate ($5/M output): a bound, not a likely mix.
+    assert priced.cost_ceiling_usd == 100.0
     assert priced.cost_expected_usd is None
     assert "no baseline" in render_estimate(priced)[2]
 
@@ -80,7 +82,7 @@ def test_a_priced_matrix_gets_a_ceiling_and_a_baseline_gives_an_expected_cost() 
     assert with_baseline.cost_expected_usd is not None
     assert with_baseline.cost_expected_usd == _PRICE.cost_usd(per_run) * 12  # midpoint look
     lines = render_estimate(with_baseline)
-    assert "ceiling ≤ $20.00" in lines[2] and "expected ≈ $" in lines[2]
+    assert "ceiling ≤ $100.00" in lines[2] and "expected ≈ $" in lines[2]
 
 
 def test_one_unpriced_target_leaves_the_whole_matrix_unpriced() -> None:
@@ -114,3 +116,51 @@ def test_an_enabled_cache_adds_the_upper_bound_caveat() -> None:
     assert not any("run-cache" in c for c in without.caveats)
     assert any("run-cache hits are not deducted" in c for c in with_cache.caveats)
     assert any("upper bounds" in line for line in render_estimate(with_cache))
+
+
+def test_the_ceiling_bounds_an_output_heavy_run() -> None:
+    """The token cap bounds the total, not its composition, so the ceiling prices the whole cap
+    at the dearest rate. Pricing it as input would understate an output-heavy run fivefold while
+    the line still read as an upper bound — and that line is what the operator approves."""
+    estimate = estimate_run(
+        schedules={"a": ((2,), 2)},
+        targets=[_FRONTIER],
+        max_tokens_per_run=1_000_000,
+        pricing_for=lambda _t: _PRICE,
+    )
+    assert estimate.worst_runs == 2
+    # _PRICE is input 1.00, output 5.00 per million: the cap costs at most the output rate.
+    assert estimate.cost_ceiling_usd == pytest.approx(2 * 5.0)
+    worst_real_cost = _PRICE.cost_usd({"output": 1_000_000}) * 2
+    assert estimate.cost_ceiling_usd is not None
+    assert estimate.cost_ceiling_usd >= worst_real_cost
+
+
+def test_the_expected_cost_divides_by_executed_runs_only() -> None:
+    """The baseline's cost counts executed runs only (§19.2), so the per-run divisor must too —
+    dividing by every completed run understates tokens per run by the replayed share."""
+    summary = load_summary(_REPORTS / "demo-benign-note-taker" / "summary.json")
+    baseline = baseline_from_summary(summary)
+    assert summary.cost is not None and summary.matrix.runs_cached == 0
+
+    def estimate_for(record: object) -> float | None:
+        return estimate_run(
+            schedules={"a": ((6, 12), 12)},
+            targets=[_FRONTIER],
+            max_tokens_per_run=1000,
+            pricing_for=lambda _t: _PRICE,
+            baseline=record,  # type: ignore[arg-type]
+        ).cost_expected_usd
+
+    none_cached = estimate_for(baseline)
+    assert none_cached is not None
+
+    # The same evaluation with half its runs replayed: the same tokens over half the executed
+    # runs is twice the tokens per run, so the expectation doubles rather than staying put.
+    half = summary.matrix.runs_completed // 2
+    cached_summary = summary.model_copy(
+        update={"matrix": summary.matrix.model_copy(update={"runs_cached": half})}
+    )
+    half_cached = estimate_for(baseline.model_copy(update={"summary": cached_summary}))
+    assert half_cached is not None
+    assert half_cached == pytest.approx(none_cached * 2, rel=1e-6)

@@ -10,10 +10,14 @@ cached run N times would produce a set that agrees with itself by construction. 
 
 ``policy_digest`` and ``canon_version`` are deliberately absent from the key: a policy or
 canonicaliser change re-derives verdicts from cached traces without re-running anything (§19.2).
-Two more things *are* in the key because they change what a run is: the **sampling** pinned on the
-request (a temperature-default trace must never stand in for a ``--deterministic-sampling`` run,
-or the reverse), and the **companion payload digests** — a companion's content reaches the run
-(offered on api-loop, staged on claude-code) while only its *name* is in the scenario's content.
+Three more things *are* in the key because they change what a run is: the **sampling** pinned on
+the request (a temperature-default trace must never stand in for a ``--deterministic-sampling``
+run, or the reverse), the **companion payload digests** — a companion's content reaches the run
+(offered on api-loop, staged on claude-code) while only its *name* is in the scenario's content —
+and the **observability fingerprint**: which planes the run could watch and the limits it ran
+under. A trace captured with no proxy is not the same observation as one captured behind it, and
+replaying the networkless one after the operator wires egress would report an unwatched plane as
+though it had been watched, which is the one thing this project must never do.
 
 A plan whose harness version cannot be known before the run — a ``claude-code`` target with no
 ``version_pin``, where the CLI version is observed only once it has run — is **not cached**: a
@@ -35,7 +39,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from bellwether.cli.orchestrator import ExecutedRun, RunExecutor, RunPlan
-from bellwether.config.models.config import HarnessConfig
+from bellwether.config.models.config import Config, HarnessConfig
 from bellwether.config.models.scenarios import Scenario
 from bellwether.determinism import canonical_json, stable_hash
 from bellwether.errors import BellwetherError, TraceError
@@ -49,17 +53,31 @@ __all__ = [
     "RunCache",
     "cache_key",
     "cache_version_for",
+    "observability_key",
     "render_sampling",
     "scenario_content_digest",
 ]
 
 #: Bumped on any change to what an entry holds or how the key is formed.
-CACHE_FORMAT = "2"
+CACHE_FORMAT = "3"
 
-#: Exit reasons never cached: infrastructure failures (§13.2) are retried on the next run, and
-#: ``budget_exceeded`` is an operator limit (§12.7) — the token cap is not in the key, so a
-#: cached one would be replayed after the operator raised the cap.
-_NEVER_CACHED_EXITS = frozenset({"sandbox_error", "harness_error", "cancelled", "budget_exceeded"})
+#: Exit reasons never cached. Infrastructure failures (§13.2) are retried on the next run. The
+#: rest are *operator-limit* outcomes (§12.7): each is decided by a bound — the token cap, the
+#: scenario or suite timeout, the sandbox memory and process limits — that the key cannot carry
+#: (the suite's ``defaults`` are outside ``scenario_content_digest``, and ``evals/`` is outside
+#: ``payload_digest``), so a cached one would be replayed unchanged after the operator raised the
+#: very limit that produced it.
+_NEVER_CACHED_EXITS = frozenset(
+    {
+        "sandbox_error",
+        "harness_error",
+        "cancelled",
+        "budget_exceeded",
+        "timeout",
+        "oom",
+        "pids_limit",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +100,8 @@ class CacheKeyInputs:
     sampling: str = ""
     #: Payload digests of the scenario's §7.4 companions, in plan order.
     companion_digests: tuple[str, ...] = ()
+    #: Which planes the run could observe, and the limits it ran under (:func:`observability_key`).
+    observability: str = ""
 
 
 def render_sampling(sampling: SamplingSpec | None) -> str:
@@ -89,6 +109,37 @@ def render_sampling(sampling: SamplingSpec | None) -> str:
     if sampling is None:
         return ""
     return f"temperature={sampling.temperature},seed={sampling.seed}"
+
+
+def observability_key(config: Config) -> str:
+    """What this configuration lets a run *observe*, and the limits it runs under (§19.2).
+
+    §19.2's key names the sandbox image, which fixes what is inside the container but says
+    nothing about what watches it from outside. Wiring the recording proxy, pointing the sandbox
+    at the controlled resolver, or turning canary planting on changes which planes the trace
+    carries — a cached networkless run replayed afterwards would leave egress, DNS or credentials
+    reading ``not_evaluable`` while the operator believed the plane was watched. The capture
+    settings and the sandbox's resource limits ride along for the same reason: they decide what
+    is recorded and when a run is killed.
+
+    Rendered as a digest of the settings themselves, so adding a field here is a key change and
+    an old entry simply misses rather than being served under a new meaning.
+    """
+    material = {
+        "capture": config.capture.model_dump(mode="json"),
+        "egress": config.egress.model_dump(mode="json"),
+        "dns": config.dns.model_dump(mode="json"),
+        "canaries": config.canaries.model_dump(mode="json"),
+        "sandbox_limits": {
+            "backend": config.sandbox.backend,
+            "memory": config.sandbox.memory,
+            "cpus": config.sandbox.cpus,
+            "pids_limit": config.sandbox.pids_limit,
+            "timeout_seconds": config.sandbox.timeout_seconds,
+            "writable_paths": sorted(config.sandbox.writable_paths),
+        },
+    }
+    return stable_hash(canonical_json(material))
 
 
 def cache_version_for(

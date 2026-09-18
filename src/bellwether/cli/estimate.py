@@ -47,6 +47,21 @@ class RunEstimate:
     caveats: tuple[str, ...]
 
 
+def _dearest_kind_cost(pricing: ModelPricing, tokens: int) -> float:
+    """``tokens`` priced at the target's most expensive per-token rate (§19.1).
+
+    The token cap bounds the total, not its composition, so the only honest ceiling prices the
+    whole cap at the dearest rate the target publishes — usually output.
+    """
+    rate = max(
+        pricing.input_usd_per_mtok,
+        pricing.output_usd_per_mtok,
+        pricing.cache_read_usd_per_mtok,
+        pricing.cache_write_usd_per_mtok,
+    )
+    return tokens * rate / 1_000_000
+
+
 def _midpoint(looks: Sequence[int]) -> int:
     if not looks:
         return 0
@@ -78,9 +93,10 @@ def estimate_run(
         else sum(_midpoint(looks) or n_max for looks, n_max in schedules.values()) * n_targets
     )
 
-    # Pricing: the ceiling treats every token as input (the cheapest kind is not assumed; the
-    # cap is a bound on total tokens, so the dearest plausible kind — output — would overstate
-    # by a wide margin and input is the volume kind). Stated in the caveats.
+    # Pricing: the cap bounds a run's *total* tokens without saying which kind they are, so the
+    # ceiling prices every one of them at the dearest kind the target has a rate for. Pricing
+    # them as input would understate an output-heavy run several-fold while the line still read
+    # as an upper bound — a number the operator approves at the §19.1 gate has to be one.
     unpriced: list[str] = []
     per_target_ceiling: dict[str, float] = {}
     for target in targets:
@@ -88,7 +104,7 @@ def estimate_run(
         if pricing is None:
             unpriced.append(f"{target.provider}/{target.model_alias}")
         else:
-            per_target_ceiling[target.slug] = pricing.cost_usd({"input": max_tokens_per_run})
+            per_target_ceiling[target.slug] = _dearest_kind_cost(pricing, max_tokens_per_run)
     caveats: list[str] = [
         "judge and A/B terms are 0: neither subsystem exists in this build",
         "E[N] is the schedule's midpoint look: this build keeps no stopping history",
@@ -104,12 +120,15 @@ def estimate_run(
         runs_per_target = worst // max(n_targets, 1)
         ceiling = sum(per_target_ceiling[t.slug] * runs_per_target for t in targets)
         caveats.append(
-            "the cost ceiling prices the per-repetition token cap as input tokens; "
-            "output tokens cost more per token but are a small share of a run"
+            "the cost ceiling prices the per-repetition token cap at each target's dearest "
+            "token rate, so it bounds the spend rather than describing the likely mix"
         )
         if baseline is not None and baseline.summary.cost is not None:
             cost = baseline.summary.cost
-            completed = baseline.summary.matrix.runs_completed
+            # The cost summary counts executed runs only (§19.2), so the divisor must too:
+            # dividing by every completed run would understate tokens per run by the share
+            # the baseline evaluation replayed from its cache.
+            completed = baseline.summary.matrix.runs_completed - baseline.summary.matrix.runs_cached
             if completed > 0 and cost.tokens:
                 per_run = {kind: value / completed for kind, value in cost.tokens.items()}
                 expected_runs_per_target = expected // max(n_targets, 1)

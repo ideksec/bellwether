@@ -2639,12 +2639,21 @@ the rule has to be in the key. The **repetition index** is the divergence worth 
 spec's key alone, every repetition of a set would resolve to the same entry and a cached set
 would be one run replayed N times — a set that agrees with itself by construction, which is
 the opposite of what a repetition set is for. Keying on `(…, repetition)` keeps N distinct
-observations. Two more components were added when a review of the first cut asked what else
-changes what a run *is* without changing the spec's tuple: the **pinned sampling** (a
+observations. Three more components were added when successive reviews of the first cut asked
+what else changes what a run *is* without changing the spec's tuple: the **pinned sampling** (a
 temperature-default trace must never be replayed under `--deterministic-sampling`, where the
-summary would then claim pinned runs that were not, nor the reverse) and the **companions'
+summary would then claim pinned runs that were not, nor the reverse); the **companions'
 payload digests** — a companion's content reaches the run (offered on api-loop, staged on
-claude-code) while only its *name* is in the scenario's content digest. `harness_version` is the
+claude-code) while only its *name* is in the scenario's content digest; and the **observability
+fingerprint** (`observability_key`), a digest of the capture settings, the egress and DNS
+sidecars and allowlists, canary planting, and the sandbox's resource limits. The spec's key names
+the sandbox image, which fixes what is *inside* the container and says nothing about what watches
+it from outside. Wiring the recording proxy, pointing the sandbox at the controlled resolver or
+turning canaries on changes which planes the trace carries, so without this a first evaluation
+run networkless would be replayed after the proxy was wired and egress would read
+`not_evaluable` while the operator believed the plane was watched — this project's signature
+failure mode, a control path rendering a clean result without running the check.
+`harness_version` is the
 package version for api-loop (the adapter ships with it) and the configured `version_pin` for
 claude-code. **An unpinned claude-code target is not cached at all**: its real CLI version is
 only known once a container has run, and a key reading "unpinned" would serve a trace across a
@@ -2663,9 +2672,13 @@ optional with a default, and an older reader ignores it.
 
 **What is never cached:** an incomplete trace, or one whose exit reason is `sandbox_error`,
 `harness_error` or `cancelled` — §13.2's infrastructure failures are retried, and a cached
-failure would be replayed forever — or `budget_exceeded`: that is an operator limit (§12.7), the
-token cap is not in the key, and a cached one would be replayed after the operator raised the
-cap. `execution.cache_ttl_days` expires entries so drift is still detected. The analysis cache
+failure would be replayed forever — or any **operator-limit** outcome (§12.7): `budget_exceeded`,
+`timeout`, `oom` and `pids_limit`. Each of those is decided by a bound the key cannot carry (the
+token cap comes from `--max-tokens`; the suite's `defaults.timeout_seconds` sits outside
+`scenario_content_digest` and, being under `evals/`, outside `payload_digest` too), so a cached
+one would be replayed unchanged after the operator raised the very limit that produced it — the
+run would keep failing at a ceiling that no longer exists. `execution.cache_ttl_days` expires
+entries so drift is still detected. The analysis cache
 §19.2 also names is not built: canonicalisation is cheap enough that re-deriving it from a
 stored trace costs nothing worth caching.
 
@@ -2746,4 +2759,37 @@ on the skill under test, and a companion is scenario context, not payload. The �
 its `companion_scenario_ids` parameter are removed rather than left inert. Plugin-layout staging
 (a bundle installed whole, the way `--plugin-dir` would) remains open — it needs a CLI fact this
 build has not observed, and the "bundle is not staged" paragraph under §5/§6/§18 still stands.
+
+## §19.1, §9.3, §20 — The estimate's ceiling bounds the spend; a header records the sampling that was sent
+
+Two corrections a review of the first cut earned, both of the same shape: a number presented as
+one thing while computed as another.
+
+**The cost ceiling is a bound, not a mix.** The first cut priced the per-repetition token cap
+entirely as *input* tokens and rendered it as `ceiling ≤ $X`. The cap bounds a run's **total**
+tokens and says nothing about their composition, so an output-heavy run could cost several times
+the figure the operator approved at §19.1's mandatory gate — the one number in the estimate a
+reader is entitled to treat as a limit. The ceiling now prices the whole cap at each target's
+dearest published rate (`_dearest_kind_cost`), which is what makes the rendered claim true; the
+caveat says plainly that this bounds the spend rather than describing the likely mix. The
+*expected* figure is unchanged in spirit and still drawn from the baseline's observed tokens per
+run, but its divisor now excludes replayed runs, because the same PR made `summary.cost` count
+executed runs only — dividing by every completed run understated tokens per run by exactly the
+cached share.
+
+**A run header records the sampling that was applied, not the sampling that was asked for.**
+`--deterministic-sampling` builds a spec carrying both a temperature and a seed, but the Messages
+API takes no seed and `anthropic_request_body` deliberately never sends one. The header stamped
+the requested pair regardless, so an Anthropic run's trace claimed a pinned seed that never left
+the host — a declaration where the project's rule is observation. `applied_sampling` lives in the
+harness layer beside the request builders and narrows a spec to the fields the provider type
+actually puts on the wire; the executor records its result, and `deterministic_sampling` is true
+only where the pin was applied. An unknown provider type claims nothing. A test asserts the
+narrowing against the real request bodies rather than against the table beside them, so the two
+cannot drift apart silently.
+
+**A declined estimate has its own exit code.** Declining raised the generic error and exited 3,
+the infrastructure code, so a script that saw only the status could not tell "the operator said
+no, nothing ran" from "the environment is broken". `RunDeclinedError` now maps to exit **4**
+(§20), leaving 3 to mean what it says.
 
