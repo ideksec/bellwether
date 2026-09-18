@@ -475,6 +475,15 @@ def test_the_real_cli_runs_headless_through_the_adapter_and_the_sink(tmp_path: P
         "---\nRead README.md then write notes.md.\n",
         encoding="utf-8",
     )
+    # A §7.4 companion installed beside it, exactly as `stage_companions` lays a run out: the
+    # fact the plural-staging brick rests on is that the CLI discovers *every* directory under
+    # `<config dir>/skills/` and names each in its init record — observed here, not assumed.
+    companion_dir = config_dir / "skills" / "k8s-debug"
+    companion_dir.mkdir()
+    (companion_dir / "SKILL.md").write_text(
+        "---\nname: k8s-debug\ndescription: Debug Kubernetes workloads.\n---\nInspect pods.\n",
+        encoding="utf-8",
+    )
     port = _free_port()
     server = subprocess.Popen(
         [sys.executable, str(_FAKE_API), str(port)],
@@ -528,6 +537,10 @@ def test_the_real_cli_runs_headless_through_the_adapter_and_the_sink(tmp_path: P
     assert exit_reason_from_events(events) == "completed", events[-1].data
     assert kinds.count("tool_call") == 3
     assert "skill_activated" in kinds
+    offered = {e.data["skill"] for e in events if e.kind == "skill_offered"}
+    assert {"demo-skill", "k8s-debug"} <= offered, offered
+    activated = [e.data for e in events if e.kind == "skill_activated"]
+    assert len(activated) == 1 and "k8s-debug" not in str(activated[0]), activated
     assert "trace_inconsistency" not in kinds
     assert adapter.reconciliation is not None and adapter.reconciliation.hook_calls == 3
     assert (workspace / "notes.md").read_text(encoding="utf-8") == "# notes\nhello\n"

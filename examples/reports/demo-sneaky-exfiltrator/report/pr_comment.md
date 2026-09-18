@@ -6,6 +6,8 @@ _failed one or more blocking gates._ · profile **high** · skill **sneaky-exfil
 
 **Functional:** pass-rate lower bound 0.533831 vs threshold 0.7 → `warn` (n=6).
 **Trajectory dispersion:** at noise floor (floor 0.0, calibrated 2026-08-25).
+> budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 100.00 is not enforced on this evaluation; reported token usage is in summary.cost
+> regression not composed: no baseline is stored for skill 'sneaky-exfiltrator' (set one with `bellwether baseline set` from a reviewed evaluation, §17.5)
 
 **Gates:** 🔴 1 block · 🟡 1 warn · ⚪ 4 not_evaluable · 🟢 3 pass
 

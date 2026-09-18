@@ -254,6 +254,8 @@ class AnalysedRun:
     #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
     #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
     scope_unused: tuple[str, ...] = ()
+    #: §19.2: the run was served from the run cache (``header.cached_from`` names the original).
+    cached: bool = False
     #: §12.6 near-misses from the platform-baseline subtraction: a traversal that names a
     #: path under a baseline entry but escapes it. Never absorbed; surfaced as findings.
     baseline_near_misses: tuple[str, ...] = ()
@@ -704,6 +706,7 @@ def analyse_run(
         scope_unused=scope_unused,
         baseline_near_misses=near_misses,
         baseline_absorbed=tuple(sorted(absorbed - frozenset(platform_baseline_t3 - absorbed))),
+        cached=trace.header.cached_from is not None,
         wall_clock_ms=trace.footer.wall_clock_ms if trace.footer is not None else None,
         tokens=(
             {
@@ -860,6 +863,8 @@ class SetReading:
     #: Runs by §12.7 outcome, so the matrix counts are exact rather than reconstructed.
     n_not_evaluable: int = 0
     n_excluded_quality: int = 0
+    #: Runs served from the run cache rather than executed (§19.2).
+    n_cached: int = 0
     #: §12.6 near-misses across the set, de-duplicated and sorted — surfaced in the report
     #: as findings; never absorbed.
     baseline_near_misses: tuple[str, ...] = ()
@@ -957,9 +962,13 @@ def aggregate(
     egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
     egress_blocked = any(run.egress_blocked for run in runs)
     # §19.1: spend is read from the footers. A footerless run is counted, not skipped, so the
-    # budget gate knows the sums are lower bounds.
+    # budget gate knows the sums are lower bounds. A run served from the run cache (§19.2) was
+    # not executed by this evaluation: its footer records what the *original* evaluation spent,
+    # so it is excluded from spend entirely — neither its tokens nor its wall clock, and not as
+    # an unobserved run either. The budget gates bound what this evaluation cost.
+    spent = [run for run in runs if not run.cached]
     tokens_total: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-    for run in runs:
+    for run in spent:
         if run.tokens is not None:
             for kind in tokens_total:
                 tokens_total[kind] += int(run.tokens.get(kind, 0))
@@ -1016,11 +1025,12 @@ def aggregate(
         baseline_near_misses=tuple(
             sorted({miss for run in runs for miss in run.baseline_near_misses})
         ),
+        n_cached=sum(1 for run in runs if run.cached),
         baseline_absorbed=tuple(sorted({path for run in runs for path in run.baseline_absorbed})),
         wall_clock_ms_observed=sum(
-            run.wall_clock_ms for run in runs if run.wall_clock_ms is not None
+            run.wall_clock_ms for run in spent if run.wall_clock_ms is not None
         ),
-        n_wall_clock_unobserved=sum(1 for run in runs if run.wall_clock_ms is None),
+        n_wall_clock_unobserved=sum(1 for run in spent if run.wall_clock_ms is None),
         tokens=tokens_total,
     )
 
@@ -1830,6 +1840,7 @@ def orchestrate(
     baseline: BaselineRecord | None = None,
     platform_baseline_version: str = "",
     extra_notes: Sequence[str] = (),
+    deterministic_sampling: bool = False,
 ) -> EvalResult:
     """Compose the verdict from the set readings, render, and write the artifact tree.
 
@@ -1893,6 +1904,21 @@ def orchestrate(
         )
     )
     notes: list[str] = list(extra_notes)
+    runs_cached = sum(r.n_cached for r in readings)
+    if runs_cached:
+        # §19.2: a replayed run is an earlier observation, not this evaluation's spend.
+        notes.append(
+            f"{runs_cached} of {sum(r.n_completed for r in readings)} runs were served from "
+            "the run cache (§19.2): the cost and wall-clock figures and the budget gates cover "
+            "the executed runs only"
+        )
+    if deterministic_sampling:
+        # §9.3: a temperature-0 run understates real variance; say so where the verdict is read.
+        notes.append(
+            "deterministic sampling: temperature was pinned to 0 for this evaluation, so the "
+            "consistency figures understate real variance and the result is not the realistic "
+            "condition (§9.3)"
+        )
     if spend.cost_usd is not None:
         gates.append(_gate("budget.cost", [_budget_cost_result(spend, profile)], required=True))
     else:
@@ -1949,6 +1975,7 @@ def orchestrate(
         spend=spend,
         regression=regression,
         platform_baseline_version=platform_baseline_version,
+        deterministic_sampling=deterministic_sampling,
     )
 
     artifacts = write_artifact_tree(
@@ -2016,6 +2043,7 @@ def _build_summary(
     spend: BudgetReading | None = None,
     regression: RegressionReading | None = None,
     platform_baseline_version: str = "",
+    deterministic_sampling: bool = False,
 ) -> Summary:
     primary = _primary(readings)
     targets = sorted({r.target.slug for r in readings})
@@ -2045,7 +2073,9 @@ def _build_summary(
         # §24: a timeout is a distinct state — counted here beside the others, never
         # blended into the assertion failures it is arithmetically grouped with (§12.7).
         runs_timed_out=sum(r.n_timed_out for r in readings),
+        runs_cached=sum(r.n_cached for r in readings),
         design="sequential",
+        deterministic_sampling=deterministic_sampling,
         looks=looks,
         boundary_z=profile.matrix.boundary_z,
         sets_stopped_at_look=dict(sorted(stopped_at.items())),

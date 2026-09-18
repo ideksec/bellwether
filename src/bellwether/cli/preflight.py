@@ -106,7 +106,7 @@ def preflight_failures(
     *,
     running_version: str = __version__,
     multi_turn_scenario_ids: Sequence[str] = (),
-    companion_scenario_ids: Sequence[str] = (),
+    deterministic_sampling: bool = False,
 ) -> list[PreconditionFailure]:
     """Every reason this profile cannot be satisfied by this composition, or an empty list.
 
@@ -143,19 +143,18 @@ def preflight_failures(
                         ),
                     )
                 )
-            # §7.4: the CLI discovers skills from what is staged into the sandbox, and this
-            # build stages exactly one; companions it cannot see would make "which activated"
-            # a foregone conclusion. Refuse rather than offer a competitor the harness lacks.
-            for scenario_id in companion_scenario_ids:
+            # §20 --deterministic-sampling: the CLI exposes no temperature or seed control, so
+            # a pinned-sampling run on this harness would be recorded as the realistic
+            # condition while the operator believed otherwise. Refuse rather than mislabel.
+            if deterministic_sampling:
                 failures.append(
                     PreconditionFailure(
-                        gate=f"scenario[{scenario_id}].also_load_skills",
+                        gate="deterministic_sampling",
                         target=target.slug,
                         remedy=(
-                            "this scenario loads companion skills (§7.4) and the claude-code "
-                            "harness stages only the skill under test in this build, so its "
-                            "companions would not be discoverable; run it on an api-loop "
-                            "target, or drop also_load_skills"
+                            "--deterministic-sampling pins temperature/seed on the model request, "
+                            "which the claude-code harness does not expose in this build; run "
+                            "on an api-loop target, or drop the flag"
                         ),
                     )
                 )
@@ -177,7 +176,7 @@ def refuse_on_preflight_failures(
     *,
     profile_name: str,
     multi_turn_scenario_ids: Sequence[str] = (),
-    companion_scenario_ids: Sequence[str] = (),
+    deterministic_sampling: bool = False,
 ) -> None:
     """Raise :class:`BellwetherError` in the §16.4 message shape if the matrix cannot start.
 
@@ -189,7 +188,7 @@ def refuse_on_preflight_failures(
         profile,
         targets,
         multi_turn_scenario_ids=multi_turn_scenario_ids,
-        companion_scenario_ids=companion_scenario_ids,
+        deterministic_sampling=deterministic_sampling,
     )
     if failures:
         rendered = "\n".join(failure.message(profile_name) for failure in failures)

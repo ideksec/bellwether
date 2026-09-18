@@ -4,9 +4,10 @@ Design rules from §20 that are load-bearing:
 
 * every command supports ``--json`` for machine consumption;
 * exit code 0 covers ``ready`` **and** ``conditional``, 2 is ``not_ready``, 3 is an
-  infrastructure error. Revision 1 mapped ``conditional`` to 1, which — since every CI
-  system treats non-zero as failure — made it block by default, the opposite of the
-  documented recommendation. The nuance belongs in per-gate commit statuses;
+  infrastructure error, 4 is a declined §19.1 estimate. Revision 1 mapped ``conditional``
+  to 1, which — since every CI system treats non-zero as failure — made it block by
+  default, the opposite of the documented recommendation. The nuance belongs in per-gate
+  commit statuses;
 * ``--strict`` promotes ``conditional`` to exit 2.
 
 Commands whose work package has not landed exit 3 and name the package, rather than
@@ -17,12 +18,15 @@ from __future__ import annotations
 
 import enum
 import os
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 
 from bellwether import __version__
+from bellwether.cli.estimate import RunEstimate, render_estimate
 from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS, TargetInfo
 from bellwether.cli.preflight import available_planes, preflight_failures
 from bellwether.config import (
@@ -52,6 +56,10 @@ class ExitCode(enum.IntEnum):
 
     INFRASTRUCTURE = 3
     """Could not evaluate: the environment, not the skill, is the problem."""
+
+    DECLINED = 4
+    """The operator declined the §19.1 pre-flight estimate. Nothing was executed — a choice,
+    not a failure, so a script can tell it from a broken environment."""
 
 
 app = typer.Typer(
@@ -521,6 +529,32 @@ def run(
     strict: Annotated[
         bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
     ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            help="Skip the confirmation after the pre-flight estimate (§19.1) — never the "
+            "estimate itself. Without it, an interactive terminal is asked to proceed; a "
+            "non-interactive run (CI) proceeds after printing the estimate.",
+        ),
+    ] = False,
+    deterministic_sampling: Annotated[
+        bool,
+        typer.Option(
+            "--deterministic-sampling",
+            help="Pin temperature to 0 (and a seed where the provider takes one) for a "
+            "low-variance comparison; marked on every run and in the report as not the "
+            "realistic condition (§9.3). Refused on claude-code targets.",
+        ),
+    ] = False,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="Execute every repetition even where the run cache holds a matching trace "
+            "(§19.2); the config's execution.cache and cache_ttl_days govern otherwise.",
+        ),
+    ] = False,
     depth: Annotated[
         str | None,
         typer.Option(
@@ -556,14 +590,16 @@ def run(
     from bellwether.cli.execution import isolation_from_config, zone_map_from_config
     from bellwether.cli.fixtures import fixture_resolver
     from bellwether.cli.run import (
+        RunDeclinedError,
         build_proxy_provider,
         build_resolver_provider,
         claude_code_providers,
         run_evaluation,
         sandbox_executor_factory,
     )
+    from bellwether.cli.run_cache import RunCache, require_cache_root
     from bellwether.determinism import stable_hash
-    from bellwether.harness import RunLimits
+    from bellwether.harness import RunLimits, SamplingSpec
     from bellwether.skill import load_skill
 
     if not skills:
@@ -601,6 +637,18 @@ def run(
     if not daemon_ok:
         typer.echo(f"bellwether run: the sandbox is unavailable — {daemon_reason}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    # §19.2: the run cache lives beside the artifact trees. Off by --no-cache or config.
+    run_cache: RunCache | None = None
+    if loaded_config.execution.cache and not no_cache:
+        try:
+            run_cache = RunCache(
+                root=require_cache_root(out / ".cache" / "runs"),
+                ttl_days=loaded_config.execution.cache_ttl_days,
+            )
+        except (BellwetherError, OSError) as error:
+            typer.echo(f"bellwether run: {error}", err=True)
+            raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
 
     worst = ExitCode.OK
     results: list[dict[str, Any]] = []
@@ -650,6 +698,10 @@ def run(
                 budget_usd=budget_usd,
                 depth=depth,
                 platform_baseline=platform_baseline,
+                run_cache=run_cache,
+                deterministic_sampling=deterministic_sampling,
+                max_tokens_per_run=max_tokens,
+                on_estimate=_estimate_gate(yes),
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -670,6 +722,11 @@ def run(
                         name: provider.base_url
                         for name, provider in loaded_config.providers.items()
                     },
+                    # §9.3: the header records the sampling a provider actually sends, so the
+                    # executor needs each provider's type, not just its endpoint.
+                    provider_types={
+                        name: provider.type for name, provider in loaded_config.providers.items()
+                    },
                     # Wired only when dns.image is set; otherwise None and DNS stays not_evaluable
                     # (§10.6). When both are on, the resolver shares the proxy's internal bridge.
                     resolver=build_resolver_provider(loaded_config),
@@ -682,6 +739,9 @@ def run(
                     # (§10.4); the env-var channel is delivered and scanned host-side today.
                     plant_canaries=loaded_config.canaries.enabled,
                     platform_baseline_version=applied_version,
+                    sampling=(
+                        SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None
+                    ),
                 ),
                 # The artifact writer appends <eval_id> itself, so the parent is `out`;
                 # passing `out / eval_id` here doubled it and hid the report from pr-comment.
@@ -691,6 +751,11 @@ def run(
                 bellwether_version=__version__,
                 profile_override=profile,
             )
+        except RunDeclinedError as error:
+            # §19.1: a decline is the operator's choice and nothing was executed, so it gets
+            # its own code rather than reading as a broken environment.
+            typer.echo(f"bellwether run [{skill_dir}]: {error}", err=True)
+            raise typer.Exit(ExitCode.DECLINED) from None
         except (BellwetherError, ConfigurationError) as error:
             typer.echo(f"bellwether run [{skill_dir}]: {error}", err=True)
             raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
@@ -702,6 +767,8 @@ def run(
                 "skill": package.name,
                 "verdict": result.verdict.verdict,
                 "descriptive_only": result.verdict.descriptive_only,
+                "runs_cached": result.summary.matrix.runs_cached,
+                "runs_completed": result.summary.matrix.runs_completed,
                 "artifacts": str(result.artifacts.root),
             }
         )
@@ -714,6 +781,11 @@ def run(
         lines=[
             f"{r['skill']}: {r['verdict']}"
             + (" (descriptive only — fixed-N, cannot be ready)" if r["descriptive_only"] else "")
+            + (
+                f" ({r['runs_cached']} of {r['runs_completed']} runs served from the run cache)"
+                if r["runs_cached"]
+                else ""
+            )
             + f" — {r['artifacts']}"
             for r in results
         ],
@@ -870,6 +942,24 @@ def pr_comment(
         as_json=json_output,
         lines=[f"{action} comment on {context.slug}#{context.number}"],
     )
+
+
+def _estimate_gate(yes: bool) -> Callable[[RunEstimate], bool]:
+    """Print the §19.1 estimate (always) and ask to proceed (only on an interactive terminal).
+
+    The estimate goes to stderr so a ``--json`` result on stdout stays machine-readable. On a
+    terminal without ``--yes`` the operator is asked; in CI there is nobody to ask, so the run
+    proceeds after the estimate is printed — the flag skips the prompt, never the figures.
+    """
+
+    def gate(estimate: RunEstimate) -> bool:
+        for line in render_estimate(estimate):
+            typer.echo(line, err=True)
+        if yes or not sys.stdin.isatty():
+            return True
+        return bool(typer.confirm("Proceed with the run?", default=False, err=True))
+
+    return gate
 
 
 def exit_code_for(result_exit_code: int, verdict: str, *, strict: bool) -> ExitCode:

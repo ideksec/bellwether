@@ -13,6 +13,7 @@ run of every skill is silently observing a different thing than it reports.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -20,7 +21,7 @@ from bellwether.errors import SkillError
 from bellwether.sandbox.fixtures import normalize_metadata
 from bellwether.skill import EVALS_DIR, SkillPackage
 
-__all__ = ["StagedPayload", "stage_payload"]
+__all__ = ["StagedPayload", "stage_companions", "stage_payload"]
 
 
 @dataclass(frozen=True)
@@ -145,3 +146,46 @@ def _target_stays_inside(root: Path, link: Path) -> bool:
     except (OSError, RuntimeError):
         # A broken or cyclic link resolves nowhere; treat it as escaping.
         return False
+
+
+def stage_companions(
+    companions: Sequence[SkillPackage],
+    destination: Path,
+    *,
+    primary: SkillPackage,
+    install_root: PurePosixPath,
+    owner: tuple[int, int] | None = None,
+) -> tuple[StagedPayload, ...]:
+    """Stage a scenario's §7.4 companion skills beside the skill under test.
+
+    A harness that discovers skills from what is installed (the ``claude-code`` CLI reads
+    ``<config dir>/skills/``) can only be offered a competitor that is actually there, so each
+    companion is staged exactly as the primary is — the same allowlisted payload, the same
+    metadata normalisation, the same §3.5 machinery check — into its own directory under
+    ``destination``, to be bound read-only at ``install_root / <slug>``. The primary's own
+    staging is untouched: nothing under a companion is hashed into the primary's digests, which
+    keeps the run cache and baselines keyed on the skill under test alone.
+
+    Two skills that slug to the same directory would shadow one another at the install root,
+    and "which activated" would then be undecidable — refused, naming both.
+    """
+    # Checked for the whole set before anything is copied, so a refusal leaves no
+    # half-staged run directory behind.
+    seen: dict[str, str] = {primary.slug: primary.name}
+    for companion in companions:
+        if companion.slug in seen:
+            raise SkillError(
+                f"companion skill {companion.name!r} would install at "
+                f"{install_root / companion.slug}, the same directory as "
+                f"{seen[companion.slug]!r}; two skills cannot share an install directory"
+            )
+        seen[companion.slug] = companion.name
+    return tuple(
+        stage_payload(
+            companion,
+            destination / companion.slug,
+            install_path=install_root,
+            owner=owner,
+        )
+        for companion in companions
+    )

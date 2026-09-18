@@ -25,8 +25,10 @@ from bellwether.cli.execution import SandboxRunExecutor, run_limits_for
 
 if TYPE_CHECKING:
     from bellwether.sandbox import IsolationProfile, ZoneMap
+from bellwether import __version__
 from bellwether.cli.baselines import BaselineRecord
 from bellwether.cli.dns_run import DnsResolverProvider
+from bellwether.cli.estimate import RunEstimate, estimate_run
 from bellwether.cli.fixtures import ResolvedFixture
 from bellwether.cli.orchestrator import (
     EvalResult,
@@ -42,6 +44,15 @@ from bellwether.cli.orchestrator import (
 )
 from bellwether.cli.preflight import refuse_on_preflight_failures
 from bellwether.cli.proxy_run import SidecarProxyProvider
+from bellwether.cli.run_cache import (
+    CacheKeyInputs,
+    CachingExecutor,
+    RunCache,
+    cache_version_for,
+    observability_key,
+    render_sampling,
+    scenario_content_digest,
+)
 from bellwether.cli.run_plan import ResolvedRun, resolve_run
 from bellwether.config.models.baseline import PlatformBaseline
 from bellwether.config.models.config import Config
@@ -55,8 +66,10 @@ from bellwether.harness import (
     TRUSTED_MODEL_HOSTS_ENV,
     ModelClient,
     RunLimits,
+    SamplingSpec,
     build_model_client,
 )
+from bellwether.sandbox import fixture_digest
 from bellwether.skill import SkillPackage
 from bellwether.verdict import validate_capability_weights
 
@@ -130,6 +143,15 @@ def select_scenarios(
     return selected
 
 
+class RunDeclinedError(BellwetherError):
+    """The operator declined the §19.1 pre-flight estimate; nothing was executed.
+
+    A distinct type because a decline is a *choice*, not a failure: the CLI gives it its own
+    exit code rather than the infrastructure one, which would read as a broken environment in a
+    script that only sees the status.
+    """
+
+
 def run_evaluation(
     *,
     config: Config,
@@ -155,6 +177,10 @@ def run_evaluation(
     baseline: BaselineRecord | None = None,
     depth: str | None = None,
     platform_baseline: PlatformBaseline | None = None,
+    run_cache: RunCache | None = None,
+    deterministic_sampling: bool = False,
+    max_tokens_per_run: int = 1_000_000,
+    on_estimate: Callable[[RunEstimate], bool] | None = None,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -172,6 +198,14 @@ def run_evaluation(
     this evaluation; the cost gate it feeds is composed only where every target is priced.
     ``baseline`` is the skill's stored §17.5 baseline, when one exists; the regression gate is
     composed against it where the profile asks for the comparison and the key allows it.
+    ``on_estimate`` receives the §19.1 pre-flight estimate after the matrix is planned and
+    before anything is executed; returning False declines the run, which is refused with no
+    container started. ``max_tokens_per_run`` is the per-repetition cap the estimate prices.
+    ``run_cache`` (§19.2), when given, wraps the executor: a plan whose key — payload digest,
+    scenario content, target, fixture digest, harness version, model id, sandbox image, platform
+    baseline version, repetition — matches a live entry is served from the stored trace instead of
+    being executed, and every executed complete run is stored. ``summary.matrix.runs_cached``
+    counts the replays.
     ``platform_baseline`` is the ``.bellwether/platform-baseline.yaml`` document (§12.6): where
     it is keyed to the configured sandbox image its path entries are subtracted from every
     run's capability sets and its version is stamped on the summary; where it is not, nothing
@@ -242,7 +276,7 @@ def run_evaluation(
         targets,
         profile_name=resolved.profile_name,
         multi_turn_scenario_ids=[s.id for s in scenarios if isinstance(s.prompt, list)],
-        companion_scenario_ids=[s.id for s in scenarios if s.also_load_skills],
+        deterministic_sampling=deterministic_sampling,
     )
 
     # §16.1: a capability class the manifest denies must not be weighted 0. Weight 0 erases it
@@ -278,7 +312,7 @@ def run_evaluation(
         )
         return client, model_id_by_slug[slug]
 
-    executor = make_executor(package, fixture, client_factory)
+    executor: RunExecutor = make_executor(package, fixture, client_factory)
     # §7.2: with a resolver, each scenario's fixture is resolved here — before the executor and
     # any container — and stamped on its plans; a missing named fixture refuses at this point.
     # Likewise each scenario's sequential schedule (§7.2 `looks`/`n_max`, else the suite default,
@@ -297,6 +331,25 @@ def run_evaluation(
         n_max_for=lambda scenario: schedule[scenario.id][1],
         companions_for=companions_for,
     )
+
+    def pricing_for(target: TargetInfo) -> ModelPricing | None:
+        return config.providers[target.provider].pricing_for(target.model_alias)
+
+    # §19.1: the pre-flight estimate is mandatory and comes before anything is spent. The
+    # caller shows it and may decline; a decline is a refusal with no container started.
+    estimate = estimate_run(
+        schedules=schedule,
+        targets=targets,
+        max_tokens_per_run=max_tokens_per_run,
+        pricing_for=pricing_for,
+        baseline=baseline,
+        fixed_mode=repetitions is not None,
+        cache_enabled=run_cache is not None,
+    )
+    if on_estimate is not None and not on_estimate(estimate):
+        raise RunDeclinedError(
+            "run declined at the pre-flight estimate (§19.1); nothing was executed"
+        )
     # Declared scope (§12.5) is applied as a *declared-vs-observed table*, not as outcome
     # assertions: `scope=None` keeps the scenario's own assertions deciding each run's outcome,
     # while `declared_scope` feeds the manifest's scope into the `scope` gate — every area of the
@@ -320,6 +373,59 @@ def run_evaluation(
                 f"platform baseline {platform_baseline.version!r} not applied: {why} (§12.6); "
                 "no infrastructural access was subtracted from the capability sets"
             )
+    caching: CachingExecutor | None = None
+    if run_cache is not None:
+        # §19.2: the key is formed from what the run *is* — the skill's payload, the scenario's
+        # content, the target and the exact model id, the fixture, the sandbox image, the platform
+        # baseline — plus the repetition index, the pinned sampling and the companions' payloads
+        # (spec-notes). The harness version is the adapter shipped with this package for api-loop
+        # and the configured pin for claude-code; unpinned, the plan bypasses the cache.
+        harness_versions = {
+            target.harness: cache_version_for(
+                target.harness, config.harnesses.get(target.harness), __version__
+            )
+            for target in targets
+        }
+        applied_version = applied_baseline.version if applied_baseline is not None else ""
+        sampling_key = render_sampling(
+            SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None
+        )
+        # What this configuration can watch, and the limits it runs under: a trace captured
+        # with no proxy is a different observation from one captured behind it (§19.2).
+        observability = observability_key(config)
+
+        def inputs_for(plan: RunPlan) -> CacheKeyInputs | None:
+            harness_version = harness_versions.get(plan.target.harness)
+            if harness_version is None:
+                return None
+            return CacheKeyInputs(
+                payload_digest=package.payload_digest,
+                scenario_id=plan.scenario.id,
+                scenario_digest=scenario_content_digest(plan.scenario),
+                target_slug=plan.target.slug,
+                fixture_digest=fixture_digest(
+                    plan.fixture if plan.fixture is not None else fixture
+                ),
+                harness=plan.target.harness,
+                harness_version=harness_version,
+                model_id=model_id_by_slug[plan.target.slug],
+                sandbox_image=config.sandbox.image,
+                platform_baseline_version=applied_version,
+                repetition=plan.repetition,
+                sampling=sampling_key,
+                companion_digests=tuple(c.payload_digest for c in plan.companions),
+                observability=observability,
+            )
+
+        caching = CachingExecutor(
+            executor,
+            run_cache,
+            inputs_for,
+            eval_id=eval_id,
+            run_root=out_dir / eval_id / "runs",
+        )
+        executor = caching
+
     readings = drive_evaluation(
         plans,
         executor,
@@ -330,6 +436,14 @@ def run_evaluation(
         looks_for=lambda scenario_id: schedule[scenario_id][0],
         platform_baseline=applied_baseline,
     )
+    if caching is not None and caching.bypassed:
+        # §19.2: disclosed, not silent — the operator turned the cache on and part of the
+        # matrix could not honestly use it.
+        baseline_notes.append(
+            f"run cache bypassed for {len(caching.bypassed)} run(s) on an unpinned claude-code "
+            "target: the CLI version is observable only after a run, so no key can be formed "
+            "before it (set harnesses.<name>.version_pin to cache these) (§19.2)"
+        )
 
     criticality = (
         package.manifest.metadata.criticality if package.manifest is not None else "medium"
@@ -341,9 +455,6 @@ def run_evaluation(
         int(run_limits_for(RunLimits(), scenario, suite.defaults).wall_seconds * 1000)
         for scenario in scenarios
     )
-
-    def pricing_for(target: TargetInfo) -> ModelPricing | None:
-        return config.providers[target.provider].pricing_for(target.model_alias)
 
     return orchestrate(
         skill_name=package.name,
@@ -364,6 +475,7 @@ def run_evaluation(
         baseline=baseline,
         platform_baseline_version=applied_baseline.version if applied_baseline else "",
         extra_notes=baseline_notes,
+        deterministic_sampling=deterministic_sampling,
     )
 
 
@@ -486,7 +598,9 @@ def sandbox_executor_factory(
     randomize_identifiers: bool = True,
     plant_canaries: bool = False,
     provider_base_urls: Mapping[str, str | None] | None = None,
+    provider_types: Mapping[str, str] | None = None,
     platform_baseline_version: str | None = None,
+    sampling: SamplingSpec | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -532,7 +646,9 @@ def sandbox_executor_factory(
             randomize_identifiers=randomize_identifiers,
             plant_canaries=plant_canaries,
             provider_base_urls=dict(provider_base_urls or {}),
+            provider_types=dict(provider_types or {}),
             platform_baseline_version=platform_baseline_version,
+            sampling=sampling,
         )
 
     return make

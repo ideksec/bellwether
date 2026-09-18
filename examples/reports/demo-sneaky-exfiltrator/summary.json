@@ -97,12 +97,14 @@
     "boundary_z": 2.289,
     "descriptive_only": false,
     "design": "sequential",
+    "deterministic_sampling": false,
     "escalation_truncated": false,
     "looks": [
       6,
       12,
       20
     ],
+    "runs_cached": 0,
     "runs_completed": 6,
     "runs_errored": 0,
     "runs_evaluable": 6,
@@ -130,7 +132,7 @@
     "profile": "high"
   },
   "regression": null,
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "security": {
     "canary_leaks": [],
     "runtime": {},

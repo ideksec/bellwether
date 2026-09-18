@@ -35,6 +35,7 @@ from bellwether.harness.provider import (
     ModelClient,
     ModelRequest,
     ModelTurn,
+    SamplingSpec,
     ToolSpec,
 )
 from bellwether.harness.tools import SandboxToolset
@@ -68,6 +69,7 @@ class ApiLoopAdapter:
         *,
         skills: tuple[OfferedSkill, ...] = (),
         clock: Callable[[], dt.datetime] | None = None,
+        sampling: SamplingSpec | None = None,
     ) -> None:
         """Args:
         client: The model client — a live provider or a scripted transcript.
@@ -75,9 +77,12 @@ class ApiLoopAdapter:
         skills: Skills offered for this run, presented sorted by name.
         clock: Injected for golden traces, which must be byte-stable and therefore
             cannot read the wall clock (§24). Defaults to real UTC time.
+        sampling: Sampling to pin on every request (§20 ``--deterministic-sampling``);
+            ``None`` leaves the provider's defaults, which is the realistic condition.
         """
         self._client = client
         self._tools = toolset
+        self._sampling = sampling
         self._skills = tuple(sorted(skills, key=lambda skill: skill.name))
         self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
 
@@ -147,6 +152,7 @@ class ApiLoopAdapter:
                     system=system,
                     messages=tuple(messages),
                     tools=self._tool_specs(),
+                    sampling=self._sampling,
                 )
             )
             usage = model_turn.usage

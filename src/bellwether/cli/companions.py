@@ -11,13 +11,14 @@ under test is the one place a name means something. A name that resolves nowhere
 any run: a coexistence scenario whose competitor is silently absent would report the primary
 winning every activation for the wrong reason.
 
-Companions are loaded as skill packages and *offered* — name, description, body — through the
-harness exactly as the primary is. They are not staged into the sandbox: on ``api-loop`` the
-offer is host-side and a companion's own scripts would not exist in the container (a tool call
-into them fails as an ordinary error result, recorded). The ``claude-code`` harness discovers
-skills from what is staged, so companions there need plural staging, which this build has not
-built; the §16.4 preflight refuses that combination rather than offering a companion the CLI
-cannot see.
+Companions are loaded as skill packages and reach the harness the way that harness takes
+skills. On ``api-loop`` they are *offered* host-side — name, description, body — exactly as the
+primary is, and are not staged: a companion's own scripts would not exist in the container (a
+tool call into them fails as an ordinary error result, recorded). The ``claude-code`` harness
+discovers skills from what is installed under its config directory, so there the executor
+*stages* each companion beside the skill under test (``sandbox.staging.stage_companions``,
+bound read-only at the same install root) and the CLI's own init record — which names every
+skill it loaded — is what shows they were discoverable, as ``skill_offered`` events.
 """
 
 from __future__ import annotations

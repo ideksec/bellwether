@@ -135,6 +135,9 @@ def anthropic_request_body(request: ModelRequest, *, max_tokens: int) -> dict[st
             {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
             for tool in request.tools
         ]
+    # §9.3: sampling is sent only where pinned; the Messages API takes no seed.
+    if request.sampling is not None and request.sampling.temperature is not None:
+        body["temperature"] = request.sampling.temperature
     return body
 
 
@@ -391,6 +394,11 @@ def openai_request_body(request: ModelRequest, *, max_tokens: int) -> dict[str, 
         "max_completion_tokens": max_tokens,
         "messages": openai_messages(request),
     }
+    if request.sampling is not None:
+        if request.sampling.temperature is not None:
+            body["temperature"] = request.sampling.temperature
+        if request.sampling.seed is not None:
+            body["seed"] = request.sampling.seed
     if request.tools:
         body["tools"] = [
             {

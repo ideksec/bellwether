@@ -577,6 +577,9 @@ def test_run_exposes_the_section_20_matrix_options() -> None:
         "--strict",
         "--budget-usd",
         "--depth",
+        "--no-cache",
+        "--deterministic-sampling",
+        "--yes",
     ):
         assert option in names, option
 
@@ -623,3 +626,12 @@ def test_doctor_reports_the_platform_baseline_state(tmp_path: Path) -> None:
     baseline_path.unlink()
     row = doctor()["platform baseline (§12.6)"]
     assert row["status"] == "warn" and "absent" in row["detail"]
+
+
+def test_the_exit_codes_are_distinct_and_a_decline_is_not_an_infrastructure_failure() -> None:
+    """§20 × §19.1: a script that only sees the status must be able to tell "the operator said
+    no" from "the environment is broken" — the first is a choice and nothing was executed."""
+    codes = [ExitCode.OK, ExitCode.NOT_READY, ExitCode.INFRASTRUCTURE, ExitCode.DECLINED]
+    assert [int(code) for code in codes] == [0, 2, 3, 4]
+    assert len({int(code) for code in codes}) == len(codes)
+    assert ExitCode.DECLINED != ExitCode.INFRASTRUCTURE

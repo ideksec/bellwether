@@ -112,8 +112,9 @@ def _banner(summary: Summary) -> str:
         f"    <p>{_esc(gloss)}. Policy profile <strong>{_esc(summary.policy.profile)}</strong>; "
         f"skill <strong>{_esc(summary.skill.name)}</strong> "
         f"(<code>{_esc(summary.skill.criticality)}</code> criticality).</p>\n"
-        f"  </div>\n"
-        f"</header>"
+        + "".join(f'    <p class="note">{_esc(note)}</p>\n' for note in summary.verdict.notes)
+        + "  </div>\n"
+        "</header>"
     )
 
 

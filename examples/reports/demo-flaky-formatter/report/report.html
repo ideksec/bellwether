@@ -93,6 +93,8 @@ tr:last-child td { border-bottom: none; }
     <div class="eyebrow">Bellwether verdict</div>
     <h1 class="verdict">not_ready</h1>
     <p>failed one or more blocking gates. Policy profile <strong>medium</strong>; skill <strong>flaky-formatter</strong> (<code>medium</code> criticality).</p>
+    <p class="note">budget.cost not composed: no pricing configured for scripted/frontier (providers.&lt;name&gt;.pricing), so max_cost_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost</p>
+    <p class="note">regression not composed: no baseline is stored for skill &#x27;flaky-formatter&#x27; (set one with `bellwether baseline set` from a reviewed evaluation, §17.5)</p>
   </div>
 </header>
 <section class="stats">
@@ -250,7 +252,7 @@ tr:last-child td { border-bottom: none; }
   </ul>
 </section>
 <footer class="provenance muted-text">
-  <div>eval <code>demo-flaky-formatter</code> &middot; generated 2026-01-01T12:00:00Z &middot; bellwether 0.1.0-demo &middot; summary schema 1.2</div>
+  <div>eval <code>demo-flaky-formatter</code> &middot; generated 2026-01-01T12:00:00Z &middot; bellwether 0.1.0-demo &middot; summary schema 1.3</div>
   <div>package <code>sha256:7ed9284e5c5c661146f4159f01217d180d1e7d6960eda29db28650304dec1bd5</code></div>
   <div>policy <code>sha256:7a3f301a4090f8dc69fce5a0e87cd46eacfd0278653e9c9d7341606c7c136fa2</code></div>
 </footer>

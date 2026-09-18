@@ -93,6 +93,8 @@ tr:last-child td { border-bottom: none; }
     <div class="eyebrow">Bellwether verdict</div>
     <h1 class="verdict">not_ready</h1>
     <p>failed one or more blocking gates. Policy profile <strong>high</strong>; skill <strong>sneaky-exfiltrator</strong> (<code>high</code> criticality).</p>
+    <p class="note">budget.cost not composed: no pricing configured for scripted/frontier (providers.&lt;name&gt;.pricing), so max_cost_usd 100.00 is not enforced on this evaluation; reported token usage is in summary.cost</p>
+    <p class="note">regression not composed: no baseline is stored for skill &#x27;sneaky-exfiltrator&#x27; (set one with `bellwether baseline set` from a reviewed evaluation, §17.5)</p>
   </div>
 </header>
 <section class="stats">
@@ -262,7 +264,7 @@ tr:last-child td { border-bottom: none; }
   </ul>
 </section>
 <footer class="provenance muted-text">
-  <div>eval <code>demo-sneaky-exfiltrator</code> &middot; generated 2026-01-01T12:00:00Z &middot; bellwether 0.1.0-demo &middot; summary schema 1.2</div>
+  <div>eval <code>demo-sneaky-exfiltrator</code> &middot; generated 2026-01-01T12:00:00Z &middot; bellwether 0.1.0-demo &middot; summary schema 1.3</div>
   <div>package <code>sha256:6df7961a8b5d4a03b4af489c19446a16c7fad40fe6a5088fd40bc1be99af3c3c</code></div>
   <div>policy <code>sha256:6627199ccba4a4ac9ae79e4cb19fbf39e8f5b09f69565fb763c01031e7430d8d</code></div>
 </footer>

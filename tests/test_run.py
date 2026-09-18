@@ -672,30 +672,21 @@ def test_run_refuses_a_multi_turn_scenario_on_a_claude_code_target(tmp_path: Pat
     assert "api-loop" in turn_failures[0].remedy
 
 
-def test_run_refuses_companion_skills_on_a_claude_code_target() -> None:
-    """§7.4 × §16.4: the claude-code harness stages only the skill under test in this build, so
-    companions would be undiscoverable and "which activated" a foregone conclusion — refused
-    before any container rather than run with competitors the harness cannot see."""
+def test_companion_scenarios_are_admitted_on_a_claude_code_target() -> None:
+    """§7.4 × §16.4: companions are now staged beside the skill under test for the CLI to
+    discover (`stage_companions`), so a coexistence scenario no longer fails the preflight on a
+    claude-code target — the refusal that stood while the build staged exactly one skill is
+    gone, and nothing else about the target's admission changed."""
     from bellwether.cli.orchestrator import TargetInfo
     from bellwether.cli.preflight import preflight_failures
 
-    ok = preflight_failures(
-        _config(),
-        _policy().profile("low"),
-        [TargetInfo("api-loop", "anthropic", "frontier")],
-        companion_scenario_ids=["collide"],
-    )
-    assert not any("collide" in f.gate for f in ok)
-
-    refused = preflight_failures(
-        _config(),
-        _policy().profile("low"),
-        [TargetInfo("claude-code", "anthropic", "frontier")],
-        companion_scenario_ids=["collide"],
-    )
-    companion_failures = [f for f in refused if f.gate == "scenario[collide].also_load_skills"]
-    assert companion_failures
-    assert "api-loop" in companion_failures[0].remedy
+    for harness in ("api-loop", "claude-code"):
+        failures = preflight_failures(
+            _config(),
+            _policy().profile("low"),
+            [TargetInfo(harness, "anthropic", "frontier")],
+        )
+        assert not any("also_load_skills" in f.gate for f in failures)
 
 
 # ---------------------------------------------------------------------------
@@ -1268,3 +1259,299 @@ def test_a_platform_baseline_for_another_image_is_not_applied_and_the_verdict_sa
         "not applied" in note and "applies_to_image is unset" in note
         for note in result.verdict.notes
     )
+
+
+# ---------------------------------------------------------------------------
+# §19.2: the run cache on the run path
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_evaluation_is_served_from_the_run_cache(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """First run fills the cache (every complete run stored); the second executes nothing,
+    every run is re-filed under the new evaluation with `cached_from`, and the summary counts
+    the replays. The verdict is the same: a cached run is the same observation."""
+    from bellwether.cli.run_cache import RunCache
+
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    def evaluate(eval_id: str):  # type: ignore[no-untyped-def]
+        return run_evaluation(
+            config=_config(),
+            policy=_policy(),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id=eval_id,
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            run_cache=cache,
+        )
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    first = evaluate("first")
+    assert holder["exec"].calls == 20
+    assert first.summary.matrix.runs_cached == 0
+    assert len(list((tmp_path / "cache").iterdir())) == 20
+
+    second = evaluate("second")
+    assert holder["exec"].calls == 0  # nothing executed
+    assert second.summary.matrix.runs_cached == 20
+    assert second.summary.matrix.runs_completed == 20
+    assert second.verdict.verdict == first.verdict.verdict
+    # Re-filed under the new evaluation, provenance kept.
+    trace_path = second.artifacts.traces[0]
+    first_line = trace_path.read_text(encoding="utf-8").splitlines()[0]
+    assert '"eval_id":"second"' in first_line.replace(" ", "")
+    # The scripted executor stamps eval_id "e" on the traces it writes; provenance names it.
+    assert '"cached_from":"e/benign-stable-' in first_line.replace(" ", "")
+    # §19.2 × §16.2: a replayed run is an earlier observation, not this evaluation's spend —
+    # the cost figures and the budget gates cover executed runs only, and the verdict says so.
+    assert first.summary.cost is not None and sum(first.summary.cost.tokens.values()) > 0
+    assert second.summary.cost is not None
+    assert sum(second.summary.cost.tokens.values()) == 0
+    assert second.summary.cost.wall_clock_s == 0.0
+    assert second.summary.cost.runs_without_footer == 0
+    assert any("20 of 20 runs were served from the run cache" in n for n in second.verdict.notes)
+    assert not any("run cache" in n for n in first.verdict.notes)
+
+
+def test_pinned_sampling_never_hits_a_trace_recorded_at_provider_defaults(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """The sampling is in the key: a matrix run at the provider's defaults must not be replayed
+    under --deterministic-sampling (the summary would claim pinned runs that were not), nor the
+    reverse."""
+    from bellwether.cli.run_cache import RunCache
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    plain = _evaluate_with(package, tmp_path, config=_config(), run_cache=cache)
+    assert plain.summary.matrix.runs_cached == 0
+    pinned = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, deterministic_sampling=True
+    )
+    assert pinned.summary.matrix.runs_cached == 0
+    assert pinned.summary.matrix.deterministic_sampling is True
+    again = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, deterministic_sampling=True
+    )
+    assert again.summary.matrix.runs_cached == 20
+
+
+def test_wiring_the_proxy_misses_the_cache(package: SkillPackage, tmp_path: Path) -> None:
+    """§19.2 × §10.5: a trace captured with no proxy is not the same observation as one captured
+    behind it. Replaying the networkless run after the operator wired egress would leave the
+    plane not_evaluable while the report implied it had been watched — the one failure mode this
+    project exists to prevent."""
+    from bellwether.cli.run_cache import RunCache
+    from bellwether.config.models.config import EgressConfig
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+
+    networkless = _config()
+    assert networkless.egress.image == ""
+    first = _evaluate_with(package, tmp_path, config=networkless, run_cache=cache)
+    assert first.summary.matrix.runs_cached == 0
+    again = _evaluate_with(package, tmp_path, config=networkless, run_cache=cache)
+    assert again.summary.matrix.runs_cached == 20
+
+    observed = networkless.model_copy(
+        update={"egress": EgressConfig(image="proxy@sha256:" + "e" * 64)}
+    )
+    wired = _evaluate_with(package, tmp_path, config=observed, run_cache=cache)
+    assert wired.summary.matrix.runs_cached == 0
+
+    # And turning canary planting off is a different observation too (§10.4).
+    no_canaries = observed.model_copy(
+        update={"canaries": observed.canaries.model_copy(update={"enabled": False})}
+    )
+    uncanaried = _evaluate_with(package, tmp_path, config=no_canaries, run_cache=cache)
+    assert uncanaried.summary.matrix.runs_cached == 0
+
+
+def test_a_changed_companion_misses_the_cache(package: SkillPackage, tmp_path: Path) -> None:
+    """A companion's content reaches the run (offered on api-loop, staged on claude-code) while
+    only its *name* is in the scenario's content digest, so its payload digest is in the key."""
+    from bellwether.cli.run_cache import RunCache
+    from bellwether.skill import load_skill
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    companion_dir = tmp_path / "k8s-debug"
+    (companion_dir / "evals").mkdir(parents=True)
+
+    def write_companion(body: str) -> None:
+        (companion_dir / "SKILL.md").write_text(
+            f"---\nname: k8s-debug\ndescription: Debugs pods.\n---\n{body}\n", encoding="utf-8"
+        )
+
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    write_companion("inspect pods")
+    companions = (load_skill(companion_dir),)
+    first = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, companions_for=lambda _s: companions
+    )
+    assert first.summary.matrix.runs_cached == 0
+    same = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, companions_for=lambda _s: companions
+    )
+    assert same.summary.matrix.runs_cached == 20
+
+    write_companion("inspect pods, then restart them")
+    changed = (load_skill(companion_dir),)
+    edited = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, companions_for=lambda _s: changed
+    )
+    assert edited.summary.matrix.runs_cached == 0
+
+
+def test_a_changed_model_id_or_no_cache_misses(package: SkillPackage, tmp_path: Path) -> None:
+    from bellwether.cli.run_cache import RunCache
+    from bellwether.config.models.provider import ProviderConfig as _Provider
+
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    def evaluate(eval_id: str, config: Config, use_cache: bool = True):  # type: ignore[no-untyped-def]
+        return run_evaluation(
+            config=config,
+            policy=_policy(),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id=eval_id,
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            run_cache=cache if use_cache else None,
+        )
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    evaluate("fill", _config())
+    assert holder["exec"].calls == 20
+
+    other_model = Config(
+        **_API,
+        kind="Config",
+        providers={
+            "anthropic": _Provider(
+                type="anthropic", api_key_env=_KEY_ENV, models={"frontier": "a-newer-model-id"}
+            )
+        },
+        sandbox=SandboxConfig(image="img@sha256:" + "d" * 64),
+    )
+    changed = evaluate("changed-model", other_model)
+    assert holder["exec"].calls == 20  # a changed model id never hits (§19.2)
+    assert changed.summary.matrix.runs_cached == 0
+
+    bypassed = evaluate("bypassed", _config(), use_cache=False)
+    assert holder["exec"].calls == 20
+    assert bypassed.summary.matrix.runs_cached == 0
+
+
+# ---------------------------------------------------------------------------
+# §20 / §9.3: --deterministic-sampling
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_sampling_is_marked_on_the_summary_and_the_verdict(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result = _evaluate_with(package, tmp_path, config=_config(), deterministic_sampling=True)
+    assert result.summary.matrix.deterministic_sampling is True
+    assert any("deterministic sampling" in note for note in result.verdict.notes)
+    plain = _evaluate_with(package, tmp_path / "plain", config=_config())
+    assert plain.summary.matrix.deterministic_sampling is False
+    assert not any("deterministic sampling" in note for note in plain.verdict.notes)
+
+
+def test_run_refuses_deterministic_sampling_on_a_claude_code_target() -> None:
+    """§20 × §16.4: the CLI exposes no temperature/seed control, so a pinned-sampling run on
+    that harness would be mislabelled as the realistic condition — refused before any container."""
+    from bellwether.cli.orchestrator import TargetInfo
+    from bellwether.cli.preflight import preflight_failures
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("api-loop", "anthropic", "frontier")],
+        deterministic_sampling=True,
+    )
+    assert not any(f.gate == "deterministic_sampling" for f in failures)
+
+    failures = preflight_failures(
+        _config(),
+        _policy().profile("low"),
+        [TargetInfo("claude-code", "anthropic", "frontier")],
+        deterministic_sampling=True,
+    )
+    pinned = [f for f in failures if f.gate == "deterministic_sampling"]
+    assert pinned and "api-loop" in pinned[0].remedy
+
+
+# ---------------------------------------------------------------------------
+# §19.1: the pre-flight estimate
+# ---------------------------------------------------------------------------
+
+
+def test_the_estimate_is_offered_before_anything_runs_and_a_decline_refuses(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    from bellwether.cli.estimate import RunEstimate
+
+    seen: list[RunEstimate] = []
+    holder: dict[str, _ScriptedExecutor] = {}
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        holder["exec"] = _ScriptedExecutor(pkg, tmp_path, client_factory)
+        return holder["exec"]
+
+    def evaluate(accept: bool):  # type: ignore[no-untyped-def]
+        def gate(estimate: RunEstimate) -> bool:
+            seen.append(estimate)
+            return accept
+
+        return run_evaluation(
+            config=_config(),
+            policy=_policy(),
+            package=package,
+            fixture=tmp_path / "fixture",
+            environ=_ENVIRON,
+            make_executor=make_executor,
+            out_dir=tmp_path / "out",
+            eval_id="estimate",
+            created_at="2026-08-05T12:00:00Z",
+            bellwether_version="0.1.0",
+            max_tokens_per_run=50_000,
+            on_estimate=gate,
+        )
+
+    from bellwether.cli.run import RunDeclinedError
+
+    # A decline is the operator's choice, not a failure: its own type, which the CLI maps to
+    # its own exit code rather than the infrastructure one (§19.1).
+    with pytest.raises(RunDeclinedError, match="declined at the pre-flight estimate"):
+        evaluate(accept=False)
+    assert holder["exec"].calls == 0  # nothing executed
+    estimate = seen[-1]
+    # The low profile: one scenario × one target, looks [6, 12, 20].
+    assert (estimate.best_runs, estimate.expected_runs, estimate.worst_runs) == (6, 12, 20)
+    assert estimate.max_tokens_per_run == 50_000
+    assert estimate.cost_ceiling_usd is None  # the fixture config prices nothing
+
+    evaluate(accept=True)
+    assert holder["exec"].calls == 20

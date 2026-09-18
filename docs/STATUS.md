@@ -364,7 +364,8 @@ host-side, so a companion's own scripts are absent in the container and a call i
 ordinary recorded error. The `claude-code` harness discovers skills from what is staged, and this
 build stages exactly one, so a companion scenario on a `claude-code` target is **refused by the
 §16.4 preflight** (`scenario[<id>].also_load_skills`) — plural staging is the same deferred piece
-as plugin-layout staging. The full §7.4 machinery (the `bellwether coexistence` command, the
+as plugin-layout staging *(since landed: companions are staged for `claude-code`; see the entry
+above)*. The full §7.4 machinery (the `bellwether coexistence` command, the
 trigger-collision matrix, the library baseline and its delta) is still a work package; what
 landed is the loading half every coexistence scenario needs first (spec-notes §7.4).
 
@@ -485,6 +486,81 @@ nothing and the verdict says why; the applied version is stamped on the run head
 summary. `doctor` reports absent / present-but-not-applied / applied. Processes and tools stay
 unwired: attribution by tree needs the process plane, and the shipped tools list is empty.
 
+**The run cache landed (§19.2).** `execution.cache` was configured and read nowhere. A
+`CachingExecutor` now wraps the executor (off by `--no-cache` or config): a plan whose key
+matches a live entry under `<out>/.cache/runs` is served from the stored trace, and every
+executed complete run is stored. The key is the spec's — payload digest, scenario *content*
+(not id), target, fixture digest, harness version, sandbox image, platform baseline version —
+plus the model id (the spec: never cache across a changed model id) and the **repetition index**,
+which the spec's key omits and this build adds: a set exists to observe variance, and one run
+replayed N times would agree with itself by construction. Entries expire by `cache_ttl_days`;
+infrastructure failures are never stored. A hit is re-filed under the new evaluation with
+`run_id`/`eval_id`/`scenario_id` set for it and the new header field `cached_from` naming the
+original observation, so the artifact tree stays consistent and provenance is never lost.
+`summary.matrix.runs_cached` counts the replays (schema `1.3`) and the run output says how many
+were served from cache. The harness version in the key is the package version for api-loop
+(the adapter ships with it) and the configured pin for claude-code (spec-notes §19.2).
+
+**Two review passes then closed twelve gaps before merge**, and they are worth reading as a
+group, because every one of them is the project's signature failure mode wearing a different
+hat: a number or a plane presented as observed when it was not. The first pass added the
+**pinned sampling** and the **companions' payload digests** to the key (both change what a run
+is without touching the spec's tuple); made `budget_exceeded` uncacheable; had an **unpinned
+claude-code target bypass the cache** rather than key on "unpinned" across a CLI upgrade,
+disclosed in the verdict notes; **excluded replayed runs from spend**, so `summary.cost` and the
+budget gates cover executed runs only and a cached matrix cannot fail a budget it did not spend;
+and had the estimate state its figures as upper bounds with the cache on.
+
+The second pass (`/code-review`, every finding reproduced against the code) closed six more.
+The load-bearing one: the key carried the sandbox image but **nothing about what watched the
+container from outside**, so wiring the recording proxy for the first time would have replayed
+the old networkless traces and left egress `not_evaluable` while the report implied the plane had
+been watched. `observability_key` now digests the capture settings, the egress and DNS sidecars
+and allowlists, canary planting and the sandbox's resource limits into the key. `timeout`, `oom`
+and `pids_limit` join `budget_exceeded` as never-cached, since each is decided by a bound the key
+cannot carry. The estimate's **cost ceiling now prices the token cap at each target's dearest
+rate**, so the figure the operator approves is the bound the rendered line claims; the expected
+figure's divisor excludes replayed runs. The run header records the sampling that was **applied**
+rather than requested (`applied_sampling`, asserted against the real request bodies), so an
+Anthropic run no longer claims a seed the Messages API never accepts. And a declined estimate
+exits **4** rather than the infrastructure code, so a script can tell a choice from a breakage.
+
+**`--deterministic-sampling` (§20, §9.3)** pins temperature 0 (and a seed where the provider
+takes one) through a `SamplingSpec` on the api-loop adapter that reaches every model request.
+Bellwether still records the provider's defaults unless asked. The run header records the
+pinned values and `deterministic_sampling`, the summary marks the matrix, and the verdict
+carries a note that the result understates real variance. Refused by the §16.4 preflight on
+claude-code targets, where the CLI exposes no such control — never mislabelled as the realistic
+condition. Along the way the **PR comment and HTML report now render the verdict's notes** —
+the unpriced cost gate, a missing baseline, a platform baseline not applied, pinned sampling —
+where the verdict is read, not only in `summary.json`.
+
+**The §19.1 pre-flight estimate is mandatory, with `--yes`.** Before anything is executed,
+`run_evaluation` offers the estimate — matrix size, best/expected/worst run counts from the
+schedules the sets will actually run (first look / midpoint look / `n_max`), the per-run token
+cap, and a cost range where every target is priced: the ceiling prices the token cap, the
+expected figure draws tokens per run from the skill's stored baseline where one exists, and an
+unpriced matrix gets no dollar figure rather than a guess. The judge/A-B terms are stated as
+zero and E[N] as the midpoint (no stopping history exists yet). The CLI prints it to stderr,
+asks to proceed on an interactive terminal, and proceeds without asking in CI; `--yes` skips
+the prompt, never the estimate. A decline refuses with no container started.
+
+**Companion skills are staged for the `claude-code` harness — §7.4 plural staging.** The
+preflight refusal that stood while the build staged exactly one skill is gone: for a
+`claude-code` target the executor stages every companion a scenario names beside the skill under
+test (`sandbox/staging.py:stage_companions` — the same allowlisted payload, metadata
+normalisation and §3.5 machinery check the primary gets, each under its own slug, bound
+read-only at the same install root), and the api-loop path is unchanged (companions offered
+host-side). The fact the brick rests on — that the CLI discovers *every* directory under
+`<config dir>/skills/` and names each in its init record — is observed against the real CLI in
+the offline suite (both skills reach `skill_offered`, only the skill under test activates), and
+the CI-only executor proof stages a companion through `SandboxRunExecutor` and asserts the same
+from the trace. Two skills that slug to one install directory are refused before anything is
+copied (they would shadow each other and "which activated" would be undecidable); nothing under
+a companion is hashed into the primary's digests, so the run cache and baselines still key on the
+skill under test alone. Plugin-layout staging (a bundle installed whole, `--plugin-dir`) stays
+open: it needs a CLI fact this build has not observed.
+
 ---
 
 ## Where the build is
@@ -524,7 +600,7 @@ unwired: attribution by tree needs the process plane, and the shipped tools list
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1198 tests: 1144 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1240 tests: 1186 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

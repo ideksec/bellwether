@@ -30,8 +30,18 @@ __all__ = [
     "ToolCallRequest",
     "ToolSpec",
     "TurnUsage",
+    "applied_sampling",
     "resolve_model",
 ]
+
+#: Which :class:`SamplingSpec` fields each provider type puts on the wire. The Messages API
+#: takes a temperature and no seed; the Chat Completions shape takes both. Kept here, beside
+#: the request builders that honour it, so a header can record what was *sent* rather than what
+#: was asked for — a trace claiming a seed a provider never accepted is a false observation.
+SAMPLING_FIELDS_BY_PROVIDER_TYPE: dict[str, frozenset[str]] = {
+    "anthropic": frozenset({"temperature"}),
+    "openai_compatible": frozenset({"temperature", "seed"}),
+}
 
 
 @dataclass(frozen=True)
@@ -83,6 +93,39 @@ class ModelTurn:
 
 
 @dataclass(frozen=True)
+class SamplingSpec:
+    """Sampling pinned for a low-variance comparison (§9.3, §20 ``--deterministic-sampling``).
+
+    Bellwether records the provider's own defaults rather than imposing its own; a spec is
+    set only when the operator asks, and the run header marks it so the result is never
+    mistaken for the realistic condition. ``seed`` reaches providers that accept one.
+    """
+
+    temperature: float | None = None
+    seed: int | None = None
+
+    @property
+    def is_deterministic(self) -> bool:
+        return self.temperature is not None and self.temperature == 0
+
+
+def applied_sampling(spec: SamplingSpec | None, provider_type: str | None) -> SamplingSpec:
+    """``spec`` narrowed to the fields ``provider_type`` actually sends (§9.3).
+
+    ``None`` — no pin asked for, or a harness that owns its own sampling — yields the empty
+    spec, which is how the provider's defaults are recorded. An unknown provider type keeps
+    nothing: a field that cannot be shown to have been sent is not claimed.
+    """
+    if spec is None:
+        return SamplingSpec()
+    fields = SAMPLING_FIELDS_BY_PROVIDER_TYPE.get(provider_type or "", frozenset())
+    return SamplingSpec(
+        temperature=spec.temperature if "temperature" in fields else None,
+        seed=spec.seed if "seed" in fields else None,
+    )
+
+
+@dataclass(frozen=True)
 class ModelRequest:
     """One request to the model: the loop's full conversational state."""
 
@@ -93,6 +136,8 @@ class ModelRequest:
     #: them within one package; the wire shape is the client's concern.
     messages: tuple[dict[str, Any], ...]
     tools: tuple[ToolSpec, ...] = ()
+    #: Sampling to pin, when the operator asked for it; ``None`` leaves the provider's default.
+    sampling: SamplingSpec | None = None
 
 
 class ModelClient(Protocol):

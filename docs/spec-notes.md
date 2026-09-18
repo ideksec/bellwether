@@ -1744,7 +1744,7 @@ N = 4 under a `[2, 4]` override was not a profile look and was mis-keyed as the 
 look. With no override the result is the resolved matrix exactly, so the default path and every
 committed report are byte-identical.
 
-## §7.4, §5 — `also_load_skills` loads sibling skills as offered companions; the CLI harness refuses them
+## §7.4, §5 — `also_load_skills` loads sibling skills as offered companions; the CLI harness refuses them *(refusal since lifted — see "§7.4, §9.1 — Companions are staged for the claude-code harness")*
 
 `Scenario.also_load_skills` carried companion names from WP-1 and the run path never read it, so
 every scenario ran with the primary offered alone and `other_skill_activated` had nothing to
@@ -2628,3 +2628,168 @@ The applied version is stamped on the run header (`platform_baseline_version`, a
 and on the summary, where it is the §17.5 key component. A baseline not keyed to the configured
 image absorbs nothing, and the verdict note and the `doctor` row both carry the document's own
 reason, so "not applied" never reads as "nothing infrastructural happened".
+
+## §19.2 — The run cache key adds the model id and the repetition index; a hit is re-filed with provenance
+
+§19.2's run-cache key is `(payload_digest, scenario_content_digest, target, fixture_digest,
+harness_version, sandbox_image, platform_baseline_version)`. This build's key has two more
+components. The **model id** is there because §19.2 also says "never cache across a changed
+model ID, even where the alias is unchanged" — the alias is part of `target`, the id is not, so
+the rule has to be in the key. The **repetition index** is the divergence worth a note: with the
+spec's key alone, every repetition of a set would resolve to the same entry and a cached set
+would be one run replayed N times — a set that agrees with itself by construction, which is
+the opposite of what a repetition set is for. Keying on `(…, repetition)` keeps N distinct
+observations. Three more components were added when successive reviews of the first cut asked
+what else changes what a run *is* without changing the spec's tuple: the **pinned sampling** (a
+temperature-default trace must never be replayed under `--deterministic-sampling`, where the
+summary would then claim pinned runs that were not, nor the reverse); the **companions'
+payload digests** — a companion's content reaches the run (offered on api-loop, staged on
+claude-code) while only its *name* is in the scenario's content digest; and the **observability
+fingerprint** (`observability_key`), a digest of the capture settings, the egress and DNS
+sidecars and allowlists, canary planting, and the sandbox's resource limits. The spec's key names
+the sandbox image, which fixes what is *inside* the container and says nothing about what watches
+it from outside. Wiring the recording proxy, pointing the sandbox at the controlled resolver or
+turning canaries on changes which planes the trace carries, so without this a first evaluation
+run networkless would be replayed after the proxy was wired and egress would read
+`not_evaluable` while the operator believed the plane was watched — this project's signature
+failure mode, a control path rendering a clean result without running the check.
+`harness_version` is the
+package version for api-loop (the adapter ships with it) and the configured `version_pin` for
+claude-code. **An unpinned claude-code target is not cached at all**: its real CLI version is
+only known once a container has run, and a key reading "unpinned" would serve a trace across a
+CLI upgrade. Such plans bypass the cache (never consulted, never filled) and the verdict notes
+disclose the count with the remedy — a cache entry cannot depend on something learned after the
+lookup, and it cannot pretend not to depend on it either.
+
+**A hit is re-filed, not copied.** The cached trace's header carries the original evaluation's
+`run_id`, `eval_id` and `scenario_id`; replaying it verbatim would file an artifact under the
+wrong evaluation and, after a scenario rename (which the content key deliberately survives),
+under the wrong scenario id. The replay rewrites those three identity fields for the new
+evaluation and sets the new header field `cached_from` (`<eval_id>/<run_id>` of the original)
+so the provenance is explicit rather than lost. Actions and the footer are the original's,
+byte for byte — the observation is not touched. `arf_version` is unchanged: the field is
+optional with a default, and an older reader ignores it.
+
+**What is never cached:** an incomplete trace, or one whose exit reason is `sandbox_error`,
+`harness_error` or `cancelled` — §13.2's infrastructure failures are retried, and a cached
+failure would be replayed forever — or any **operator-limit** outcome (§12.7): `budget_exceeded`,
+`timeout`, `oom` and `pids_limit`. Each of those is decided by a bound the key cannot carry (the
+token cap comes from `--max-tokens`; the suite's `defaults.timeout_seconds` sits outside
+`scenario_content_digest` and, being under `evals/`, outside `payload_digest` too), so a cached
+one would be replayed unchanged after the operator raised the very limit that produced it — the
+run would keep failing at a ceiling that no longer exists. `execution.cache_ttl_days` expires
+entries so drift is still detected. The analysis cache
+§19.2 also names is not built: canonicalisation is cheap enough that re-deriving it from a
+stored trace costs nothing worth caching.
+
+**A replayed run is not this evaluation's spend.** §16.2's `max_cost_usd` and
+`max_wall_clock_minutes` bound what an evaluation costs, and a cached run's footer records what
+the *original* evaluation spent. The spend sums (`summary.cost`, the `budget.cost` and
+`budget.wall_clock` gates) therefore cover executed runs only — a cached run contributes neither
+tokens nor wall clock, and is not counted as an unobserved run either — and the verdict carries
+a note saying how many runs were replayed, so a matrix served from cache cannot fail a budget
+it did not spend, and a reader is told why the cost figure is small. The §19.1 estimate is
+printed before any lookup, so it cannot deduct hits; with the cache on it says its figures are
+upper bounds rather than guessing a hit rate.
+
+## §9.3, §20 — `--deterministic-sampling` is a per-request pin, recorded and marked, and refused where it cannot be honoured
+
+§9.3 has Bellwether record the provider's sampling defaults rather than impose its own, and §20
+lists `--deterministic-sampling` for a low-variance comparison. The flag is a `SamplingSpec`
+on the api-loop adapter, sent on every request: `temperature` to both providers, `seed` only
+to the Chat Completions API (the Messages API takes none, so it is not sent). Without the flag
+no sampling field is on the wire at all — the realistic condition stays the default. The run
+header records the pinned values in `target.sampling` and sets `deterministic_sampling`, the
+summary marks the matrix, and the verdict carries a note, because a temperature-0 run
+understates the variance the consistency figures exist to measure. On a claude-code target the
+CLI exposes no temperature or seed control, so the §16.4 preflight refuses the flag there rather
+than record a "deterministic" run that was nothing of the kind.
+
+**The verdict's notes are rendered.** Until now `verdict.notes` (the unpriced cost gate, a
+missing baseline, a platform baseline not applied) reached only `summary.json`; a reader of the
+PR comment never saw that a control had not run. Both renderers now show them under the
+verdict header — §16.2's "a control that did nothing must read as one that did nothing" has to
+hold on the surface people actually read.
+
+## §19.1 — The pre-flight estimate prices a ceiling and a baseline-drawn expectation, and never guesses
+
+§19.1 makes the estimate mandatory and prescribes a cost formula with three multipliers and an
+`E[N]` from the repository's stopping history. This build prints the estimate before anything
+is spent and states, in the estimate itself, which parts of the formula it cannot fill. The run
+counts come from the schedules the sets will actually run: best is every set stopping at its
+first look, worst is every set at `n_max`, expected is the **midpoint look** — §19.1's default
+for a skill with no history, and this build keeps no stopping-history store, so it is always the
+midpoint and the estimate says so. The judge and A/B terms are zero because neither subsystem
+exists. The dollar figures are two: a **ceiling** — the per-repetition token cap priced as input
+tokens for every worst-case run, a bound rather than a forecast (output tokens cost more per
+token but are a small share of a run, and the cap bounds the total) — and an **expected** cost
+drawn from the skill's stored baseline's observed tokens per run where one exists. With any
+target unpriced there is no dollar figure at all, only the enforced token cap: an estimate that
+guessed a price would be the one number in the report a reader could not trust.
+
+`--yes` skips the confirmation prompt, never the estimate. The prompt is asked only on an
+interactive terminal; a CI run proceeds after printing, since there is nobody to answer — the
+mandatory part is the printing. A decline is a refusal with no container started.
+
+## §7.4, §9.1 — Companions are staged for the `claude-code` harness; the preflight refusal is lifted
+
+The entry above refused a companion scenario on a `claude-code` target because the build staged
+exactly one skill and the CLI discovers skills from what is installed. Plural staging now exists:
+`stage_companions` stages each companion the scenario names into its own directory under the run
+(`<run>/companions/<slug>`) with the same `stage_payload` the primary uses — the allowlisted payload
+only, normalised metadata, the §3.5 machinery check — and the executor binds each read-only at
+`<install root>/<slug>` beside the skill under test. Three decisions.
+
+**The fact was observed before it was relied on.** §9.1 says the harness reads
+`~/.claude/skills/`; that one directory is discovered was proven for the primary, but "every
+directory is discovered and named" is a separate CLI fact. The real-CLI offline test installs a
+companion beside the primary and asserts the CLI's init record names both (each reaches the trace
+as `skill_offered`) while only the primary activates; the CI-only executor proof stages a companion
+through `SandboxRunExecutor` and asserts the same from the trace. Discovery is thus *observed* per
+run — a companion the CLI did not list would be visible as a missing `skill_offered`, not assumed
+present.
+
+**Collisions refuse before any copy.** Two skills that slug to one directory would shadow each
+other at the install root and "which activated" would be undecidable; the whole set is checked
+first, naming both skills, so a refusal leaves no half-staged run directory.
+
+**Companions stay out of the primary's digests.** Nothing under a companion is hashed into
+`payload_digest` or `fixture_digest`, matching the api-loop entry: the run cache and baselines key
+on the skill under test, and a companion is scenario context, not payload. The §16.4 clause and
+its `companion_scenario_ids` parameter are removed rather than left inert. Plugin-layout staging
+(a bundle installed whole, the way `--plugin-dir` would) remains open — it needs a CLI fact this
+build has not observed, and the "bundle is not staged" paragraph under §5/§6/§18 still stands.
+
+## §19.1, §9.3, §20 — The estimate's ceiling bounds the spend; a header records the sampling that was sent
+
+Two corrections a review of the first cut earned, both of the same shape: a number presented as
+one thing while computed as another.
+
+**The cost ceiling is a bound, not a mix.** The first cut priced the per-repetition token cap
+entirely as *input* tokens and rendered it as `ceiling ≤ $X`. The cap bounds a run's **total**
+tokens and says nothing about their composition, so an output-heavy run could cost several times
+the figure the operator approved at §19.1's mandatory gate — the one number in the estimate a
+reader is entitled to treat as a limit. The ceiling now prices the whole cap at each target's
+dearest published rate (`_dearest_kind_cost`), which is what makes the rendered claim true; the
+caveat says plainly that this bounds the spend rather than describing the likely mix. The
+*expected* figure is unchanged in spirit and still drawn from the baseline's observed tokens per
+run, but its divisor now excludes replayed runs, because the same PR made `summary.cost` count
+executed runs only — dividing by every completed run understated tokens per run by exactly the
+cached share.
+
+**A run header records the sampling that was applied, not the sampling that was asked for.**
+`--deterministic-sampling` builds a spec carrying both a temperature and a seed, but the Messages
+API takes no seed and `anthropic_request_body` deliberately never sends one. The header stamped
+the requested pair regardless, so an Anthropic run's trace claimed a pinned seed that never left
+the host — a declaration where the project's rule is observation. `applied_sampling` lives in the
+harness layer beside the request builders and narrows a spec to the fields the provider type
+actually puts on the wire; the executor records its result, and `deterministic_sampling` is true
+only where the pin was applied. An unknown provider type claims nothing. A test asserts the
+narrowing against the real request bodies rather than against the table beside them, so the two
+cannot drift apart silently.
+
+**A declined estimate has its own exit code.** Declining raised the generic error and exited 3,
+the infrastructure code, so a script that saw only the status could not tell "the operator said
+no, nothing ran" from "the environment is broken". `RunDeclinedError` now maps to exit **4**
+(§20), leaving 3 to mean what it says.
+

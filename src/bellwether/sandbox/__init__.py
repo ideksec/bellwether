@@ -53,7 +53,7 @@ from bellwether.sandbox.session import (
     ZoneOverlay,
     prepare_sandbox,
 )
-from bellwether.sandbox.staging import StagedPayload, stage_payload
+from bellwether.sandbox.staging import StagedPayload, stage_companions, stage_payload
 from bellwether.sandbox.zones import (
     ZONE_RULES,
     Zone,
@@ -96,5 +96,6 @@ __all__ = [
     "overlay_available",
     "prepare_sandbox",
     "read_overlay_diff",
+    "stage_companions",
     "stage_payload",
 ]

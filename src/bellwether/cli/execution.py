@@ -52,7 +52,9 @@ from bellwether.harness import (
     OfferedSkill,
     RawHarnessEvent,
     RunLimits,
+    SamplingSpec,
     SandboxToolset,
+    applied_sampling,
     claude_code_environment,
     hook_settings,
 )
@@ -63,6 +65,7 @@ from bellwether.sandbox import (
     PreparedSandbox,
     ZoneMap,
     prepare_sandbox,
+    stage_companions,
 )
 from bellwether.sandbox.docker import StreamedExec
 from bellwether.skill import SkillPackage
@@ -73,6 +76,7 @@ from bellwether.trace import (
     PlantedCanary,
     RunFooter,
     RunHeader,
+    Sampling,
     SandboxRef,
     SkillRef,
     TargetRef,
@@ -185,6 +189,11 @@ def run_limits_for(
     if timeout is None:
         return base
     return replace(base, wall_seconds=float(timeout))
+
+
+def _sampling_record(spec: SamplingSpec) -> Sampling:
+    """The trace's sampling block for an already-narrowed spec (§9.3)."""
+    return Sampling(temperature=spec.temperature, seed=spec.seed)
 
 
 def _single_turn_prompt(plan: RunPlan) -> str:
@@ -366,6 +375,9 @@ class SandboxRunExecutor:
     #: §12.6: the platform baseline's version, recorded in every run header where one is
     #: applied so the trace says which infrastructure allowlist its analysis subtracted.
     platform_baseline_version: str | None = None
+    #: §20 ``--deterministic-sampling``: sampling pinned on every api-loop request and marked
+    #: on the run header; ``None`` leaves the provider's defaults (the realistic condition).
+    sampling: SamplingSpec | None = None
     proxy: SidecarProxyProvider | None = None
     resolver: DnsResolverProvider | None = None
     plant_canaries: bool = False
@@ -384,6 +396,9 @@ class SandboxRunExecutor:
     #: ``claude-code`` target whose CLI talks to the API from inside the sandbox and needs to
     #: be pointed at the same endpoint the proxy allowlists as ``model_api``.
     provider_base_urls: Mapping[str, str | None] = field(default_factory=dict)
+    #: Provider name → configured type (``anthropic`` / ``openai_compatible``). Read only to
+    #: record the sampling a provider actually sends (§9.3); unknown names claim nothing.
+    provider_types: Mapping[str, str] = field(default_factory=dict)
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
@@ -451,6 +466,22 @@ class SandboxRunExecutor:
             list(run_proxy.sandbox_ro_binds()) if run_proxy is not None else []
         )
         ro_binds += self._stage_canary_files(planting, prepared, run_dir)
+        # §7.4 on claude-code: the CLI discovers skills from what is installed, so a scenario's
+        # companions are staged beside the skill under test and bound read-only at the same
+        # install root. The api-loop harness offers them host-side instead (`offered_skills_for`).
+        # Whether the CLI actually discovered them is *observed*, not assumed: its init record
+        # names every skill it loaded, and the adapter records each as `skill_offered`.
+        if plan.target.harness == "claude-code" and plan.companions:
+            ro_binds += [
+                (staged.root, staged.install_path)
+                for staged in stage_companions(
+                    plan.companions,
+                    run_dir / "companions",
+                    primary=self.package,
+                    install_root=prepared.payload.install_path.parent,
+                    owner=prepared.isolation.owner,
+                )
+            ]
         extra_ro_binds = ro_binds or None
 
         # The harness: the api-loop reference (the model runs host-side, tools exec into the
@@ -522,6 +553,7 @@ class SandboxRunExecutor:
                     scanner if scanner is not None else client,
                     SandboxToolset(docker_exec_runner(self.backend, prepared)),
                     skills=offered_skills_for(self.package, plan),
+                    sampling=self.sampling,
                 )
             if isinstance(adapter, ClaudeCodeAdapter):
                 # The CLI is driven with a single `-p` prompt; a multi-turn scenario cannot
@@ -621,6 +653,20 @@ class SandboxRunExecutor:
                     model_alias=plan.target.model_alias,
                     model_id_requested=model_id,
                     model_id_reported=_reported_model_id(events, model_id),
+                    # §9.3: recorded, never silently set — and recorded as *applied*, not as
+                    # asked for: a provider whose API takes no seed gets none sent, so the
+                    # header must not claim one (observation beats declaration).
+                    sampling=_sampling_record(
+                        applied_sampling(
+                            self.sampling if not use_claude_code else None,
+                            self.provider_types.get(plan.target.provider),
+                        )
+                    ),
+                    # True only where the pin was actually applied, not merely requested.
+                    deterministic_sampling=applied_sampling(
+                        self.sampling if not use_claude_code else None,
+                        self.provider_types.get(plan.target.provider),
+                    ).is_deterministic,
                     harness_capabilities=(
                         adapter.capabilities_record()
                         if isinstance(adapter, ClaudeCodeAdapter)
