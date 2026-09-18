@@ -22,7 +22,7 @@ from bellwether.cli.orchestrator import RunPlan, TargetInfo, aggregate, analyse_
 from bellwether.config import template_path
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
 from bellwether.config.policy_loader import parse_policy
-from bellwether.harness import ModelTurn, ScriptedClient, ToolCallRequest, TurnUsage
+from bellwether.harness import ModelTurn, RunLimits, ScriptedClient, ToolCallRequest, TurnUsage
 from bellwether.sandbox import DockerBackend, overlay_available
 from bellwether.skill import load_skill
 
@@ -131,6 +131,7 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
 ) -> None:
     package = load_skill(skill_dir)
     target = TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
+    limits = RunLimits(max_turns=9, max_tool_calls=17, max_total_tokens=123_456)
     executor = SandboxRunExecutor(
         backend=backend,
         package=package,
@@ -138,6 +139,7 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
         client_factory=_client_factory,
         eval_id="firstlight",
         run_root=tmp_path / "runs",
+        limits=limits,
     )
     scenario = _scenario()
     profile = _firstlight_profile()
@@ -151,6 +153,19 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
         assert executed.trace.is_complete
         assert executed.trace.exit_reason == "completed"
         assert len(executed.trace.actions_of_kind("skill_activated")) == 1
+        # §9.2/§12.7: the bounds this run was given are on its header, so a limit-stopped
+        # trace says whose ceiling stopped it rather than only that it stopped. The wall
+        # clock is §7.2's, not the executor's: the scenario declares none, so the suite's
+        # own default (900s) replaces the base bound rather than the base bound standing.
+        header_limits = executed.trace.header.limits
+        assert header_limits is not None
+        assert header_limits.max_turns == 9
+        assert header_limits.max_tool_calls == 17
+        assert header_limits.max_total_tokens == 123_456
+        assert scenario.timeout_seconds is None
+        suite = package.scenarios
+        assert suite is not None and suite.defaults.timeout_seconds == 900
+        assert header_limits.wall_seconds == 900.0 != limits.wall_seconds
         fs = {
             a.action["path"]: a.action["zone"]
             for a in executed.trace.actions_on_plane("filesystem")

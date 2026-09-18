@@ -451,8 +451,9 @@ def run_evaluation(
     # §19.1: the executor's per-run wall-clock cap (the scenario's timeout, §7.2) is what
     # bounds a footerless run's duration for the budget gate; pricing resolves per target
     # alias so reported tokens become dollars only at a configured rate, never a guessed one.
+    configured_limits = run_limits_from_config(config, max_total_tokens=max_tokens_per_run)
     per_run_wall_cap_ms = max(
-        int(run_limits_for(RunLimits(), scenario, suite.defaults).wall_seconds * 1000)
+        int(run_limits_for(configured_limits, scenario, suite.defaults).wall_seconds * 1000)
         for scenario in scenarios
     )
 
@@ -583,6 +584,29 @@ def apply_matrix_options(
         checked_looks, checked_n = consistent_schedule(looks, n_max, subject="--looks/--n-max")
         return replace(resolved, looks=checked_looks, n_max=checked_n)
     return resolved
+
+
+def run_limits_from_config(config: Config, *, max_total_tokens: int | None = None) -> RunLimits:
+    """The per-run bounds this configuration allows (§9.2, §12.7).
+
+    ``execution.limits`` rather than the generic :class:`RunLimits` defaults, which were
+    previously what every run got no matter what the operator configured. ``max_total_tokens``
+    overrides the configured token cap where the caller passed ``--max-tokens``: that flag is
+    the documented per-invocation cost control, and it would be surprising for a config value
+    to win over a flag typed on the command line.
+
+    ``wall_seconds`` stays at the :class:`RunLimits` default here and is replaced per run by
+    :func:`~bellwether.cli.execution.run_limits_for` from the scenario's §7.2 timeout, which is
+    where the wall clock is specified.
+    """
+    limits = config.execution.limits
+    return RunLimits(
+        max_turns=limits.max_turns,
+        max_tool_calls=limits.max_tool_calls,
+        max_total_tokens=(
+            limits.max_total_tokens if max_total_tokens is None else max_total_tokens
+        ),
+    )
 
 
 def sandbox_executor_factory(

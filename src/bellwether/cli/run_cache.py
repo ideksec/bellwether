@@ -119,14 +119,17 @@ def observability_key(config: Config) -> str:
     at the controlled resolver, or turning canary planting on changes which planes the trace
     carries — a cached networkless run replayed afterwards would leave egress, DNS or credentials
     reading ``not_evaluable`` while the operator believed the plane was watched. The capture
-    settings and the sandbox's resource limits ride along for the same reason: they decide what
-    is recorded and when a run is killed.
+    settings, the per-run harness limits and the sandbox's resource limits ride along for the
+    same reason: they decide what is recorded and when a run is killed.
 
     Rendered as a digest of the settings themselves, so adding a field here is a key change and
     an old entry simply misses rather than being served under a new meaning.
     """
     material = {
         "capture": config.capture.model_dump(mode="json"),
+        # §9.2/§12.7: a run stopped at a turn or tool-call ceiling is a different
+        # observation from one that ran to its own end, so raising a ceiling must miss.
+        "run_limits": config.execution.limits.model_dump(mode="json"),
         "egress": config.egress.model_dump(mode="json"),
         "dns": config.dns.model_dump(mode="json"),
         "canaries": config.canaries.model_dump(mode="json"),

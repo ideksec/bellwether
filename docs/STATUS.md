@@ -561,6 +561,27 @@ a companion is hashed into the primary's digests, so the run cache and baselines
 skill under test alone. Plugin-layout staging (a bundle installed whole, `--plugin-dir`) stays
 open: it needs a CLI fact this build has not observed.
 
+**Per-run limits come from configuration, and the bounds are on the record (§9.2, §12.7).**
+`RunLimits` was a set of generic defaults — 32 turns, 128 tool calls, a million tokens — that
+every run got no matter what the operator configured, because nothing read a configured value.
+`execution.limits` now supplies all three (`run_limits_from_config`), with `--max-tokens` still
+overriding the token cap because a flag typed at the terminal should beat a config file. The
+wall clock deliberately stays out of it: §7.2 gives it to the scenario, and a second wall clock
+in config would silently override the suite author's choice.
+
+The reason this is more than plumbing is what §12.7 does with the outcomes. Hitting the turn or
+tool-call ceiling is *timeout*-shaped and **scored as a failure**, while the token cap is
+`budget_exceeded` and therefore `not_evaluable`. So a tightened turn limit quietly converts an
+operator's choice into the skill's failing score. Three things keep that legible: every run
+header now carries a `limits` block with the bounds it ran under (absent, not empty, where a
+writer recorded none — the same absent-versus-empty distinction the coverage block turns on),
+so a limit-stopped trace says whose ceiling stopped it; `doctor` states the bounds and what
+hitting each one produces before a forty-minute run rather than after; and the limits join the
+run cache's observability key, because a run stopped at a ceiling is a different observation
+from one that ran to its own end, so raising a ceiling must miss rather than replay the
+truncated trace. The tests run the real adapter into each ceiling rather than asserting the
+plumbing, and each was proven to fail with its wiring reverted.
+
 ---
 
 ## Where the build is
@@ -600,7 +621,7 @@ open: it needs a CLI fact this build has not observed.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1240 tests: 1186 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1247 tests: 1193 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -1245,9 +1266,9 @@ is the authoritative sequence, and the two agree. The live-container CLI run aga
    `no_egress` / `egress_only_to` / `no_dns_outside` assertions evaluate for real, **per-scenario
    fixtures** are expressible (`fixture: <name>` resolves per scenario and rides on each `RunPlan`),
    and the precondition check, weight validation, §21 refusal and FIFO sink are wired into
-   `doctor`/`run`. Still open here: `RunLimits` derived from the profile rather than the defaults
-   (the budget gate is now composed; what remains is deriving the per-run limits from the
-   profile rather than the defaults).
+   `doctor`/`run`. **Closed since:** the per-run limits are configuration-derived rather than
+   the generic defaults (`execution.limits` → `run_limits_from_config`), recorded on every run
+   header, and in the run-cache observability key.
 2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
    decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
    sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53

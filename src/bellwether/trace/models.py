@@ -155,6 +155,22 @@ class TargetRef(ArfModel):
     harness_capabilities: dict[str, Any] | None = None
 
 
+class LimitsRef(ArfModel):
+    """The per-run bounds in force for this run (§9.2, §12.7).
+
+    Recorded because a limit-stopped run is otherwise indistinguishable from a skill that
+    stopped on its own: §12.7 scores a turn or tool-call limit as a *timeout*, which reads
+    as the skill failing. With the bound on the header, a reader can see that the run ended
+    at an operator's ceiling and what that ceiling was.
+    """
+
+    max_turns: int | None = None
+    max_tool_calls: int | None = None
+    #: From the scenario's §7.2 ``timeout_seconds`` (else the suite default), not from config.
+    wall_seconds: float | None = None
+    max_total_tokens: int | None = None
+
+
 class SandboxRef(ArfModel):
     image: str
     isolation: str = "docker"
@@ -285,6 +301,10 @@ class RunHeader(ArfModel):
     skill: SkillRef
     target: TargetRef
     sandbox: SandboxRef
+    #: §9.2/§12.7: what this run was allowed to spend, so a limit-stopped trace is legible.
+    #: Absent where the writer recorded no bounds, which is not the same as bounds of none —
+    #: the same absent-versus-empty distinction the coverage block turns on.
+    limits: LimitsRef | None = None
     identity: IdentityBlock = Field(default_factory=IdentityBlock)
     platform_baseline_version: str | None = None
     canon: CanonBlock = Field(default_factory=CanonBlock)
