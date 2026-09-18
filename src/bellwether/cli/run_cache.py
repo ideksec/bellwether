@@ -10,6 +10,15 @@ cached run N times would produce a set that agrees with itself by construction. 
 
 ``policy_digest`` and ``canon_version`` are deliberately absent from the key: a policy or
 canonicaliser change re-derives verdicts from cached traces without re-running anything (§19.2).
+Two more things *are* in the key because they change what a run is: the **sampling** pinned on the
+request (a temperature-default trace must never stand in for a ``--deterministic-sampling`` run,
+or the reverse), and the **companion payload digests** — a companion's content reaches the run
+(offered on api-loop, staged on claude-code) while only its *name* is in the scenario's content.
+
+A plan whose harness version cannot be known before the run — a ``claude-code`` target with no
+``version_pin``, where the CLI version is observed only once it has run — is **not cached**: a
+key that read "unpinned" would serve a trace across a CLI upgrade. ``cache_version_for`` says
+which, and the executor records the bypass so the evaluation can disclose it.
 
 A hit is written into the new evaluation's run directory with the header's ``run_id``,
 ``eval_id`` and ``scenario_id`` set for this evaluation and ``cached_from`` naming the original
@@ -26,9 +35,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from bellwether.cli.orchestrator import ExecutedRun, RunExecutor, RunPlan
+from bellwether.config.models.config import HarnessConfig
 from bellwether.config.models.scenarios import Scenario
 from bellwether.determinism import canonical_json, stable_hash
 from bellwether.errors import BellwetherError, TraceError
+from bellwether.harness import SamplingSpec
 from bellwether.trace import NormalizationContext, read_trace, write_trace
 
 __all__ = [
@@ -37,14 +48,18 @@ __all__ = [
     "CachingExecutor",
     "RunCache",
     "cache_key",
+    "cache_version_for",
+    "render_sampling",
     "scenario_content_digest",
 ]
 
 #: Bumped on any change to what an entry holds or how the key is formed.
-CACHE_FORMAT = "1"
+CACHE_FORMAT = "2"
 
-#: Exit reasons that are infrastructure failures (§13.2): retried on the next run, never cached.
-_NEVER_CACHED_EXITS = frozenset({"sandbox_error", "harness_error", "cancelled"})
+#: Exit reasons never cached: infrastructure failures (§13.2) are retried on the next run, and
+#: ``budget_exceeded`` is an operator limit (§12.7) — the token cap is not in the key, so a
+#: cached one would be replayed after the operator raised the cap.
+_NEVER_CACHED_EXITS = frozenset({"sandbox_error", "harness_error", "cancelled", "budget_exceeded"})
 
 
 @dataclass(frozen=True)
@@ -63,6 +78,36 @@ class CacheKeyInputs:
     sandbox_image: str
     platform_baseline_version: str
     repetition: int
+    #: The sampling pinned on the request, rendered (``""`` for the provider's defaults).
+    sampling: str = ""
+    #: Payload digests of the scenario's §7.4 companions, in plan order.
+    companion_digests: tuple[str, ...] = ()
+
+
+def render_sampling(sampling: SamplingSpec | None) -> str:
+    """The key's rendering of a pinned sampling spec; empty for the provider's defaults."""
+    if sampling is None:
+        return ""
+    return f"temperature={sampling.temperature},seed={sampling.seed}"
+
+
+def cache_version_for(
+    harness: str, entry: HarnessConfig | None, bellwether_version: str
+) -> str | None:
+    """The harness version the key uses, or ``None`` where the plan must not be cached.
+
+    ``harness`` is the target's harness name; ``entry`` its ``harnesses.<name>`` config, where
+    one exists. The api-loop adapter ships with this package, so its version is Bellwether's
+    own whatever the config says. A ``claude-code`` harness runs the CLI the sandbox image
+    carries: pinned, the pin is the version; unpinned (or unconfigured), the version is only
+    observable after the run, and a key cannot be formed honestly before it — so such plans
+    bypass the cache rather than hit across an upgrade.
+    """
+    if harness == "api-loop":
+        return bellwether_version
+    if entry is None:
+        return None
+    return entry.version_pin
 
 
 def scenario_content_digest(scenario: Scenario) -> str:
@@ -150,17 +195,24 @@ class CachingExecutor:
 
     inner: RunExecutor
     cache: RunCache
-    inputs_for: Callable[[RunPlan], CacheKeyInputs]
+    #: The key inputs for a plan, or ``None`` where the plan must not be cached (the harness
+    #: version is unknowable before the run — see :func:`cache_version_for`).
+    inputs_for: Callable[[RunPlan], CacheKeyInputs | None]
     eval_id: str
     run_root: Path
     served_from_cache: list[str] = field(default_factory=list)
     executed: list[str] = field(default_factory=list)
+    #: Plans executed with the cache neither consulted nor filled, by coordinate.
+    bypassed: list[str] = field(default_factory=list)
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
+        coordinate = f"{plan.scenario.id}/{plan.target.slug}/{plan.repetition}"
         inputs = self.inputs_for(plan)
+        if inputs is None:
+            self.bypassed.append(coordinate)
+            return self.inner.execute(plan)
         key = cache_key(inputs)
         hit = self.cache.lookup(key)
-        coordinate = f"{plan.scenario.id}/{plan.target.slug}/{plan.repetition}"
         if hit is not None:
             replayed = self._replay(plan, hit)
             if replayed is not None:

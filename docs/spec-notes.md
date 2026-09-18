@@ -2639,10 +2639,18 @@ the rule has to be in the key. The **repetition index** is the divergence worth 
 spec's key alone, every repetition of a set would resolve to the same entry and a cached set
 would be one run replayed N times — a set that agrees with itself by construction, which is
 the opposite of what a repetition set is for. Keying on `(…, repetition)` keeps N distinct
-observations. `harness_version` is the package version for api-loop (the adapter ships with
-it) and the configured `version_pin` (or `unpinned`) for claude-code, whose real CLI version is
-only known once a container has run; a cache entry cannot depend on something learned after the
-lookup.
+observations. Two more components were added when a review of the first cut asked what else
+changes what a run *is* without changing the spec's tuple: the **pinned sampling** (a
+temperature-default trace must never be replayed under `--deterministic-sampling`, where the
+summary would then claim pinned runs that were not, nor the reverse) and the **companions'
+payload digests** — a companion's content reaches the run (offered on api-loop, staged on
+claude-code) while only its *name* is in the scenario's content digest. `harness_version` is the
+package version for api-loop (the adapter ships with it) and the configured `version_pin` for
+claude-code. **An unpinned claude-code target is not cached at all**: its real CLI version is
+only known once a container has run, and a key reading "unpinned" would serve a trace across a
+CLI upgrade. Such plans bypass the cache (never consulted, never filled) and the verdict notes
+disclose the count with the remedy — a cache entry cannot depend on something learned after the
+lookup, and it cannot pretend not to depend on it either.
 
 **A hit is re-filed, not copied.** The cached trace's header carries the original evaluation's
 `run_id`, `eval_id` and `scenario_id`; replaying it verbatim would file an artifact under the
@@ -2655,9 +2663,21 @@ optional with a default, and an older reader ignores it.
 
 **What is never cached:** an incomplete trace, or one whose exit reason is `sandbox_error`,
 `harness_error` or `cancelled` — §13.2's infrastructure failures are retried, and a cached
-failure would be replayed forever. `execution.cache_ttl_days` expires entries so drift is still
-detected. The analysis cache §19.2 also names is not built: canonicalisation is cheap enough
-that re-deriving it from a stored trace costs nothing worth caching.
+failure would be replayed forever — or `budget_exceeded`: that is an operator limit (§12.7), the
+token cap is not in the key, and a cached one would be replayed after the operator raised the
+cap. `execution.cache_ttl_days` expires entries so drift is still detected. The analysis cache
+§19.2 also names is not built: canonicalisation is cheap enough that re-deriving it from a
+stored trace costs nothing worth caching.
+
+**A replayed run is not this evaluation's spend.** §16.2's `max_cost_usd` and
+`max_wall_clock_minutes` bound what an evaluation costs, and a cached run's footer records what
+the *original* evaluation spent. The spend sums (`summary.cost`, the `budget.cost` and
+`budget.wall_clock` gates) therefore cover executed runs only — a cached run contributes neither
+tokens nor wall clock, and is not counted as an unobserved run either — and the verdict carries
+a note saying how many runs were replayed, so a matrix served from cache cannot fail a budget
+it did not spend, and a reader is told why the cost figure is small. The §19.1 estimate is
+printed before any lookup, so it cannot deduct hits; with the cache on it says its figures are
+upper bounds rather than guessing a hit rate.
 
 ## §9.3, §20 — `--deterministic-sampling` is a per-request pin, recorded and marked, and refused where it cannot be honoured
 

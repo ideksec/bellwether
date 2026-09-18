@@ -93,3 +93,24 @@ def test_one_unpriced_target_leaves_the_whole_matrix_unpriced() -> None:
     assert estimate.cost_ceiling_usd is None
     assert estimate.unpriced_targets == ("anthropic/small",)
     assert "unpriced (anthropic/small)" in render_estimate(estimate)[2]
+
+
+def test_an_enabled_cache_adds_the_upper_bound_caveat() -> None:
+    """Hits are known only per plan as the matrix runs, so the figures are stated as upper
+    bounds rather than the estimate guessing a hit rate."""
+    without = estimate_run(
+        schedules={"a": ((6, 12), 12)},
+        targets=[_FRONTIER],
+        max_tokens_per_run=1000,
+        pricing_for=lambda _t: _PRICE,
+    )
+    with_cache = estimate_run(
+        schedules={"a": ((6, 12), 12)},
+        targets=[_FRONTIER],
+        max_tokens_per_run=1000,
+        pricing_for=lambda _t: _PRICE,
+        cache_enabled=True,
+    )
+    assert not any("run-cache" in c for c in without.caveats)
+    assert any("run-cache hits are not deducted" in c for c in with_cache.caveats)
+    assert any("upper bounds" in line for line in render_estimate(with_cache))

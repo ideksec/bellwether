@@ -1313,6 +1313,73 @@ def test_a_second_evaluation_is_served_from_the_run_cache(
     assert '"eval_id":"second"' in first_line.replace(" ", "")
     # The scripted executor stamps eval_id "e" on the traces it writes; provenance names it.
     assert '"cached_from":"e/benign-stable-' in first_line.replace(" ", "")
+    # §19.2 × §16.2: a replayed run is an earlier observation, not this evaluation's spend —
+    # the cost figures and the budget gates cover executed runs only, and the verdict says so.
+    assert first.summary.cost is not None and sum(first.summary.cost.tokens.values()) > 0
+    assert second.summary.cost is not None
+    assert sum(second.summary.cost.tokens.values()) == 0
+    assert second.summary.cost.wall_clock_s == 0.0
+    assert second.summary.cost.runs_without_footer == 0
+    assert any("20 of 20 runs were served from the run cache" in n for n in second.verdict.notes)
+    assert not any("run cache" in n for n in first.verdict.notes)
+
+
+def test_pinned_sampling_never_hits_a_trace_recorded_at_provider_defaults(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """The sampling is in the key: a matrix run at the provider's defaults must not be replayed
+    under --deterministic-sampling (the summary would claim pinned runs that were not), nor the
+    reverse."""
+    from bellwether.cli.run_cache import RunCache
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    plain = _evaluate_with(package, tmp_path, config=_config(), run_cache=cache)
+    assert plain.summary.matrix.runs_cached == 0
+    pinned = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, deterministic_sampling=True
+    )
+    assert pinned.summary.matrix.runs_cached == 0
+    assert pinned.summary.matrix.deterministic_sampling is True
+    again = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, deterministic_sampling=True
+    )
+    assert again.summary.matrix.runs_cached == 20
+
+
+def test_a_changed_companion_misses_the_cache(package: SkillPackage, tmp_path: Path) -> None:
+    """A companion's content reaches the run (offered on api-loop, staged on claude-code) while
+    only its *name* is in the scenario's content digest, so its payload digest is in the key."""
+    from bellwether.cli.run_cache import RunCache
+    from bellwether.skill import load_skill
+
+    (tmp_path / "fixture").mkdir(exist_ok=True)
+    companion_dir = tmp_path / "k8s-debug"
+    (companion_dir / "evals").mkdir(parents=True)
+
+    def write_companion(body: str) -> None:
+        (companion_dir / "SKILL.md").write_text(
+            f"---\nname: k8s-debug\ndescription: Debugs pods.\n---\n{body}\n", encoding="utf-8"
+        )
+
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    write_companion("inspect pods")
+    companions = (load_skill(companion_dir),)
+    first = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, companions_for=lambda _s: companions
+    )
+    assert first.summary.matrix.runs_cached == 0
+    same = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, companions_for=lambda _s: companions
+    )
+    assert same.summary.matrix.runs_cached == 20
+
+    write_companion("inspect pods, then restart them")
+    changed = (load_skill(companion_dir),)
+    edited = _evaluate_with(
+        package, tmp_path, config=_config(), run_cache=cache, companions_for=lambda _s: changed
+    )
+    assert edited.summary.matrix.runs_cached == 0
 
 
 def test_a_changed_model_id_or_no_cache_misses(package: SkillPackage, tmp_path: Path) -> None:

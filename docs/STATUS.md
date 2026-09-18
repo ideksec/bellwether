@@ -499,7 +499,15 @@ infrastructure failures are never stored. A hit is re-filed under the new evalua
 original observation, so the artifact tree stays consistent and provenance is never lost.
 `summary.matrix.runs_cached` counts the replays (schema `1.3`) and the run output says how many
 were served from cache. The harness version in the key is the package version for api-loop
-(the adapter ships with it) and the configured pin for claude-code (spec-notes §19.2).
+(the adapter ships with it) and the configured pin for claude-code (spec-notes §19.2). A
+completeness review of the first cut then closed six gaps before merge: the key also carries the
+**pinned sampling** and the **companions' payload digests** (both change what a run is without
+touching the spec's tuple); `budget_exceeded` joins the never-cached exits (an operator limit,
+and the cap is not in the key); an **unpinned claude-code target bypasses the cache** rather
+than keying on "unpinned" across a CLI upgrade, disclosed in the verdict notes; **spend excludes
+replayed runs** — `summary.cost` and the budget gates cover executed runs only, with a note
+saying how many were replayed, so a cached matrix cannot fail a budget it did not spend; and the
+pre-flight estimate states its figures are upper bounds when the cache is on.
 
 **`--deterministic-sampling` (§20, §9.3)** pins temperature 0 (and a seed where the provider
 takes one) through a `SamplingSpec` on the api-loop adapter that reaches every model request.
@@ -576,7 +584,7 @@ open: it needs a CLI fact this build has not observed.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1222 tests: 1168 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1229 tests: 1175 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

@@ -48,6 +48,8 @@ from bellwether.cli.run_cache import (
     CacheKeyInputs,
     CachingExecutor,
     RunCache,
+    cache_version_for,
+    render_sampling,
     scenario_content_digest,
 )
 from bellwether.cli.run_plan import ResolvedRun, resolve_run
@@ -332,6 +334,7 @@ def run_evaluation(
         pricing_for=pricing_for,
         baseline=baseline,
         fixed_mode=repetitions is not None,
+        cache_enabled=run_cache is not None,
     )
     if on_estimate is not None and not on_estimate(estimate):
         raise BellwetherError(
@@ -360,20 +363,28 @@ def run_evaluation(
                 f"platform baseline {platform_baseline.version!r} not applied: {why} (§12.6); "
                 "no infrastructural access was subtracted from the capability sets"
             )
+    caching: CachingExecutor | None = None
     if run_cache is not None:
         # §19.2: the key is formed from what the run *is* — the skill's payload, the scenario's
         # content, the target and the exact model id, the fixture, the sandbox image, the platform
-        # baseline — plus the repetition index (spec-notes). The harness version is the adapter
-        # shipped with this package for api-loop and the configured pin for claude-code.
+        # baseline — plus the repetition index, the pinned sampling and the companions' payloads
+        # (spec-notes). The harness version is the adapter shipped with this package for api-loop
+        # and the configured pin for claude-code; unpinned, the plan bypasses the cache.
         harness_versions = {
-            name: (
-                __version__ if harness.type == "api-loop" else (harness.version_pin or "unpinned")
+            target.harness: cache_version_for(
+                target.harness, config.harnesses.get(target.harness), __version__
             )
-            for name, harness in config.harnesses.items()
+            for target in targets
         }
         applied_version = applied_baseline.version if applied_baseline is not None else ""
+        sampling_key = render_sampling(
+            SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None
+        )
 
-        def inputs_for(plan: RunPlan) -> CacheKeyInputs:
+        def inputs_for(plan: RunPlan) -> CacheKeyInputs | None:
+            harness_version = harness_versions.get(plan.target.harness)
+            if harness_version is None:
+                return None
             return CacheKeyInputs(
                 payload_digest=package.payload_digest,
                 scenario_id=plan.scenario.id,
@@ -383,20 +394,23 @@ def run_evaluation(
                     plan.fixture if plan.fixture is not None else fixture
                 ),
                 harness=plan.target.harness,
-                harness_version=harness_versions.get(plan.target.harness, "unknown"),
+                harness_version=harness_version,
                 model_id=model_id_by_slug[plan.target.slug],
                 sandbox_image=config.sandbox.image,
                 platform_baseline_version=applied_version,
                 repetition=plan.repetition,
+                sampling=sampling_key,
+                companion_digests=tuple(c.payload_digest for c in plan.companions),
             )
 
-        executor = CachingExecutor(
+        caching = CachingExecutor(
             executor,
             run_cache,
             inputs_for,
             eval_id=eval_id,
             run_root=out_dir / eval_id / "runs",
         )
+        executor = caching
 
     readings = drive_evaluation(
         plans,
@@ -408,6 +422,14 @@ def run_evaluation(
         looks_for=lambda scenario_id: schedule[scenario_id][0],
         platform_baseline=applied_baseline,
     )
+    if caching is not None and caching.bypassed:
+        # §19.2: disclosed, not silent — the operator turned the cache on and part of the
+        # matrix could not honestly use it.
+        baseline_notes.append(
+            f"run cache bypassed for {len(caching.bypassed)} run(s) on an unpinned claude-code "
+            "target: the CLI version is observable only after a run, so no key can be formed "
+            "before it (set harnesses.<name>.version_pin to cache these) (§19.2)"
+        )
 
     criticality = (
         package.manifest.metadata.criticality if package.manifest is not None else "medium"

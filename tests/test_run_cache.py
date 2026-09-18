@@ -13,14 +13,22 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+from bellwether.cli.orchestrator import ExecutedRun, RunPlan, TargetInfo
 from bellwether.cli.run_cache import (
     CACHE_FORMAT,
     CacheKeyInputs,
+    CachingExecutor,
     RunCache,
     cache_key,
+    cache_version_for,
+    render_sampling,
     scenario_content_digest,
 )
+from bellwether.config.models.config import HarnessConfig
 from bellwether.config.models.scenarios import Scenario
+from bellwether.harness import SamplingSpec
+from bellwether.trace import NormalizationContext, read_trace, write_trace
+from tests.factories import make_action, make_footer, make_header
 
 
 def _scenario(**overrides: object) -> Scenario:
@@ -72,8 +80,88 @@ def test_the_key_ignores_the_scenario_id_and_follows_the_spec_components() -> No
         {"platform_baseline_version": "2026.09.1"},
         {"harness_version": "0.2.0"},
         {"target_slug": "api-loop-anthropic-small"},
+        # A temperature-default trace must never stand in for a pinned-sampling run.
+        {"sampling": "temperature=0.0,seed=0"},
+        # A companion's content reaches the run; only its name is in the scenario digest.
+        {"companion_digests": ("sha256:" + "f" * 64,)},
     ):
         assert cache_key(_inputs(**change)) != base, change
+
+
+def test_sampling_renders_empty_for_provider_defaults_and_pinned_otherwise() -> None:
+    assert render_sampling(None) == ""
+    assert render_sampling(SamplingSpec(temperature=0.0, seed=0)) == "temperature=0.0,seed=0"
+    assert render_sampling(SamplingSpec(temperature=0.0)) == "temperature=0.0,seed=None"
+
+
+def test_the_harness_version_is_bellwethers_for_api_loop_and_the_pin_for_claude_code() -> None:
+    # The api-loop adapter ships with this package: its version is Bellwether's, configured or not.
+    assert cache_version_for("api-loop", None, "0.1.0") == "0.1.0"
+    assert cache_version_for("api-loop", HarnessConfig(type="api-loop"), "0.1.0") == "0.1.0"
+    pinned = HarnessConfig(type="claude-code", version_pin="2.1.257")
+    assert cache_version_for("claude-code", pinned, "0.1.0") == "2.1.257"
+    # Unpinned: the CLI version is observable only after the run, so no key can be formed.
+    assert cache_version_for("claude-code", HarnessConfig(type="claude-code"), "0.1.0") is None
+    assert cache_version_for("claude-code", None, "0.1.0") is None
+
+
+def _executed(exit_reason: str, tmp_path: Path) -> ExecutedRun:
+    path = write_trace(
+        tmp_path / f"{exit_reason}.arf.jsonl",
+        make_header(),
+        [make_action(0)],
+        make_footer(exit_reason=exit_reason),
+    )
+    return ExecutedRun(
+        trace=read_trace(path),
+        context=NormalizationContext(workspace_root="/work/ws", home="/home/agent", tmp="/tmp"),
+        trace_jsonl=path.read_text(encoding="utf-8"),
+    )
+
+
+def test_a_budget_exceeded_run_is_never_stored(tmp_path: Path) -> None:
+    """The token cap is not in the key, so a cached ``budget_exceeded`` trace would be replayed
+    after the operator raised the cap — an operator limit is never cached (§12.7, §19.2)."""
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    assert cache.store(cache_key(_inputs()), _executed("budget_exceeded", tmp_path), _inputs()) is (
+        None
+    )
+    assert cache.lookup(cache_key(_inputs())) is None
+    stored = cache.store(cache_key(_inputs()), _executed("completed", tmp_path), _inputs())
+    assert stored is not None and cache.lookup(cache_key(_inputs())) is not None
+
+
+class _CountingExecutor:
+    def __init__(self, tmp_path: Path) -> None:
+        self.calls = 0
+        self.tmp_path = tmp_path
+
+    def execute(self, plan: RunPlan) -> ExecutedRun:
+        self.calls += 1
+        return _executed("completed", self.tmp_path / str(self.calls))
+
+
+def test_an_uncacheable_plan_bypasses_the_cache_and_is_recorded(tmp_path: Path) -> None:
+    """A plan whose key cannot be formed (an unpinned claude-code harness) is executed with the
+    cache neither consulted nor filled, and the bypass is recorded for disclosure."""
+    (tmp_path / "1").mkdir()
+    (tmp_path / "2").mkdir()
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    inner = _CountingExecutor(tmp_path)
+    caching = CachingExecutor(
+        inner, cache, lambda _plan: None, eval_id="e", run_root=tmp_path / "runs"
+    )
+    plan = RunPlan(
+        scenario=_scenario(),
+        target=TargetInfo("claude-code", "anthropic", "frontier"),
+        repetition=1,
+    )
+    caching.execute(plan)
+    caching.execute(plan)
+    assert inner.calls == 2
+    assert caching.bypassed == ["s/claude-code-anthropic-frontier/1"] * 2
+    assert caching.served_from_cache == [] and caching.executed == []
+    assert not (tmp_path / "cache").exists()  # never consulted, never filled
 
 
 def test_lookup_returns_none_for_a_missing_or_malformed_entry(tmp_path: Path) -> None:

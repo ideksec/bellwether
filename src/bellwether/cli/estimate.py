@@ -61,8 +61,14 @@ def estimate_run(
     pricing_for: Callable[[TargetInfo], ModelPricing | None],
     baseline: BaselineRecord | None = None,
     fixed_mode: bool = False,
+    cache_enabled: bool = False,
 ) -> RunEstimate:
-    """Sum the per-set counts and price them where possible (§19.1)."""
+    """Sum the per-set counts and price them where possible (§19.1).
+
+    ``cache_enabled`` adds the caveat that run-cache hits are not deducted: whether a plan hits
+    is known only per plan as the matrix runs, so the figures are upper bounds on a cached
+    evaluation rather than a guess at its hit rate.
+    """
     n_targets = len(targets)
     best = sum((looks[0] if looks else n_max) for looks, n_max in schedules.values()) * n_targets
     worst = sum(n_max for _, n_max in schedules.values()) * n_targets
@@ -87,6 +93,11 @@ def estimate_run(
         "judge and A/B terms are 0: neither subsystem exists in this build",
         "E[N] is the schedule's midpoint look: this build keeps no stopping history",
     ]
+    if cache_enabled:
+        caveats.append(
+            "run-cache hits are not deducted: a repetition served from the cache (§19.2) costs "
+            "nothing, so these counts and costs are upper bounds"
+        )
     ceiling: float | None = None
     expected_cost: float | None = None
     if not unpriced:

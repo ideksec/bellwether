@@ -962,9 +962,13 @@ def aggregate(
     egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
     egress_blocked = any(run.egress_blocked for run in runs)
     # §19.1: spend is read from the footers. A footerless run is counted, not skipped, so the
-    # budget gate knows the sums are lower bounds.
+    # budget gate knows the sums are lower bounds. A run served from the run cache (§19.2) was
+    # not executed by this evaluation: its footer records what the *original* evaluation spent,
+    # so it is excluded from spend entirely — neither its tokens nor its wall clock, and not as
+    # an unobserved run either. The budget gates bound what this evaluation cost.
+    spent = [run for run in runs if not run.cached]
     tokens_total: dict[str, int] = {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0}
-    for run in runs:
+    for run in spent:
         if run.tokens is not None:
             for kind in tokens_total:
                 tokens_total[kind] += int(run.tokens.get(kind, 0))
@@ -1024,9 +1028,9 @@ def aggregate(
         n_cached=sum(1 for run in runs if run.cached),
         baseline_absorbed=tuple(sorted({path for run in runs for path in run.baseline_absorbed})),
         wall_clock_ms_observed=sum(
-            run.wall_clock_ms for run in runs if run.wall_clock_ms is not None
+            run.wall_clock_ms for run in spent if run.wall_clock_ms is not None
         ),
-        n_wall_clock_unobserved=sum(1 for run in runs if run.wall_clock_ms is None),
+        n_wall_clock_unobserved=sum(1 for run in spent if run.wall_clock_ms is None),
         tokens=tokens_total,
     )
 
@@ -1900,6 +1904,14 @@ def orchestrate(
         )
     )
     notes: list[str] = list(extra_notes)
+    runs_cached = sum(r.n_cached for r in readings)
+    if runs_cached:
+        # §19.2: a replayed run is an earlier observation, not this evaluation's spend.
+        notes.append(
+            f"{runs_cached} of {sum(r.n_completed for r in readings)} runs were served from "
+            "the run cache (§19.2): the cost and wall-clock figures and the budget gates cover "
+            "the executed runs only"
+        )
     if deterministic_sampling:
         # §9.3: a temperature-0 run understates real variance; say so where the verdict is read.
         notes.append(
