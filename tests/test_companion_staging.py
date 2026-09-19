@@ -5,6 +5,7 @@ competitor that is actually there.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -142,8 +143,6 @@ def test_a_claude_code_plan_carries_the_companions_the_executor_stages(tmp_path:
 
 
 def _plugin_with_skills(root: Path, names: tuple[str, ...]) -> Path:
-    import json
-
     bundle = root / "demo-bundle"
     bundle.mkdir(parents=True)
     (bundle / "plugin.json").write_text(

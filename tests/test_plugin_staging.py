@@ -324,9 +324,6 @@ def test_a_relative_bundle_path_with_no_declared_name_still_installs(tmp_path: P
     the bundle name *alone* refused a run that had worked the day before. The resolved
     directory name is what it points at, and that is what installs.
     """
-    import json
-    import os
-
     from bellwether.skill import load_plugin
 
     bundle = _bundle(tmp_path)

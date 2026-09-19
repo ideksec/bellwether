@@ -370,14 +370,12 @@ def test_the_probe_removes_its_client_container_even_when_the_run_times_out(monk
     started running, attached to the sandbox bridge. Without the removal, a probe that timed
     out took the bridge with it — the one thing the module says it never does.
     """
-    import subprocess as sp
-
     probe_module = importlib.import_module("bellwether.cli.interception_probe")
     order: list[str] = []
 
     class _TimesOut(probe_module.ProbeRunner):
-        def run(self, argv: list[str]) -> sp.CompletedProcess[str]:
-            raise sp.TimeoutExpired(argv, self.timeout_seconds)
+        def run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired(argv, self.timeout_seconds)
 
         def remove(self, container_name: str) -> None:
             order.append("remove")
@@ -408,7 +406,7 @@ def test_the_probe_removes_its_client_container_even_when_the_run_times_out(monk
     # teardown order, not the settings.
     monkeypatch.setattr(probe_module, "replace", lambda provider, **_kwargs: provider)
 
-    with pytest.raises(sp.TimeoutExpired):
+    with pytest.raises(subprocess.TimeoutExpired):
         probe_module.run_interception_probe(_Provider(), client_image="img", runner=_TimesOut())
 
     assert order == ["remove", "proxy-close"]
