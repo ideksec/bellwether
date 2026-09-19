@@ -489,3 +489,95 @@ def test_the_payload_mount_is_omitted_when_the_skill_is_installed_another_way(pr
     assert payload_mount not in without
     # Exactly one mount fewer; the rest of the run is unchanged.
     assert without.count("-v") == with_payload.count("-v") - 1
+
+
+# ---------------------------------------------------------------------------
+# A refusal after the standup must not cost a leaked sidecar (review round three)
+# ---------------------------------------------------------------------------
+
+
+def test_a_refusal_after_the_proxy_standup_still_tears_the_sidecars_down(tmp_path: Path) -> None:
+    """The recording proxy and the resolver are opened *before* the staging that can refuse.
+
+    Everything between that standup and the run's own try/finally was unguarded, so a bundle
+    that refused to stage, a companion slug collision or a sink that could not open its FIFO
+    left the sidecar containers running and their bridges behind. A refusal that costs the
+    operator a manual `docker network rm` is a refusal that discourages refusing — and refusing
+    is how most of this executor stays honest.
+
+    The resolver has to close first: it joined the proxy's bridge, which the proxy's close
+    removes, and a still-attached container blocks that.
+    """
+    from bellwether.cli.orchestrator import RunPlan, TargetInfo
+    from bellwether.errors import SkillError
+    from bellwether.skill import load_skill
+
+    closed: list[str] = []
+
+    class _Sidecar:
+        def container_name(self) -> str:
+            return "bw-proxy-test"
+
+    class _RunProxy:
+        sidecar = _Sidecar()
+
+        def sandbox_network(self) -> str:
+            return "bw-internal-test"
+
+        def sandbox_ro_binds(self) -> list[tuple[Path, PurePosixPath]]:
+            return []
+
+        def sandbox_env(self) -> dict[str, str]:
+            return {"HTTPS_PROXY": "http://bw-proxy-test:8080"}
+
+        def close(self) -> None:
+            closed.append("proxy")
+
+    class _RunResolver:
+        def sandbox_network(self) -> str:
+            return "bw-internal-test"
+
+        def sandbox_dns(self) -> str:
+            return "10.0.0.2"
+
+        def close(self) -> None:
+            closed.append("resolver")
+
+    class _ProxyProvider:
+        def open(self, _run_id: str, *, shared_dir: Path, canaries: object) -> _RunProxy:
+            return _RunProxy()
+
+    class _ResolverProvider:
+        def open(self, _run_id: str, **_kwargs: object) -> _RunResolver:
+            return _RunResolver()
+
+    # Two companions slugging to the same install directory: the §7.4 refusal, raised by
+    # `stage_companions` inside the newly-guarded region.
+    companions = []
+    for index in range(2):
+        root = tmp_path / f"copy-{index}" / "rival"
+        (root / "evals").mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            "---\nname: rival\ndescription: d\n---\nbody\n", encoding="utf-8"
+        )
+        companions.append(load_skill(root, load_evals=False))
+
+    executor = _executor(
+        tmp_path,
+        eval_id="leak-guard",
+        proxy=_ProxyProvider(),
+        resolver=_ResolverProvider(),
+    )
+    plan = RunPlan(
+        scenario=_scenario(),
+        target=TargetInfo("claude-code", "anthropic", "frontier"),
+        repetition=1,
+        companions=tuple(companions),
+    )
+
+    with pytest.raises(SkillError, match="cannot share an install directory"):
+        executor.execute(plan)
+
+    assert closed == ["resolver", "proxy"], (
+        "a refusal after the standup leaked a sidecar; closed: " + repr(closed)
+    )

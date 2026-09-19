@@ -2998,3 +2998,47 @@ the manifest's declared name, or the directory name where it declares none — w
 bundle rather than its root path is what travels from `_expand_skill_args` to the executor. The
 escape guard did not move: the spec's name rule admits periods, so `..` is a *well-formed* declared
 name, and where a value came from does not make it usable as a directory.
+
+### Round three — the repository's own machinery, and what a refusal costs
+
+Seven more from the next review pass, and the one that matters most is a §3.5 hole the first two
+rounds walked past. `evals/` is the *skill's* machinery. A plugin bundle that is its own checkout
+also carries the **repository's**: `.bellwether/` holds the config, the platform baseline, the
+stored baselines and the *policy* — the gates the skill is about to be judged against — and
+`.bellwether-out/` holds the traces of previous evaluations. Whole-bundle staging put both inside
+the container, which tells the skill under test not merely that it is being watched but exactly
+what would clear it. Both are excluded now, named in `refused_machinery`, and the directory name
+comes from `config.document.CONFIG_DIR` rather than being spelled again, so renaming it cannot
+leave the exclusion behind.
+
+`plugin_bundle_digest` had the same shape of gap one level down: it hashed escaping symlinks that
+the copy refuses, so re-pointing one at a different host file moved a cache key describing a bundle
+in which nothing had moved. The predicate the two share is now `staged_exclusion`, which takes the
+bundle root and can therefore answer the filesystem questions too; `bundle_exclusion` remains the
+name-only half, because a directory has to be judged before it is walked.
+
+**The install name needed a fallback, not a refusal.** Deriving the container path from
+`PluginBundle.name` alone broke `bellwether run .` on a bundle whose manifest declares no name:
+`load_plugin` falls back to the directory name, and a relative path has no last component, so the
+name is `""` and staging refused a run that had worked the day before. `_install_name` takes the
+first *usable* of the declared name and the resolved directory name, and refuses only when neither
+is. The guard also rejects `:`, which is legal in a directory name and fatal in `-v host:container:ro`
+— docker answers "invalid volume specification", an error about docker syntax for a problem about
+the operator's checkout.
+
+**A refusal must not cost a leaked sidecar.** The recording proxy and the resolver are opened
+before the staging that can refuse, and everything between that standup and the run's own
+`try`/`finally` was unguarded: a bundle that refused, a companion slug collision, a `claude-code`
+target with no proxy, a sink that could not open its FIFO — each left the sidecar containers
+running and their bridges behind. A refusal that costs the operator a manual `docker network rm` is
+a refusal that discourages refusing, and refusing is how most of the executor stays honest. The
+region is now guarded, resolver first, because it joined the proxy's bridge and a still-attached
+container blocks its removal.
+
+**Two smaller ones on the probe.** `run_interception_probe(probe_host=…)` reached the interpreter
+but not `probe_argv`, so an overridden host produced a client still asking for the default and a
+probe guaranteed to read *inconclusive* however well the CA was trusted. And the client container
+had no name and no deadline of its own: `subprocess.run` kills the `docker run` process on timeout
+and leaves the container attached to the sandbox bridge, which then refuses to be removed — the one
+thing the module's docstring says it never does. The container is named, removed before the proxy
+closes, and the Node client carries its own 20-second deadline.

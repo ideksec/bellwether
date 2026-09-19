@@ -502,79 +502,97 @@ class SandboxRunExecutor:
         else:
             network = "none"
         dns = run_resolver.sandbox_dns() if run_resolver is not None else None
-        extra_env = self._extra_env(plan, run_proxy, planting)
-        ro_binds: list[tuple[Path, PurePosixPath]] = (
-            list(run_proxy.sandbox_ro_binds()) if run_proxy is not None else []
-        )
-        ro_binds += self._stage_canary_files(planting, prepared, run_dir)
-        # §7.4 on claude-code: the CLI discovers skills from what is installed, so a scenario's
-        # companions are staged beside the skill under test and bound read-only at the same
-        # install root. The api-loop harness offers them host-side instead (`offered_skills_for`).
-        # Whether the CLI actually discovered them is *observed*, not assumed: its init record
-        # names every skill it loaded, and the adapter records each as `skill_offered`.
-        # §5/§6/§18: an Agent Plugin is installed *whole* for the CLI, in the layout a real
-        # client uses. Bare-directory staging loses everything outside a skill's own directory
-        # — shared references a skill body points at, the manifest — so a skill that reads a
-        # sibling path works in a client and fails here for a reason that is about Bellwether.
-        plugin_dirs: list[str] = []
-        companions = tuple(plan.companions)
-        if plan.target.harness == "claude-code" and self.plugin is not None:
-            staged_bundle = stage_plugin_bundle(
-                self.plugin.root,
-                run_dir / "plugin",
-                name=self.plugin.name,
-                owner=prepared.isolation.owner,
+        # Everything between the proxy/resolver standup and the run's own try/finally is
+        # guarded, because anything that raises here — a bundle that refuses to stage, a
+        # companion slug collision, a claude-code target with no proxy, a sink that cannot
+        # open its FIFO — used to leave the sidecar containers running and their bridges
+        # behind. A refusal that costs the operator a manual `docker network rm` is a refusal
+        # that discourages refusing, and refusing is how most of this file stays honest.
+        sink: HostEventSink | None = None
+        try:
+            extra_env = self._extra_env(plan, run_proxy, planting)
+            ro_binds: list[tuple[Path, PurePosixPath]] = (
+                list(run_proxy.sandbox_ro_binds()) if run_proxy is not None else []
             )
-            ro_binds.append((staged_bundle.root, staged_bundle.install_path))
-            plugin_dirs.append(str(staged_bundle.install_path))
-            # The skill under test is *inside* the bundle now. Installing the bare payload as
-            # well would offer the harness two copies of it — `demo-skill` and
-            # `demo-bundle:demo-skill` — and which one activated would be undecidable, with the
-            # bare copy lacking exactly the sibling-bundle content this staging exists to give.
-            prepared = replace(prepared, install_payload=False)
-            # Same reasoning, and it bites harder for a companion that is a sibling in this
-            # bundle — see `companions_to_stage`.
-            companions = companions_to_stage(companions, self.plugin.root)
-        if plan.target.harness == "claude-code" and companions:
-            ro_binds += [
-                (staged.root, staged.install_path)
-                for staged in stage_companions(
-                    companions,
-                    run_dir / "companions",
-                    primary=self.package,
-                    install_root=prepared.payload.install_path.parent,
+            ro_binds += self._stage_canary_files(planting, prepared, run_dir)
+            # §7.4 on claude-code: the CLI discovers skills from what is installed, so a scenario's
+            # companions are staged beside the skill under test and bound read-only at the same
+            # install root. The api-loop harness offers them host-side instead (`offered_skills_for`).
+            # Whether the CLI actually discovered them is *observed*, not assumed: its init record
+            # names every skill it loaded, and the adapter records each as `skill_offered`.
+            # §5/§6/§18: an Agent Plugin is installed *whole* for the CLI, in the layout a real
+            # client uses. Bare-directory staging loses everything outside a skill's own directory
+            # — shared references a skill body points at, the manifest — so a skill that reads a
+            # sibling path works in a client and fails here for a reason that is about Bellwether.
+            plugin_dirs: list[str] = []
+            companions = tuple(plan.companions)
+            if plan.target.harness == "claude-code" and self.plugin is not None:
+                staged_bundle = stage_plugin_bundle(
+                    self.plugin.root,
+                    run_dir / "plugin",
+                    name=self.plugin.name,
                     owner=prepared.isolation.owner,
                 )
-            ]
-        extra_ro_binds = ro_binds or None
+                ro_binds.append((staged_bundle.root, staged_bundle.install_path))
+                plugin_dirs.append(str(staged_bundle.install_path))
+                # The skill under test is *inside* the bundle now. Installing the bare payload as
+                # well would offer the harness two copies of it — `demo-skill` and
+                # `demo-bundle:demo-skill` — and which one activated would be undecidable, with the
+                # bare copy lacking exactly the sibling-bundle content this staging exists to give.
+                prepared = replace(prepared, install_payload=False)
+                # Same reasoning, and it bites harder for a companion that is a sibling in this
+                # bundle — see `companions_to_stage`.
+                companions = companions_to_stage(companions, self.plugin.root)
+            if plan.target.harness == "claude-code" and companions:
+                ro_binds += [
+                    (staged.root, staged.install_path)
+                    for staged in stage_companions(
+                        companions,
+                        run_dir / "companions",
+                        primary=self.package,
+                        install_root=prepared.payload.install_path.parent,
+                        owner=prepared.isolation.owner,
+                    )
+                ]
+            extra_ro_binds = ro_binds or None
 
-        # The harness: the api-loop reference (the model runs host-side, tools exec into the
-        # sandbox) or the real Claude Code CLI *inside* the sandbox (§9.4). The CLI's own
-        # model calls leave only through the proxy carrying the sandbox-scoped token, and its
-        # hook stream lands on the host-owned sink — both stood up here, before the container.
-        use_claude_code = plan.target.harness == "claude-code"
-        sink: HostEventSink | None = None
-        sink_bind: tuple[Path, PurePosixPath] | None = None
-        if use_claude_code:
-            if run_proxy is None:
-                raise BellwetherError(
-                    "a claude-code target needs the recording proxy: the CLI's model calls "
-                    "originate inside the sandbox and have no route out but the proxy, which "
-                    "injects the real key (§3.3 invariant 1); set egress.image in config.yaml"
+            # The harness: the api-loop reference (the model runs host-side, tools exec into the
+            # sandbox) or the real Claude Code CLI *inside* the sandbox (§9.4). The CLI's own
+            # model calls leave only through the proxy carrying the sandbox-scoped token, and its
+            # hook stream lands on the host-owned sink — both stood up here, before the container.
+            use_claude_code = plan.target.harness == "claude-code"
+            sink_bind: tuple[Path, PurePosixPath] | None = None
+            if use_claude_code:
+                if run_proxy is None:
+                    raise BellwetherError(
+                        "a claude-code target needs the recording proxy: the CLI's model calls "
+                        "originate inside the sandbox and have no route out but the proxy, which "
+                        "injects the real key (§3.3 invariant 1); set egress.image in config.yaml"
+                    )
+                sink = HostEventSink((run_dir / "events").resolve())
+                sink.start()
+                # §3.5: the sink's container path is drawn per run from the identifiers, not fixed —
+                # a constant FIFO path is a tell a skill can grep for. The bind and the hook command
+                # (below) read the same per-run path, so the hook writes exactly where it is mounted.
+                sink_bind = (sink.path, prepared.identifiers.event_sink_path)
+                extra_env.update(
+                    claude_code_environment(
+                        api_token=run_proxy.sandbox_credential(plan.target.provider),
+                        base_url=self.provider_base_urls.get(plan.target.provider),
+                        config_dir=str(prepared.zones.harness_state),
+                    )
                 )
-            sink = HostEventSink((run_dir / "events").resolve())
-            sink.start()
-            # §3.5: the sink's container path is drawn per run from the identifiers, not fixed —
-            # a constant FIFO path is a tell a skill can grep for. The bind and the hook command
-            # (below) read the same per-run path, so the hook writes exactly where it is mounted.
-            sink_bind = (sink.path, prepared.identifiers.event_sink_path)
-            extra_env.update(
-                claude_code_environment(
-                    api_token=run_proxy.sandbox_credential(plan.target.provider),
-                    base_url=self.provider_base_urls.get(plan.target.provider),
-                    config_dir=str(prepared.zones.harness_state),
-                )
-            )
+
+        except BaseException:
+            if sink is not None:
+                sink.stop()
+            # The resolver first: it may have joined the proxy's bridge, which the proxy's
+            # close then removes — a still-attached container would block it.
+            if run_resolver is not None:
+                run_resolver.close()
+            if run_proxy is not None:
+                run_proxy.close()
+            raise
 
         try:
             self.backend.mount(prepared)

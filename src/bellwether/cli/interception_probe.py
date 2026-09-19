@@ -35,9 +35,11 @@ over TLS it had to trust.
 from __future__ import annotations
 
 import subprocess
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from bellwether.capture import (
     CredentialBroker,
@@ -85,6 +87,10 @@ const net = require('net'), tls = require('tls');
 const proxy = new URL(process.env.HTTPS_PROXY || process.env.https_proxy);
 const host = process.env.BW_PROBE_HOST;
 const fail = (m) => { console.error(m); process.exit(1); };
+// Its own deadline, shorter than the runner's. A client that hangs would be killed with the
+// container still attached to the sandbox bridge, which then refuses to be removed.
+const deadline = setTimeout(() => fail('ETIMEDOUT probe client deadline'), 20000);
+deadline.unref();
 const sock = net.connect(Number(proxy.port || 80), proxy.hostname, () => {
   sock.write('CONNECT ' + host + ':443 HTTP/1.1\\r\\nHost: ' + host + ':443\\r\\n\\r\\n');
 });
@@ -159,6 +165,24 @@ class ProbeRunner:
             argv, capture_output=True, text=True, timeout=self.timeout_seconds, check=False
         )
 
+    def remove(self, container_name: str) -> None:
+        """Best-effort teardown of a client that outlived :meth:`run`.
+
+        ``subprocess.run`` kills the ``docker run`` process on timeout; the **container** it
+        started keeps going, stays attached to the sandbox bridge, and the bridge then refuses
+        to be removed — so a probe that timed out would leak exactly what the module promises
+        it never leaks. Failures here are ignored on purpose: the usual case is a container
+        that already exited, and a teardown that raised would replace the real error.
+        """
+        with suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                [self.binary, "rm", "-f", container_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+
 
 def probe_argv(
     *,
@@ -167,6 +191,8 @@ def probe_argv(
     environment: dict[str, str],
     ca_host_path: Path,
     binary: str = "docker",
+    probe_host: str = PROBE_HOST,
+    container_name: str | None = None,
 ) -> list[str]:
     """The exact command that runs the probe client, built so a human can re-run it.
 
@@ -177,9 +203,16 @@ def probe_argv(
     get rather than a chain assembled for the test.
     """
     argv = [binary, "run", "--rm", "--network", network]
+    if container_name is not None:
+        # Named so a client that outlives its runner can be found and removed. An unnamed
+        # container that survives a timeout stays attached to the sandbox bridge, and the
+        # bridge then refuses to be removed — the leak the teardown below exists to prevent.
+        argv += ["--name", container_name]
     for name in sorted(environment):
         argv += ["-e", f"{name}={environment[name]}"]
-    argv += ["-e", f"BW_PROBE_HOST={PROBE_HOST}"]
+    # The host the interpreter is told to look for, so a caller that overrides it gets a probe
+    # about that host rather than one guaranteed to read "inconclusive".
+    argv += ["-e", f"BW_PROBE_HOST={probe_host}"]
     argv += ["-v", f"{ca_host_path.resolve()}:{DEFAULT_CA_CONTAINER_PATH}:ro"]
     argv += [image, "sh", "-c", probe_client_command()]
     return argv
@@ -204,6 +237,9 @@ def run_interception_probe(
     "the proxy would not start" is not evidence about the CA.
     """
     runner = runner or ProbeRunner()
+    # Unique per probe: two doctors on one machine must not collide on the name, and a stale
+    # name from an earlier crashed probe must not block this one.
+    container_name = f"bw-interception-probe-{uuid4().hex[:12]}"
     # The probe's own proxy, carrying the one setting that makes a destination unnecessary.
     # Applied here rather than asked of the caller, so a probe cannot be stood up without it and
     # then report "inconclusive" for a reason that is really about mitmproxy's defaults.
@@ -233,10 +269,15 @@ def run_interception_probe(
                     network=proxy.sandbox_network(),
                     environment=proxy.sandbox_env(),
                     ca_host_path=proxy.ca_host_path,
+                    probe_host=probe_host,
+                    container_name=container_name,
                 )
             )
             recorded = [flow.host for flow in proxy.flows()]
         finally:
+            # Before the proxy: a client still attached to the sandbox bridge blocks its
+            # removal, so a timed-out probe would leave the bridge behind as well.
+            runner.remove(container_name)
             proxy.close()
         # Decided *inside* the temporary directory's scope. The sidecar runs as root and leaves
         # a root-owned confdir behind, so cleanup can raise for a non-root operator — and a

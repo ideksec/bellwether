@@ -210,7 +210,7 @@ def test_a_relative_bundle_path_installs_under_the_directory_it_names(tmp_path: 
 
 def test_a_bundle_with_no_usable_directory_name_is_refused(tmp_path: Path) -> None:
     """The filesystem root resolves to no name at all: there is nowhere to install it."""
-    with pytest.raises(SkillError, match="not a usable directory name"):
+    with pytest.raises(SkillError, match="usable as a directory inside the container"):
         stage_plugin_bundle(Path("/"), tmp_path / "staged")
 
 
@@ -299,17 +299,70 @@ def test_the_bundle_installs_under_its_own_name_not_the_host_directorys(tmp_path
     assert staged.install_path == PurePosixPath(INSTALL_ROOT) / "demo-bundle"
 
 
-def test_a_declared_name_that_is_not_a_directory_name_is_refused(tmp_path: Path) -> None:
+def test_a_declared_name_that_is_not_a_directory_name_never_reaches_the_container_path(
+    tmp_path: Path,
+) -> None:
     """The manifest's name reaches a container path, so it is validated there too.
 
-    The spec's name rule admits periods, so `..` is a well-formed declared name — and it would
-    put the bundle's mount one level above the plugin root. Refused by the same guard the host
-    directory name goes through, because where a value came from does not make it safe.
+    The spec's name rule admits periods, so `..` is a *well-formed* declared name — and it
+    would put the bundle's mount one level above the plugin root, over the harness-state zone.
+    Where a value came from does not make it usable as a directory name, so the declared name
+    goes through the same guard the host directory name does, and the directory name is what
+    is used when it fails.
     """
     bundle = _bundle(tmp_path)
-    for declared in ("..", ".", "", "../elsewhere"):
-        with pytest.raises(SkillError, match="not a usable directory name"):
-            stage_plugin_bundle(bundle, tmp_path / f"staged-{declared or 'empty'}", name=declared)
+    for index, declared in enumerate(("..", ".", "", "../elsewhere", "acme:tools")):
+        staged = stage_plugin_bundle(bundle, tmp_path / f"staged-{index}", name=declared)
+        assert staged.install_path == PurePosixPath(INSTALL_ROOT) / "demo-bundle"
+
+
+def test_a_relative_bundle_path_with_no_declared_name_still_installs(tmp_path: Path) -> None:
+    """The regression that made the fallback matter rather than be dead code.
+
+    `bellwether run .` on a bundle whose manifest declares no name gets `""` from
+    `load_plugin` — a relative path has no last component — so deriving the container path from
+    the bundle name *alone* refused a run that had worked the day before. The resolved
+    directory name is what it points at, and that is what installs.
+    """
+    import json
+    import os
+
+    from bellwether.skill import load_plugin
+
+    bundle = _bundle(tmp_path)
+    (bundle / "plugin.json").write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+    cwd = Path.cwd()
+    os.chdir(bundle)
+    try:
+        loaded = load_plugin(Path())
+        # `Path()` is `.`: a relative path with no last component, which is the fact that
+        # turned this into a refusal.
+        assert loaded.name == ""
+        staged = stage_plugin_bundle(loaded.root, tmp_path / "staged", name=loaded.name)
+    finally:
+        os.chdir(cwd)
+
+    assert staged.install_path == PurePosixPath(INSTALL_ROOT) / "demo-bundle"
+
+
+def test_a_directory_name_docker_cannot_mount_is_refused_before_docker_sees_it(
+    tmp_path: Path,
+) -> None:
+    """A colon is legal in a directory name and fatal in a bind mount.
+
+    The bundle is mounted with `-v <host>:<container>:ro`, so a container path carrying a colon
+    makes docker refuse the whole run with "invalid volume specification" — an error about
+    docker syntax, for a problem about the operator's directory name. Refused here, where the
+    message can say what to do about it.
+    """
+    checkout = tmp_path / "acme:tools"
+    checkout.mkdir()
+    bundle = _bundle(checkout)
+    bundle.rename(checkout / "inner")
+    (checkout / "inner").rename(tmp_path / "acme:tools-bundle")
+
+    with pytest.raises(SkillError, match="usable as a directory inside the container"):
+        stage_plugin_bundle(tmp_path / "acme:tools-bundle", tmp_path / "staged", name=None)
 
 
 def test_an_upper_cased_evals_directory_is_still_machinery(tmp_path: Path) -> None:
@@ -390,3 +443,64 @@ def test_the_digest_and_the_copy_agree_on_what_is_excluded(tmp_path: Path) -> No
         if bundle_exclusion(relative.parts) is None
     }
     assert digested == set(staged.files)
+
+
+def test_the_repositorys_own_bellwether_directories_never_reach_the_container(
+    tmp_path: Path,
+) -> None:
+    """§3.5 at its most load-bearing, and the exclusion list missed it.
+
+    `evals/` is the *skill's* machinery. A plugin bundle that is its own checkout also carries
+    the *repository's*: `.bellwether/` holds the config, the platform baseline, the stored
+    baselines and the **policy** — the gates this very skill is about to be judged against —
+    and `.bellwether-out/` holds the traces of previous evaluations. Staging the bundle whole
+    put both inside the container, which tells the skill under test not merely that it is
+    being watched but exactly what would clear it.
+    """
+    from bellwether.config.document import CONFIG_DIR
+
+    bundle = _bundle(tmp_path)
+    (bundle / CONFIG_DIR.name).mkdir()
+    (bundle / CONFIG_DIR.name / "policy.yaml").write_text("gates: {}\n", encoding="utf-8")
+    (bundle / CONFIG_DIR.name / "baselines").mkdir()
+    (bundle / CONFIG_DIR.name / "baselines" / "demo.json").write_text("{}", encoding="utf-8")
+    out = bundle / f"{CONFIG_DIR.name}-out"
+    (out / "eval-1").mkdir(parents=True)
+    (out / "eval-1" / "trace.arf.jsonl").write_text("{}\n", encoding="utf-8")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+
+    assert not any(path.startswith(CONFIG_DIR.name) for path in staged.files), staged.files
+    assert not (staged.root / CONFIG_DIR.name).exists()
+    assert not (staged.root / f"{CONFIG_DIR.name}-out").exists()
+    # Named, not silently dropped — and as machinery, which is what they are.
+    assert CONFIG_DIR.name in staged.refused_machinery
+    assert f"{CONFIG_DIR.name}-out" in staged.refused_machinery
+    # The content that *should* travel still does.
+    assert "shared/reference.md" in staged.files
+
+
+def test_the_cache_key_ignores_a_symlink_the_copy_refuses(tmp_path: Path) -> None:
+    """The digest has to describe the bundle *as installed*, symlinks included.
+
+    An escaping symlink is refused by the copy, so re-pointing one at a different host file
+    changes nothing inside the container — but it moved the cache key, which means a key that
+    claims to describe a bundle in which nothing moved.
+    """
+    from bellwether.sandbox import plugin_bundle_digest
+
+    bundle = _bundle(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a").write_text("a\n", encoding="utf-8")
+    (outside / "b").write_text("b\n", encoding="utf-8")
+    link = bundle / "escaping"
+    link.symlink_to(outside / "a")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+    assert "escaping" in staged.refused_symlinks and "escaping" not in staged.files
+
+    before = plugin_bundle_digest(bundle)
+    link.unlink()
+    link.symlink_to(outside / "b")
+    assert plugin_bundle_digest(bundle) == before

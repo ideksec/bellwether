@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 
 import pytest
 
@@ -330,3 +331,84 @@ def test_doctor_says_so_when_no_proxy_is_wired(tmp_path: Path, monkeypatch) -> N
     row = app_module._interception_probe_check(networkless)
     assert row["status"] == "warn"
     assert "egress.image is empty" in row["detail"]
+
+
+def test_an_overridden_probe_host_reaches_the_client(tmp_path: Path) -> None:
+    """`probe_host` was threaded into the *interpreter* but not into the command, so a caller
+    that overrode it got a client still asking for the default — and a probe guaranteed to
+    report "inconclusive" however well the CA was trusted."""
+    argv = probe_argv(
+        image="img",
+        network="net",
+        environment={"HTTPS_PROXY": "http://p:8080"},
+        ca_host_path=Path("/tmp/ca.pem"),
+        probe_host="somewhere-else.invalid",
+    )
+    assert "BW_PROBE_HOST=somewhere-else.invalid" in argv
+    assert f"BW_PROBE_HOST={PROBE_HOST}" not in argv
+
+
+def test_the_probe_container_is_named_so_a_timed_out_client_can_be_removed() -> None:
+    """A client that outlives its runner stays attached to the sandbox bridge, and the bridge
+    then refuses to be removed — so the module's "never leaks a bridge or a container" needs a
+    handle on the container, not just on the `docker run` process."""
+    argv = probe_argv(
+        image="img",
+        network="net",
+        environment={},
+        ca_host_path=Path("/tmp/ca.pem"),
+        container_name="bw-interception-probe-abc123",
+    )
+    assert argv[argv.index("bw-interception-probe-abc123") - 1] == "--name"
+
+
+def test_the_probe_removes_its_client_container_even_when_the_run_times_out(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Asserted through the real standup path, because the leak is in its ordering: the client
+    has to be removed *before* the proxy's bridge is, or the bridge removal is what fails.
+
+    ``subprocess.run`` kills the ``docker run`` process on timeout and leaves the container it
+    started running, attached to the sandbox bridge. Without the removal, a probe that timed
+    out took the bridge with it — the one thing the module says it never does.
+    """
+    import subprocess as sp
+
+    probe_module = importlib.import_module("bellwether.cli.interception_probe")
+    order: list[str] = []
+
+    class _TimesOut(probe_module.ProbeRunner):
+        def run(self, argv: list[str]) -> sp.CompletedProcess[str]:
+            raise sp.TimeoutExpired(argv, self.timeout_seconds)
+
+        def remove(self, container_name: str) -> None:
+            order.append("remove")
+
+    class _Proxy:
+        ca_host_path = Path("/tmp/ca.pem")
+
+        def sandbox_network(self) -> str:
+            return "bw-internal"
+
+        def sandbox_env(self) -> dict[str, str]:
+            return {}
+
+        def flows(self) -> list[object]:
+            return []
+
+        def close(self) -> None:
+            order.append("proxy-close")
+
+    class _Provider:
+        extra_settings: ClassVar[dict[str, str]] = {}
+
+        def open(self, _run_id: str, *, shared_dir: Path) -> _Proxy:
+            return _Proxy()
+
+    # The provider is a stand-in, so the dataclass rewrite the probe applies to a real
+    # `SidecarProxyProvider` has nothing to rewrite; the substitution under test is the
+    # teardown order, not the settings.
+    monkeypatch.setattr(probe_module, "replace", lambda provider, **_kwargs: provider)
+
+    with pytest.raises(sp.TimeoutExpired):
+        probe_module.run_interception_probe(_Provider(), client_image="img", runner=_TimesOut())
+
+    assert order == ["remove", "proxy-close"]

@@ -654,6 +654,22 @@ rather than the whole checkout, so a plugin developed in place stops thrashing t
 the bundle installs under `PluginBundle.name` rather than the host checkout's directory name, so
 the container path is the same on every machine (§24).
 
+A **third round** found seven more, and one of them was the §3.5 hole the first two walked past:
+`evals/` is the *skill's* machinery, but a plugin bundle that is its own checkout also carries the
+**repository's** — `.bellwether/` (config, platform baseline, stored baselines, and the *policy*:
+the gates the skill is about to be judged against) and `.bellwether-out/` (the traces of previous
+evaluations). Staging the bundle whole put both in the container, which tells the skill not merely
+that it is watched but exactly what would clear it. Both are excluded now, by name taken from
+`config.document.CONFIG_DIR` so a rename cannot leave the exclusion behind. The rest, in rough
+order of cost: a refusal raised after the proxy/resolver standup used to leak both sidecars and
+their bridges (a refusal that costs a manual `docker network rm` is a refusal that discourages
+refusing); deriving the install path from `PluginBundle.name` alone broke `bellwether run .` on a
+bundle with no declared name, so the resolved directory name is the fallback again and the guard
+also rejects `:`, which is legal in a directory name and fatal in a bind mount; the digest hashed
+escaping symlinks the copy refuses; and on the probe, `probe_host` reached the interpreter but not
+the command, and the client container had neither a name nor a deadline, so a timeout left it
+attached to the bridge it was supposed never to leak.
+
 ---
 
 ## Where the build is
@@ -693,7 +709,7 @@ the container path is the same on every machine (§24).
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1298 tests: 1240 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
+1306 tests: 1248 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

@@ -60,6 +60,7 @@ from bellwether.sandbox.staging import (
     stage_companions,
     stage_payload,
     stage_plugin_bundle,
+    staged_exclusion,
 )
 from bellwether.sandbox.zones import (
     ZONE_RULES,
@@ -108,4 +109,5 @@ __all__ = [
     "stage_companions",
     "stage_payload",
     "stage_plugin_bundle",
+    "staged_exclusion",
 ]
