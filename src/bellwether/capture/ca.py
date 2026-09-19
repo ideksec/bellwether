@@ -17,7 +17,7 @@ the *decision* it feeds — "did the probe reach the proxy?" — is here and tes
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -25,8 +25,10 @@ __all__ = [
     "CA_MECHANISMS",
     "DEFAULT_CA_CONTAINER_PATH",
     "CaMechanism",
+    "InterceptionProbe",
     "ca_trust_environment",
     "interception_confirmed",
+    "interpret_interception_probe",
     "system_store_install_commands",
 ]
 
@@ -105,3 +107,112 @@ def interception_confirmed(recorded_hosts: Iterable[str], probe_host: str) -> bo
         return host.strip().lower().rstrip(".")
 
     return _normalise(probe_host) in {_normalise(host) for host in recorded_hosts}
+
+
+#: Substrings that mean the client rejected the proxy's certificate. Matched case-insensitively
+#: against the probe client's stderr. These are the wordings OpenSSL, Python's ``ssl`` and curl
+#: produce for an untrusted issuer; the list is deliberately about *trust*, not about any TLS
+#: error, so a handshake that failed for another reason stays "inconclusive" rather than being
+#: reported as an untrusted CA.
+_CA_REJECTION_MARKERS: tuple[str, ...] = (
+    "certificate_verify_failed",
+    "certificate verify failed",
+    "unable to get local issuer certificate",
+    "self-signed certificate",
+    "self signed certificate",
+    "ssl: certificate",
+    "unable to verify the first certificate",
+    # Node's OpenSSL error codes, which arrive as the `code` rather than prose. Node is the
+    # interpreter the shipped sandbox image carries, so these are the wordings most likely to
+    # be seen in practice.
+    "self_signed_cert_in_chain",
+    "depth_zero_self_signed_cert",
+    "unable_to_verify_leaf_signature",
+    "unable_to_get_issuer_cert",
+    "cert_untrusted",
+)
+
+
+@dataclass(frozen=True)
+class InterceptionProbe:
+    """What one CA-in-the-loop probe established (§9.2, §20).
+
+    Three outcomes, kept apart on purpose. ``confirmed`` means the proxy recorded the probe
+    host, which can only happen if the client completed a TLS handshake against the proxy's
+    own certificate — the trust chain is proven, end to end. ``ca_rejected`` means the client
+    refused that certificate: the single most dangerous state in the tool, because a run in
+    this condition produces traces with **zero egress that read as a clean skill**.
+
+    Neither confirmed nor rejected is *inconclusive*: the probe never reached the proxy at all
+    (no route, the client image lacks the interpreter, the request died before TLS). That is
+    reported as its own state rather than folded into either, because "we could not tell" and
+    "the CA is not trusted" call for different actions, and neither may be read as a pass.
+    """
+
+    confirmed: bool
+    ca_rejected: bool
+    probe_host: str
+    recorded_hosts: tuple[str, ...]
+    exit_code: int
+    reason: str
+
+    @property
+    def inconclusive(self) -> bool:
+        return not self.confirmed and not self.ca_rejected
+
+
+def interpret_interception_probe(
+    probe_host: str,
+    recorded_hosts: Sequence[str],
+    *,
+    exit_code: int,
+    stderr: str = "",
+) -> InterceptionProbe:
+    """Decide what a probe run established, from the proxy's flows and the client's output.
+
+    The load-bearing asymmetry: the proxy records a flow when it **receives** the request, so a
+    recorded probe host proves the client accepted the proxy's certificate even where the
+    upstream was unreachable and the client ultimately got an error. The probe therefore needs
+    no reachable destination and no peer server — only a client that trusts the CA. A client
+    that does not trust it fails during the handshake, before any flow exists, which is exactly
+    the state this probe is for.
+    """
+    confirmed = interception_confirmed(recorded_hosts, probe_host)
+    recorded = tuple(recorded_hosts)
+    if confirmed:
+        return InterceptionProbe(
+            confirmed=True,
+            ca_rejected=False,
+            probe_host=probe_host,
+            recorded_hosts=recorded,
+            exit_code=exit_code,
+            reason=(
+                f"the proxy recorded a request to {probe_host}, so the client completed TLS "
+                "against the proxy's own certificate: the CA is trusted and egress is observed"
+            ),
+        )
+    lowered = stderr.lower()
+    if any(marker in lowered for marker in _CA_REJECTION_MARKERS):
+        return InterceptionProbe(
+            confirmed=False,
+            ca_rejected=True,
+            probe_host=probe_host,
+            recorded_hosts=recorded,
+            exit_code=exit_code,
+            reason=(
+                f"the client rejected the proxy's certificate for {probe_host}, so TLS was not "
+                "intercepted: a run in this state records no egress at all, which reads as a "
+                "skill that made no network calls (§9.2)"
+            ),
+        )
+    return InterceptionProbe(
+        confirmed=False,
+        ca_rejected=False,
+        probe_host=probe_host,
+        recorded_hosts=recorded,
+        exit_code=exit_code,
+        reason=(
+            f"the probe did not reach the proxy (client exit {exit_code}) and did not fail on "
+            "the certificate, so nothing was established either way — this is not a pass"
+        ),
+    )

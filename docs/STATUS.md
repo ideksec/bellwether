@@ -582,6 +582,116 @@ from one that ran to its own end, so raising a ceiling must miss rather than rep
 truncated trace. The tests run the real adapter into each ceiling rather than asserting the
 plumbing, and each was proven to fail with its wiring reverted.
 
+**Three bricks: the interception probe, CodeQL, and whole-bundle plugin staging.**
+
+**WP-14's live half (§9.2, §20).** Doctor reported the recording proxy as *configured* and stopped
+there, which is a different claim from the sandbox *trusting* it — and the gap between them is the
+tool's most dangerous state, because a container that rejects the CA makes no observable egress and
+the run's trace reads as a skill that never touched the network. `--probe-interception` now
+executes: the real sidecar, a client container on the run's own internal bridge carrying the §9.2
+trust environment, a genuine HTTPS request, and the proxy's own flow log as the answer. The design
+turn worth recording is that the proxy records a flow **on receipt**, before forwarding, so a
+recorded probe host establishes that the client completed the handshake against the proxy's
+certificate even when the upstream does not exist. The probe therefore needs no peer server and no
+reachable destination: it uses an unresolvable `.invalid` name, and nothing leaves the machine.
+Three outcomes are kept apart — confirmed, a rejected CA (`critical`, and doctor exits non-zero),
+and *inconclusive*, which says so rather than passing, because "we could not tell" and "the CA is
+not trusted" call for different actions. The container proof asserts the counter-case too: with the
+CA stripped from the trust environment the same request is refused and no flow is recorded, so the
+probe is one that can fail.
+
+**CodeQL.** `security-and-quality` over the Python package, on pull requests, `main`, and weekly so
+a newly published query reaches code already written. Actions SHA-pinned like everything else. A
+tool that renders security verdicts on other people's code while running no static analysis of its
+own is asking for a trust it does not extend to itself.
+
+**Plugin-layout staging (§5/§6/§18).** An Agent Plugin is now installed **whole** — staged with its
+manifest and everything outside a skill's own directory, mounted, and loaded with `--plugin-dir` —
+rather than each skill lifted out of it. Bare-directory staging meant a skill whose body points at a
+sibling path worked in a real client and failed under evaluation for a reason that was about
+Bellwether. §3.5 applies bundle-wide: no `evals/` anywhere under the bundle is copied, each one is
+named rather than silently dropped, and the outcome is asserted rather than trusted.
+
+A `/code-review` pass over the branch then found seven more, all fixed with a test each and each
+proven to fail with its fix reverted. The two that matter most were both "the check does not check
+what it says": the probe ran its client from the **sidecar** image while rendering a row about the
+sandbox trusting the CA — the one container the claim is about, and the one case it could not fail
+for — and whole-bundle staging left the bare payload mounted *as well*, so the harness held two
+copies of the skill under test and which activated was undecidable. The rest: version-control
+metadata is excluded from a staged bundle (`.git` carries the evaluation machinery even after the
+working tree's `evals/` is left behind), non-regular files are skipped rather than read (a FIFO
+would block the copy forever — reverting that fix hung the test run, which is its own proof), the
+install path is resolved before it is trusted (a lexical containment check does not catch `..`),
+the bundle digest keys the run cache, and a probe that cannot run is a doctor row rather than a
+traceback.
+
+The part of that brick worth reading is what the CLI told us. Rather than assume how a bundle is
+loaded, the real CLI 2.1.274 was run with `--plugin-dir` and its init record read: every skill under
+`skills/` is offered, and **each is reported qualified by its bundle** (`demo-bundle:demo-skill`).
+Bellwether's activation assertion compared names exactly, so whole-bundle staging would have scored
+the skill under test as never activating on every plugin run — a false negative produced entirely by
+how Bellwether staged the skill, which is the worst kind because it looks like evidence about the
+skill. `skill_name_matches` strips the bundle qualifier from the recorded side only, so a scenario
+can still name one bundle's skill exactly; the trace keeps what the harness actually said. A test
+pins the qualification against the real binary, so a future CLI that drops it fails there rather
+than leaving the matcher quietly over-matching.
+
+A **second review round** over the same branch found five more of the same shape — a path that
+renders a clean result without observing the thing it names — and each is fixed with a test
+(spec-notes §3.5/§9.2/§19.2/§24). The sharpest: the probe client was hard-coded to `python3`, and
+running the shipped `claude-code` sandbox base settled what it carries — `node` and `sh`, no
+`python3`, no `curl`, no `openssl`. The probe corrected to use the sandbox image could therefore
+only ever report *inconclusive* on the one image that matters, while its CI proof passed by
+substituting the sidecar. The client is now a `sh` dispatcher preferring Node, which is the point
+rather than a fallback: Node ignores the system trust store and reads `NODE_EXTRA_CA_CERTS`, the
+mechanism §9.2 calls not optional. It is run for real against an intercepting socket server
+offline, in both the trusted and the rejected case, and the container proof runs on the sandbox's
+own digest-pinned base as well as the sidecar. The rest: a §7.4 companion that is a sibling in the
+installed bundle is no longer staged a second time (two copies of the competitor, in exactly the
+scenarios companions exist to decide); the bundle's §3.5 exclusion and its leak assertion now fold
+case and Unicode form as the payload's always did; `plugin_digest` digests what staging copies
+rather than the whole checkout, so a plugin developed in place stops thrashing the run cache; and
+the bundle installs under `PluginBundle.name` rather than the host checkout's directory name, so
+the container path is the same on every machine (§24).
+
+A **third round** found seven more, and one of them was the §3.5 hole the first two walked past:
+`evals/` is the *skill's* machinery, but a plugin bundle that is its own checkout also carries the
+**repository's** — `.bellwether/` (config, platform baseline, stored baselines, and the *policy*:
+the gates the skill is about to be judged against) and `.bellwether-out/` (the traces of previous
+evaluations). Staging the bundle whole put both in the container, which tells the skill not merely
+that it is watched but exactly what would clear it. Both are excluded now, by name taken from
+`config.document.CONFIG_DIR` so a rename cannot leave the exclusion behind. The rest, in rough
+order of cost: a refusal raised after the proxy/resolver standup used to leak both sidecars and
+their bridges (a refusal that costs a manual `docker network rm` is a refusal that discourages
+refusing); deriving the install path from `PluginBundle.name` alone broke `bellwether run .` on a
+bundle with no declared name, so the resolved directory name is the fallback again and the guard
+also rejects `:`, which is legal in a directory name and fatal in a bind mount; the digest hashed
+escaping symlinks the copy refuses; and on the probe, `probe_host` reached the interpreter but not
+the command, and the client container had neither a name nor a deadline, so a timeout left it
+attached to the bridge it was supposed never to leak.
+
+A **fourth round** found three more, all inside round three's own code. The exclusion list added to
+close the §3.5 hole named `.bellwether-out/` — taken from the documentation — while the name `--out`
+actually defaults to is `bellwether-runs`: the fix for a check that did not check what it said
+contained one. Both names now come from `config.document`, the repeated `--out` literal is gone, and
+a test asserts every command sharing that default shares the object. The teardown guard started one
+statement too late (the resolver's own standup sat above it, the one case where a proxy is up and
+nothing else would close it) and ran its closes in sequence, so the first to raise skipped the rest;
+both were proven by reverting them. Two further findings are left for their own brick because they
+are in files this change does not touch — see the list below.
+
+A **fifth round** found nothing merge-blocking and four worth fixing, three of them in the previous
+two rounds' own code. The `--out` exclusion was keyed on the *default* directory, so `--out
+artifacts` on a self-checkout bundle still staged previous evaluations' verdicts: `staged_exclusion`
+and `plugin_bundle_digest` take `exclude_roots` now and the caller passes the artifact root it is
+actually writing to — the whole root, since the evaluations *beside* this one hold the traces. The
+run's own `finally` still tore down sequentially four lines below the region that had just been
+fixed, so a raising `stop_persistent` leaked both sidecars on the path where the run *succeeded*;
+both go through `_tear_down` now, which attempts every step and attaches what failed as a note to
+the propagating exception rather than discarding it or replacing the run's own error. And the drift
+guard written last round skipped any command that had already drifted, so it names the seven
+commands exhaustively instead of counting them.
+
 ---
 
 ## Where the build is
@@ -621,7 +731,7 @@ plumbing, and each was proven to fail with its wiring reverted.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1247 tests: 1193 offline, 54 under the `docker` mark (47 run, 7 CI-only skips). All green.
+1314 tests: 1256 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -760,10 +870,15 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    **every v0.1 work package is built**; what is left for the v0.1 line is the live proof of the
    second harness and the loose ends below.
 
-Loose ends to fold in along the way: **process and tool attribution against the platform baseline** (the path half is wired; §10.3 process trees need the process plane), WP-14's **live doctor interception probe** (small; do it with
-the DNS/canary work), and **plugin-layout staging** — installing an Agent Plugin bundle whole, in the
-layout a real client uses (`--plugin-dir`), rather than each skill as a bare directory
-(spec-notes §5/§6/§18).
+Loose ends to fold in along the way: **process and tool attribution against the platform baseline**
+(the path half is wired; §10.3 process trees need the process plane); **`also_load_skills` accepts a
+path, not a name** (`cli/companions.py` joins the entry onto the skills directory with no
+single-component check, so `../…` escapes the tree and `./<name>` slips past the self-companion
+refusal — §5 says a companion is a sibling); and **`init-manifest` declares infrastructure egress**
+(`cli/infer_manifest.py` turns every `egress:<host>` capability into a `network.egress_allow` entry
+without filtering on egress class, so the model API and the harness's own hosts land in the skill's
+declaration; the class is on the action payload, the canonical capability drops it). *(WP-14's live doctor
+interception probe and plugin-layout staging have since landed — see the entries at the top.)*
 (`openai_compatible` provider support and the per-run §3.5 **sink path** have since landed — see the
 entries at the top.)
 
@@ -1278,9 +1393,12 @@ is the authoritative sequence, and the two agree. The live-container CLI run aga
    the Anthropic client did not need is implemented (`OpenAiCompatibleClient`), with the §3.3 key
    guard extended to it via an out-of-checkout trusted-host env var. See the entry at the top.
 
-**WP-14's live half** (doctor issuing a real request and asserting `interception_confirmed`) is still
-open — the CA-in-the-loop probe. The interception test above deliberately used plain HTTP to prove
-injection/blocking without TLS; the CA trust chain gets its own live proof when doctor's probe lands.
+**WP-14's live half is closed.** `bellwether doctor --probe-interception` stands the recording
+proxy up, runs a client container on the sandbox's own internal bridge with the §9.2 trust
+environment, issues a real HTTPS request and reads the proxy's flows. The interception test above
+deliberately used plain HTTP, which covers injection and blocking but says nothing about whether
+the sandbox would accept the proxy's certificate — and a sandbox that would not produces
+zero-egress traces that read as a clean skill.
 
 ## Outstanding actions
 
@@ -1305,7 +1423,7 @@ injection/blocking without TLS; the CA trust chain gets its own live proof when 
 | Branch protection on `main` requiring `check` and `container` | **reported done; not verifiable from here** — the branches API still shows `main` as `protected: false`. That is consistent with a *ruleset* rather than classic branch protection, which the flag does not reflect. Worth confirming, because it is the control that closes the stale-check hazard below. |
 | Private vulnerability reporting enabled | open — `SECURITY.md` already points people at it |
 | Dependabot | **config committed** (`.github/dependabot.yml`, github-actions + uv, weekly) — enable it in repo settings if it is not on by default |
-| CodeQL | open — thin to be missing on a repo about supply chain |
+| CodeQL | **workflow committed** (`.github/workflows/codeql.yml`, `security-and-quality` over the Python package, on PRs, `main` and weekly, SHA-pinned) — nothing to enable for a public repo; confirm results appear under Security → Code scanning |
 
 Two stray remote branches remain, both safe to delete (a session cannot delete branches
 other than its own designated one, so this is left for a human):

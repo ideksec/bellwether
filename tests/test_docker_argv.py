@@ -470,3 +470,310 @@ def test_stage_canary_files_is_empty_when_nothing_is_planted(tmp_path: Path) -> 
         executor.package, executor.fixture, tmp_path / "prep", rng=SeededRng(1, "x")
     )
     assert executor._stage_canary_files(None, prepared, tmp_path / "run") == []
+
+
+def test_the_payload_mount_is_omitted_when_the_skill_is_installed_another_way(prepared) -> None:  # type: ignore[no-untyped-def]
+    """§5/§6/§18: a skill installed as part of an Agent Plugin bundle must not *also* be mounted
+    bare, or the harness is offered two copies of it and "which activated" is undecidable.
+    Asserted against the real argv builder — a switch the backend ignored would leave both
+    mounted while the executor believed otherwise."""
+    from dataclasses import replace
+
+    backend = DockerBackend(image="img")
+    payload_mount = f"{prepared.payload.root}:{prepared.payload.install_path}:ro"
+
+    with_payload = backend.build_argv(prepared, ["true"])
+    assert payload_mount in with_payload
+
+    without = backend.build_argv(replace(prepared, install_payload=False), ["true"])
+    assert payload_mount not in without
+    # Exactly one mount fewer; the rest of the run is unchanged.
+    assert without.count("-v") == with_payload.count("-v") - 1
+
+
+# ---------------------------------------------------------------------------
+# A refusal after the standup must not cost a leaked sidecar (review round three)
+# ---------------------------------------------------------------------------
+
+
+def test_a_refusal_after_the_proxy_standup_still_tears_the_sidecars_down(tmp_path: Path) -> None:
+    """The recording proxy and the resolver are opened *before* the staging that can refuse.
+
+    Everything between that standup and the run's own try/finally was unguarded, so a bundle
+    that refused to stage, a companion slug collision or a sink that could not open its FIFO
+    left the sidecar containers running and their bridges behind. A refusal that costs the
+    operator a manual `docker network rm` is a refusal that discourages refusing — and refusing
+    is how most of this executor stays honest.
+
+    The resolver has to close first: it joined the proxy's bridge, which the proxy's close
+    removes, and a still-attached container blocks that.
+    """
+    from bellwether.cli.orchestrator import RunPlan, TargetInfo
+    from bellwether.errors import SkillError
+    from bellwether.skill import load_skill
+
+    closed: list[str] = []
+
+    class _Sidecar:
+        def container_name(self) -> str:
+            return "bw-proxy-test"
+
+    class _RunProxy:
+        sidecar = _Sidecar()
+
+        def sandbox_network(self) -> str:
+            return "bw-internal-test"
+
+        def sandbox_ro_binds(self) -> list[tuple[Path, PurePosixPath]]:
+            return []
+
+        def sandbox_env(self) -> dict[str, str]:
+            return {"HTTPS_PROXY": "http://bw-proxy-test:8080"}
+
+        def close(self) -> None:
+            closed.append("proxy")
+
+    class _RunResolver:
+        def sandbox_network(self) -> str:
+            return "bw-internal-test"
+
+        def sandbox_dns(self) -> str:
+            return "10.0.0.2"
+
+        def close(self) -> None:
+            closed.append("resolver")
+
+    class _ProxyProvider:
+        def open(self, _run_id: str, *, shared_dir: Path, canaries: object) -> _RunProxy:
+            return _RunProxy()
+
+    class _ResolverProvider:
+        def open(self, _run_id: str, **_kwargs: object) -> _RunResolver:
+            return _RunResolver()
+
+    # Two companions slugging to the same install directory: the §7.4 refusal, raised by
+    # `stage_companions` inside the newly-guarded region.
+    companions = []
+    for index in range(2):
+        root = tmp_path / f"copy-{index}" / "rival"
+        (root / "evals").mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            "---\nname: rival\ndescription: d\n---\nbody\n", encoding="utf-8"
+        )
+        companions.append(load_skill(root, load_evals=False))
+
+    executor = _executor(
+        tmp_path,
+        eval_id="leak-guard",
+        proxy=_ProxyProvider(),
+        resolver=_ResolverProvider(),
+    )
+    plan = RunPlan(
+        scenario=_scenario(),
+        target=TargetInfo("claude-code", "anthropic", "frontier"),
+        repetition=1,
+        companions=tuple(companions),
+    )
+
+    with pytest.raises(SkillError, match="cannot share an install directory"):
+        executor.execute(plan)
+
+    assert closed == ["resolver", "proxy"], (
+        "a refusal after the standup leaked a sidecar; closed: " + repr(closed)
+    )
+
+
+def test_a_resolver_that_fails_to_come_up_does_not_leak_the_proxy(tmp_path: Path) -> None:
+    """The guard started one statement too late.
+
+    The resolver's own standup sat above it, and that is the case where a proxy is already
+    running and nothing else would ever close it: a resolver image that will not pull, a bridge
+    name already taken. The resolver is inside the guard now.
+    """
+    from bellwether.cli.orchestrator import RunPlan, TargetInfo
+    from bellwether.errors import BellwetherError
+
+    closed: list[str] = []
+
+    class _Sidecar:
+        def container_name(self) -> str:
+            return "bw-proxy-test"
+
+    class _RunProxy:
+        sidecar = _Sidecar()
+
+        def sandbox_network(self) -> str:
+            return "bw-internal-test"
+
+        def sandbox_ro_binds(self) -> list[tuple[Path, PurePosixPath]]:
+            return []
+
+        def sandbox_env(self) -> dict[str, str]:
+            return {}
+
+        def close(self) -> None:
+            closed.append("proxy")
+
+    class _ProxyProvider:
+        def open(self, _run_id: str, *, shared_dir: Path, canaries: object) -> _RunProxy:
+            return _RunProxy()
+
+    class _ResolverThatWillNotStart:
+        def open(self, _run_id: str, **_kwargs: object) -> object:
+            raise BellwetherError("the resolver image could not be pulled")
+
+    executor = _executor(
+        tmp_path,
+        eval_id="resolver-guard",
+        proxy=_ProxyProvider(),
+        resolver=_ResolverThatWillNotStart(),
+    )
+    plan = RunPlan(
+        scenario=_scenario(),
+        target=TargetInfo("api-loop", "anthropic", "frontier"),
+        repetition=1,
+    )
+
+    with pytest.raises(BellwetherError, match="resolver image could not be pulled"):
+        executor.execute(plan)
+
+    assert closed == ["proxy"], "a resolver standup failure leaked the proxy sidecar"
+
+
+def test_a_teardown_that_raises_does_not_suppress_the_others(tmp_path: Path) -> None:
+    """Run in sequence, the first close to raise skipped the rest — reinstating the leak the
+    handler exists to prevent, and replacing the original error with a teardown error, which is
+    the less useful of the two to be told about."""
+    from bellwether.cli.orchestrator import RunPlan, TargetInfo
+    from bellwether.errors import BellwetherError, SkillError
+    from bellwether.skill import load_skill
+
+    closed: list[str] = []
+
+    class _Sidecar:
+        def container_name(self) -> str:
+            return "bw-proxy-test"
+
+    class _RunProxy:
+        sidecar = _Sidecar()
+
+        def sandbox_network(self) -> str:
+            return "bw-internal-test"
+
+        def sandbox_ro_binds(self) -> list[tuple[Path, PurePosixPath]]:
+            return []
+
+        def sandbox_env(self) -> dict[str, str]:
+            return {}
+
+        def close(self) -> None:
+            closed.append("proxy")
+
+    class _RunResolver:
+        def sandbox_network(self) -> str:
+            return "bw-internal-test"
+
+        def sandbox_dns(self) -> str:
+            return "10.0.0.2"
+
+        def close(self) -> None:
+            closed.append("resolver")
+            raise BellwetherError("docker network rm: device or resource busy")
+
+    class _ProxyProvider:
+        def open(self, _run_id: str, *, shared_dir: Path, canaries: object) -> _RunProxy:
+            return _RunProxy()
+
+    class _ResolverProvider:
+        def open(self, _run_id: str, **_kwargs: object) -> _RunResolver:
+            return _RunResolver()
+
+    companions = []
+    for index in range(2):
+        root = tmp_path / f"dup-{index}" / "rival"
+        (root / "evals").mkdir(parents=True)
+        (root / "SKILL.md").write_text(
+            "---\nname: rival\ndescription: d\n---\nbody\n", encoding="utf-8"
+        )
+        companions.append(load_skill(root, load_evals=False))
+
+    executor = _executor(
+        tmp_path,
+        eval_id="teardown-isolation",
+        proxy=_ProxyProvider(),
+        resolver=_ResolverProvider(),
+    )
+    plan = RunPlan(
+        scenario=_scenario(),
+        target=TargetInfo("claude-code", "anthropic", "frontier"),
+        repetition=1,
+        companions=tuple(companions),
+    )
+
+    # The *original* refusal reaches the caller, not the teardown's own error.
+    with pytest.raises(SkillError, match="cannot share an install directory"):
+        executor.execute(plan)
+
+    assert closed == ["resolver", "proxy"], (
+        "a raising teardown suppressed the ones after it; closed: " + repr(closed)
+    )
+
+
+def test_a_raising_teardown_on_the_success_path_still_closes_the_sidecars(
+    tmp_path: Path,
+) -> None:
+    """The other half of the leak, in the same function four lines away.
+
+    The guarded region got isolated teardowns; the run's own `finally` did not, so a raising
+    `stop_persistent` or `unmount` skipped the resolver and proxy closes — on the *success*
+    path, where nothing else is ever coming back for them. Fixing one half and leaving the
+    other is worse than not knowing about either.
+    """
+    from bellwether.cli.execution import _tear_down
+    from bellwether.errors import BellwetherError
+
+    ran: list[str] = []
+
+    def _boom() -> None:
+        ran.append("container")
+        raise BellwetherError("docker rm: No such container")
+
+    # Nothing is propagating, so the teardown failure is raised on its own rather than lost.
+    with pytest.raises(BellwetherError, match="teardown did not complete"):
+        _tear_down(
+            ("the sandbox container", _boom),
+            ("the controlled resolver", lambda: ran.append("resolver")),
+            ("the recording proxy", lambda: ran.append("proxy")),
+        )
+
+    assert ran == ["container", "resolver", "proxy"]
+
+
+def test_a_teardown_failure_never_replaces_the_runs_own_error() -> None:
+    """A note on the real exception, not instead of it.
+
+    Told "docker rm: No such container" in place of the refusal that actually stopped the run,
+    an operator goes and fixes the wrong thing — the same reason the probe keeps *inconclusive*
+    apart from *rejected*.
+    """
+    from bellwether.cli.execution import _tear_down
+    from bellwether.errors import BellwetherError, SkillError
+
+    def _boom() -> None:
+        raise BellwetherError("docker network rm: resource busy")
+
+    # Written as a plain capture rather than a re-raise inside `pytest.raises`: the claim is
+    # about what `_tear_down` does to the exception being handled, and the control flow should
+    # say so without a reader (or an analyser) having to work out where the raise lands.
+    caught: SkillError | None = None
+    try:
+        raise SkillError("two skills cannot share an install directory")
+    except SkillError as error:
+        _tear_down(("the recording proxy", _boom))
+        caught = error
+
+    assert caught is not None
+    assert "share an install directory" in str(caught)
+    notes = getattr(caught, "__notes__", [])
+    assert any("resource busy" in note for note in notes), notes
+    assert any("the recording proxy" in note for note in notes), notes

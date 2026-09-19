@@ -401,7 +401,10 @@ class DockerBackend:
         argv += ["-v", f"{workspace_source}:{workspace_target}:rw"]
         # After the writable mounts, so the read-only payload sits on top of, rather than
         # underneath, a writable parent.
-        argv += ["-v", f"{prepared.payload.root}:{prepared.payload.install_path}:ro"]
+        # Skipped where the skill reaches the container inside an Agent Plugin bundle: two
+        # copies of one skill would make "which activated" undecidable (§5/§6/§18).
+        if prepared.install_payload:
+            argv += ["-v", f"{prepared.payload.root}:{prepared.payload.install_path}:ro"]
 
         # The pinned machine-id (§9.2), bound read-only over /etc/machine-id. Emitted here
         # rather than left to the caller's `extra_ro_binds` so it is applied to every path —

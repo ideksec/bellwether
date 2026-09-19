@@ -439,7 +439,8 @@ def test_expand_skill_args_passes_a_plain_skill_directory_through(tmp_path: Path
     skill = tmp_path / "a-skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: s\ndescription: d\n---\nb\n", encoding="utf-8")
-    assert _expand_skill_args([str(skill)]) == [(skill, ())]
+    # A bare directory carries no bundle root: nothing is installed whole.
+    assert _expand_skill_args([str(skill)]) == [(skill, (), None)]
 
 
 def test_expand_skill_args_expands_a_plugin_to_its_skills(tmp_path: Path) -> None:
@@ -449,8 +450,13 @@ def test_expand_skill_args_expands_a_plugin_to_its_skills(tmp_path: Path) -> Non
 
     plugin = _make_plugin(tmp_path, ("zeta", "alpha"))
     expanded = _expand_skill_args([str(plugin)])
-    assert [d.name for d, _ in expanded] == ["alpha", "zeta"]
-    assert all(notes == () for _, notes in expanded)
+    assert [d.name for d, _, _ in expanded] == ["alpha", "zeta"]
+    assert all(notes == () for _, notes, _ in expanded)
+    # The bundle travels with every expanded skill, so the executor can install the plugin
+    # whole rather than lifting each skill out of it (§5/§6/§18) — and under the bundle's own
+    # name, so the container path does not follow the host checkout's directory name (§24).
+    assert {bundle.root for _, _, bundle in expanded if bundle is not None} == {plugin}
+    assert {bundle.name for _, _, bundle in expanded if bundle is not None} == {plugin.name}
 
 
 def test_expand_skill_args_reports_mcp_servers_as_unevaluated(tmp_path: Path) -> None:
@@ -460,7 +466,7 @@ def test_expand_skill_args_reports_mcp_servers_as_unevaluated(tmp_path: Path) ->
     from bellwether.cli.app import _expand_skill_args
 
     plugin = _make_plugin(tmp_path, ("alpha",), mcp=True)
-    ((_, notes),) = _expand_skill_args([str(plugin)])
+    ((_, notes, _root),) = _expand_skill_args([str(plugin)])
     assert any("mcp.json" in note and "unobserved" in note for note in notes)
 
 
@@ -473,7 +479,7 @@ def test_expand_skill_args_prefers_the_skill_reading_of_a_hybrid(tmp_path: Path)
     hybrid.mkdir()
     (hybrid / "SKILL.md").write_text("---\nname: h\ndescription: d\n---\nb\n", encoding="utf-8")
     (hybrid / "plugin.json").write_text('{"name": "h"}', encoding="utf-8")
-    assert _expand_skill_args([str(hybrid)]) == [(hybrid, ())]
+    assert _expand_skill_args([str(hybrid)]) == [(hybrid, (), None)]
 
 
 def test_run_refuses_a_plugin_with_no_skills(tmp_path: Path) -> None:

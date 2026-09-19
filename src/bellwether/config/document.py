@@ -23,6 +23,7 @@ __all__ = [
     "CONFIG_FILE",
     "PLATFORM_BASELINE_FILE",
     "POLICY_FILE",
+    "RUN_OUTPUT_DIR",
     "load_yaml_mapping",
     "validate_document",
 ]
@@ -32,6 +33,11 @@ CONFIG_DIR = Path(".bellwether")
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 POLICY_FILE = CONFIG_DIR / "policy.yaml"
 PLATFORM_BASELINE_FILE = CONFIG_DIR / "platform-baseline.yaml"
+#: Where ``--out`` writes artifact trees by default. Named here beside the other default
+#: locations rather than repeated at each option, because it is also one of the directories
+#: that must never be staged into a container (§3.5): it holds previous evaluations' traces,
+#: summaries and verdicts. A literal repeated per command is how the exclusion missed it.
+RUN_OUTPUT_DIR = Path("bellwether-runs")
 
 
 def load_yaml_mapping(path: Path) -> dict[str, Any]:

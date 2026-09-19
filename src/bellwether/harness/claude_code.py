@@ -135,6 +135,7 @@ def claude_code_argv(
     limits: RunLimits,
     settings: Mapping[str, Any] | None = None,
     permission_mode: str = DEFAULT_PERMISSION_MODE,
+    plugin_dirs: Sequence[str] = (),
     binary: str = "claude",
 ) -> list[str]:
     """The CLI invocation for one run (the flags observed on CLI 2.1.257).
@@ -144,6 +145,11 @@ def claude_code_argv(
     otherwise carry a ``.claude/settings.json`` that reconfigures the harness under test.
     ``--settings`` carries the hook configuration inline so no extra file is mounted. The
     model is passed by the resolved id, never an alias (§9.5).
+
+    ``plugin_dirs`` installs Agent Plugin bundles whole (``--plugin-dir``, repeatable — the
+    flag observed on CLI 2.1.274). A skill loaded this way is reported **qualified by its
+    bundle** (``<plugin>:<skill>``), which is why the activation comparison strips the
+    qualifier rather than the trace hiding it.
     """
     argv = [
         binary,
@@ -161,6 +167,8 @@ def claude_code_argv(
         "--setting-sources",
         "user",
     ]
+    for plugin_dir in plugin_dirs:
+        argv += ["--plugin-dir", plugin_dir]
     if settings is not None:
         argv += ["--settings", json.dumps(settings, sort_keys=True, separators=(",", ":"))]
     return argv
@@ -323,6 +331,7 @@ class ClaudeCodeAdapter:
         hook_source: HookSource | None = None,
         settings: Mapping[str, Any] | None = None,
         permission_mode: str = DEFAULT_PERMISSION_MODE,
+        plugin_dirs: Sequence[str] = (),
         binary: str = "claude",
         clock: Callable[[], dt.datetime] | None = None,
     ) -> None:
@@ -332,6 +341,7 @@ class ClaudeCodeAdapter:
             sink is wired, in which case the plane rests on stdout alone and says so.
         settings: The ``--settings`` JSON (normally :func:`hook_settings`).
         permission_mode: The CLI permission mode; recorded on every run.
+        plugin_dirs: Agent Plugin bundles to install whole, by container path (§5/§6/§18).
         clock: Injected for deterministic tests; defaults to real UTC time. Event
             timestamps are the host's receipt time of each stdout line.
         """
@@ -339,6 +349,7 @@ class ClaudeCodeAdapter:
         self._hook_source = hook_source
         self._settings = settings
         self._permission_mode = permission_mode
+        self._plugin_dirs = tuple(plugin_dirs)
         self._binary = binary
         self._clock = clock or (lambda: dt.datetime.now(dt.UTC))
         self.session = SessionFacts()
@@ -400,6 +411,7 @@ class ClaudeCodeAdapter:
             limits=limits,
             settings=self._settings,
             permission_mode=self._permission_mode,
+            plugin_dirs=self._plugin_dirs,
             binary=self._binary,
         )
         self.last_argv = argv

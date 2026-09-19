@@ -2825,3 +2825,288 @@ rather than replaying the truncated trace. The field is optional rather than def
 writer that recorded no bounds is distinguishable from one that recorded bounds of none; that
 also keeps the committed golden trace byte-identical.
 
+## §9.2, §20 — The interception probe needs no reachable destination, and has three outcomes
+
+§9.2 asks `bellwether doctor` to establish interception by issuing a real request. The host-side
+core (the mechanism table, `interception_confirmed`) landed early; the live half did not, and
+doctor reported the proxy as *configured* in its place. Those are different claims, and the space
+between them is where the tool's worst failure lives: a container that rejects the CA produces
+traces with zero egress, which read as a skill that never touched the network.
+
+**The probe is self-contained.** The obvious design needs a reachable destination, which means
+either real internet from CI or a TLS peer container stood up beside the proxy. Neither is
+necessary, because of where the flow is recorded: `ProxyAddon.on_request` appends the flow when
+the request **arrives**, before any forwarding decision. So a recorded probe host establishes that
+the client completed a TLS handshake against the proxy's own certificate — which is the entire
+question — regardless of what happened upstream. The probe therefore targets an unresolvable name
+in the reserved `.invalid` TLD: nothing leaves the machine, no peer is needed, and a client that
+does not trust the CA fails during the handshake, before any flow exists. The probe host is
+deliberately *not* allowlisted either; a denied request is still recorded, because the block is a
+decision made after receipt.
+
+**Three outcomes, not two.** Confirmed and rejected are the obvious pair, and collapsing everything
+else into "not confirmed" would be the familiar mistake — a probe that could not run would read as
+a CA failure, and the operator would fix the wrong thing. `InterceptionProbe` carries an explicit
+*inconclusive* state for the case where nothing was established either way (no route, no
+interpreter, a request that died before TLS), and doctor renders it as a `warn` that says so.
+Only a rejection is `critical`. The rejection markers are matched on *trust* wordings
+specifically, not on TLS errors generally, for the same reason.
+
+**It probes the sandbox image, not the sidecar.** The first cut ran the client from the sidecar
+image, on the reasoning that it is the one image guaranteed to carry a Python interpreter. The
+row it rendered said the CA is trusted and egress is observed — about a container no evaluation
+ever uses. The container that has to trust the CA is the **sandbox**: that is what a run puts on
+the internal bridge, and a sandbox that rejects the certificate is the entire state the probe
+exists to rule out, so the probe could not fail for the case that matters. It now runs the client
+from ``sandbox.image``; an image with no interpreter yields *inconclusive*, which is the honest
+answer and the reason that third state exists.
+
+**Everything a probe can throw is a row, not a traceback.** A missing ``docker`` binary or a pull
+that outruns the client timeout says nothing about the CA, and must not abort ``doctor`` in place
+of the rest of its rows: ``OSError`` and ``subprocess.SubprocessError`` join ``BellwetherError``
+as "not probed" warnings.
+
+**The counter-case is asserted.** A probe that cannot fail establishes nothing, so the container
+proof also runs the identical request from a client with the CA stripped from its trust
+environment — keeping `HTTPS_PROXY`, so the failure is about trust and nothing else — and asserts
+the certificate is refused with no flow recorded. The stripping helper lives beside an offline
+guard that fails if `probe_argv` ever names trust differently, so the CI counter-case cannot
+silently become vacuous by stripping nothing.
+
+## §5, §6, §18 — A plugin is installed whole, and the CLI qualifies its skills
+
+The earlier note deferred plugin-layout staging on the grounds that it needed a client fact this
+build had not observed. This closes it by observing the fact.
+
+**What was wrong.** Staging lifted each skill out of its bundle and installed it as a bare
+directory. Everything the bundle holds *outside* a skill directory — shared references a skill body
+points at, the manifest — never reached the container, so a skill that reads a sibling path works
+in a real client and fails under evaluation for a reason that is about Bellwether rather than about
+the skill. `stage_plugin_bundle` now copies the bundle whole and the CLI loads it with
+`--plugin-dir` (the flag the real binary documents: "load a plugin from a directory"). The §3.5
+invariant is unchanged and now applies bundle-wide rather than per skill: no `evals/` anywhere is
+copied, each is named in `refused_machinery`, and the result is asserted before the bundle is
+mounted.
+
+**One bundle, one copy of the skill.** The bare payload is mounted at
+``<config dir>/skills/<slug>`` on every run, and staging the bundle *as well* left the harness
+holding two copies of the skill under test — ``demo-skill`` and ``demo-bundle:demo-skill`` — with
+which one activated undecidable. That is the same ambiguity the §16.4 preflight refuses for
+companions, reintroduced by the back door, and the worse half is that if the bare copy won the
+run would still lack the sibling-bundle content this staging exists to provide.
+``PreparedSandbox.install_payload`` now says explicitly whether the skill reaches the container
+by its own mount, and the bundle path turns it off.
+
+**What must not travel with a bundle.** The copy is a denylist where ``stage_payload`` is an
+allowlist, because arbitrary bundle content is the point — so the exclusions are named rather
+than assumed. Version-control metadata is excluded: a plugin that is its own checkout carries the
+evaluation machinery inside ``.git``, and leaving the working tree's ``evals/`` behind is no use
+when ``git show HEAD:evals/scenarios.yaml`` recovers it. Non-regular files are skipped rather than
+read: a FIFO blocks the copy until a writer appears, and the observed tree must never decide
+whether the observer finishes (§10.0). Ordinary dotfiles *are* staged — a bundle's own ``.env`` or
+``.claude`` is content a real client installs.
+
+**The install path is resolved before it is trusted.** ``stage_payload`` asserts its derived path
+cannot escape the install root; the bundle needs the same, with one subtlety that a lexical check
+misses. Taking the path's name verbatim puts ``..`` in the container path, and
+``plugins/..`` compares as *relative to* ``plugins`` while resolving to its parent — which would
+mount the bundle read-only over the harness-state zone. Resolving the bundle path first is what
+makes the guard real, and it also makes ``bellwether run ..`` install under the directory it
+actually names.
+
+**The bundle keys the run cache.** ``payload_digest`` covers the skill's own files and nothing
+else, so without a bundle digest a cached trace would be replayed after a shared file the skill
+reads changed, and a bare run and a ``--plugin-dir`` run would share a key. ``plugin_digest``
+closes both.
+
+**The observed fact, and why it mattered more than the staging.** Running the real CLI 2.1.274 with
+`--plugin-dir` and reading its init record: every skill under `skills/` is offered, and each is
+reported **qualified by its bundle** — `demo-bundle:demo-skill`, not `demo-skill`. Bellwether's
+`skill_activated` assertion compared the recorded name to the skill under test exactly. Whole-bundle
+staging would therefore have scored the skill as *never activating* on every plugin run: a false
+negative manufactured by the staging choice, presented as evidence about the skill. Had the staging
+landed on the assumption that names come through bare, the corpus would have looked fine (no plugin
+skill is in it) and the defect would have waited for a user.
+
+The fix keeps the observation and narrows the comparison, not the other way round: the trace records
+what the harness said, and `skill_name_matches` strips the bundle qualifier **from the recorded side
+only**. An expected name that carries its own qualifier is compared whole, so a scenario can still
+name exactly one bundle's skill where two bundles ship the same skill name. The qualification is
+pinned by a test against the real binary, so a future CLI that drops it fails there rather than
+leaving the matcher over-matching forever.
+
+## §26 — CodeQL on Bellwether's own source
+
+Listed for a long time as "thin to be missing on a repo about supply chain", and parked as a
+repository setting. Only the *enabling* is a setting; the workflow is code, and for a public
+repository committing it is the whole of the work. `security-and-quality` over the Python package,
+on pull requests and `main`, plus weekly — the weekly run being the part that earns the most, since
+most of what the queries will ever find here is already written. SHA-pinned like every other action,
+because `tools/pin_lint.py` is not optional for the repository that ships it.
+
+
+## §3.5, §9.2, §19.2, §24 — A second review round: what the container actually holds, and what the key actually describes
+
+Four of the findings in the review of the bricks above share a shape, and it is the shape this
+project keeps finding: **a path that renders a clean-looking result without observing the thing it
+names.**
+
+**The probe client could not run on the image it claimed to probe.** The first round fixed the
+probe to use the *sandbox* image rather than the sidecar — the container a run actually places on
+the internal bridge. The client was still hard-coded to `python3`. Running the shipped
+`claude-code` sandbox base settled it: `curl`, `wget`, `openssl`, `python3` all missing; `node` and
+`sh` present. So the corrected probe could only ever report *inconclusive* on the one image that
+matters, while its CI proof passed by substituting the sidecar. The client is now a `sh` dispatcher
+preferring `node`, and Node is not a fallback here but the point: it ignores the system trust store
+and reads `NODE_EXTRA_CA_CERTS`, which §9.2 singles out as the mechanism that is **not optional**,
+so the probe exercises the trust path most likely to be the one that silently fails. Node's core
+`https` does not honour `HTTPS_PROXY`, so the tunnel is made explicitly — `CONNECT`, then TLS over
+that socket — which is exactly the sequence being established. Node also reports OpenSSL error
+*codes* rather than the prose Python and OpenSSL produce, so `_CA_REJECTION_MARKERS` gained them;
+without that, every real Node rejection would have read as "nothing established" rather than as the
+one `critical` outcome the feature exists to report. The container proof now runs on the sandbox's
+own digest-pinned base **and** the sidecar, one per branch of the dispatcher, and the client is
+additionally run against a real intercepting socket server offline, in both the trusted and the
+rejected case — a client that cannot fail establishes nothing.
+
+**A companion inside the bundle was installed twice.** Whole-bundle staging stopped installing the
+skill under test twice; a §7.4 companion that is a *sibling in the same bundle* was still staged
+bare on top of the bundle's copy. The harness would see `k8s-debug` and `demo-bundle:k8s-debug` —
+two copies of the competitor — in precisely the scenarios companions exist to decide, where *which*
+skill activated is the whole question. `companions_to_stage` drops a companion the bundle already
+installs, comparing resolved paths so a symlinked checkout is recognised as the same files.
+
+**The §3.5 exclusion was weaker in the bundle than in the payload.** `payload._is_machinery`
+deliberately folds case and Unicode form — `EVALS/manifest.yaml` is machinery just as much as
+`evals/manifest.yaml`. The bundle walk compared the exact string, and so did the leak assertion that
+is supposed to catch exactly that. Both now go through one shared predicate,
+`staging.bundle_exclusion`, over the public `names_machinery_dir`; version-control directories are
+folded the same way, since `.Git` on a case-insensitive filesystem is still a checkout.
+
+**The cache key described a different bundle from the one staged.** `plugin_digest` was
+`fixture_digest(plugin_root)` — the whole working directory, including `.git` and every `evals/`,
+none of which staging copies. A plugin developed in its own checkout therefore changed key on every
+commit while the bytes placed in the container were identical, and the cost of that miss is paid in
+model tokens. `plugin_bundle_digest` excludes exactly what `stage_plugin_bundle` refuses, through
+the same predicate, and a test asserts the two sets are equal rather than merely similar.
+
+**The container path followed the operator's directory name.** The install directory came from
+`bundle_root.resolve().name`, so the same bundle checked out as `plugin/` on CI and `plugin-dev/` on
+a laptop installed at two different container paths: the run cache becomes machine-local (§24) and
+the host layout leaks into a sandbox the skill can read. It now comes from `PluginBundle.name` —
+the manifest's declared name, or the directory name where it declares none — which is why the
+bundle rather than its root path is what travels from `_expand_skill_args` to the executor. The
+escape guard did not move: the spec's name rule admits periods, so `..` is a *well-formed* declared
+name, and where a value came from does not make it usable as a directory.
+
+### Round three — the repository's own machinery, and what a refusal costs
+
+Seven more from the next review pass, and the one that matters most is a §3.5 hole the first two
+rounds walked past. `evals/` is the *skill's* machinery. A plugin bundle that is its own checkout
+also carries the **repository's**: `.bellwether/` holds the config, the platform baseline, the
+stored baselines and the *policy* — the gates the skill is about to be judged against — and
+`.bellwether-out/` holds the traces of previous evaluations. Whole-bundle staging put both inside
+the container, which tells the skill under test not merely that it is being watched but exactly
+what would clear it. Both are excluded now, named in `refused_machinery`, and the directory name
+comes from `config.document.CONFIG_DIR` rather than being spelled again, so renaming it cannot
+leave the exclusion behind.
+
+`plugin_bundle_digest` had the same shape of gap one level down: it hashed escaping symlinks that
+the copy refuses, so re-pointing one at a different host file moved a cache key describing a bundle
+in which nothing had moved. The predicate the two share is now `staged_exclusion`, which takes the
+bundle root and can therefore answer the filesystem questions too; `bundle_exclusion` remains the
+name-only half, because a directory has to be judged before it is walked.
+
+**The install name needed a fallback, not a refusal.** Deriving the container path from
+`PluginBundle.name` alone broke `bellwether run .` on a bundle whose manifest declares no name:
+`load_plugin` falls back to the directory name, and a relative path has no last component, so the
+name is `""` and staging refused a run that had worked the day before. `_install_name` takes the
+first *usable* of the declared name and the resolved directory name, and refuses only when neither
+is. The guard also rejects `:`, which is legal in a directory name and fatal in `-v host:container:ro`
+— docker answers "invalid volume specification", an error about docker syntax for a problem about
+the operator's checkout.
+
+**A refusal must not cost a leaked sidecar.** The recording proxy and the resolver are opened
+before the staging that can refuse, and everything between that standup and the run's own
+`try`/`finally` was unguarded: a bundle that refused, a companion slug collision, a `claude-code`
+target with no proxy, a sink that could not open its FIFO — each left the sidecar containers
+running and their bridges behind. A refusal that costs the operator a manual `docker network rm` is
+a refusal that discourages refusing, and refusing is how most of the executor stays honest. The
+region is now guarded, resolver first, because it joined the proxy's bridge and a still-attached
+container blocks its removal.
+
+**Two smaller ones on the probe.** `run_interception_probe(probe_host=…)` reached the interpreter
+but not `probe_argv`, so an overridden host produced a client still asking for the default and a
+probe guaranteed to read *inconclusive* however well the CA was trusted. And the client container
+had no name and no deadline of its own: `subprocess.run` kills the `docker run` process on timeout
+and leaves the container attached to the sandbox bridge, which then refuses to be removed — the one
+thing the module's docstring says it never does. The container is named, removed before the proxy
+closes, and the Node client carries its own 20-second deadline.
+
+### Round four — the exclusion list was guessed, and the guard started one statement late
+
+Three more, all in code the previous round introduced.
+
+**The exclusion list named a directory the code does not use.** Round three excluded
+`.bellwether/` and `.bellwether-out/` from a staged bundle. `.bellwether-out/` came from the
+documentation; the name `--out` actually defaults to is `bellwether-runs`, and that is where a
+self-checkout bundle keeps previous evaluations' traces, summaries and verdicts. So the exclusion
+read as though it covered the case and did not — the exact shape of defect the §3.5 assertion exists
+to catch, committed *inside* the fix for it. Both names now come from `config.document`
+(`CONFIG_DIR`, `RUN_OUTPUT_DIR`), the `--out` literal that was repeated at six commands is gone, and
+a test asserts every command sharing that default shares the object rather than re-spelling it.
+`.bellwether-out` stays excluded because the workflows and older checkouts use it.
+
+**The teardown guard started one statement too late and ended too trusting.** The resolver's own
+standup sat above the guard, and that is precisely the case where a proxy is already up and nothing
+else would ever close it — a resolver image that will not pull, a bridge name already taken. And
+the handler's three closes ran in sequence, so the first to raise skipped the rest, reinstating the
+leak it was added to prevent *and* replacing the original refusal with a teardown error, which is
+the less useful of the two to be told about. The resolver standup is inside the guard now and each
+close is isolated. Both were proven by reverting them: each test fails without its fix.
+
+**Two findings left for their own brick**, because they are in files this change does not touch and
+widening a PR to reach them is how a diff stops being reviewable:
+
+- `cli/companions.py` joins `also_load_skills` entries as paths with no single-component check, so
+  `../…` escapes the skills tree and `./<name>` slips past the self-companion refusal. §5 says a
+  companion is a sibling; the loader should require one.
+- `cli/infer_manifest.py` turns every `egress:<host>` capability into a `network.egress_allow`
+  entry without filtering on egress class, so `init-manifest` writes the model API and harness
+  infrastructure hosts into the skill's own declaration. The class is already on the action
+  payload (`egress_class`); it is the canonical capability that drops it.
+
+### Round five — the exclusion the caller knows, and the other half of the teardown
+
+Nothing merge-blocking this round, and four worth fixing. Three were in code the last two rounds
+introduced; the fourth was the other half of a defect they half-fixed.
+
+**The `--out` exclusion was keyed on a default.** Round four fixed the exclusion list to name the
+directory the code actually uses, `bellwether-runs`. It is still only the *default*: `--out
+artifacts` on a bundle that is its own checkout put previous evaluations' summaries and verdicts
+inside the container, and the name rule cannot see that. `staged_exclusion` and
+`plugin_bundle_digest` now take `exclude_roots`, and the caller passes the artifact root it is
+actually writing to — the §3.5 invariant stops resting on a default nobody is obliged to keep. The
+executor takes the **artifact root**, not its own run directory: `<out>/<eval_id>/runs` would leave
+every previous evaluation beside it staged, and those hold the traces and verdicts, which is the
+part a skill would learn from. The same value keys the run cache, because a key over a different
+set of files from the one staged is the failure the shared predicate exists to prevent.
+
+**The success path leaked what the failure path no longer does.** Round four isolated the teardowns
+in the guarded region and left the run's own `finally` running its five closes in sequence, four
+lines below — so a raising `stop_persistent` or `unmount` skipped the resolver and proxy closes on
+the path where the run *succeeded* and nothing is ever coming back for them. Both now go through
+`_tear_down`, which attempts every step.
+
+**And it no longer discards what failed.** `suppress(Exception)` bought isolation by throwing the
+signal away: a bridge that would not come down left no trace anywhere, which is not a standard this
+project applies to skills and should not apply to its own housekeeping. `_tear_down` collects the
+failures and attaches them as a note to whatever exception is propagating — never replacing it,
+because an operator told "docker rm: No such container" instead of the refusal that actually
+stopped the run goes and fixes the wrong thing. With nothing propagating, the teardown failure is
+raised on its own.
+
+**A threshold is not a drift guard.** The test added last round to stop the `--out` default being
+re-spelled skipped any command that had drifted and asserted a count, so one command drifting away
+passed exactly as cleanly as none drifting. It names the seven commands exhaustively now, `demo`
+and its deliberate `examples/reports` included; changing the set has to be a deliberate edit.

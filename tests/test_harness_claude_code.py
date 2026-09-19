@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from bellwether.assertions.engine import skill_name_matches
 from bellwether.capture import HostEventSink
 from bellwether.harness import (
     ClaudeCodeAdapter,
@@ -544,3 +545,98 @@ def test_the_real_cli_runs_headless_through_the_adapter_and_the_sink(tmp_path: P
     assert "trace_inconsistency" not in kinds
     assert adapter.reconciliation is not None and adapter.reconciliation.hook_calls == 3
     assert (workspace / "notes.md").read_text(encoding="utf-8") == "# notes\nhello\n"
+
+
+@pytest.mark.skipif(shutil.which("claude") is None, reason="the claude CLI is not on PATH")
+def test_the_real_cli_qualifies_a_bundled_skill_by_its_plugin(tmp_path: Path) -> None:
+    """The fact §5/§6/§18's whole-bundle staging rests on, taken from the real binary.
+
+    `--plugin-dir` installs an Agent Plugin whole and the CLI offers **every** skill under its
+    `skills/` — but reports each one qualified by the bundle (`demo-bundle:demo-skill`). That
+    qualification is why `skill_name_matches` strips it: without that, a plugin-staged run
+    would score its skill as never activating, a false negative produced by how Bellwether
+    staged the skill rather than by anything the skill did.
+
+    Asserted against the real CLI so it cannot rot silently: if a future version drops the
+    qualifier, this fails here rather than the matcher quietly over-matching forever.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# project\nhello world\n", encoding="utf-8")
+    (tmp_path / "home").mkdir()
+    config_dir = tmp_path / "cfg"
+    config_dir.mkdir()
+
+    bundle = tmp_path / "demo-bundle"
+    (bundle / "skills" / "demo-skill").mkdir(parents=True)
+    (bundle / "plugin.json").write_text(
+        '{"name": "demo-bundle", "version": "1.0.0"}', encoding="utf-8"
+    )
+    (bundle / "skills" / "demo-skill" / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: Demo skill that reads the README and writes notes."
+        "\n---\nRead README.md then write notes.md.\n",
+        encoding="utf-8",
+    )
+    (bundle / "skills" / "other-skill").mkdir(parents=True)
+    (bundle / "skills" / "other-skill" / "SKILL.md").write_text(
+        "---\nname: other-skill\ndescription: Debugs Kubernetes workloads.\n---\nInspect pods.\n",
+        encoding="utf-8",
+    )
+
+    port = _free_port()
+    server = subprocess.Popen(
+        [sys.executable, str(_FAKE_API), str(port)],
+        env={**os.environ, "FAKE_WS": str(workspace)},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        env = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path / "home"),
+            "TERM": "dumb",
+            **claude_code_environment(
+                api_token="sk-ant-scoped-fake",
+                base_url=f"http://127.0.0.1:{port}",
+                config_dir=str(config_dir),
+            ),
+        }
+        argv = claude_code_argv(
+            "Use the demo-skill to take notes.",
+            model_id="fake-model-v1",
+            limits=RunLimits(wall_seconds=120),
+            permission_mode="dontAsk",
+            plugin_dirs=[str(bundle)],
+        )
+        completed = subprocess.run(
+            [*argv, "--allowedTools", "Skill,Read,Write"],
+            cwd=workspace,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    finally:
+        server.kill()
+        server.wait()
+
+    init = None
+    for line in completed.stdout.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if record.get("type") == "system" and record.get("subtype") == "init":
+            init = record
+            break
+    assert init is not None, f"no init record; stderr tail:\n{completed.stderr[-2000:]}"
+
+    offered = set(init.get("skills") or ())
+    # Every skill in the bundle is loaded — the bundle is installed whole, not skill by skill.
+    assert {"demo-bundle:demo-skill", "demo-bundle:other-skill"} <= offered, sorted(offered)
+    # And each is qualified, which is the fact the matcher has to know about.
+    assert "demo-skill" not in offered
+    assert skill_name_matches("demo-bundle:demo-skill", "demo-skill")
+    # The CLI names the bundle it loaded, with the path it was given.
+    plugins = {entry.get("name") for entry in (init.get("plugins") or [])}
+    assert "demo-bundle" in plugins, init.get("plugins")

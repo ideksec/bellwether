@@ -100,6 +100,11 @@ class CacheKeyInputs:
     sampling: str = ""
     #: Payload digests of the scenario's §7.4 companions, in plan order.
     companion_digests: tuple[str, ...] = ()
+    #: Digest of the Agent Plugin bundle installed whole, where one is (§5/§6/§18). The skill's
+    #: own ``payload_digest`` does not cover the bundle's other content, and that content reaches
+    #: the container — so editing a shared file a skill reads, or switching between a bare and a
+    #: ``--plugin-dir`` run, has to miss rather than replay a trace of the other arrangement.
+    plugin_digest: str = ""
     #: Which planes the run could observe, and the limits it ran under (:func:`observability_key`).
     observability: str = ""
 

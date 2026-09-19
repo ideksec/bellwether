@@ -21,6 +21,7 @@ from bellwether.config.document import (
     CONFIG_FILE,
     PLATFORM_BASELINE_FILE,
     POLICY_FILE,
+    RUN_OUTPUT_DIR,
     load_yaml_mapping,
 )
 from bellwether.config.loader import (
@@ -57,6 +58,7 @@ __all__ = [
     "CONFIG_FILE",
     "PLATFORM_BASELINE_FILE",
     "POLICY_FILE",
+    "RUN_OUTPUT_DIR",
     "AssertionSpec",
     "Config",
     "Criticality",
