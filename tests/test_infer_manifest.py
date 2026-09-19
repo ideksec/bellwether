@@ -203,8 +203,8 @@ def test_the_harnesss_own_egress_is_never_declared_as_the_skills() -> None:
 
 
 def test_no_harness_host_reaches_the_rendered_manifest() -> None:
-    """Asserted against the rendered bytes, not the intermediate structure: the file is what a
-    reviewer reads and what `load_skill` later enforces."""
+    """Asserted through the rendered file rather than the intermediate structure: the YAML is
+    what a reviewer reads and what `load_skill` later enforces, so it is what has to be clean."""
     from bellwether.cli.infer_manifest import render_manifest_yaml
 
     summary = _with_expansions(
@@ -223,5 +223,8 @@ def test_no_harness_host_reaches_the_rendered_manifest() -> None:
     )
 
     manifest = parse_manifest(yaml.safe_load(rendered))
+    # Exact hosts, not substrings. A `"anthropic.com" in host` check is the URL-substring
+    # antipattern this project refuses in the egress allowlist itself (`_host_matches` exists
+    # for it): `notanthropic.com.evil.net` contains the string and is a different host.
     assert manifest.declared_scope.network.egress_allow == ["api.example.com"]
-    assert not any("anthropic.com" in host for host in manifest.declared_scope.network.egress_allow)
+    assert "api.anthropic.com" not in manifest.declared_scope.network.egress_allow
