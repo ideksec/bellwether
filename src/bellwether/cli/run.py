@@ -393,7 +393,15 @@ def run_evaluation(
         )
         # §5/§6/§18: the bundle's content outside the skill's own directory reaches the
         # container, so it belongs in the key that decides whether a trace may be replayed.
-        plugin_digest = plugin_bundle_digest(plugin.root) if plugin is not None else ""
+        # The output directory is excluded here for the same reason the executor excludes it
+        # from the copy — a bundle that is its own checkout must not hand the skill previous
+        # evaluations' verdicts — and it has to be the *same* exclusion, or the key would
+        # describe a different set of files from the one staged.
+        plugin_digest = (
+            plugin_bundle_digest(plugin.root, exclude_roots=(out_dir,))
+            if plugin is not None
+            else ""
+        )
         # What this configuration can watch, and the limits it runs under: a trace captured
         # with no proxy is a different observation from one captured behind it (§19.2).
         observability = observability_key(config)
@@ -631,6 +639,7 @@ def sandbox_executor_factory(
     plugin: PluginBundle | None = None,
     platform_baseline_version: str | None = None,
     sampling: SamplingSpec | None = None,
+    artifact_root: Path | None = None,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -678,6 +687,7 @@ def sandbox_executor_factory(
             provider_base_urls=dict(provider_base_urls or {}),
             provider_types=dict(provider_types or {}),
             plugin=plugin,
+            artifact_root=artifact_root,
             platform_baseline_version=platform_baseline_version,
             sampling=sampling,
         )

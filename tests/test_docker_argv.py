@@ -717,3 +717,59 @@ def test_a_teardown_that_raises_does_not_suppress_the_others(tmp_path: Path) -> 
     assert closed == ["resolver", "proxy"], (
         "a raising teardown suppressed the ones after it; closed: " + repr(closed)
     )
+
+
+def test_a_raising_teardown_on_the_success_path_still_closes_the_sidecars(
+    tmp_path: Path,
+) -> None:
+    """The other half of the leak, in the same function four lines away.
+
+    The guarded region got isolated teardowns; the run's own `finally` did not, so a raising
+    `stop_persistent` or `unmount` skipped the resolver and proxy closes — on the *success*
+    path, where nothing else is ever coming back for them. Fixing one half and leaving the
+    other is worse than not knowing about either.
+    """
+    from bellwether.cli.execution import _tear_down
+    from bellwether.errors import BellwetherError
+
+    ran: list[str] = []
+
+    def _boom() -> None:
+        ran.append("container")
+        raise BellwetherError("docker rm: No such container")
+
+    # Nothing is propagating, so the teardown failure is raised on its own rather than lost.
+    with pytest.raises(BellwetherError, match="teardown did not complete"):
+        _tear_down(
+            ("the sandbox container", _boom),
+            ("the controlled resolver", lambda: ran.append("resolver")),
+            ("the recording proxy", lambda: ran.append("proxy")),
+        )
+
+    assert ran == ["container", "resolver", "proxy"]
+
+
+def test_a_teardown_failure_never_replaces_the_runs_own_error() -> None:
+    """A note on the real exception, not instead of it.
+
+    Told "docker rm: No such container" in place of the refusal that actually stopped the run,
+    an operator goes and fixes the wrong thing — the same reason the probe keeps *inconclusive*
+    apart from *rejected*.
+    """
+    from bellwether.cli.execution import _tear_down
+    from bellwether.errors import BellwetherError, SkillError
+
+    def _boom() -> None:
+        raise BellwetherError("docker network rm: resource busy")
+
+    with pytest.raises(SkillError) as caught:
+        try:
+            raise SkillError("two skills cannot share an install directory")
+        except SkillError:
+            _tear_down(("the recording proxy", _boom))
+            raise
+
+    assert "share an install directory" in str(caught.value)
+    notes = getattr(caught.value, "__notes__", [])
+    assert any("resource busy" in note for note in notes), notes
+    assert any("the recording proxy" in note for note in notes), notes

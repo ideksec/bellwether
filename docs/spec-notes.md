@@ -3075,3 +3075,38 @@ widening a PR to reach them is how a diff stops being reviewable:
   entry without filtering on egress class, so `init-manifest` writes the model API and harness
   infrastructure hosts into the skill's own declaration. The class is already on the action
   payload (`egress_class`); it is the canonical capability that drops it.
+
+### Round five — the exclusion the caller knows, and the other half of the teardown
+
+Nothing merge-blocking this round, and four worth fixing. Three were in code the last two rounds
+introduced; the fourth was the other half of a defect they half-fixed.
+
+**The `--out` exclusion was keyed on a default.** Round four fixed the exclusion list to name the
+directory the code actually uses, `bellwether-runs`. It is still only the *default*: `--out
+artifacts` on a bundle that is its own checkout put previous evaluations' summaries and verdicts
+inside the container, and the name rule cannot see that. `staged_exclusion` and
+`plugin_bundle_digest` now take `exclude_roots`, and the caller passes the artifact root it is
+actually writing to — the §3.5 invariant stops resting on a default nobody is obliged to keep. The
+executor takes the **artifact root**, not its own run directory: `<out>/<eval_id>/runs` would leave
+every previous evaluation beside it staged, and those hold the traces and verdicts, which is the
+part a skill would learn from. The same value keys the run cache, because a key over a different
+set of files from the one staged is the failure the shared predicate exists to prevent.
+
+**The success path leaked what the failure path no longer does.** Round four isolated the teardowns
+in the guarded region and left the run's own `finally` running its five closes in sequence, four
+lines below — so a raising `stop_persistent` or `unmount` skipped the resolver and proxy closes on
+the path where the run *succeeded* and nothing is ever coming back for them. Both now go through
+`_tear_down`, which attempts every step.
+
+**And it no longer discards what failed.** `suppress(Exception)` bought isolation by throwing the
+signal away: a bridge that would not come down left no trace anywhere, which is not a standard this
+project applies to skills and should not apply to its own housekeeping. `_tear_down` collects the
+failures and attaches them as a note to whatever exception is propagating — never replacing it,
+because an operator told "docker rm: No such container" instead of the refusal that actually
+stopped the run goes and fixes the wrong thing. With nothing propagating, the teardown failure is
+raised on its own.
+
+**A threshold is not a drift guard.** The test added last round to stop the `--out` default being
+re-spelled skipped any command that had drifted and asserted a count, so one command drifting away
+passed exactly as cleanly as none drifting. It names the seven commands exhaustively now, `demo`
+and its deliberate `examples/reports` included; changing the set has to be a deliberate edit.

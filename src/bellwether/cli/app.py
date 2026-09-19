@@ -758,6 +758,11 @@ def run(
                     # token cap. Previously every run took the generic defaults whatever
                     # the operator configured.
                     limits=run_limits_from_config(loaded_config, max_total_tokens=max_tokens),
+                    # §3.5: the whole artifact root, so a plugin bundle that is its own
+                    # checkout never stages a previous evaluation's traces or verdicts. The
+                    # same value keys the run cache, or the key would describe a different
+                    # set of files from the one staged.
+                    artifact_root=out,
                     # Wired only when egress.image is set (a live config); otherwise None and the
                     # sandbox runs networkless, exactly as first-light (§10.5). A key is brokered
                     # into the sidecar only for the providers a claude-code target names — the

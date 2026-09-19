@@ -21,9 +21,11 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from bellwether.assertions.engine import skill_name_matches
+from bellwether.determinism import sorted_walk
 from bellwether.errors import SkillError
 from bellwether.harness import RunLimits, claude_code_argv
 from bellwether.sandbox import stage_plugin_bundle
+from bellwether.sandbox.staging import staged_exclusion
 
 INSTALL_ROOT = "/home/agent/.claude/plugins"
 
@@ -427,7 +429,6 @@ def test_the_digest_and_the_copy_agree_on_what_is_excluded(tmp_path: Path) -> No
     """One rule, asserted against both users of it. A digest that describes a different set of
     files from the one staged is the failure mode the shared predicate exists to prevent: the
     cache would replay a trace recorded from a bundle that is not this one."""
-    from bellwether.determinism import sorted_walk
     from bellwether.sandbox.staging import bundle_exclusion
 
     bundle = _bundle(tmp_path)
@@ -541,17 +542,75 @@ def test_every_commands_out_default_is_the_directory_the_exclusion_names() -> No
     from bellwether.cli.app import app
     from bellwether.config.document import RUN_OUTPUT_DIR
 
-    shared = 0
-    for command in app.registered_commands:
-        parameters = inspect.signature(command.callback).parameters
-        if "out" not in parameters:
-            continue
-        default = parameters["out"].default
-        name = command.callback.__name__
-        if default != RUN_OUTPUT_DIR:
-            # `demo` deliberately writes somewhere else; a command with its own default is
-            # fine, a command that re-spells this one is the drift.
-            continue
-        shared += 1
+    defaults = {
+        command.callback.__name__: parameters["out"].default
+        for command in app.registered_commands
+        if "out" in (parameters := inspect.signature(command.callback).parameters)
+    }
+    # Named exhaustively rather than counted. A threshold passes when a command drifts *away*
+    # from the shared default as happily as when none does, which is the failure a drift guard
+    # is supposed to be immune to. `demo` deliberately writes somewhere else and is the one
+    # exception; anything else changing membership has to be a deliberate edit here.
+    assert set(defaults) == {
+        "run",
+        "init_manifest",
+        "show_trace",
+        "render_report",
+        "diff",
+        "demo",
+    }, sorted(defaults)
+    assert defaults.pop("demo") == Path("examples/reports")
+    for name, default in defaults.items():
         assert default is RUN_OUTPUT_DIR, f"{name} re-spells the run output directory: {default}"
-    assert shared >= 5, f"only found {shared} commands defaulting --out to the run output dir"
+
+
+def test_a_non_default_out_directory_is_excluded_when_the_caller_names_it(
+    tmp_path: Path,
+) -> None:
+    """The name-based list covers the *default* `--out`; `--out artifacts` is invisible to it.
+
+    Excluding by name alone left the §3.5 invariant resting on a default nobody has to keep: a
+    bundle that is its own checkout, evaluated with `--out artifacts`, staged previous
+    evaluations' summaries and verdicts into the container. The caller knows the directory it
+    is actually writing to, so it passes it.
+    """
+    from bellwether.sandbox import plugin_bundle_digest
+
+    bundle = _bundle(tmp_path)
+    artifacts = bundle / "artifacts"
+    (artifacts / "eval-3").mkdir(parents=True)
+    (artifacts / "eval-3" / "summary.json").write_text('{"verdict": "ready"}', encoding="utf-8")
+
+    # Without being told, the name rule cannot see it — asserted so the fix is not mistaken
+    # for something the name list already covered.
+    unguarded = stage_plugin_bundle(bundle, tmp_path / "unguarded")
+    assert "artifacts/eval-3/summary.json" in unguarded.files
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged", exclude_roots=(artifacts,))
+    assert not any(path.startswith("artifacts") for path in staged.files), staged.files
+    assert "artifacts" in staged.refused_machinery
+
+    # And the digest agrees, or the key would describe a different bundle from the one staged.
+    before = plugin_bundle_digest(bundle, exclude_roots=(artifacts,))
+    (artifacts / "eval-3" / "summary.json").write_text('{"verdict": "not_ready"}', encoding="utf-8")
+    assert plugin_bundle_digest(bundle, exclude_roots=(artifacts,)) == before
+    digested = {
+        relative.as_posix()
+        for relative in sorted_walk(bundle)
+        if staged_exclusion(bundle, relative, exclude_roots=(artifacts,)) is None
+    }
+    assert digested == set(staged.files)
+
+
+def test_the_executor_excludes_the_artifact_root_it_writes_to(tmp_path: Path) -> None:
+    """The executor and the cache key must name the same directory.
+
+    The executor's run root is `<out>/<eval_id>/runs`; excluding only that leaves every
+    *previous* evaluation beside it staged, and those hold the traces and verdicts — the part
+    a skill would actually learn from. Both now take the artifact root.
+    """
+    from bellwether.cli.execution import SandboxRunExecutor
+
+    fields = SandboxRunExecutor.__dataclass_fields__
+    assert "artifact_root" in fields
+    assert fields["artifact_root"].default is None  # falls back to the run root, inside it

@@ -680,6 +680,18 @@ nothing else would close it) and ran its closes in sequence, so the first to rai
 both were proven by reverting them. Two further findings are left for their own brick because they
 are in files this change does not touch — see the list below.
 
+A **fifth round** found nothing merge-blocking and four worth fixing, three of them in the previous
+two rounds' own code. The `--out` exclusion was keyed on the *default* directory, so `--out
+artifacts` on a self-checkout bundle still staged previous evaluations' verdicts: `staged_exclusion`
+and `plugin_bundle_digest` take `exclude_roots` now and the caller passes the artifact root it is
+actually writing to — the whole root, since the evaluations *beside* this one hold the traces. The
+run's own `finally` still tore down sequentially four lines below the region that had just been
+fixed, so a raising `stop_persistent` leaked both sidecars on the path where the run *succeeded*;
+both go through `_tear_down` now, which attempts every step and attaches what failed as a note to
+the propagating exception rather than discarding it or replacing the run's own error. And the drift
+guard written last round skipped any command that had already drifted, so it names the seven
+commands exhaustively instead of counting them.
+
 ---
 
 ## Where the build is
@@ -719,7 +731,7 @@ are in files this change does not touch — see the list below.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1310 tests: 1252 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
+1314 tests: 1256 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

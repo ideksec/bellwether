@@ -22,8 +22,8 @@ executor never imports a provider itself, so the ``harness → sandbox`` boundar
 from __future__ import annotations
 
 import datetime as dt
+import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
@@ -268,6 +268,36 @@ def companions_to_stage(
     return tuple(companion for companion in companions if not _inside(companion.root, bundle_root))
 
 
+def _tear_down(*steps: tuple[str, Callable[[], object] | None]) -> None:
+    """Run every teardown step, whatever any of them does.
+
+    Isolated rather than sequential, because a raising step used to skip the ones after it and
+    leak exactly what they exist to release — a sidecar container and its bridges, which
+    nothing will come back for. Isolated *and reported*, because the alternative is a bridge
+    that failed to come down leaving no signal anywhere, and "observation beats declaration"
+    does not stop applying to Bellwether's own housekeeping.
+
+    A teardown failure never replaces the run's own outcome: it is attached as a note to
+    whatever exception is propagating, and raised on its own only when nothing else is.
+    """
+    failures: list[str] = []
+    for what, step in steps:
+        if step is None:
+            continue
+        try:
+            step()
+        except Exception as error:
+            failures.append(f"{what}: {error}")
+    if not failures:
+        return
+    note = "teardown did not complete; these may still be running:\n  " + "\n  ".join(failures)
+    propagating = sys.exc_info()[1]
+    if propagating is not None:
+        propagating.add_note(note)
+        return
+    raise BellwetherError(note)
+
+
 def _inside(path: Path, root: Path) -> bool:
     """Whether ``path`` lives within ``root``, both resolved.
 
@@ -441,6 +471,11 @@ class SandboxRunExecutor:
     #: Provider name → configured type (``anthropic`` / ``openai_compatible``). Read only to
     #: record the sampling a provider actually sends (§9.3); unknown names claim nothing.
     provider_types: Mapping[str, str] = field(default_factory=dict)
+    #: Where this invocation writes artifact trees (``--out``), so a plugin bundle that is its
+    #: own checkout never stages them (§3.5). The whole root, not this run's directory: the
+    #: previous evaluations beside it hold the traces and verdicts, and those are the part a
+    #: skill would learn from. ``None`` falls back to the run root, which is inside it.
+    artifact_root: Path | None = None
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
@@ -537,6 +572,11 @@ class SandboxRunExecutor:
                     run_dir / "plugin",
                     name=self.plugin.name,
                     owner=prepared.isolation.owner,
+                    # §3.5: the name-based exclusion covers the *default* --out directory.
+                    # This is the one we are actually writing to, so a bundle that is its own
+                    # checkout cannot hand the skill previous evaluations' verdicts merely
+                    # because the operator passed --out somewhere else.
+                    exclude_roots=(self.artifact_root or self.run_root,),
                 )
                 ro_binds.append((staged_bundle.root, staged_bundle.install_path))
                 plugin_dirs.append(str(staged_bundle.install_path))
@@ -595,14 +635,14 @@ class SandboxRunExecutor:
             # worse of the two to be told about. The resolver goes before the proxy: it may
             # have joined the proxy's bridge, which the proxy's close then removes, and a
             # still-attached container blocks that.
-            for close in (
-                (sink.stop if sink is not None else None),
-                (run_resolver.close if run_resolver is not None else None),
-                (run_proxy.close if run_proxy is not None else None),
-            ):
-                if close is not None:
-                    with suppress(Exception):
-                        close()
+            _tear_down(
+                ("the hook event sink", sink.stop if sink is not None else None),
+                (
+                    "the controlled resolver",
+                    run_resolver.close if run_resolver is not None else None,
+                ),
+                ("the recording proxy", run_proxy.close if run_proxy is not None else None),
+            )
             raise
 
         try:
@@ -824,16 +864,23 @@ class SandboxRunExecutor:
             jsonl = trace_path.read_text(encoding="utf-8")
             trace = read_trace(trace_path)
         finally:
-            self.backend.stop_persistent(prepared)
-            self.backend.unmount(prepared)
-            if sink is not None:
-                sink.stop()  # idempotent: the adapter normally drained it already
-            # The resolver goes first: when it joined the proxy's bridge, the proxy's close removes
-            # that bridge, which a still-attached resolver container would block.
-            if run_resolver is not None:
-                run_resolver.close()
-            if run_proxy is not None:
-                run_proxy.close()
+            # Isolated for the same reason the guard above is, and this was the other half of
+            # the same defect: run in sequence, a raising `stop_persistent` or `unmount` skips
+            # the resolver and proxy closes and leaks both sidecars — on the *success* path,
+            # where nothing else will ever come back for them. The resolver goes before the
+            # proxy: when it joined the proxy's bridge, the proxy's close removes that bridge,
+            # which a still-attached resolver container would block.
+            _tear_down(
+                ("the sandbox container", lambda: self.backend.stop_persistent(prepared)),
+                ("the sandbox overlay", lambda: self.backend.unmount(prepared)),
+                # Idempotent: the adapter normally drained it already.
+                ("the hook event sink", sink.stop if sink is not None else None),
+                (
+                    "the controlled resolver",
+                    run_resolver.close if run_resolver is not None else None,
+                ),
+                ("the recording proxy", run_proxy.close if run_proxy is not None else None),
+            )
 
         context = NormalizationContext(workspace_root=str(prepared.identifiers.workspace_root))
         return ExecutedRun(trace=trace, context=context, trace_jsonl=jsonl)

@@ -77,7 +77,9 @@ def bundle_exclusion(parts: Sequence[str]) -> str | None:
     return None
 
 
-def staged_exclusion(bundle_root: Path, relative: Path) -> str | None:
+def staged_exclusion(
+    bundle_root: Path, relative: Path, *, exclude_roots: Sequence[Path] = ()
+) -> str | None:
     """Why ``relative`` is not staged out of ``bundle_root``, or ``None`` where it is.
 
     One function, because the copy and the digest that keys the run cache have to agree — and
@@ -86,30 +88,49 @@ def staged_exclusion(bundle_root: Path, relative: Path) -> str | None:
     not changed at all; and it hashed symlinks the copy refuses, so re-pointing one at
     ``/etc/passwd`` moved a key that describes a bundle in which nothing moved.
 
-    Adds ``"symlink"`` to :func:`bundle_exclusion`'s answers: a link whose target escapes the
-    bundle is a way to place host content inside the container's view of it.
+    Adds two answers to :func:`bundle_exclusion`'s. ``"symlink"`` — a link whose target escapes
+    the bundle is a way to place host content inside the container's view of it. And
+    ``"machinery"`` for anything under an ``exclude_roots`` entry: the name-based list covers
+    the *default* ``--out`` directory, but ``--out artifacts`` on a bundle that is its own
+    checkout puts previous evaluations' summaries and verdicts somewhere the name rule cannot
+    see. The caller knows the directory it is actually writing to, so it passes it rather than
+    leaving the §3.5 invariant resting on a default nobody has to keep.
     """
     by_name = bundle_exclusion(relative.parts)
     if by_name is not None:
         return by_name
     origin = bundle_root / relative
+    for root in exclude_roots:
+        if _is_within(origin, root):
+            return "machinery"
     if origin.is_symlink() and not _target_stays_inside(bundle_root, origin):
         return "symlink"
     return None
 
 
-def plugin_bundle_digest(bundle_root: Path) -> str:
+def _is_within(path: Path, root: Path) -> bool:
+    """Whether ``path`` lies under ``root``, both resolved; a path that resolves nowhere is not."""
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        return False
+
+
+def plugin_bundle_digest(bundle_root: Path, *, exclude_roots: Sequence[Path] = ()) -> str:
     """Digest exactly what :func:`stage_plugin_bundle` would place in the container.
 
     The run cache replays a recorded trace when its key matches (§19.2), so the key has to
     describe the bundle *as installed*. Hashing the bundle's working directory instead counts
     content the container never sees — a plugin developed in place would thrash the cache on
-    every commit, and the cost of that is paid in tokens.
+    every commit, and the cost of that is paid in tokens. ``exclude_roots`` carries the same
+    meaning it has in :func:`staged_exclusion`, and has to be passed here whenever it is passed
+    there: a digest over a different set of files from the one staged is the failure this
+    shared predicate exists to prevent.
     """
     excluded = frozenset(
         relative.as_posix()
         for relative in sorted_walk(bundle_root)
-        if staged_exclusion(bundle_root, relative) is not None
+        if staged_exclusion(bundle_root, relative, exclude_roots=exclude_roots) is not None
     )
     return fixture_digest(bundle_root, excluded)
 
@@ -352,6 +373,7 @@ def stage_plugin_bundle(
     name: str | None = None,
     install_path: str | PurePosixPath = "/home/agent/.claude/plugins",
     owner: tuple[int, int] | None = None,
+    exclude_roots: Sequence[Path] = (),
 ) -> StagedBundle:
     """Copy an Agent Plugin bundle whole, in the layout a real client installs (§5, §6, §18).
 
@@ -389,15 +411,14 @@ def stage_plugin_bundle(
     # is content a real client would install — so the exclusions below are explicit.
     for origin in sorted(bundle_root.rglob("*"), key=lambda path: path.as_posix()):
         relative = origin.relative_to(bundle_root)
-        parts = relative.parts
-        excluded = staged_exclusion(bundle_root, relative)
+        excluded = staged_exclusion(bundle_root, relative, exclude_roots=exclude_roots)
         if excluded == "symlink":
             # A link out of the bundle places host content inside the container's view of it.
             refused_symlinks.append(relative.as_posix())
             continue
         if excluded is not None:
             # Named once, at the directory that caused it, rather than once per file beneath.
-            if bundle_exclusion(parts[:-1]) is None:
+            if staged_exclusion(bundle_root, relative.parent, exclude_roots=exclude_roots) is None:
                 (refused_machinery if excluded == "machinery" else refused_vcs).append(
                     relative.as_posix()
                 )
