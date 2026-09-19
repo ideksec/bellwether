@@ -803,25 +803,20 @@ def _declaration_names(entry: str, rooted: str) -> bool:
     # `${HOME}/.ssh/../public/**` reads to a reviewer as naming `${HOME}/public` and would
     # otherwise buy a blanket pass on `~/.ssh/`.
     #
-    # The check runs on every *expanded* alternative, not on the raw entry. Checking only the
-    # raw text — the first cut — let `${HOME}/{..}` walk straight past, which was worse than
-    # the hole it replaced: `${HOME}/..` was refused while its one-brace spelling excused every
-    # file tier 2 collapses onto the home root, and `${HOME}/.ssh/{..}/public/**` restored the
-    # very pass the literal check had just closed.
-    #
-    # The unexpanded entry is tried alongside the expansions, because `expand_braces` has no
-    # escape syntax: a location whose name really contains `{a,b}` is named by the literal
-    # entry and by nothing else, and dropping it would recreate the undeclarable-hit class this
-    # rule has already produced twice.
-    alternatives = (entry, *expand_braces(entry))
-    if any(_traverses(alternative) for alternative in alternatives):
-        # *Any* alternative traversing disqualifies the whole entry, not just that one. Checking
-        # each alternative independently still let `${HOME}/{..}` through, because the raw entry
-        # is tried too and `{..}` is not a `..` segment — so the spelling the expansion existed
-        # to catch was excused by the literal fallback instead. A declaration that can walk out
-        # of what it names is not a declaration of it under any reading.
+    # Normalise, then compare. The rule this replaced was a list of shapes to reject — no
+    # glob before the anchor, no `.`, no `..`, no `{..}` — and every round of review found the
+    # next unenumerated spelling: `..` was refused and `{..}` walked through. Enumerating bad
+    # inputs cannot terminate. So the entry is reduced to the path it *certainly reaches* and
+    # that path is compared structurally; the old special cases are consequences rather than
+    # clauses.
+    candidates = expand_braces(entry)
+    if any(_traverses(candidate) for candidate in candidates):
+        # Kept as an explicit, conservative rule on top of normalisation: an entry that walks
+        # out of anything disqualifies *every* branch of itself, so
+        # `${HOME}/.ssh/{..,qq}/public/**` cannot buy `.ssh/` access on its innocent branch
+        # while smuggling a traversal on the other. Normalisation alone would accept it.
         return False
-    return any(_alternative_names(alternative, rooted) for alternative in alternatives)
+    return any(_prefix_names(candidate, rooted) for candidate in candidates)
 
 
 def _traverses(entry: str) -> bool:
@@ -829,35 +824,71 @@ def _traverses(entry: str) -> bool:
     return ".." in entry.split("/")
 
 
-def _alternative_names(entry: str, rooted: str) -> bool:
-    """One brace-free declaration against one rooted sensitive location."""
+def _literal_prefix(entry: str) -> tuple[str, ...] | None:
+    """The path segments a declaration certainly reaches, lexically normalised.
+
+    Everything from the first segment carrying a glob metacharacter is dropped, because a
+    declaration says nothing definite past its first wildcard: ``${WORKSPACE}/**`` reaches
+    ``.git/`` but names only ``${WORKSPACE}``. ``{`` counts as a metacharacter (``${`` does
+    not) so that a brace group left unexpanded — by the size cap, or because it is the raw
+    text — can never contribute a literal segment.
+
+    ``.`` is dropped and ``..`` pops, so a traversal resolves instead of being pattern-matched.
+    ``None`` means the entry climbs above its own root and therefore names nothing.
+    """
+    segments: list[str] = []
+    for index, segment in enumerate(entry.split("/")):
+        if _has_glob(segment) or _opens_brace(segment):
+            break
+        if segment == "." or (segment == "" and index > 0):
+            continue
+        if segment == "..":
+            if not segments:
+                return None
+            segments.pop()
+            continue
+        segments.append(segment)
+    return tuple(segments)
+
+
+def _opens_brace(segment: str) -> bool:
+    return any(
+        character == "{" and (index == 0 or segment[index - 1] != "$")
+        for index, character in enumerate(segment)
+    )
+
+
+def _prefix_names(entry: str, rooted: str) -> bool:
+    """Whether one brace-free declaration's literal prefix lands at or under ``rooted``."""
+    prefix = _literal_prefix(entry)
+    if prefix is None:
+        return False
     if rooted == "${HOME}":
-        if not entry.startswith("${HOME}/"):
+        # The home root is the one location with nothing narrower beneath it to name, so it is
+        # named only by a file sitting *directly* in it: exactly one segment deeper. `.` and
+        # `..` need no clause — normalisation has already collapsed them, leaving zero segments
+        # deeper or nothing at all.
+        home = _literal_prefix("${HOME}")
+        if home is None or len(prefix) != len(home) + 1 or prefix[: len(home)] != home:
             return False
-        rest = entry[len("${HOME}/") :]
-        # `.` is the directory itself and `..` its parent, so neither is a file declared inside
-        # it. `..` is also caught by `_traverses` on every alternative; kept here as well,
-        # because dropping it on the strength of that other check is exactly how `${HOME}/{..}`
-        # got in.
-        if rest in (".", ".."):
+        # …and the entry must *stop* there. The literal prefix is truncated at the first
+        # wildcard, so `${HOME}/.aws/**` reduces to `${HOME}/.aws` and would otherwise read as
+        # naming one segment deeper — when what it names is `.aws/`, a different sensitive
+        # directory. Anything reaching past that one segment is not a file in the home root.
+        if _has_glob(entry) or _opens_brace(entry):
             return False
-        # `<` and `>` are not path characters in any manifest anyone means: they are how the
-        # gate's own hint spells its placeholder, and `${HOME}/<name>` pasted verbatim would
-        # otherwise satisfy this branch — a placeholder that silently "works" is a trap set for
+        # `<` and `>` are not path characters in any manifest anyone means: they are how this
+        # gate's own finding spells its placeholder, and `${HOME}/<name>` pasted verbatim would
+        # otherwise satisfy this branch — a placeholder that silently works is a trap set for
         # exactly the author the hint is written for.
-        if "<" in rest or ">" in rest:
-            return False
-        return bool(rest) and "/" not in rest and not _has_glob(rest)
-    if rooted.endswith("/"):
-        # `startswith` is the whole rule, and carries "nothing before that point is a glob" by
-        # itself: a declaration whose prefix globbed — `${HOME}/*/` — cannot literally begin
-        # with `${HOME}/.ssh/`. An earlier version also rejected a glob character in `rooted`,
-        # which comes from the *observation* and never from the declaration, so a directory
-        # genuinely named `.a*b` would have been undeclarable by any entry at all.
-        return entry.startswith(rooted)
-    # A hit on a single file (a sensitive name at the workspace root) has nothing beneath it,
-    # so only naming it exactly is naming it.
-    return entry == rooted
+        return not any(character in prefix[-1] for character in "<>")
+    target = _literal_prefix(rooted.rstrip("/"))
+    if target is None or not target:
+        return False
+    if not rooted.endswith("/"):
+        # A hit on a single file has nothing beneath it, so only naming it exactly names it.
+        return prefix == target
+    return prefix[: len(target)] == target and len(prefix) >= len(target)
 
 
 def undeclared_sensitive_hits(hits: Sequence[str], scope: DeclaredScope | None) -> tuple[str, ...]:

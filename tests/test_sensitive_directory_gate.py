@@ -681,3 +681,60 @@ def test_the_filesystem_zone_set_matches_what_the_canonicaliser_emits() -> None:
         f"FILESYSTEM_ZONES carries members the canonicaliser never emits: "
         f"{FILESYSTEM_ZONES - emitted}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Normalise, then compare — what the structural rule buys
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("hit", "entry", "section"),
+    [
+        (_WORKSPACE_GIT_WRITE, "${WORKSPACE}/./.git/**", "write"),
+        (_HOME_SSH, "${HOME}/./.ssh/id_rsa", "read"),
+        (_HOME_ROOT, "${HOME}/./.bashrc", "read"),
+    ],
+)
+def test_a_redundant_dot_segment_does_not_break_a_legitimate_declaration(
+    hit: str, entry: str, section: str
+) -> None:
+    """False positives the *previous* rule had, which four review rounds never found.
+
+    It compared strings — `entry.startswith(rooted)` — so a declaration written with a
+    redundant `./` did not literally begin with the rooted location and was refused, blocking a
+    skill that had declared exactly the right thing. Resolving the path before comparing makes
+    this a non-event rather than a clause.
+    """
+    assert undeclared_sensitive_hits((hit,), _scope(filesystem={section: [entry]})) == ()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "${HOME}/.ssh/{.}/{..}/x",
+        "${HOME}/{.ssh/..,y}/z",
+        "${HOME}/.ssh/./../public/**",
+    ],
+)
+def test_a_traversal_spelled_any_of_these_ways_does_not_excuse_a_hit(entry: str) -> None:
+    """Spellings no review round tried.
+
+    The rule this replaced enumerated shapes to reject, and each round found the next
+    unenumerated one — `..` refused, `{..}` through. Reducing the entry to the path it
+    certainly reaches makes the spelling irrelevant: `.` drops, `..` pops, and what is left is
+    either under the sensitive location or it is not.
+    """
+    assert undeclared_sensitive_hits((_HOME_SSH,), _scope(filesystem={"read": [entry]})) == (
+        _HOME_SSH,
+    )
+
+
+@pytest.mark.parametrize("entry", ["${HOME}/{.}", "${HOME}/./..", "${HOME}/."])
+def test_an_entry_that_resolves_to_the_home_root_itself_does_not_name_a_file_in_it(
+    entry: str,
+) -> None:
+    """`${HOME}` is named by a file *inside* it, and these resolve to the directory or above."""
+    assert undeclared_sensitive_hits((_HOME_ROOT,), _scope(filesystem={"read": [entry]})) == (
+        _HOME_ROOT,
+    )

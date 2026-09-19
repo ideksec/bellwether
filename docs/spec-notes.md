@@ -3457,6 +3457,48 @@ the function eight times in one process and asserted the results agreed, but set
 fixed within a process for a fixed hash seed, so eight repetitions of the buggy code agree too. It
 now runs real subprocesses under differing `PYTHONHASHSEED`.
 
+### §13.5.4 — the matcher, rewritten to normalise rather than enumerate
+
+Four review rounds, and three of them found the same shape of defect: the round's headline
+finding was a regression introduced by the previous round's fix, all in the declaration matcher.
+`workspace_delete` undeclarable; a `filesystem.read` entry excusing `egress:evil.com`;
+`${HOME}/{..}` walking past a `..` check. That is not bad luck. It is what a **blacklist** does.
+
+The rule had grown to eight interacting clauses, and most were *reject this bad shape*: no glob
+before the anchor, no `.`, no `..`, no `{..}`, no `<`/`>`, no non-filesystem zone. Enumerating
+bad inputs cannot terminate — every clause has an unenumerated spelling, which is exactly the
+`..` → `{..}` sequence. More review rounds against that shape would keep producing findings
+without converging.
+
+So the matcher now **normalises and then compares**. An entry is reduced to the path it certainly
+reaches — expand braces, drop everything from the first segment carrying a wildcard (a
+declaration says nothing definite past its first `*`), then resolve `.` and `..` lexically — and
+that path is compared to the sensitive location segment-wise. The old clauses become consequences:
+`${HOME}/.` resolves to the home root and so is not a file *in* it; `${HOME}/{..}` expands, then
+resolves above its own root and names nothing; `${WORKSPACE}/**` reduces to `${WORKSPACE}`, which
+is not at-or-under `${WORKSPACE}/.git`.
+
+Two clauses are kept deliberately rather than derived. **Any alternative traversing disqualifies
+the whole entry**, because normalisation alone would let `${HOME}/.ssh/{..,qq}/public/**` buy
+`.ssh/` access on its innocent branch while smuggling a traversal on the other; a conservative
+rule is right for a gate whose disposition is `block`. And the `<`/`>` rejection stays, because
+the gate's own finding spells its placeholder `${HOME}/<name>` and that would otherwise resolve
+to a perfectly good single segment.
+
+**The rewrite was safe to make because four rounds of review had built the harness for it.** The
+48 tests in `test_sensitive_directory_gate.py` encode every bypass and every false positive found
+across those rounds, and they were held unchanged as the contract. One of them failed on the first
+attempt — cutting at the wildcard loses the fact that an entry *continues* past it, so
+`${HOME}/.aws/**` reduced to `${HOME}/.aws` and read as naming a file in the home root. That is
+the corpus doing its job, and it is the argument for rewriting now rather than later: the tests
+that make it checkable exist now.
+
+Two things the new rule fixes that **no review round found**. Three legitimate declarations
+written with a redundant `./` — `${WORKSPACE}/./.git/**` and friends — were *refused* by the old
+string comparison, blocking a skill that had declared exactly the right thing. And five traversal
+spellings nobody tried (`${HOME}/.ssh/{.}/{..}/x`, `${HOME}/{.ssh/..,y}/z`, …) are refused without
+any clause naming them. Both are now tests.
+
 ### §12.6 — the tools near-miss, reached by a second route
 
 Flagging a baseline entry whose tool is classed differently closed the inert-allowlist trap by

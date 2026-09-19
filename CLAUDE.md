@@ -45,7 +45,11 @@ did before, and both wiring hops are revert-proved. Four review rounds; each fou
 previous round's fixes. The fourth found that a `..` fix had opened a worse hole than it closed
 (`${HOME}/{..}`), and that a blanket "every fix revert-proved" claim was false for the **second
 commit running**. **Never write a blanket assurance about a set of changes — publish the per-change
-measurement, including the rows that come back unproved and why.** Five of thirteen `security_runtime` dispositions are enforced, eight remain
+measurement, including the rows that come back unproved and why.** The matcher was then rewritten
+to **normalise rather than enumerate**: three of the four rounds' headline findings were
+regressions from the previous round's fix in the same predicate, which is what a blacklist does —
+every reject-clause has an unenumerated spelling. Reduce an input to what it certainly means, then
+compare; do not list the ways it can be wrong. Five of thirteen `security_runtime` dispositions are enforced, eight remain
 inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. A `harness_state_write` gate was attempted and
 **withdrawn**: §10.2 attributes such a write by a Plane A anchor and Plane B carries no correlation,
 so it could never fire — see spec-notes. §12.6's `tools` are applied as well as parsed; its
