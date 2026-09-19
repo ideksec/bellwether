@@ -9,10 +9,15 @@ tests pin the decision the probe feeds, and the command it runs; the container h
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bellwether.capture import interpret_interception_probe
-from bellwether.cli.interception_probe import PROBE_HOST, probe_argv
+from bellwether.cli.interception_probe import (
+    PROBE_CLIENT_SOURCE,
+    PROBE_HOST,
+    PROBE_SIDECAR_SETTINGS,
+    probe_argv,
+)
 
 _CERT_ERROR = (
     "URLError <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
@@ -149,3 +154,48 @@ def test_stripping_trust_removes_every_mechanism_and_keeps_the_route() -> None:
     assert not any("ca-certificates" in part for part in stripped)
     # The route to the proxy survives, so a failure is about trust and nothing else.
     assert "HTTPS_PROXY=http://p:8080" in stripped
+
+
+def test_the_probe_defers_the_upstream_so_it_needs_no_reachable_destination() -> None:
+    """The bug CI caught in the first cut. mitmproxy's default connection strategy is *eager*:
+    it dials the upstream before the client handshake so the generated certificate can copy the
+    real one. Under eager, an unresolvable probe host fails at connect and the request hook never
+    fires — no flow, and the probe reports "inconclusive" forever. `lazy` completes the client
+    handshake first, which is the whole reason the probe can use a destination that does not
+    exist."""
+    assert PROBE_SIDECAR_SETTINGS == {"connection_strategy": "lazy"}
+
+
+def test_the_probes_sidecar_setting_reaches_mitmdump(tmp_path: Path) -> None:
+    """Asserted against the real argv builder: a setting the sidecar never passes to mitmdump
+    would leave the probe silently back on the eager default."""
+    from bellwether.capture import CredentialBroker, MitmproxySidecar
+    from bellwether.determinism import SeededRng
+
+    sidecar = MitmproxySidecar(
+        image="img",
+        network="net",
+        broker=CredentialBroker.for_run({}, {}, rng=SeededRng(1, "probe")),
+        provider_of_host={},
+        shared_dir=tmp_path,
+        extra_settings=PROBE_SIDECAR_SETTINGS,
+    )
+    argv = sidecar.sidecar_argv("bw-proxy-probe", PurePosixPath("/shared/config.json"))
+    assert "connection_strategy=lazy" in argv
+    # Emitted as a --set pair, after the built-in ones.
+    assert argv[argv.index("connection_strategy=lazy") - 1] == "--set"
+
+
+def test_a_run_gets_no_extra_mitmdump_settings(tmp_path: Path) -> None:
+    """The probe's setting must not reach an evaluation: a proxy that behaved differently would
+    change what a trace means."""
+    from bellwether.cli.proxy_run import SidecarProxyProvider
+
+    assert SidecarProxyProvider.__dataclass_fields__["extra_settings"].default_factory() == {}
+
+
+def test_the_probe_client_exits_non_zero_when_the_request_fails() -> None:
+    """A client that always exits 0 makes the inconclusive message read "client exit 0" whether
+    it ran or not — the uninformative signal that hid the eager-strategy failure in the first
+    CI run."""
+    assert "sys.exit(1)" in PROBE_CLIENT_SOURCE

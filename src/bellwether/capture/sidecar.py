@@ -107,6 +107,11 @@ class MitmproxySidecar(RecordingProxy):
     #: poll. Both are injected in tests so the lifecycle runs without a daemon or real waiting.
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run
     sleep: Callable[[float], None] = time.sleep
+    #: Extra ``--set k=v`` options for mitmdump, applied after the built-in ones and emitted in
+    #: sorted order (§24). Empty for a run: the defaults are what a real evaluation observes, and
+    #: a setting that changed what the proxy does would change what the trace means. The §9.2
+    #: interception probe is the one caller, and it says why in its own module.
+    extra_settings: Mapping[str, str] = field(default_factory=dict)
     _handle: SidecarHandle | None = field(default=None, repr=False)
 
     def _network_is_user_defined(self) -> bool:
@@ -153,6 +158,8 @@ class MitmproxySidecar(RecordingProxy):
             "--set",
             f"confdir={SIDECAR_SHARED_MOUNT / _CONFDIR_NAME}",
         ]
+        for name in sorted(self.extra_settings):
+            argv += ["--set", f"{name}={self.extra_settings[name]}"]
         return argv
 
     def build_config(

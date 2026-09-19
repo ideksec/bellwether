@@ -12,19 +12,30 @@ reads the proxy's recorded flows. The decision the flows feed is
 :func:`~bellwether.capture.ca.interpret_interception_probe`, which is pure and tested offline;
 what lives here is the standup, which needs a daemon.
 
-**The probe needs no reachable destination.** The proxy records a flow when it *receives* a
-request, before forwarding, so a recorded probe host establishes that the client completed the
-handshake
-against the proxy's certificate even when the upstream does not exist. A client that does not
-trust the CA fails during that handshake and no flow is ever recorded — which is precisely the
-distinction being drawn. So the probe host is deliberately an unresolvable name in a reserved
-TLD: nothing leaves the machine, and no peer server has to be stood up.
+**The probe needs no reachable destination — but only because it asks for that explicitly.**
+The addon records a flow when the request *arrives*, before any forwarding decision, so a
+recorded probe host establishes that the client completed the handshake
+against the proxy's certificate whatever the upstream then did. A client that does not trust the
+CA fails during that handshake and no flow is ever recorded — which is precisely the distinction
+being drawn.
+
+That is not free. mitmproxy's default connection strategy is *eager*: it dials the upstream
+**before** the client handshake, so the generated certificate can copy the real one. Under eager
+an unresolvable host fails at connect and the request hook never fires. The first cut of this
+probe assumed otherwise, and CI said so. The probe's own sidecar therefore runs with
+``connection_strategy=lazy``, which completes the client handshake first and defers the upstream
+entirely. Runs are untouched: the setting is passed by this module alone, because a proxy that
+behaved differently would change what a trace means.
+
+With that, the probe host is an unresolvable name in a reserved TLD and the allowlist denies it:
+nothing leaves the machine, no peer server is stood up, and the client still gets a real answer
+over TLS it had to trust.
 """
 
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -36,20 +47,26 @@ from bellwether.errors import BellwetherError
 __all__ = [
     "PROBE_CLIENT_SOURCE",
     "PROBE_HOST",
+    "PROBE_SIDECAR_SETTINGS",
     "ProbeRunner",
     "probe_argv",
     "run_interception_probe",
 ]
 
 #: An unresolvable name in the reserved ``.invalid`` TLD (RFC 2606). The probe must never leave
-#: the machine, and it does not need to: the flow is recorded on receipt, so reaching the proxy
+#: the machine, and it does not need to: the flow is recorded on arrival, so reaching the proxy
 #: is the whole of what is being established.
 PROBE_HOST = "bellwether-interception-probe.invalid"
 
 #: The client, run inside the container. ``urllib`` honours ``SSL_CERT_FILE``, one of the §9.2
-#: mechanisms, so a successful handshake here exercises the real trust path rather than a
-#: bespoke one. Any outcome is fine — a 502 from the proxy means it received the request, which
-#: is the point — so the failure is caught and its text printed for the interpreter to read.
+#: mechanisms, so a handshake here exercises the real trust path rather than a bespoke one.
+#:
+#: An HTTP error *is* a success for this purpose — a 403 from the default-deny allowlist means
+#: the proxy received the request over TLS the client accepted — so the exception text is
+#: printed for the interpreter to read. The exit code is still made non-zero on any exception:
+#: it is not what decides the outcome (the recorded flow is), but a client that always exits 0
+#: makes the inconclusive message read "client exit 0" whether it ran or not, which is exactly
+#: the kind of uninformative signal this project is supposed to refuse.
 PROBE_CLIENT_SOURCE = """
 import os, sys, urllib.request
 url = "https://" + os.environ["BW_PROBE_HOST"] + "/bellwether-probe"
@@ -58,7 +75,13 @@ try:
         print("status", response.status)
 except Exception as exc:  # noqa: BLE001 - every outcome is data for the interpreter
     print(type(exc).__name__, exc, file=sys.stderr)
+    sys.exit(1)
 """
+
+#: mitmdump settings the probe's sidecar needs, and nothing a run uses. ``lazy`` completes the
+#: client handshake before any upstream connection, which is what lets the probe establish CA
+#: trust without a reachable destination (see the module docstring).
+PROBE_SIDECAR_SETTINGS: dict[str, str] = {"connection_strategy": "lazy"}
 
 
 @dataclass(frozen=True)
@@ -117,6 +140,12 @@ def run_interception_probe(
     "the proxy would not start" is not evidence about the CA.
     """
     runner = runner or ProbeRunner()
+    # The probe's own proxy, carrying the one setting that makes a destination unnecessary.
+    # Applied here rather than asked of the caller, so a probe cannot be stood up without it and
+    # then report "inconclusive" for a reason that is really about mitmproxy's defaults.
+    provider = replace(
+        provider, extra_settings={**provider.extra_settings, **PROBE_SIDECAR_SETTINGS}
+    )
     with TemporaryDirectory(prefix="bellwether-probe-") as shared:
         try:
             proxy = provider.open("interception-probe", shared_dir=Path(shared))

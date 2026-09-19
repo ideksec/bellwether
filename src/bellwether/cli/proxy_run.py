@@ -24,7 +24,7 @@ against a real daemon on CI.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -141,6 +141,8 @@ class SidecarProxyProvider:
     #: host → provider name, for the sidecar's credential injection. Empty when no provider key is
     #: brokered into the sandbox (the ``api-loop`` case), which is the default.
     provider_of_host: dict[str, str] = field(default_factory=dict)
+    #: Extra mitmdump ``--set`` options. Empty for a run; see :attr:`MitmproxySidecar.extra_settings`.
+    extra_settings: Mapping[str, str] = field(default_factory=dict)
     sidecar_factory: SidecarFactory | None = None
 
     def open(self, run_id: str, *, shared_dir: Path, canaries: Sequence[Canary] = ()) -> RunProxy:
@@ -199,4 +201,5 @@ class SidecarProxyProvider:
             broker=self.broker,
             provider_of_host=self.provider_of_host,
             shared_dir=shared_dir,
+            extra_settings=self.extra_settings,
         )
