@@ -171,3 +171,57 @@ def test_init_manifest_command_end_to_end(tmp_path: Path) -> None:
     )
     assert again.exit_code == ExitCode.INFRASTRUCTURE
     assert "already exists" in again.output
+
+
+def test_the_harnesss_own_egress_is_never_declared_as_the_skills() -> None:
+    """The worst inference this module could make, and it was making it.
+
+    Under `claude-code` the CLI's model calls leave through the same proxy the skill's would,
+    so `api.anthropic.com` appeared in the capability profile of every run. Written into the
+    skill's own `network.egress_allow`, a later genuine exfiltration to the model API would
+    read as declared-and-allowed — the laundering this module's docstring says it prevents,
+    performed on the one host where it matters most.
+    """
+    summary = _with_expansions(
+        _summary(_BENIGN),
+        {
+            "egress:api.example.com": ["/v1"],
+            "egress_infrastructure:api.anthropic.com": ["/v1/messages"],
+            "egress_infrastructure:statsig.anthropic.com": ["/v1/i"],
+        },
+    )
+    scope = infer_scope(summary)
+
+    # The skill's own host still is declared — the guard must not cost the inference.
+    assert scope.egress == ("api.example.com",)
+    undeclared = dict(scope.undeclared)
+    assert set(undeclared) == {
+        "egress_infrastructure:api.anthropic.com",
+        "egress_infrastructure:statsig.anthropic.com",
+    }
+    assert "the harness's own egress" in undeclared["egress_infrastructure:api.anthropic.com"]
+
+
+def test_no_harness_host_reaches_the_rendered_manifest() -> None:
+    """Asserted against the rendered bytes, not the intermediate structure: the file is what a
+    reviewer reads and what `load_skill` later enforces."""
+    from bellwether.cli.infer_manifest import render_manifest_yaml
+
+    summary = _with_expansions(
+        _summary(_BENIGN),
+        {
+            "egress:api.example.com": ["/v1"],
+            "egress_infrastructure:api.anthropic.com": ["/v1/messages"],
+        },
+    )
+    rendered = render_manifest_yaml(
+        infer_scope(summary),
+        skill_name="benign-note-taker",
+        eval_id=_BENIGN,
+        payload_digest="sha256:abc",
+        criticality="low",
+    )
+
+    manifest = parse_manifest(yaml.safe_load(rendered))
+    assert manifest.declared_scope.network.egress_allow == ["api.example.com"]
+    assert not any("anthropic.com" in host for host in manifest.declared_scope.network.egress_allow)

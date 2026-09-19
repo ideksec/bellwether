@@ -262,12 +262,31 @@ def capability_for(action: Action, context: NormalizationContext) -> Capability 
         return Capability(tier1="canary_read", tier2="canary_read", tier3=normalized)
 
     if kind == "egress_request":
+        # §13.5.1 weights `egress:<host>` at 10 and says "(non-model)" in the same breath, so
+        # the class the weight attaches to is the skill's reach — not every packet that crossed
+        # the proxy. The assertions layer already draws that line (`derive`, `engine` and the
+        # §10.8 precedence matrix all filter to `skill_attributed`); the canonicalizer did not,
+        # so under `claude-code` — where the CLI's own model calls originate *inside* the
+        # sandbox and leave through the proxy — a skill that made no request at all still
+        # carried two weight-10 capabilities: the model API and the harness's telemetry host.
+        # That put harness traffic in the BCI, in `max_rare_capability_risk` (weight ≥ cutoff
+        # blocks, so a telemetry host appearing in one run of six blocks the verdict), in the
+        # §17.5 baseline, and in `init-manifest`'s `network.egress_allow`. It also made the two
+        # harnesses incomparable, since api-loop's model calls are host-side and never cross
+        # this proxy at all — the same skill, two capability profiles.
+        #
+        # A missing class reads as the skill's, deliberately: an unlabelled flow is an
+        # observation we cannot attribute, and the honest direction for that is the weighted
+        # one, not the floor.
         host = payload.get("host")
         url = payload.get("url")
         if isinstance(host, str):
+            egress_class = payload.get("egress_class")
+            harness = isinstance(egress_class, str) and egress_class != "skill_attributed"
+            base = "egress_infrastructure" if harness else "egress"
             return Capability(
-                tier1=f"egress:{host}",
-                tier2=f"egress:{host}",
+                tier1=f"{base}:{host}",
+                tier2=f"{base}:{host}",
                 tier3=url if isinstance(url, str) else None,
             )
         return None
