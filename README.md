@@ -120,8 +120,8 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from eleven gates (twelve on a priced matrix, thirteen with a stored baseline), and these
-are the checks that can actually move a skill off `ready`:
+composed from ten gates (eleven on a priced matrix, twelve with a stored baseline), and these are
+the checks that can actually move a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
 - **functional** — the pass-rate *lower bound* (not the point estimate) clears the policy threshold;
@@ -145,10 +145,6 @@ are the checks that can actually move a skill off `ready`:
   excuses it only by naming a location under that directory — a blanket `${HOME}/**` does not,
   since a broad glob hiding exactly this access is why the rule exists. Declaring it deliberately
   (`credentials.expects`) is the supported way to say a skill legitimately needs it;
-- **security_runtime.harness_state** — a write into the harness's own config directory, made
-  through a tool call. A skill that edits the instrument can change what the instrument reports
-  about it (§3.5). Only *attributed* writes count: a real CLI writes its own config constantly and
-  that churn is the harness's, not the skill's. `warn` under the shipped policy;
 - **security_runtime.dns** — a lookup of a name outside the allowlist, from what the controlled
   resolver logged (Plane E). An HTTP proxy never sees UDP/53, so this is the gate on the covert
   channel that routes around the egress plane. Where the resolver was not wired, the gate defers

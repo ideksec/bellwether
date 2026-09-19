@@ -33,13 +33,7 @@
     },
     {
       "name": "security_runtime.sensitive_directories",
-      "reason": "api-loop-scripted-frontier: every run was observed and none touched a §13.5.4 sensitive directory; the claim is bounded by what the harness reported, since a read inside a subprocess is not resolved to a path until the §10.3 process plane exists",
-      "required": true,
-      "status": "pass"
-    },
-    {
-      "name": "security_runtime.harness_state",
-      "reason": "api-loop-scripted-frontier: the filesystem-write and harness planes cannot both support an absence claim for every run in this set, so 'nothing was written to harness state' is not an earned absence (§10.7, §10.8)",
+      "reason": "api-loop-scripted-frontier: Plane A's coverage cannot support an absence claim for every run in this set, so 'no sensitive directory was touched' is not an earned absence (§10.7, §10.8)",
       "required": false,
       "status": "not_evaluable"
     },

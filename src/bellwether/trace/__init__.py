@@ -38,6 +38,7 @@ from bellwether.trace.canonical import (
     StepSignature,
     canonicalize,
     capability_for,
+    sensitive_directory_of,
 )
 from bellwether.trace.epochs import PLANE_PRIORITY, anchor_events
 from bellwether.trace.models import (
@@ -112,6 +113,7 @@ __all__ = [
     "parse_trace",
     "read_trace",
     "redact_trace_actions",
+    "sensitive_directory_of",
     "serialize_record",
     "token_totals_from_events",
     "tool_result_actions",

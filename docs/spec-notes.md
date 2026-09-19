@@ -3259,10 +3259,30 @@ coverage was imperfect, would be the worst of both readings.
 declares `${HOME}/.aws/credentials` under `credentials.expects`, reads it, sends nothing outward,
 and must reach `ready`. A gate blocking on any sensitive hit fires on every correct run of it —
 the guaranteed false positive the spec says a flagship finding must not have. So the gate reads
-*undeclared* hits, and a declaration excuses a hit only by naming a location **under the sensitive
-directory itself**. A blanket `${HOME}/**` does not, because the reason §13.5.4 exists is that a
-broad glob hides exactly this access; `init-manifest` already draws the same line when it refuses
-to write a sensitive path into an inferred allowlist.
+*undeclared* hits, and a declaration excuses a hit only by naming the sensitive location. A
+blanket `${HOME}/**` does not, because the reason §13.5.4 exists is that a broad glob hides
+exactly this access; `init-manifest` already draws the same line when it refuses to write a
+sensitive path into an inferred allowlist.
+
+*Matching the declaration against the hit took two attempts.* The first compared the declared glob
+against the hit's tier-2 **prefix**, and that is wrong in both directions at once. A workspace
+hit's tier-2 is the bare first segment — `workspace_read:.git/` — while declarations are
+`${WORKSPACE}`-rooted, so an explicit `${WORKSPACE}/.git/**` never matched and a skill reading its
+own repository could not declare its way out of a blocking, required gate. Meanwhile the home-root
+hit's prefix is `${HOME}`, which *every* home-rooted glob starts with, so the blanket the rule
+exists to see through was the one declaration that did excuse it. The comparison is now against
+the sensitive *directory token* `sensitive_directory_of` already extracts, as a path segment, with
+the home root special-cased because there is no narrower way to name it: a specific path under
+`${HOME}` is deliberate, a recursive wildcard is the blanket. Every hit shape is a test case.
+
+*The pass needs both planes.* A sensitive hit can arrive from a Plane A tool call naming a path or
+from a Plane B write under a sensitive directory, so an absence claim over it needs both — Plane A
+answers for reads and cannot answer for writes, and half an absence claim is not one. Checking
+only Plane A let the gate pass on a set where the write plane was blind. The consequence is that
+paths without an overlay defer, and under the shipped `block` disposition a *required*
+not_evaluable gate makes the verdict `not_ready` (§16.2) — so the demo, first-light and test
+profiles soften this disposition to `warn` exactly as they already soften egress, DNS and the
+canary gates, and for the same reason. A real run mounts the overlay and can pass it.
 
 *Where the exclusion is computed matters.* The live path calls `analyse_run` with `scope=None` and
 carries the manifest in `declared_scope`, folding it in afterwards. Deriving the exclusions from
@@ -3273,28 +3293,33 @@ undeclared in production. They are computed where the manifest table is applied,
 skill worth showing; it is simply not a gate finding, so the report section and the §17.5
 regression comparison are unchanged.
 
-### §3.5/§10.2 — `harness_state_write`
+### §3.5/§10.2 — `harness_state_write`, attempted and withdrawn
 
 A skill writing into the harness's own config directory is editing the instrument: settings a hook
 is read from, configuration that outlives the run, state a later repetition inherits. §3.5's
-concern is that a skill able to change the instrument can change what the instrument reports.
+concern is that a skill able to change the instrument can change what the instrument reports. The
+gate was built, and then removed before it shipped, because **it could never fire**.
 
-*The false positive* here was already prevented, one layer down, which is the only reason the gate
-is composable. §10.2 admits a harness-state write into the capability set **only where a Plane A
-tool call anchors it**; a real `claude-code` run writes its config dir constantly, and that churn
-is the harness's. Reverting that rule makes unanchored churn read as the skill's, which is how the
-distinction was confirmed rather than assumed. `WriteEvidence` now carries the anchor so the gate
-can read it.
+§10.2 admits a harness-state write into the capability set only where a Plane A tool call anchors
+it, and the gate read the same anchor off the write evidence — the right rule, since a real
+`claude-code` run writes its config dir constantly and that churn is the harness's. But Plane B
+actions are constructed with **no `Correlation` at all** (`trace/build.py`): `anchor_seq` is only
+ever set for Plane C canary findings. So `anchor_seq is not None` is false for every write that
+exists, and the gate returned `pass` on a skill that had just rewritten `settings.json`. A control
+that renders a clean result without observing anything — committed, by us, in the same change that
+set out to close two of those.
 
-The existing `no_harness_state_write` *assertion* keeps counting every write, anchored or not. That
-asymmetry is deliberate: an assertion is a claim a scenario author wrote on purpose ("this skill
-must not write there at all"), while the gate is default-on and must not fire on churn.
+The suite stayed green throughout, because the existing `no_harness_state_write` *assertion*
+matches on zone alone and was genuinely unaffected. Only a review that asked "can this gate ever
+return anything but pass?" caught it.
 
-*An honest detour.* The gate was first written against a tier-1 `harness_state_write` capability.
-There is no such class — the canonicalizer files such a write as `outside_workspace_write`, and
-`harness_state_write` is a *finding kind* from the zone rules. The test caught it before the wrong
-premise reached the gate's logic, which is the argument for writing the test against the real
-pipeline rather than the mental model of it.
+It also surfaces a pre-existing fact worth recording on its own: **§10.2's attribution rule is
+written against a correlation Plane B never populates**, so *no* harness-state write becomes a
+capability today — the rule excludes everything rather than just the churn. Correlating overlay
+writes back to the tool calls that caused them is §11.5 step 3 and real work; the overlay diff is a
+post-run set with no per-write timing to correlate on. The gate is worth having once that exists.
+Until then it is disclosed here and in `docs/STATUS.md` rather than shipped as a pass that means
+nothing.
 
 ### §12.6 — the baseline's `tools`
 

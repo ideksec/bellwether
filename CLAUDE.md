@@ -33,11 +33,12 @@ verdict** (`security_runtime.canaries` — a skill that exfiltrates a planted ca
 `ready`), and the **DNS gate is scored** (`security_runtime.dns`, with the live smoke wiring the
 resolver so the labelled run keeps `ready` on observed evidence). The model-API canary
 channel is scanned and scored (`security_runtime.canary_reads`; credentials plane `full`).
-Two further declared-but-inert dispositions are now scored: **`security_runtime.sensitive_directories`**
+One further declared-but-inert disposition is now scored: **`security_runtime.sensitive_directories`**
 (§13.5.4 — an *undeclared* read or write under `~/.aws/`, `~/.ssh/` and the rest; frequency-independent,
-and a blanket `${HOME}/**` does not excuse it) and **`security_runtime.harness_state`** (§3.5/§10.2 —
-a tool-call-attributed write into the harness's own config; the CLI's own churn is not the skill's).
-§12.6's `tools` are applied as well as parsed; its `processes` still wait on the §10.3 process plane.
+and a blanket `${HOME}/**` does not excuse it). A `harness_state_write` gate was attempted and
+**withdrawn**: §10.2 attributes such a write by a Plane A anchor and Plane B carries no correlation,
+so it could never fire — see spec-notes. §12.6's `tools` are applied as well as parsed; its
+`processes` still wait on the §10.3 process plane.
 What
 remains is *proof breadth*: every v0.1 work package is built, including the **`claude-code`
 adapter** (WP-17 — the real CLI headless inside the sandbox, stream-json → Plane A, its hooks →

@@ -46,11 +46,6 @@ class WriteEvidence:
     #: Normalized (``${WORKSPACE}/...``) absolute path.
     path: str
     deleted: bool
-    #: The Plane A tool call this write is attributed to, where the correlation is known
-    #: (§11.5 step 3). ``None`` means the write happened with no tool call to answer for it —
-    #: which in the harness-state zone is the harness's own churn, the distinction §10.2 draws
-    #: when it admits such a write into the capability set only where a tool call anchors it.
-    anchor_seq: int | None = None
 
 
 @dataclass(frozen=True)
@@ -280,7 +275,6 @@ def _index_filesystem_action(action: Action, context: NormalizationContext) -> W
         zone=zone,
         path=context.normalize_path(path),
         deleted=action.kind == "file_delete",
-        anchor_seq=action.correlation.anchor_seq,
     )
 
 

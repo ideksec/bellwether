@@ -44,6 +44,7 @@ from bellwether.cli.orchestrator import (
     orchestrate,
     scope_exceeded_of,
     scope_unused_of,
+    undeclared_sensitive_hits,
 )
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
@@ -375,6 +376,11 @@ def _demo_profile(profile_name: str) -> ProfileSpec:
     profile = policy.profile(profile_name)
     security = profile.gates.security_runtime.model_copy(
         update={
+            # Softened for the same reason as the rest: this path mounts no overlay, so
+            # the write plane cannot support "no sensitive write" and a `block`
+            # disposition on an unobservable control makes every run `not_ready`
+            # (§16.2: a required not_evaluable gate blocks). A real run has the overlay.
+            "sensitive_directory_access": "warn",
             "egress_outside_allowlist": "warn",
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
@@ -413,6 +419,11 @@ def _reading_for_case(
                 run,
                 scope_exceeded=scope_exceeded_of(executed, declared),
                 scope_unused=scope_unused_of(executed, declared),
+                # The §13.5.4 exclusions come from the manifest too, exactly as the live path
+                # and the corpus harness fold them in. This is the third caller of the same
+                # pattern; omitting it here would make a declared sensitive read block in the
+                # demo and pass everywhere else.
+                undeclared_sensitive_hits=undeclared_sensitive_hits(run.sensitive_hits, declared),
             )
         analysed.append(run)
     return aggregate(scenario.id, _TARGET, analysed, profile=profile)

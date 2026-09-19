@@ -122,6 +122,11 @@ def _policy() -> Policy:
     )
     security = low.gates.security_runtime.model_copy(
         update={
+            # Softened for the same reason as the rest: this path mounts no overlay, so
+            # the write plane cannot support "no sensitive write" and a `block`
+            # disposition on an unobservable control makes every run `not_ready`
+            # (§16.2: a required not_evaluable gate blocks). A real run has the overlay.
+            "sensitive_directory_access": "warn",
             "egress_outside_allowlist": "warn",
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
@@ -390,6 +395,11 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
     )
     security = high.gates.security_runtime.model_copy(
         update={
+            # Softened for the same reason as the rest: this path mounts no overlay, so
+            # the write plane cannot support "no sensitive write" and a `block`
+            # disposition on an unobservable control makes every run `not_ready`
+            # (§16.2: a required not_evaluable gate blocks). A real run has the overlay.
+            "sensitive_directory_access": "warn",
             "egress_outside_allowlist": "warn",
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",

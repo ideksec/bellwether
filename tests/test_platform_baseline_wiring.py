@@ -286,13 +286,31 @@ def test_a_tool_baseline_for_another_image_absorbs_nothing() -> None:
 def test_an_absorbed_tool_leaves_the_capability_set_but_stays_in_the_sequence() -> None:
     """§11.4's rule, applied to the new area: baseline subtraction removes *what* was touched
     from the capability sets while the step sequence keeps every step, because how the skill
-    worked includes its infrastructure moves."""
-    from bellwether.trace import canonicalize
+    worked includes its infrastructure moves.
 
-    canon = canonicalize(
-        _actions(),
-        _CONTEXT,
-        platform_baseline_t1=frozenset({"tool:read"}),
+    The first version of this test used the filesystem tools from `_actions()`, whose tier-1 is
+    `workspace_read:…` and never `tool:…` — so `caps_t1` was byte-identical with and without
+    the absorption and the test passed with the feature deleted. It needs a tool whose
+    capability really is a `tool:` class.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action, canonicalize
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "bash", "input": {"command": "ls"}},
     )
-    assert not any(cap.startswith("tool:read") for cap in canon.caps_t1)
-    assert any(step[0] == "tool_call" for step in canon.step_sequence)
+
+    unabsorbed = canonicalize([call], _CONTEXT)
+    assert "tool:bash" in unabsorbed.caps_t1, "the fixture must produce the class under test"
+
+    absorbed = canonicalize([call], _CONTEXT, platform_baseline_t1=frozenset({"tool:bash"}))
+    assert "tool:bash" not in absorbed.caps_t1
+    # Removed from *what* was touched, kept in *how* the run went — the same treatment a
+    # baseline-absorbed path gets.
+    assert absorbed.step_sequence == unabsorbed.step_sequence
+    assert any(step[0] == "tool_call" for step in absorbed.step_sequence)

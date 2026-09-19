@@ -167,19 +167,11 @@ tr:last-child td { border-bottom: none; }
     </tr>
     <tr>
       <td><code>security_runtime.sensitive_directories</code></td>
-      <td><span class="chip ok">✓ pass</span></td>
-      <td>no undeclared sensitive directory in the reported activity</td>
-      <td>block</td>
-      <td class="muted-text">required</td>
-      <td>api-loop-scripted-frontier: every run was observed and none touched a §13.5.4 sensitive directory; the claim is bounded by what the harness reported, since a read inside a subprocess is not resolved to a path until the §10.3 process plane exists</td>
-    </tr>
-    <tr>
-      <td><code>security_runtime.harness_state</code></td>
       <td><span class="chip muted">· not_evaluable</span></td>
       <td>unobserved</td>
       <td>warn</td>
       <td class="muted-text">advisory</td>
-      <td>api-loop-scripted-frontier: the filesystem-write and harness planes cannot both support an absence claim for every run in this set, so &#x27;nothing was written to harness state&#x27; is not an earned absence (§10.7, §10.8)</td>
+      <td>api-loop-scripted-frontier: Plane A&#x27;s coverage cannot support an absence claim for every run in this set, so &#x27;no sensitive directory was touched&#x27; is not an earned absence (§10.7, §10.8)</td>
     </tr>
     <tr>
       <td><code>security_runtime.canaries</code></td>

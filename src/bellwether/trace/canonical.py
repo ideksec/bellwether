@@ -40,6 +40,7 @@ __all__ = [
     "StepSignature",
     "canonicalize",
     "capability_for",
+    "sensitive_directory_of",
 ]
 
 #: One step of the trajectory: ``(kind, tool name, tier-1 capability)``. Tool name and
@@ -194,7 +195,8 @@ def canonicalize(
         sorted(
             entry
             for entry in t2
-            if _directory_of(entry) is not None and _directory_of(entry) in sensitive_directories
+            if sensitive_directory_of(entry) is not None
+            and sensitive_directory_of(entry) in sensitive_directories
         )
     )
 
@@ -440,7 +442,7 @@ def _top_level(normalized: str) -> str:
     return normalized
 
 
-def _directory_of(tier2: str) -> str | None:
+def sensitive_directory_of(tier2: str) -> str | None:
     """The bare directory name a tier-2 entry names, for the sensitive list.
 
     ``workspace_read:.git/`` → ``.git/``; ``outside_workspace_read:${HOME}/.aws/`` →

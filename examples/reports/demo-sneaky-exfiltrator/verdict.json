@@ -34,14 +34,8 @@
     {
       "name": "security_runtime.sensitive_directories",
       "reason": "api-loop-scripted-frontier: the skill read or wrote under a §13.5.4 sensitive directory that no manifest entry deliberately declares; any single appearance is a finding, and frequency is deliberately irrelevant here",
-      "required": true,
-      "status": "block"
-    },
-    {
-      "name": "security_runtime.harness_state",
-      "reason": "api-loop-scripted-frontier: the filesystem-write and harness planes cannot both support an absence claim for every run in this set, so 'nothing was written to harness state' is not an earned absence (§10.7, §10.8)",
       "required": false,
-      "status": "not_evaluable"
+      "status": "warn"
     },
     {
       "name": "security_runtime.canaries",
