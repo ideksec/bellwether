@@ -11,7 +11,7 @@ slice, validated on CI.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import pytest
@@ -394,3 +394,25 @@ def test_a_canary_in_a_request_header_is_found_before_redaction() -> None:
     assert flow.canary_hits[0].destination == "other_host"
     # And the value itself still never reaches the record.
     assert canaries[0].marker not in flow_record_line(flow)
+
+
+def test_the_fake_request_models_every_field_the_protocol_declares() -> None:
+    """The structural reason R1 survived: the fake had one ``pretty_host`` field where the real
+    object has two, so no test could express a client that addresses one host and names another.
+    The attack was not representable, which is a stronger kind of untested than "we forgot".
+
+    A ``Protocol`` gives no runtime enforcement — a fake satisfies it by having *enough* fields,
+    never all of them — so a field added to :class:`RequestLike` for a new decision would not
+    fail anything here. This checks the fake is complete, so the next field the addon starts
+    reading has to be modelled before its behaviour can be tested at all.
+    """
+    from bellwether.capture.proxy_addon import RequestLike
+
+    declared = set(RequestLike.__annotations__)
+    modelled = {field.name for field in fields(_FakeRequest)}
+
+    missing = sorted(declared - modelled)
+    assert not missing, (
+        f"_FakeRequest does not model {missing}, so no test here can vary them. A fake that "
+        "cannot express an input cannot fail on it."
+    )

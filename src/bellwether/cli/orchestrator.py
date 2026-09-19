@@ -116,6 +116,9 @@ from bellwether.verdict import (
 )
 
 __all__ = [
+    "ADVISORY_GATE_CONTROLS",
+    "ENFORCED_SECURITY_RUNTIME_DISPOSITIONS",
+    "ENFORCING_GATE_CONTROLS",
     "AnalysedRun",
     "EvalResult",
     "ExecutedRun",
@@ -1882,6 +1885,70 @@ _PLANE_DEPENDENT_CHECKS: Mapping[str, str] = {
 #: one will not, on its own, make a verdict ``not_ready``. ``doctor`` reads this set to warn when
 #: a configured disposition is inert, so a control is never mistaken for an active one; a new
 #: gate wiring another disposition must add it here (see spec-notes, BW-49).
+#: **The control registry (§16.1).** Every field the policy schema accepts under ``gates``,
+#: classified by what this build does with it. A control the schema accepts and the composition
+#: ignores is the project's signature defect — a path that renders a clean result without running
+#: the check — and it has now been found four times in four different sub-models: the
+#: ``security_runtime`` dispositions (BW-49), ``static.require_scan``, ``scope.require_manifest``
+#: and the whole ``human_review`` gate. Enumerating them one at a time after the fact is what a
+#: blacklist does; this is the allowlist.
+#:
+#: ``tests/test_control_registry.py`` fails the build when a field on any gate model is absent
+#: from both sets, so a new control cannot be *merged* without someone saying which it is. That
+#: is the whole point: the cost of the mistake is a failing test at authoring time rather than a
+#: verdict that skipped a check.
+#:
+#: A control is ``ENFORCING`` when some composed gate or §16.4 precondition reads it and can
+#: change the verdict. It is ``ADVISORY`` when it only shapes a message, a threshold's display,
+#: or a figure — never when it is simply unimplemented. There is deliberately no third bucket for
+#: "accepted but does nothing": that state is what this registry exists to make unrepresentable.
+ENFORCING_GATE_CONTROLS: frozenset[str] = frozenset(
+    {
+        # evidence
+        "evidence.min_evaluable_fraction",
+        # static (§15) — required, and refused by the preflight where no scanner ships
+        "static.require_scan",
+        "static.max_severity_allowed",
+        # scope (§12.5)
+        "scope.require_manifest",
+        "scope.block_on",
+        # security_runtime (§16.2): which dispositions are scored is its own constant
+        # (ENFORCED_SECURITY_RUNTIME_DISPOSITIONS, below) because `doctor` reads that list to
+        # name the inert ones; the registry test consults it rather than restating it here.
+        # functional (§13.1)
+        "functional.min_pass_rate_lower_bound",
+        "functional.require_all_should_trigger",
+        "functional.max_false_trigger_rate",
+        # consistency (§13.4, §13.5)
+        "consistency.min_bci",
+        "consistency.min_modal_trajectory_share",
+        "consistency.max_mean_edit_distance",
+        "consistency.min_capability_jaccard_weighted",
+        "consistency.max_rare_capability_risk",
+        # regression (§17.5)
+        "regression.compare_to_baseline",
+        "regression.block_on_capability_expansion",
+        "regression.max_pass_rate_drop",
+        # budget (§19.1)
+        "budget.max_cost_usd",
+        "budget.max_wall_clock_minutes",
+        # human review (§6.3)
+        "human_review.required",
+        "human_review.max_age_days",
+        "human_review.separate_reviewer_from_author",
+    }
+)
+
+#: Controls that shape what is *reported* without deciding the verdict. Each entry names why,
+#: because "advisory" is the answer an inert control would also like to give.
+ADVISORY_GATE_CONTROLS: Mapping[str, str] = {
+    # §12.3: a judge score gates quality, and no judge subsystem exists in this build. The
+    # threshold is carried into the report so a reader knows what would have been applied.
+    "quality.min_judge_score": "no judge subsystem in this build (§12.3)",
+    "quality.require_positive_lift": "no A/B subsystem in this build (§12.3)",
+}
+
+
 ENFORCED_SECURITY_RUNTIME_DISPOSITIONS: frozenset[str] = frozenset(
     {
         "egress_outside_allowlist",
