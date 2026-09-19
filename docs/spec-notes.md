@@ -2825,3 +2825,77 @@ rather than replaying the truncated trace. The field is optional rather than def
 writer that recorded no bounds is distinguishable from one that recorded bounds of none; that
 also keeps the committed golden trace byte-identical.
 
+## §9.2, §20 — The interception probe needs no reachable destination, and has three outcomes
+
+§9.2 asks `bellwether doctor` to establish interception by issuing a real request. The host-side
+core (the mechanism table, `interception_confirmed`) landed early; the live half did not, and
+doctor reported the proxy as *configured* in its place. Those are different claims, and the space
+between them is where the tool's worst failure lives: a container that rejects the CA produces
+traces with zero egress, which read as a skill that never touched the network.
+
+**The probe is self-contained.** The obvious design needs a reachable destination, which means
+either real internet from CI or a TLS peer container stood up beside the proxy. Neither is
+necessary, because of where the flow is recorded: `ProxyAddon.on_request` appends the flow when
+the request **arrives**, before any forwarding decision. So a recorded probe host establishes that
+the client completed a TLS handshake against the proxy's own certificate — which is the entire
+question — regardless of what happened upstream. The probe therefore targets an unresolvable name
+in the reserved `.invalid` TLD: nothing leaves the machine, no peer is needed, and a client that
+does not trust the CA fails during the handshake, before any flow exists. The probe host is
+deliberately *not* allowlisted either; a denied request is still recorded, because the block is a
+decision made after receipt.
+
+**Three outcomes, not two.** Confirmed and rejected are the obvious pair, and collapsing everything
+else into "not confirmed" would be the familiar mistake — a probe that could not run would read as
+a CA failure, and the operator would fix the wrong thing. `InterceptionProbe` carries an explicit
+*inconclusive* state for the case where nothing was established either way (no route, no
+interpreter, a request that died before TLS), and doctor renders it as a `warn` that says so.
+Only a rejection is `critical`. The rejection markers are matched on *trust* wordings
+specifically, not on TLS errors generally, for the same reason.
+
+**The counter-case is asserted.** A probe that cannot fail establishes nothing, so the container
+proof also runs the identical request from a client with the CA stripped from its trust
+environment — keeping `HTTPS_PROXY`, so the failure is about trust and nothing else — and asserts
+the certificate is refused with no flow recorded. The stripping helper lives beside an offline
+guard that fails if `probe_argv` ever names trust differently, so the CI counter-case cannot
+silently become vacuous by stripping nothing.
+
+## §5, §6, §18 — A plugin is installed whole, and the CLI qualifies its skills
+
+The earlier note deferred plugin-layout staging on the grounds that it needed a client fact this
+build had not observed. This closes it by observing the fact.
+
+**What was wrong.** Staging lifted each skill out of its bundle and installed it as a bare
+directory. Everything the bundle holds *outside* a skill directory — shared references a skill body
+points at, the manifest — never reached the container, so a skill that reads a sibling path works
+in a real client and fails under evaluation for a reason that is about Bellwether rather than about
+the skill. `stage_plugin_bundle` now copies the bundle whole and the CLI loads it with
+`--plugin-dir` (the flag the real binary documents: "load a plugin from a directory"). The §3.5
+invariant is unchanged and now applies bundle-wide rather than per skill: no `evals/` anywhere is
+copied, each is named in `refused_machinery`, and the result is asserted before the bundle is
+mounted.
+
+**The observed fact, and why it mattered more than the staging.** Running the real CLI 2.1.274 with
+`--plugin-dir` and reading its init record: every skill under `skills/` is offered, and each is
+reported **qualified by its bundle** — `demo-bundle:demo-skill`, not `demo-skill`. Bellwether's
+`skill_activated` assertion compared the recorded name to the skill under test exactly. Whole-bundle
+staging would therefore have scored the skill as *never activating* on every plugin run: a false
+negative manufactured by the staging choice, presented as evidence about the skill. Had the staging
+landed on the assumption that names come through bare, the corpus would have looked fine (no plugin
+skill is in it) and the defect would have waited for a user.
+
+The fix keeps the observation and narrows the comparison, not the other way round: the trace records
+what the harness said, and `skill_name_matches` strips the bundle qualifier **from the recorded side
+only**. An expected name that carries its own qualifier is compared whole, so a scenario can still
+name exactly one bundle's skill where two bundles ship the same skill name. The qualification is
+pinned by a test against the real binary, so a future CLI that drops it fails there rather than
+leaving the matcher over-matching forever.
+
+## §26 — CodeQL on Bellwether's own source
+
+Listed for a long time as "thin to be missing on a repo about supply chain", and parked as a
+repository setting. Only the *enabling* is a setting; the workflow is code, and for a public
+repository committing it is the whole of the work. `security-and-quality` over the Python package,
+on pull requests and `main`, plus weekly — the weekly run being the part that earns the most, since
+most of what the queries will ever find here is already written. SHA-pinned like every other action,
+because `tools/pin_lint.py` is not optional for the repository that ships it.
+
