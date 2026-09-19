@@ -573,6 +573,26 @@ class ClaudeCodeAdapter:
                     ),
                 },
             )
+        # §12.7: two operator limits the CLI exposes no flag for, so neither can be *enforced*
+        # here — the process runs to its own end and the totals are read afterwards. They are
+        # reported at the boundary instead, and reported the same way, because a cap that is
+        # checked after the spend is a threshold and saying otherwise is what let the pre-flight
+        # estimate price an unenforceable number as a ceiling. `--max-turns` is genuinely
+        # enforced (it is on the argv above); these two are not.
+        if len(stdout_calls) > limits.max_tool_calls:
+            yield RawHarnessEvent(
+                ts=self._clock(),
+                kind="harness_error",
+                turn=turn or None,
+                data={
+                    "exit_reason": "budget_exceeded",
+                    "detail": (
+                        f"tool call limit: {limits.max_tool_calls} (made {len(stdout_calls)}); "
+                        "this harness exposes no flag for it, so the limit is observed after "
+                        "the run rather than enforced during it"
+                    ),
+                },
+            )
         if tokens_used > limits.max_total_tokens:
             # An operator limit the CLI has no flag for, so it is enforced at the boundary:
             # the run spent more than allowed and is not_evaluable, never a pass (§12.7).

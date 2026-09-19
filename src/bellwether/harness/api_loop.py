@@ -146,6 +146,20 @@ class ApiLoopAdapter:
                 yield self._limit_event("timeout", f"wall clock: {limits.wall_seconds:.0f}s", turn)
                 return
 
+            # §12.7/§19.1: the token budget is *reserved* before the request, not only counted
+            # after it. Checking the total once a completion has returned means the run can
+            # only notice it overshot — the tokens are already bought — so a figure the
+            # pre-flight estimate prices as a ceiling was really a threshold. Two halves: refuse
+            # to start a turn with nothing left, and tell the provider how much output is left
+            # so this turn cannot itself blow past the cap. What remains unbounded is the input
+            # side of the final request, which is spent to discover the answer; the estimate
+            # says so rather than claiming a tighter bound than it has.
+            remaining = limits.max_total_tokens - tokens_used
+            if remaining <= 0:
+                yield self._limit_event(
+                    "budget_exceeded", f"token budget: {limits.max_total_tokens}", turn
+                )
+                return
             model_turn = self._client.complete(
                 ModelRequest(
                     model_id=model_id,
@@ -153,6 +167,7 @@ class ApiLoopAdapter:
                     messages=tuple(messages),
                     tools=self._tool_specs(),
                     sampling=self._sampling,
+                    max_output_tokens=remaining,
                 )
             )
             usage = model_turn.usage

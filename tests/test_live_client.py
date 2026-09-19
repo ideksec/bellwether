@@ -569,3 +569,49 @@ def test_a_non_object_tool_input_is_a_controlled_error() -> None:
         parse_anthropic_response(
             {"content": [{"type": "tool_use", "id": "t", "name": "read", "input": "not-an-object"}]}
         )
+
+
+# ---------------------------------------------------------------------------
+# R8 — the token cap is reserved before the request, not counted after it
+# ---------------------------------------------------------------------------
+
+
+def test_the_remaining_budget_lowers_the_providers_output_ceiling() -> None:
+    """R8: the loop counted tokens *after* a completion returned, so a run could only ever
+    notice it had overshot — the tokens were already bought, and a figure the pre-flight
+    estimate priced as a ceiling was really a threshold. The remaining budget now goes on the
+    wire as the provider's own output ceiling."""
+    from dataclasses import replace
+
+    bounded = replace(_REQUEST, max_output_tokens=32)
+
+    assert anthropic_request_body(bounded, max_tokens=4096)["max_tokens"] == 32
+    assert openai_request_body(bounded, max_tokens=4096)["max_completion_tokens"] == 32
+
+
+def test_a_request_never_raises_the_clients_configured_ceiling() -> None:
+    """The remaining budget can only *lower* it: the client's ceiling is the operator's
+    setting, and a run with budget to spare must not be allowed to talk past it."""
+    from dataclasses import replace
+
+    generous = replace(_REQUEST, max_output_tokens=1_000_000)
+
+    assert anthropic_request_body(generous, max_tokens=4096)["max_tokens"] == 4096
+
+
+def test_an_unbounded_request_leaves_the_configured_ceiling_alone() -> None:
+    assert anthropic_request_body(_REQUEST, max_tokens=4096)["max_tokens"] == 4096
+
+
+def test_a_remaining_budget_of_zero_still_asks_for_one_token() -> None:
+    """A provider asked for zero output tokens errors rather than returning an empty turn, and
+    an error here would read as an infrastructure failure rather than an exhausted budget. The
+    loop refuses to start such a turn at all; this is the floor under that."""
+    from dataclasses import replace
+
+    assert (
+        anthropic_request_body(replace(_REQUEST, max_output_tokens=0), max_tokens=4096)[
+            "max_tokens"
+        ]
+        == 1
+    )

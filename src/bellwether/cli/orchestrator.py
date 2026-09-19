@@ -486,6 +486,12 @@ def drive_evaluation(
     than the earliest pre-registered decision point (§13.1) has no boundary to stop at and would
     yield a figure the sequential design does not license — so it is refused rather than quietly
     reported, the same reflex as the rest of the pipeline.
+
+    Sets are executed **look by look** (§13.1): a set runs to its first pre-registered decision
+    point, the design is consulted, and the next batch is bought only on a ``continue``. Before
+    this, every set ran to ``n_max`` and the stopping decision was computed from the finished
+    matrix — the design named where a set *would have* stopped, having already paid for the runs
+    past that point.
     """
 
     # §7.2: a scenario may carry its own look schedule; each set is aggregated — and held to
@@ -497,11 +503,16 @@ def drive_evaluation(
 
     analysed_by_set: dict[tuple[str, str], list[AnalysedRun]] = {}
     order: list[tuple[str, str, TargetInfo]] = []
+    by_set: dict[tuple[str, str], list[RunPlan]] = {}
     for plan in plans:
         set_key = (plan.scenario.id, plan.target.slug)
-        if set_key not in analysed_by_set:
+        if set_key not in by_set:
+            by_set[set_key] = []
             analysed_by_set[set_key] = []
             order.append((plan.scenario.id, plan.target.slug, plan.target))
+        by_set[set_key].append(plan)
+
+    def execute_and_analyse(plan: RunPlan) -> AnalysedRun:
         executed = executor.execute(plan)
         run = analyse_run(
             plan,
@@ -527,7 +538,44 @@ def drive_evaluation(
                     run.sensitive_hits, declared_scope
                 ),
             )
-        analysed_by_set[set_key].append(run)
+        return run
+
+    # §13.1: **execute by look**, not straight to ``n_max``. The plan matrix expands to the last
+    # look because that is the most a set can need; running all of it and computing the stopping
+    # decision afterwards made the sequential design a label on the report rather than a
+    # scheduling rule. A set whose interval resolves at the first look then still paid for every
+    # later run, while the pre-flight estimate printed "best 6, expected 12" next to a matrix
+    # that always cost 20 — the number an operator approves has to be one the run can produce.
+    #
+    # The decision is the same one ``aggregate`` records, taken on the runs so far: a ``continue``
+    # buys the next batch, anything else stops the set. Aggregation is pure, so re-running it per
+    # look costs nothing and, more to the point, means the scheduler and the report cannot
+    # disagree about where a set stopped — they are reading one function.
+    for set_key in (key for key in by_set):
+        scenario_id, slug = set_key
+        set_plans = by_set[set_key]
+        set_looks = [look for look in looks_of(scenario_id) if look <= len(set_plans)]
+        if not set_looks or set_looks[-1] != len(set_plans):
+            set_looks = [*set_looks, len(set_plans)]
+        target = next(t for sid, sl, t in order if (sid, sl) == set_key)
+        for look in set_looks:
+            while len(analysed_by_set[set_key]) < look:
+                analysed_by_set[set_key].append(
+                    execute_and_analyse(set_plans[len(analysed_by_set[set_key])])
+                )
+            if look >= len(set_plans):
+                break
+            reading = aggregate(
+                scenario_id,
+                target,
+                analysed_by_set[set_key],
+                profile=profile,
+                weights=weights,
+                looks=looks_of(scenario_id),
+            )
+            if reading.look_outcome != "continue":
+                break
+
     for scenario_id, slug, _target in order:
         set_looks = looks_of(scenario_id)
         first_look = set_looks[0] if set_looks else 1

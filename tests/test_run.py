@@ -472,10 +472,13 @@ def test_run_evaluation_produces_a_verdict_and_an_artifact_tree(
     result, executor = _evaluate(package, tmp_path)
 
     # benign-stable: every evaluable gate passes; egress not_evaluable (no proxy in this path) →
-    # conditional, exit 0. The full n_max was run.
+    # conditional, exit 0. The set stops at its first look rather than running to n_max: the
+    # sequential design (§13.1) schedules the matrix now instead of describing it afterwards.
+    looks = _policy().profile("low").matrix.looks
     assert result.verdict.verdict == "conditional"
     assert result.exit_code == 0
-    assert executor.calls == _policy().profile("low").matrix.n_max
+    assert executor.calls == looks[0]
+    assert executor.calls < _policy().profile("low").matrix.n_max
     assert result.artifacts.summary_json.exists()
 
 
@@ -931,13 +934,17 @@ def _evaluate_with(package: SkillPackage, tmp_path: Path, *, config: Config, **k
 def test_an_unpriced_matrix_composes_the_wall_clock_gate_and_discloses_the_cost_gap(
     package: SkillPackage, tmp_path: Path
 ) -> None:
-    """No pricing: the wall-clock half is decided from the footers (20 runs × 30 s = 10 min,
+    """No pricing: the wall-clock half is decided from the footers (six runs × 30 s = 3 min,
     within 60), the cost half is not composed, and the verdict *says so* — the token usage is
-    still in summary.cost, with usd null rather than a zero that would read as free."""
+    still in summary.cost, with usd null rather than a zero that would read as free.
+
+    Six, not twenty: the set resolves at its first pre-registered look and the sequential design
+    stops the scheduler there (§13.1). The budget figures are what the run *cost*, so they
+    follow the runs it actually bought."""
     result, _ = _evaluate(package, tmp_path)
     gates = {gate.name: gate for gate in result.verdict.gates}
     assert gates["budget.wall_clock"].status == "pass"
-    assert gates["budget.wall_clock"].per_target[0].observed == "10.00 min"
+    assert gates["budget.wall_clock"].per_target[0].observed == "3.00 min"
     assert "budget.cost" not in gates
     assert any("budget.cost not composed" in note for note in result.verdict.notes)
     assert any("anthropic/frontier" in note for note in result.verdict.notes)
@@ -946,24 +953,24 @@ def test_an_unpriced_matrix_composes_the_wall_clock_gate_and_discloses_the_cost_
     assert cost.usd is None
     assert cost.unpriced_targets == ("anthropic/frontier",)
     assert cost.runs_without_footer == 0
-    assert cost.wall_clock_s == 600.0
-    # 20 runs × (120 + 90 input, 40 + 10 output) from the scripted transcript
-    assert cost.tokens["input"] == 20 * 210
-    assert cost.tokens["output"] == 20 * 50
+    assert cost.wall_clock_s == 180.0
+    # six runs × (120 + 90 input, 40 + 10 output) from the scripted transcript
+    assert cost.tokens["input"] == 6 * 210
+    assert cost.tokens["output"] == 6 * 50
 
 
 def test_a_priced_matrix_composes_the_cost_gate_from_reported_tokens(
     package: SkillPackage, tmp_path: Path
 ) -> None:
     """With every alias priced, reported tokens become dollars at the configured rate:
-    20 × (210 × $1 + 50 × $5) per million = $0.0092, within the profile's $25."""
+    six × (210 × $1 + 50 × $5) per million = $0.00276, within the profile's $25."""
     result = _evaluate_with(package, tmp_path, config=_priced_config())
     gates = {gate.name: gate for gate in result.verdict.gates}
     assert gates["budget.cost"].status == "pass"
-    assert gates["budget.cost"].per_target[0].observed == "$0.0092"
+    assert gates["budget.cost"].per_target[0].observed == "$0.0028"
     assert not any("budget.cost not composed" in note for note in result.verdict.notes)
     assert result.summary.cost is not None
-    assert result.summary.cost.usd == 0.0092
+    assert result.summary.cost.usd == 0.00276
     assert result.summary.cost.unpriced_targets == ()
     # Otherwise the same verdict as the unpriced path: conditional on the unobserved planes.
     assert result.verdict.verdict == "conditional"
@@ -1000,15 +1007,16 @@ def test_budget_usd_is_ignored_on_an_unpriced_matrix_but_the_note_carries_it(
 def test_a_matrix_over_its_wall_clock_ceiling_is_not_ready(
     package: SkillPackage, tmp_path: Path
 ) -> None:
-    """The shipped low profile allows 60 min; 20 runs at 4 min each is 80 — the gate blocks
-    on what the footers recorded, and the summary shows the spend that did it."""
+    """The shipped low profile allows 60 min; the set stops at its first look of six, and six
+    runs at 11 min each is 66 — the gate blocks on what the footers recorded, and the summary
+    shows the spend that did it."""
 
     class _Slow(_ScriptedExecutor):
         def execute(self, plan: RunPlan) -> ExecutedRun:
             executed = super().execute(plan)
             trace = executed.trace
             assert trace.footer is not None
-            footer = trace.footer.model_copy(update={"wall_clock_ms": 4 * 60_000})
+            footer = trace.footer.model_copy(update={"wall_clock_ms": 11 * 60_000})
             from dataclasses import replace as _replace
 
             return _replace(executed, trace=_replace(trace, footer=footer))
@@ -1030,10 +1038,10 @@ def test_a_matrix_over_its_wall_clock_ceiling_is_not_ready(
     )
     gates = {gate.name: gate for gate in result.verdict.gates}
     assert gates["budget.wall_clock"].status == "block"
-    assert gates["budget.wall_clock"].per_target[0].observed == "80.00 min"
+    assert gates["budget.wall_clock"].per_target[0].observed == "66.00 min"
     assert result.verdict.verdict == "not_ready"
     assert result.summary.cost is not None
-    assert result.summary.cost.wall_clock_s == 4800.0
+    assert result.summary.cost.wall_clock_s == 3960.0
 
 
 # ---------------------------------------------------------------------------
@@ -1200,7 +1208,9 @@ def test_depth_standard_runs_frontier_and_small_at_looks_six_and_twelve(
     result, executor = _evaluate_depth(
         package, tmp_path, depth="standard", policy=_two_alias_policy(), config=_two_alias_config()
     )
-    assert executor.calls == 2 * 12
+    # Planned to 12 per target, executed to the look that resolved: both scripted sets pass
+    # cleanly at the first look, so the second batch is never bought (§13.1).
+    assert executor.calls == 2 * 6
     assert result.summary.matrix.target_slugs == (
         "api-loop-anthropic-frontier",
         "api-loop-anthropic-small",
@@ -1218,13 +1228,14 @@ def test_depth_standard_refuses_a_matrix_missing_one_of_its_aliases(
         _evaluate_depth(package, tmp_path, depth="standard", policy=_policy(), config=_config())
 
 
-def test_depth_deep_runs_every_configured_target_to_twenty(
+def test_depth_deep_plans_every_configured_target_to_twenty_and_stops_when_resolved(
     package: SkillPackage, tmp_path: Path
 ) -> None:
     result, executor = _evaluate_depth(
         package, tmp_path, depth="deep", policy=_two_alias_policy(), config=_two_alias_config()
     )
-    assert executor.calls == 2 * 20
+    # `deep` pre-registers three looks and plans to 20; a clean set still stops at the first.
+    assert executor.calls == 2 * 6
     assert result.summary.matrix.looks == (6, 12, 20)
     assert len(result.summary.matrix.target_slugs) == 2
 
@@ -1308,14 +1319,16 @@ def test_a_second_evaluation_is_served_from_the_run_cache(
 
     (tmp_path / "fixture").mkdir(exist_ok=True)
     first = evaluate("first")
-    assert holder["exec"].calls == 20
+    # Six, not twenty: the set resolves at its first pre-registered look and the sequential
+    # design stops the scheduler there (§13.1), so the cache holds what was actually run.
+    assert holder["exec"].calls == 6
     assert first.summary.matrix.runs_cached == 0
-    assert len(list((tmp_path / "cache").iterdir())) == 20
+    assert len(list((tmp_path / "cache").iterdir())) == 6
 
     second = evaluate("second")
     assert holder["exec"].calls == 0  # nothing executed
-    assert second.summary.matrix.runs_cached == 20
-    assert second.summary.matrix.runs_completed == 20
+    assert second.summary.matrix.runs_cached == 6
+    assert second.summary.matrix.runs_completed == 6
     assert second.verdict.verdict == first.verdict.verdict
     # Re-filed under the new evaluation, provenance kept.
     trace_path = second.artifacts.traces[0]
@@ -1330,7 +1343,7 @@ def test_a_second_evaluation_is_served_from_the_run_cache(
     assert sum(second.summary.cost.tokens.values()) == 0
     assert second.summary.cost.wall_clock_s == 0.0
     assert second.summary.cost.runs_without_footer == 0
-    assert any("20 of 20 runs were served from the run cache" in n for n in second.verdict.notes)
+    assert any("6 of 6 runs were served from the run cache" in n for n in second.verdict.notes)
     assert not any("run cache" in n for n in first.verdict.notes)
 
 
@@ -1354,7 +1367,7 @@ def test_pinned_sampling_never_hits_a_trace_recorded_at_provider_defaults(
     again = _evaluate_with(
         package, tmp_path, config=_config(), run_cache=cache, deterministic_sampling=True
     )
-    assert again.summary.matrix.runs_cached == 20
+    assert again.summary.matrix.runs_cached == 6
 
 
 def test_wiring_the_proxy_misses_the_cache(package: SkillPackage, tmp_path: Path) -> None:
@@ -1373,7 +1386,7 @@ def test_wiring_the_proxy_misses_the_cache(package: SkillPackage, tmp_path: Path
     first = _evaluate_with(package, tmp_path, config=networkless, run_cache=cache)
     assert first.summary.matrix.runs_cached == 0
     again = _evaluate_with(package, tmp_path, config=networkless, run_cache=cache)
-    assert again.summary.matrix.runs_cached == 20
+    assert again.summary.matrix.runs_cached == 6
 
     observed = networkless.model_copy(
         update={"egress": EgressConfig(image="proxy@sha256:" + "e" * 64)}
@@ -1414,7 +1427,7 @@ def test_a_changed_companion_misses_the_cache(package: SkillPackage, tmp_path: P
     same = _evaluate_with(
         package, tmp_path, config=_config(), run_cache=cache, companions_for=lambda _s: companions
     )
-    assert same.summary.matrix.runs_cached == 20
+    assert same.summary.matrix.runs_cached == 6
 
     write_companion("inspect pods, then restart them")
     changed = (load_skill(companion_dir),)
@@ -1452,7 +1465,7 @@ def test_a_changed_model_id_or_no_cache_misses(package: SkillPackage, tmp_path: 
 
     (tmp_path / "fixture").mkdir(exist_ok=True)
     evaluate("fill", _config())
-    assert holder["exec"].calls == 20
+    assert holder["exec"].calls == 6
 
     other_model = Config(
         **_API,
@@ -1465,11 +1478,11 @@ def test_a_changed_model_id_or_no_cache_misses(package: SkillPackage, tmp_path: 
         sandbox=SandboxConfig(image="img@sha256:" + "d" * 64),
     )
     changed = evaluate("changed-model", other_model)
-    assert holder["exec"].calls == 20  # a changed model id never hits (§19.2)
+    assert holder["exec"].calls == 6  # a changed model id never hits (§19.2)
     assert changed.summary.matrix.runs_cached == 0
 
     bypassed = evaluate("bypassed", _config(), use_cache=False)
-    assert holder["exec"].calls == 20
+    assert holder["exec"].calls == 6
     assert bypassed.summary.matrix.runs_cached == 0
 
 
@@ -1564,7 +1577,9 @@ def test_the_estimate_is_offered_before_anything_runs_and_a_decline_refuses(
     assert estimate.cost_ceiling_usd is None  # the fixture config prices nothing
 
     evaluate(accept=True)
-    assert holder["exec"].calls == 20
+    # The estimate's *best* case, which is now the case the scheduler can actually produce:
+    # before this, the estimate printed "best 6" beside a matrix that always cost 20.
+    assert holder["exec"].calls == estimate.best_runs == 6
 
 
 def test_run_evaluation_hands_the_configured_sensitive_list_to_the_driver(
