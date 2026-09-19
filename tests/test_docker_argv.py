@@ -470,3 +470,22 @@ def test_stage_canary_files_is_empty_when_nothing_is_planted(tmp_path: Path) -> 
         executor.package, executor.fixture, tmp_path / "prep", rng=SeededRng(1, "x")
     )
     assert executor._stage_canary_files(None, prepared, tmp_path / "run") == []
+
+
+def test_the_payload_mount_is_omitted_when_the_skill_is_installed_another_way(prepared) -> None:  # type: ignore[no-untyped-def]
+    """§5/§6/§18: a skill installed as part of an Agent Plugin bundle must not *also* be mounted
+    bare, or the harness is offered two copies of it and "which activated" is undecidable.
+    Asserted against the real argv builder — a switch the backend ignored would leave both
+    mounted while the executor believed otherwise."""
+    from dataclasses import replace
+
+    backend = DockerBackend(image="img")
+    payload_mount = f"{prepared.payload.root}:{prepared.payload.install_path}:ro"
+
+    with_payload = backend.build_argv(prepared, ["true"])
+    assert payload_mount in with_payload
+
+    without = backend.build_argv(replace(prepared, install_payload=False), ["true"])
+    assert payload_mount not in without
+    # Exactly one mount fewer; the rest of the run is unchanged.
+    assert without.count("-v") == with_payload.count("-v") - 1

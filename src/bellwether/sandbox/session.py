@@ -75,6 +75,12 @@ class PreparedSandbox:
     #: never read as a named volume. ``None`` only where a caller assembled a sandbox by
     #: hand; :func:`prepare_sandbox` always sets it.
     machine_id_file: Path | None = None
+    #: Whether the skill's own payload is installed at ``payload.install_path``. False where the
+    #: skill reaches the container another way — installed as part of an Agent Plugin bundle
+    #: (§5/§6/§18). Mounting both would offer the harness *two* copies of the same skill, one
+    #: bare and one bundle-qualified, and "which activated" would be undecidable — the exact
+    #: ambiguity the §16.4 preflight refuses for companions.
+    install_payload: bool = True
 
     def mounts(self) -> list[tuple[Path, PurePosixPath, str]]:
         """``(host path, container path, mode)`` for each mount.
@@ -82,10 +88,10 @@ class PreparedSandbox:
         The payload is mounted read-only: a skill that can rewrite its own installed body
         mid-run makes the trace describe something other than the reviewed artifact.
         """
-        return [
-            (self.workspace.root, self.identifiers.workspace_root, "rw"),
-            (self.payload.root, self.payload.install_path, "ro"),
-        ]
+        mounts = [(self.workspace.root, self.identifiers.workspace_root, "rw")]
+        if self.install_payload:
+            mounts.append((self.payload.root, self.payload.install_path, "ro"))
+        return mounts
 
     def environment(self) -> dict[str, str]:
         """Environment pinned inside the container (§9.2)."""

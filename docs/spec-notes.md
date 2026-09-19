@@ -2852,6 +2852,20 @@ interpreter, a request that died before TLS), and doctor renders it as a `warn` 
 Only a rejection is `critical`. The rejection markers are matched on *trust* wordings
 specifically, not on TLS errors generally, for the same reason.
 
+**It probes the sandbox image, not the sidecar.** The first cut ran the client from the sidecar
+image, on the reasoning that it is the one image guaranteed to carry a Python interpreter. The
+row it rendered said the CA is trusted and egress is observed — about a container no evaluation
+ever uses. The container that has to trust the CA is the **sandbox**: that is what a run puts on
+the internal bridge, and a sandbox that rejects the certificate is the entire state the probe
+exists to rule out, so the probe could not fail for the case that matters. It now runs the client
+from ``sandbox.image``; an image with no interpreter yields *inconclusive*, which is the honest
+answer and the reason that third state exists.
+
+**Everything a probe can throw is a row, not a traceback.** A missing ``docker`` binary or a pull
+that outruns the client timeout says nothing about the CA, and must not abort ``doctor`` in place
+of the rest of its rows: ``OSError`` and ``subprocess.SubprocessError`` join ``BellwetherError``
+as "not probed" warnings.
+
 **The counter-case is asserted.** A probe that cannot fail establishes nothing, so the container
 proof also runs the identical request from a client with the CA stripped from its trust
 environment — keeping `HTTPS_PROXY`, so the failure is about trust and nothing else — and asserts
@@ -2873,6 +2887,37 @@ the skill. `stage_plugin_bundle` now copies the bundle whole and the CLI loads i
 invariant is unchanged and now applies bundle-wide rather than per skill: no `evals/` anywhere is
 copied, each is named in `refused_machinery`, and the result is asserted before the bundle is
 mounted.
+
+**One bundle, one copy of the skill.** The bare payload is mounted at
+``<config dir>/skills/<slug>`` on every run, and staging the bundle *as well* left the harness
+holding two copies of the skill under test — ``demo-skill`` and ``demo-bundle:demo-skill`` — with
+which one activated undecidable. That is the same ambiguity the §16.4 preflight refuses for
+companions, reintroduced by the back door, and the worse half is that if the bare copy won the
+run would still lack the sibling-bundle content this staging exists to provide.
+``PreparedSandbox.install_payload`` now says explicitly whether the skill reaches the container
+by its own mount, and the bundle path turns it off.
+
+**What must not travel with a bundle.** The copy is a denylist where ``stage_payload`` is an
+allowlist, because arbitrary bundle content is the point — so the exclusions are named rather
+than assumed. Version-control metadata is excluded: a plugin that is its own checkout carries the
+evaluation machinery inside ``.git``, and leaving the working tree's ``evals/`` behind is no use
+when ``git show HEAD:evals/scenarios.yaml`` recovers it. Non-regular files are skipped rather than
+read: a FIFO blocks the copy until a writer appears, and the observed tree must never decide
+whether the observer finishes (§10.0). Ordinary dotfiles *are* staged — a bundle's own ``.env`` or
+``.claude`` is content a real client installs.
+
+**The install path is resolved before it is trusted.** ``stage_payload`` asserts its derived path
+cannot escape the install root; the bundle needs the same, with one subtlety that a lexical check
+misses. Taking the path's name verbatim puts ``..`` in the container path, and
+``plugins/..`` compares as *relative to* ``plugins`` while resolving to its parent — which would
+mount the bundle read-only over the harness-state zone. Resolving the bundle path first is what
+makes the guard real, and it also makes ``bellwether run ..`` install under the directory it
+actually names.
+
+**The bundle keys the run cache.** ``payload_digest`` covers the skill's own files and nothing
+else, so without a bundle digest a cached trace would be replayed after a shared file the skill
+reads changed, and a bare run and a ``--plugin-dir`` run would share a key. ``plugin_digest``
+closes both.
 
 **The observed fact, and why it mattered more than the staging.** Running the real CLI 2.1.274 with
 `--plugin-dir` and reading its init record: every skill under `skills/` is offered, and each is

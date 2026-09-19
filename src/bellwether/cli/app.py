@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import enum
 import os
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -741,6 +742,8 @@ def run(
                 depth=depth,
                 platform_baseline=platform_baseline,
                 run_cache=run_cache,
+                # §19.2: the bundle's content reaches the container, so it keys the cache.
+                plugin_root=plugin_root,
                 deterministic_sampling=deterministic_sampling,
                 max_tokens_per_run=max_tokens,
                 on_estimate=_estimate_gate(yes),
@@ -1017,12 +1020,19 @@ def _interception_probe_check(loaded_config: Any) -> dict[str, str]:
             ),
         }
     try:
-        probe = run_interception_probe(provider, client_image=loaded_config.egress.image)
-    except BellwetherError as error:
+        # The image that has to trust the CA is the **sandbox** image: that is what a run puts
+        # on the internal bridge, and a sandbox that rejects the certificate is the whole state
+        # this probe exists to rule out. Probing the sidecar instead would render an `ok` row
+        # about a container no evaluation uses, and could not fail for the case that matters.
+        probe = run_interception_probe(provider, client_image=loaded_config.sandbox.image)
+    except (BellwetherError, OSError, subprocess.SubprocessError) as error:
+        # A missing docker binary, a pull that outruns the client timeout, a daemon that goes
+        # away mid-probe: none of these say anything about the CA, and none may abort doctor
+        # with a traceback in place of the rest of its rows.
         return {
             "check": "TLS interception (§9.2)",
             "status": "warn",
-            "detail": f"not probed: {error}",
+            "detail": f"not probed: {type(error).__name__}: {error}",
         }
     status = "ok" if probe.confirmed else ("critical" if probe.ca_rejected else "warn")
     return {

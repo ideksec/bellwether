@@ -9,7 +9,11 @@ tests pin the decision the probe feeds, and the command it runs; the container h
 
 from __future__ import annotations
 
+import importlib
+import subprocess
 from pathlib import Path, PurePosixPath
+
+import pytest
 
 from bellwether.capture import interpret_interception_probe
 from bellwether.cli.interception_probe import (
@@ -199,3 +203,94 @@ def test_the_probe_client_exits_non_zero_when_the_request_fails() -> None:
     it ran or not — the uninformative signal that hid the eager-strategy failure in the first
     CI run."""
     assert "sys.exit(1)" in PROBE_CLIENT_SOURCE
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: what the probe actually probes, and how doctor survives it
+# ---------------------------------------------------------------------------
+
+
+def _doctor_config(tmp_path: Path):  # type: ignore[no-untyped-def]
+    from bellwether.config.models.config import Config
+
+    return Config.model_validate(
+        {
+            "apiVersion": "bellwether/v1",
+            "kind": "Config",
+            "sandbox": {"image": "sandbox@sha256:" + "5" * 64},
+            "egress": {"image": "sidecar@sha256:" + "6" * 64},
+        }
+    )
+
+
+def test_doctor_probes_the_sandbox_image_not_the_sidecar(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """A review finding, and the sharpest kind: the row said "the CA is trusted and egress is
+    observed" while the client was the *sidecar* image. The container that has to trust the CA
+    is the sandbox — that is what a run puts on the internal bridge — so probing the sidecar
+    rendered an `ok` about a container no evaluation uses, and could not fail for the one state
+    the probe exists to rule out."""
+    app_module = importlib.import_module("bellwether.cli.app")
+    import bellwether.cli.interception_probe as probe_module
+    import bellwether.cli.run as run_module
+
+    seen: dict[str, object] = {}
+
+    def _fake_probe(provider, *, client_image, **kwargs):  # type: ignore[no-untyped-def]
+        seen["client_image"] = client_image
+        return interpret_interception_probe(PROBE_HOST, [PROBE_HOST], exit_code=1)
+
+    monkeypatch.setattr(run_module, "build_proxy_provider", lambda *_a, **_k: object())
+    monkeypatch.setattr(probe_module, "run_interception_probe", _fake_probe)
+
+    row = app_module._interception_probe_check(_doctor_config(tmp_path))
+
+    assert seen["client_image"] == "sandbox@sha256:" + "5" * 64
+    assert row["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        FileNotFoundError(2, "No such file or directory: 'docker'"),
+        subprocess.TimeoutExpired(cmd=["docker", "run"], timeout=120.0),
+    ],
+)
+def test_doctor_survives_a_probe_that_cannot_run(monkeypatch, tmp_path: Path, error) -> None:  # type: ignore[no-untyped-def]
+    """A missing docker binary, or a pull that outruns the client timeout, says nothing about
+    the CA — and must not abort doctor with a traceback in place of its remaining rows."""
+    app_module = importlib.import_module("bellwether.cli.app")
+    import bellwether.cli.interception_probe as probe_module
+    import bellwether.cli.run as run_module
+
+    def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise error
+
+    monkeypatch.setattr(run_module, "build_proxy_provider", lambda *_a, **_k: object())
+    monkeypatch.setattr(probe_module, "run_interception_probe", _raise)
+
+    row = app_module._interception_probe_check(_doctor_config(tmp_path))
+
+    # Reported, not raised — and reported as "not probed", never as a pass.
+    assert row["status"] == "warn"
+    assert row["detail"].startswith("not probed:")
+    assert type(error).__name__ in row["detail"]
+
+
+def test_doctor_says_so_when_no_proxy_is_wired(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A first-light configuration has no egress plane at all, so there is nothing to establish
+    — a warn that says why, not a pass and not a failure."""
+    app_module = importlib.import_module("bellwether.cli.app")
+    import bellwether.cli.run as run_module
+    from bellwether.config.models.config import Config
+
+    monkeypatch.setattr(run_module, "build_proxy_provider", lambda *_a, **_k: None)
+    networkless = Config.model_validate(
+        {
+            "apiVersion": "bellwether/v1",
+            "kind": "Config",
+            "sandbox": {"image": "sandbox@sha256:" + "5" * 64},
+        }
+    )
+    row = app_module._interception_probe_check(networkless)
+    assert row["status"] == "warn"
+    assert "egress.image is empty" in row["detail"]

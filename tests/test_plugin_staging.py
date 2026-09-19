@@ -14,6 +14,7 @@ negative produced entirely by how Bellwether staged the skill.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -83,7 +84,9 @@ def test_a_symlink_escaping_the_bundle_is_refused(tmp_path: Path) -> None:
     (bundle / "escape.md").symlink_to("/etc/passwd")
     staged = stage_plugin_bundle(bundle, tmp_path / "staged")
 
-    assert "escape.md" in staged.refused_machinery
+    # A symlink refusal is not machinery: the two are kept apart, as `StagedPayload` does.
+    assert staged.refused_symlinks == ("escape.md",)
+    assert "escape.md" not in staged.refused_machinery
     assert "escape.md" not in staged.files
     assert not (staged.root / "escape.md").exists()
 
@@ -138,3 +141,131 @@ def test_a_scenario_may_still_name_one_bundles_skill_exactly() -> None:
     assert skill_name_matches("demo-bundle:demo-skill", "demo-bundle:demo-skill")
     assert not skill_name_matches("other-bundle:demo-skill", "demo-bundle:demo-skill")
     assert not skill_name_matches("demo-skill", "demo-bundle:demo-skill")
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: what must never reach the container, and where the bundle mounts
+# ---------------------------------------------------------------------------
+
+
+def test_a_bundle_that_is_its_own_checkout_does_not_ship_its_git_directory(
+    tmp_path: Path,
+) -> None:
+    """§3.5, the version the working-tree rule misses. Leaving `evals/` behind is not enough
+    when the bundle is its own git checkout: `git show HEAD:evals/scenarios.yaml` recovers the
+    machinery from `.git`, and a skill that can read the test machinery can behave only while
+    it is being watched."""
+    bundle = _bundle(tmp_path)
+    (bundle / ".git" / "objects").mkdir(parents=True)
+    (bundle / ".git" / "objects" / "pack").write_bytes(b"the evals live in here")
+    (bundle / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+
+    assert not any(part.startswith(".git") for name in staged.files for part in Path(name).parts)
+    assert not (staged.root / ".git").exists()
+    assert staged.refused_vcs == (".git",)
+
+
+def test_ordinary_dotfiles_are_still_staged(tmp_path: Path) -> None:
+    """The exclusion is version-control metadata, not dotfiles: a bundle's own `.env` or
+    `.claude` is content a real client installs, and dropping it would recreate the very gap
+    whole-bundle staging exists to close."""
+    bundle = _bundle(tmp_path)
+    (bundle / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+    (bundle / ".claude").mkdir()
+    (bundle / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+    assert ".env.example" in staged.files
+    assert ".claude/settings.json" in staged.files
+
+
+def test_a_fifo_in_the_bundle_does_not_hang_the_staging(tmp_path: Path) -> None:
+    """Opening a FIFO blocks until a writer appears, and nothing is going to write. The
+    observed tree must never decide whether the observer finishes (§10.0)."""
+    bundle = _bundle(tmp_path)
+    os.mkfifo(bundle / "pipe")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+    assert "pipe" not in staged.files
+    assert staged.refused_special == ("pipe",)
+
+
+def test_a_relative_bundle_path_installs_under_the_directory_it_names(tmp_path: Path) -> None:
+    """`stage_payload` asserts its install path cannot escape, and the bundle must too. The
+    subtlety: taking the path's name verbatim puts `..` in the container path, and a lexical
+    containment check does *not* catch it — `plugins/..` compares as relative to `plugins`
+    while resolving to its parent, which would mount the bundle read-only over the
+    harness-state zone. Resolving first is what makes the guard real."""
+    bundle = _bundle(tmp_path)
+    via_dots = bundle / "skills" / ".."  # the bundle itself, named awkwardly
+
+    staged = stage_plugin_bundle(via_dots, tmp_path / "staged")
+
+    assert staged.install_path == PurePosixPath(INSTALL_ROOT) / "demo-bundle"
+    assert ".." not in staged.install_path.parts
+    assert staged.install_path.is_relative_to(PurePosixPath(INSTALL_ROOT))
+
+
+def test_a_bundle_with_no_usable_directory_name_is_refused(tmp_path: Path) -> None:
+    """The filesystem root resolves to no name at all: there is nowhere to install it."""
+    with pytest.raises(SkillError, match="no usable directory name"):
+        stage_plugin_bundle(Path("/"), tmp_path / "staged")
+
+
+def test_a_prepared_sandbox_omits_the_payload_mount_when_it_is_not_installed(
+    tmp_path: Path,
+) -> None:
+    """The defect a review caught: the skill under test is *inside* the bundle, so installing
+    the bare payload as well offers the harness two copies of it — `demo-skill` and
+    `demo-bundle:demo-skill` — and which activated is undecidable. Worse, if the bare copy
+    wins, the sibling-bundle content this staging exists to provide is still absent."""
+    from dataclasses import replace
+
+    from bellwether.sandbox import ZoneMap
+    from bellwether.sandbox.session import PreparedSandbox
+    from bellwether.sandbox.staging import stage_payload
+    from bellwether.skill import load_skill
+
+    skill = tmp_path / "solo"
+    (skill / "evals").mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: solo\ndescription: A skill.\n---\nBody.\n", encoding="utf-8"
+    )
+    payload = stage_payload(load_skill(skill), tmp_path / "payload")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    class _Fixture:
+        root = workspace
+
+    prepared = PreparedSandbox(
+        identifiers=_identifiers(),
+        zones=ZoneMap(),
+        isolation=_isolation(),
+        workspace=_Fixture(),  # type: ignore[arg-type]
+        payload=payload,
+        upper_dir=tmp_path / "upper",
+        work_dir=tmp_path / "work",
+    )
+    installed = [target for _, target, _ in prepared.mounts()]
+    assert payload.install_path in installed
+
+    bundled = replace(prepared, install_payload=False)
+    assert payload.install_path not in [target for _, target, _ in bundled.mounts()]
+    # The workspace is untouched: this removes one mount, it does not reshape the run.
+    assert len(bundled.mounts()) == len(prepared.mounts()) - 1
+
+
+def _identifiers():  # type: ignore[no-untyped-def]
+    from bellwether.determinism import SeededRng
+    from bellwether.sandbox import derive_identifiers
+
+    return derive_identifiers(SeededRng(1, "ids"), randomize=False)
+
+
+def _isolation():  # type: ignore[no-untyped-def]
+    from bellwether.sandbox import IsolationProfile
+
+    return IsolationProfile()

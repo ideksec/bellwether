@@ -89,6 +89,10 @@ def test_the_key_ignores_the_scenario_id_and_follows_the_spec_components() -> No
         {"companion_digests": ("sha256:" + "f" * 64,)},
         # What the run could watch, and the limits it ran under.
         {"observability": "sha256:" + "0" * 64},
+        # The bundle's content outside the skill's own directory reaches the container, and
+        # `payload_digest` does not cover it — so editing a shared file a skill reads, or
+        # switching between a bare and a --plugin-dir run, must miss (§5/§6/§18).
+        {"plugin_digest": "sha256:" + "9" * 64},
     ):
         assert cache_key(_inputs(**change)) != base, change
 

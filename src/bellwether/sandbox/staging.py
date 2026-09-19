@@ -21,6 +21,11 @@ from bellwether.errors import SkillError
 from bellwether.sandbox.fixtures import normalize_metadata
 from bellwether.skill import EVALS_DIR, SkillPackage
 
+#: Version-control metadata never staged into a container (§3.5). A plugin that is its own
+#: checkout carries the whole evaluation machinery inside ``.git`` — leaving the working-tree
+#: ``evals/`` behind is not enough when ``git show HEAD:evals/scenarios.yaml`` recovers it.
+_VCS_DIRS = frozenset({".git", ".hg", ".svn", ".bzr"})
+
 __all__ = [
     "StagedBundle",
     "StagedPayload",
@@ -210,6 +215,16 @@ class StagedBundle:
     skill_names: tuple[str, ...]
     #: Machinery directories refused: every ``evals/`` under the bundle (§3.5).
     refused_machinery: tuple[str, ...] = ()
+    #: Symlinks **not** staged because their target escapes the bundle — a different refusal
+    #: from machinery, kept apart for the same reason :class:`StagedPayload` keeps them apart.
+    refused_symlinks: tuple[str, ...] = ()
+    #: Version-control metadata directories skipped (§3.5): a bundle that is its own checkout
+    #: carries the evaluation machinery inside ``.git`` even after the working tree's ``evals/``
+    #: is left behind, and ``git show HEAD:evals/scenarios.yaml`` would recover it.
+    refused_vcs: tuple[str, ...] = ()
+    #: Non-regular files skipped: a FIFO blocks the copy until a writer appears, and the
+    #: observed process must never decide whether the observer finishes (§10.0).
+    refused_special: tuple[str, ...] = ()
 
 
 def stage_plugin_bundle(
@@ -232,25 +247,54 @@ def stage_plugin_bundle(
     behave only while it is being watched. Each one skipped is named in ``refused_machinery``
     rather than silently dropped, and the outcome is asserted rather than trusted.
     """
+    install_root = PurePosixPath(install_path)
+    # The *resolved* directory name, so ``bellwether run ..`` installs under the directory it
+    # actually names. Taking ``bundle_root.name`` verbatim would put ``..`` in the container
+    # path, and a lexical containment check does not catch that — ``plugins/..`` compares as
+    # relative to ``plugins`` while resolving to its parent, which would mount the bundle
+    # read-only over the harness-state zone.
+    name = bundle_root.resolve().name
+    if name in ("", ".", ".."):
+        raise SkillError(
+            f"refusing to install: {bundle_root} resolves to no usable directory name, so the "
+            "plugin has nowhere to install inside the container"
+        )
+    resolved_install = install_root / name
+
+    # Asserted, not assumed, exactly as ``stage_payload`` does for a skill.
+    if not resolved_install.is_relative_to(install_root) or resolved_install == install_root:
+        raise SkillError(
+            f"refusing to install: derived plugin path {resolved_install} escapes {install_root}"
+        )
+
     if destination.exists() and any(destination.iterdir()):
         raise SkillError(f"{destination} is not empty; the bundle is staged into a fresh directory")
     destination.mkdir(parents=True, exist_ok=True)
 
     staged: list[str] = []
-    refused: list[str] = []
+    refused_machinery: list[str] = []
+    refused_symlinks: list[str] = []
+    refused_vcs: list[str] = []
+    refused_special: list[str] = []
     # Sorted walk (§24): the same bundle must stage to the same bytes on every machine.
+    # ``rglob`` matches dotfiles, which is the point — a bundle's own ``.env`` or ``.claude``
+    # is content a real client would install — so the exclusions below are explicit.
     for origin in sorted(bundle_root.rglob("*"), key=lambda path: path.as_posix()):
         relative = origin.relative_to(bundle_root)
         parts = relative.parts
         if EVALS_DIR.rstrip("/") in parts:
             if parts[-1] == EVALS_DIR.rstrip("/"):
-                refused.append(relative.as_posix())
+                refused_machinery.append(relative.as_posix())
+            continue
+        if _VCS_DIRS.intersection(parts):
+            if parts[-1] in _VCS_DIRS:
+                refused_vcs.append(relative.as_posix())
             continue
         target = destination / relative
         if origin.is_symlink():
             # A link out of the bundle places host content inside the container's view of it.
             if not _target_stays_inside(bundle_root, origin):
-                refused.append(relative.as_posix())
+                refused_symlinks.append(relative.as_posix())
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.symlink_to(origin.readlink())
@@ -258,6 +302,11 @@ def stage_plugin_bundle(
             continue
         if origin.is_dir():
             target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not origin.is_file():
+            # A FIFO would block ``read_bytes`` until a writer appears, and nothing is going to
+            # write: the observed tree must never decide whether the observer finishes (§10.0).
+            refused_special.append(relative.as_posix())
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(origin.read_bytes())
@@ -298,8 +347,11 @@ def stage_plugin_bundle(
 
     return StagedBundle(
         root=destination,
-        install_path=PurePosixPath(install_path) / bundle_root.name,
+        install_path=resolved_install,
         files=tuple(sorted(staged)),
         skill_names=skill_names,
-        refused_machinery=tuple(sorted(refused)),
+        refused_machinery=tuple(sorted(refused_machinery)),
+        refused_symlinks=tuple(sorted(refused_symlinks)),
+        refused_vcs=tuple(sorted(refused_vcs)),
+        refused_special=tuple(sorted(refused_special)),
     )

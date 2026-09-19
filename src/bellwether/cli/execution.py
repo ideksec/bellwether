@@ -490,6 +490,11 @@ class SandboxRunExecutor:
             )
             ro_binds.append((staged_bundle.root, staged_bundle.install_path))
             plugin_dirs.append(str(staged_bundle.install_path))
+            # The skill under test is *inside* the bundle now. Installing the bare payload as
+            # well would offer the harness two copies of it — `demo-skill` and
+            # `demo-bundle:demo-skill` — and which one activated would be undecidable, with the
+            # bare copy lacking exactly the sibling-bundle content this staging exists to give.
+            prepared = replace(prepared, install_payload=False)
         if plan.target.harness == "claude-code" and plan.companions:
             ro_binds += [
                 (staged.root, staged.install_path)

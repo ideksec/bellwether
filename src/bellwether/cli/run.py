@@ -178,6 +178,7 @@ def run_evaluation(
     depth: str | None = None,
     platform_baseline: PlatformBaseline | None = None,
     run_cache: RunCache | None = None,
+    plugin_root: Path | None = None,
     deterministic_sampling: bool = False,
     max_tokens_per_run: int = 1_000_000,
     on_estimate: Callable[[RunEstimate], bool] | None = None,
@@ -390,6 +391,9 @@ def run_evaluation(
         sampling_key = render_sampling(
             SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None
         )
+        # §5/§6/§18: the bundle's content outside the skill's own directory reaches the
+        # container, so it belongs in the key that decides whether a trace may be replayed.
+        plugin_digest = fixture_digest(plugin_root) if plugin_root is not None else ""
         # What this configuration can watch, and the limits it runs under: a trace captured
         # with no proxy is a different observation from one captured behind it (§19.2).
         observability = observability_key(config)
@@ -414,6 +418,7 @@ def run_evaluation(
                 repetition=plan.repetition,
                 sampling=sampling_key,
                 companion_digests=tuple(c.payload_digest for c in plan.companions),
+                plugin_digest=plugin_digest,
                 observability=observability,
             )
 

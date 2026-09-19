@@ -612,6 +612,19 @@ sibling path worked in a real client and failed under evaluation for a reason th
 Bellwether. §3.5 applies bundle-wide: no `evals/` anywhere under the bundle is copied, each one is
 named rather than silently dropped, and the outcome is asserted rather than trusted.
 
+A `/code-review` pass over the branch then found seven more, all fixed with a test each and each
+proven to fail with its fix reverted. The two that matter most were both "the check does not check
+what it says": the probe ran its client from the **sidecar** image while rendering a row about the
+sandbox trusting the CA — the one container the claim is about, and the one case it could not fail
+for — and whole-bundle staging left the bare payload mounted *as well*, so the harness held two
+copies of the skill under test and which activated was undecidable. The rest: version-control
+metadata is excluded from a staged bundle (`.git` carries the evaluation machinery even after the
+working tree's `evals/` is left behind), non-regular files are skipped rather than read (a FIFO
+would block the copy forever — reverting that fix hung the test run, which is its own proof), the
+install path is resolved before it is trusted (a lexical containment check does not catch `..`),
+the bundle digest keys the run cache, and a probe that cannot run is a doctor row rather than a
+traceback.
+
 The part of that brick worth reading is what the CLI told us. Rather than assume how a bundle is
 loaded, the real CLI 2.1.274 was run with `--plugin-dir` and its init record read: every skill under
 `skills/` is offered, and **each is reported qualified by its bundle** (`demo-bundle:demo-skill`).
@@ -662,7 +675,7 @@ than leaving the matcher quietly over-matching.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1267 tests: 1211 offline, 56 under the `docker` mark (47 run, 9 CI-only skips). All green.
+1282 tests: 1226 offline, 56 under the `docker` mark (47 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
