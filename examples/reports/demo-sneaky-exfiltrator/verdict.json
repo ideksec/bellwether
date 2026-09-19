@@ -32,6 +32,12 @@
       "status": "not_evaluable"
     },
     {
+      "name": "security_runtime.sensitive_directories",
+      "reason": "api-loop-scripted-frontier: the skill read or wrote under a §13.5.4 sensitive directory that no manifest entry deliberately declares; any single appearance is a finding, and frequency is deliberately irrelevant here",
+      "required": true,
+      "status": "block"
+    },
+    {
       "name": "security_runtime.canaries",
       "reason": "api-loop-scripted-frontier: canaries were not planted and scanned for every run in this set, so exfiltration is not observed and the gate cannot be decided (§10.4, §10.7)",
       "required": false,
