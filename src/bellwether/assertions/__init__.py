@@ -25,6 +25,7 @@ from bellwether.assertions.baseline import (
     apply_path_baseline,
     apply_tool_baseline,
     attribute_process,
+    expand_braces,
     glob_to_regex,
 )
 from bellwether.assertions.derive import (
@@ -71,6 +72,7 @@ __all__ = [
     "evaluate",
     "evaluate_all",
     "evaluate_scope",
+    "expand_braces",
     "glob_to_regex",
     "run_outcome",
     "trace_inconsistencies",

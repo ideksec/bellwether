@@ -3295,6 +3295,42 @@ special case — only a file declared *directly* in `${HOME}` names it — and a
 must be named exactly, so `${WORKSPACE}/.gitignore` does not excuse `.git/`. Each bypass is a test
 that fails against the old rule.
 
+*A second review found the anchored rule had introduced a regression of the exact shape it was
+meant to prevent.* `_hit_direction` classified by the `_read`/`_write` suffix, so
+`workspace_delete` fell through to an empty declaration list: **no manifest entry of any kind
+could excuse a deletion under a sensitive directory**, in any section. `git status` creates and
+removes `.git/index.lock` on the same runs that rewrite `.git/index` — the case pinned two
+paragraphs above as designed behaviour — so a git-using skill sat at `not_ready` with no escape.
+The file had classed a deletion as a write since `_BASELINE_WRITE_CLASSES` was written; only this
+new function read the two tables differently. The classification is now shared and **total**: any
+zone not on the write list is answerable by a read declaration, so an unforeseen zone behaves like
+a slightly loose read rule rather than an inescapable block. For a gate whose disposition is
+`block`, that is the safer direction to be wrong in.
+
+*The gate's advice pointed at an entry the gate rejects.* For a home-root hit the finding
+suggested `${HOME}` — which `_declaration_names` refuses by design, since the home root is named
+only by a file sitting directly inside it. An author following the gate's own instruction verbatim
+stayed at `not_ready`; for a deletion the hint degraded to a placeholder. The function had no test
+of any kind. Every suggestion is now fed back through the matcher by a parametrized test, which is
+the only reason a user-facing string wrong in two of its four shapes would not ship again. This is
+reachable without adversarial intent: an `ls` of `~/.aws` classes as `outside_workspace_read:${HOME}`
+rather than `.aws/`, because a path with two parts maps to the root.
+
+*Two smaller matching defects.* `${HOME}/.` and `${HOME}/..` satisfied "a single slash-free
+segment" and so excused every file tier 2 collapses onto the home root — a declaration pointing at
+the *parent* of home reading to a reviewer as naming anything but home. And braces were not
+expanded, so `${HOME}/{.aws,.config}/**` was a supported declaration in the Declared-vs-Observed
+table (which compiles through `glob_to_regex`) and an *undeclared* sensitive access to this gate:
+one manifest line, two contradictory readings, and a `not_ready` telling the author to add a line
+they already had. Expansion now goes through the same helper, which already knows `${HOME}` is a
+placeholder and not a one-choice brace group.
+
+*The headline fix was untested at the seam that was broken.* Every test written with "the
+configured list reached nothing" passed `sensitive_directories=` straight into `analyse_run`, so
+only the innermost hop was covered. Deleting both wiring lines — `config → run_evaluation` and
+`run_evaluation → drive_evaluation`, putting the code back in exactly the state this note calls a
+defect — left the whole offline suite green. Both hops now have a test that fails without them.
+
 *A residual limit, disclosed rather than closed.* Tier 2 collapses every file directly in `${HOME}`
 onto one entry, so declaring `${HOME}/.bashrc` does still excuse a read of `${HOME}/.netrc`.
 Separating them needs tier-3 granularity in the hit, which the §13.5.2 dual-tier model
@@ -3325,6 +3361,17 @@ undeclared in production. They are computed where the manifest table is applied,
 `sensitive_hits` stays the full observed list. A declared credential read is still a fact about the
 skill worth showing; it is simply not a gate finding, so the report section and the §17.5
 regression comparison are unchanged.
+
+### §12.6 — the tools near-miss, reached by a second route
+
+Flagging a baseline entry whose tool is classed differently closed the inert-allowlist trap by
+*class*. It did not close it by *name*: tool names are case-sensitive and the two harnesses spell
+them differently — `read` on api-loop, `Read` on claude-code — so a baseline written against one
+and applied to the other absorbs nothing and, because the check required an exact name hit,
+said nothing. A case-insensitive comparison now raises it. A name seen at least once under its own
+`tool:` class is never reported inert, because a `Read` call with no `file_path` falls through to
+`tool:Read` while another `Read` in the same run is classed `workspace_read`, and saying "absorbs
+nothing" about an entry that just absorbed something would be its own false report.
 
 ### §13.5.4 — the configured list, which reached nothing
 

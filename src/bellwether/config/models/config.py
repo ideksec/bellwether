@@ -216,10 +216,19 @@ class MetricsConfig(StrictModel):
         for entry in value:
             if entry == "~":
                 continue
-            if not entry or entry.strip() != entry:
+            if not entry:
                 raise ValueError(
-                    f"sensitive_directories entry {entry!r} is blank; each entry names one "
+                    "sensitive_directories carries an empty entry; each entry names one "
                     "directory (with a trailing slash) or one workspace-root file"
+                )
+            if entry.strip() != entry:
+                # Said separately from the empty case: membership is exact, so the leading or
+                # trailing space is the whole defect, and calling it "blank" sends the reader
+                # looking for an empty string that is not there.
+                raise ValueError(
+                    f"sensitive_directories entry {entry!r} has leading or trailing whitespace, "
+                    "which membership is exact about; write it as "
+                    f"{entry.strip()!r}"
                 )
             if entry.startswith("~") or entry in ("${HOME}", "$HOME"):
                 raise ValueError(

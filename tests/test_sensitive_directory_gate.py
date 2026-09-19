@@ -24,6 +24,8 @@ joined them. Every run fell back to the constant.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -296,3 +298,94 @@ def test_the_deferral_names_the_plane_that_actually_fell_short() -> None:
     )
     assert analysed.capabilities_unobserved_reason == "scripted demo: no sandbox overlay"
     assert "Plane A" not in (analysed.capabilities_unobserved_reason or "")
+
+
+# ---------------------------------------------------------------------------
+# The second review: a regression, and the advice the gate gives
+# ---------------------------------------------------------------------------
+
+_WORKSPACE_GIT_DELETE = "workspace_delete:.git/"
+
+
+def test_a_deletion_is_a_write_and_can_be_declared() -> None:
+    """The regression the anchored rule introduced: a hit no declaration could ever excuse.
+
+    `_hit_direction` classified by the `_read`/`_write` suffix, so `workspace_delete` fell
+    through to an empty declaration list — no entry, in any manifest section, could release it.
+    A skill running `git status` blocks at `not_ready` with no escape, and `git status` creates
+    and removes `.git/index.lock` on the same runs that rewrite `.git/index`, which this file
+    already pinned as the designed *write* case. The rest of the file had classed a deletion as
+    a write since `_BASELINE_WRITE_CLASSES` was written.
+    """
+    from bellwether.cli.orchestrator import _hit_direction
+
+    assert _hit_direction(_WORKSPACE_GIT_DELETE) == "write"
+
+    declared = _scope(filesystem={"write": ["${WORKSPACE}/.git/**"]})
+    assert undeclared_sensitive_hits((_WORKSPACE_GIT_DELETE,), declared) == ()
+
+    # Still only by the matching direction, and still not by a blanket.
+    read_side = _scope(filesystem={"read": ["${WORKSPACE}/.git/**"]})
+    assert undeclared_sensitive_hits((_WORKSPACE_GIT_DELETE,), read_side) == (
+        _WORKSPACE_GIT_DELETE,
+    )
+    blanket = _scope(filesystem={"write": ["${WORKSPACE}/**"]})
+    assert undeclared_sensitive_hits((_WORKSPACE_GIT_DELETE,), blanket) == (_WORKSPACE_GIT_DELETE,)
+
+
+@pytest.mark.parametrize(
+    "hit",
+    [_HOME_ROOT, _HOME_SSH, _HOME_AWS, _WORKSPACE_GIT_WRITE, _WORKSPACE_GIT_DELETE],
+)
+def test_the_hint_is_an_entry_the_rule_accepts(hit: str) -> None:
+    """Every suggestion the finding makes must actually work.
+
+    The first version suggested `${HOME}` for a home-root hit — an entry `_declaration_names`
+    rejects — so an author following the gate's own advice verbatim stayed at `not_ready`, and
+    it skipped `workspace_delete` entirely, degrading the message to a placeholder. It had no
+    test of any kind, which is how a user-facing string wrong in two of its shapes shipped green.
+    """
+    from bellwether.cli.orchestrator import _declaration_hint
+
+    hint = _declaration_hint((hit,))
+    assert "the exact path, rooted" not in hint, "the hint degraded to its placeholder"
+
+    entries = re.findall(r"'([^']+)'", hint)
+    assert entries, f"the hint names no entry: {hint}"
+    # The hint for a home-root hit names a shape, not a literal, so substitute the placeholder.
+    candidates = [entry.replace("<name>", ".bashrc") for entry in entries]
+    section = "write" if "filesystem.write" in hint else "read"
+    accepted = [
+        entry
+        for entry in candidates
+        if undeclared_sensitive_hits((hit,), _scope(filesystem={section: [entry]})) == ()
+    ]
+    assert accepted, f"no entry the hint suggests is accepted by the rule: {hint}"
+
+
+def test_a_brace_expanded_declaration_is_honoured() -> None:
+    """One manifest line must not be a supported declaration to one gate and undeclared to another.
+
+    `glob_to_regex` expands braces, so `${HOME}/{.aws,.config}/**` matches in the
+    Declared-vs-Observed table. This rule anchored a literal prefix and did not, so the author
+    got `not_ready` plus a hint to add a line they already had.
+    """
+    braced = _scope(filesystem={"read": ["${HOME}/{.aws,.config}/**"]})
+    assert undeclared_sensitive_hits((_HOME_AWS,), braced) == ()
+    assert undeclared_sensitive_hits(("outside_workspace_read:${HOME}/.config/",), braced) == ()
+    # A directory the braces do not name is still undeclared.
+    assert undeclared_sensitive_hits((_HOME_SSH,), braced) == (_HOME_SSH,)
+    # And `${HOME}` is still a placeholder, never a one-choice brace group.
+    assert undeclared_sensitive_hits((_HOME_ROOT,), braced) == (_HOME_ROOT,)
+
+
+@pytest.mark.parametrize("entry", ["${HOME}/.", "${HOME}/.."])
+def test_a_dot_entry_does_not_name_the_home_root(entry: str) -> None:
+    """`.` is the directory itself and `..` its parent — neither is a file declared inside it.
+
+    Accepting them let a declaration pointing *away* from home excuse every file tier 2
+    collapses onto the home root, while reading to a human reviewer as naming anything but home.
+    """
+    assert undeclared_sensitive_hits((_HOME_ROOT,), _scope(filesystem={"read": [entry]})) == (
+        _HOME_ROOT,
+    )

@@ -1565,3 +1565,48 @@ def test_the_estimate_is_offered_before_anything_runs_and_a_decline_refuses(
 
     evaluate(accept=True)
     assert holder["exec"].calls == 20
+
+
+def test_run_evaluation_hands_the_configured_sensitive_list_to_the_driver(
+    package: SkillPackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The outermost hop of "the configured list reached nothing".
+
+    `canonicalize` has always taken the parameter and `config.yaml` has always shipped the list;
+    the defect was that no caller joined them. Deleting this one line put the code back in
+    exactly that state with the whole offline suite still green, because every test written with
+    the fix passed the tuple straight into `analyse_run`. So this asserts the value `run_evaluation`
+    actually hands down, not that some caller can.
+    """
+    from bellwether.cli import run as run_module
+
+    config = _config()
+    config = config.model_copy(
+        update={"metrics": config.metrics.model_copy(update={"sensitive_directories": [".npmrc/"]})}
+    )
+    captured: dict[str, object] = {}
+    real = run_module.drive_evaluation
+
+    def spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "drive_evaluation", spy)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=config,
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="firstlight",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+
+    assert captured["sensitive_directories"] == (".npmrc/",)

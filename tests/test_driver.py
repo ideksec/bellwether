@@ -328,3 +328,34 @@ def test_drive_evaluation_enforces_declared_scope_on_the_live_path(tmp_path: Pat
     blind = _ReplayExecutor(tmp_path / "blind", transcript=_SCOPE_VIOLATION_TRANSCRIPT)
     (unenforced,) = drive_evaluation(plans, blind, profile=_firstlight_profile())
     assert unenforced.scope_exceeded == ()
+
+
+def test_the_driver_forwards_the_configured_sensitive_directory_list(tmp_path: Path) -> None:
+    """The hop the "configured list reached nothing" fix actually restored.
+
+    Every test written with that fix passed `sensitive_directories=` straight into
+    `analyse_run`, so only the innermost hop was covered: deleting the `config → run_evaluation →
+    drive_evaluation` wiring — putting the code back in exactly the state the change calls a
+    defect — left the whole offline suite green. The defect could be re-introduced silently.
+
+    `/etc/` is on no default list, so the hit here can only come from the caller's tuple
+    travelling the whole way down.
+    """
+    plans = plan_matrix(
+        [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=6
+    )
+
+    default = _ReplayExecutor(tmp_path / "default", transcript=_SCOPE_VIOLATION_TRANSCRIPT)
+    (unconfigured,) = drive_evaluation(plans, default, profile=_firstlight_profile())
+    assert unconfigured.sensitive_hits == ()
+
+    configured = _ReplayExecutor(tmp_path / "configured", transcript=_SCOPE_VIOLATION_TRANSCRIPT)
+    (reading,) = drive_evaluation(
+        plans,
+        configured,
+        profile=_firstlight_profile(),
+        sensitive_directories=("etc/",),
+    )
+    assert reading.sensitive_hits == ("outside_workspace_read:/etc/",)
+    # With no manifest nothing is declared, so the hit stands and the gate has something to read.
+    assert reading.undeclared_sensitive_hits == ("outside_workspace_read:/etc/",)

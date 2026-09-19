@@ -397,3 +397,60 @@ def test_a_tool_entry_that_can_never_match_is_raised_as_a_near_miss() -> None:
     inert = [detail for detail in near if "'read'" in detail]
     assert inert, "an entry that can never match must be said out loud"
     assert "absorbs nothing" in inert[0]
+
+
+def test_a_tool_entry_spelled_for_another_harness_is_raised_as_a_near_miss() -> None:
+    """The inert-allowlist trap reached by a second route: case.
+
+    Tool names are case-sensitive and the harnesses spell them differently — `read` on api-loop,
+    `Read` on claude-code. A baseline written against one and applied to the other absorbs
+    nothing *and*, before this, said nothing: the class-mismatch near-miss only fired on an
+    exact name hit, so a name never seen under that spelling fell through both checks.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "Bash", "input": {"command": "ls"}},
+    )
+
+    _absorbed, tools, near = baseline_absorption(
+        (call,), _CONTEXT, _baseline_with_tools("bash"), sandbox_image=_IMAGE
+    )
+    assert tools == frozenset(), "'bash' cannot absorb a 'Bash' call"
+    spelling = [detail for detail in near if "case-sensitive" in detail]
+    assert spelling, "a baseline entry that matches nothing only by case must be said out loud"
+    assert "'Bash'" in spelling[0]
+
+
+def test_a_tool_seen_under_its_own_class_is_never_called_inert() -> None:
+    """One name can land on both sides of the split in a single run.
+
+    A `Read` call with no `file_path` has no filesystem target and falls through to `tool:Read`,
+    while another `Read` in the same run is classed `workspace_read`. Reporting "the entry
+    absorbs nothing" about an entry that just absorbed something would be its own false report.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    def _call(seq: int, payload: dict[str, object]) -> Action:
+        return Action(
+            seq=seq,
+            ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            plane="harness",
+            kind="tool_call",
+            action={"tool": "read", "input": payload},
+        )
+
+    actions = (_call(1, {"path": "/work/a7f3c1/notes.md"}), _call(2, {}))
+    _absorbed, tools, near = baseline_absorption(
+        actions, _CONTEXT, _baseline_with_tools("read"), sandbox_image=_IMAGE
+    )
+    if "tool:read" in tools:
+        assert not [detail for detail in near if "'read'" in detail and "absorbs nothing" in detail]

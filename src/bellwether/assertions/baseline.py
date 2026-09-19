@@ -39,6 +39,7 @@ __all__ = [
     "apply_path_baseline",
     "apply_tool_baseline",
     "attribute_process",
+    "expand_braces",
     "glob_to_regex",
 ]
 
@@ -248,6 +249,18 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
     is literal."""
     alternatives = _expand_braces(pattern)
     return re.compile("|".join(f"(?:{_translate(alt)})" for alt in alternatives))
+
+
+def expand_braces(pattern: str) -> list[str]:
+    """The public name for brace expansion, for callers matching declarations themselves.
+
+    The §13.5.4 declaration rule anchors a literal prefix rather than compiling a regex, so it
+    needs the alternatives a braced entry stands for. Without this, one manifest line is
+    simultaneously a supported declaration in the Declared-vs-Observed table (which compiles
+    through :func:`glob_to_regex`, and so expands braces) and an *undeclared* sensitive access
+    to the gate — a false positive on a declaration the author correctly believes they wrote.
+    """
+    return _expand_braces(pattern)
 
 
 def _expand_braces(pattern: str) -> list[str]:

@@ -42,6 +42,7 @@ from bellwether.assertions import (
     derive_assertions,
     evaluate_all,
     evaluate_scope,
+    expand_braces,
     run_outcome,
     trace_inconsistencies,
 )
@@ -644,6 +645,7 @@ def baseline_absorption(
     # trap this whole area exists to close.
     observed_tools: set[str] = set()
     otherwise_classed: dict[str, str] = {}
+    seen_names: set[str] = set()
     for action in actions:
         if action.kind != "tool_call":
             continue
@@ -653,30 +655,45 @@ def baseline_absorption(
         capability = capability_for(action, context)
         if capability is None:
             continue
+        seen_names.add(name)
         if capability.tier1 == f"tool:{name}":
             observed_tools.add(capability.tier1)
         else:
             otherwise_classed.setdefault(name, capability.tier1)
+    # A name seen at least once under a `tool:` class is accounted for whatever else it also did
+    # — `Read` without a `file_path` has no filesystem target and falls through to `tool:Read`,
+    # so one name can land on both sides in the same run. Saying "absorbs nothing" about an
+    # entry that just absorbed something would be its own false report.
+    otherwise_classed = {
+        name: tier1
+        for name, tier1 in otherwise_classed.items()
+        if f"tool:{name}" not in observed_tools
+    }
     tools = apply_tool_baseline(sorted(observed_tools), baseline, sandbox_image=sandbox_image)
     applicable, _ = baseline.applicable_to(sandbox_image)
     if applicable:
         # §12.6 says a suspicious near-match must raise a finding rather than vanish. An entry
         # that can never match is the strongest form of that: it reads as an accounted-for
         # tool and subtracts nothing, on every run, for ever.
-        near = tuple(
-            sorted(
-                {
-                    *near,
-                    *(
-                        f"platform baseline names tool {name!r}, but this harness classes it as "
-                        f"{otherwise_classed[name]!r}, not 'tool:{name}' — the entry absorbs "
-                        "nothing (§12.6)"
-                        for name in baseline.tools
-                        if name in otherwise_classed
-                    ),
-                }
-            )
+        by_fold = {name.casefold(): name for name in seen_names}
+        misclassed = tuple(
+            f"platform baseline names tool {name!r}, but this harness classes it as "
+            f"{otherwise_classed[name]!r}, not 'tool:{name}' — the entry absorbs nothing (§12.6)"
+            for name in baseline.tools
+            if name in otherwise_classed
         )
+        # Tool names are case-sensitive and the harnesses spell them differently — `read` on
+        # api-loop, `Read` on claude-code. A baseline written against one and applied to the
+        # other absorbs nothing *and*, without this, says nothing: the same inert-allowlist trap
+        # reached by a different route.
+        misspelled = tuple(
+            f"platform baseline names tool {name!r}, but this run's harness spells it "
+            f"{by_fold[name.casefold()]!r} — tool names are case-sensitive, so the entry "
+            "absorbs nothing (§12.6)"
+            for name in baseline.tools
+            if name not in seen_names and name.casefold() in by_fold
+        )
+        near = tuple(sorted({*near, *misclassed, *misspelled}))
     return read_app.absorbed | write_app.absorbed, tools, near
 
 
@@ -703,14 +720,32 @@ def _rooted_target(hit: str) -> str | None:
     return target
 
 
-def _hit_direction(hit: str) -> str | None:
-    """``read`` or ``write`` — which declaration list may excuse this hit."""
+#: Tier-1 zones a *write* declaration answers for. The same classification
+#: ``_BASELINE_WRITE_CLASSES`` uses — a deletion is a write, and reading the two tables
+#: differently is what made ``workspace_delete`` undeclarable.
+_WRITE_ZONES = frozenset(
+    {"workspace_write", "outside_workspace_write", "workspace_delete", "harness_state_write"}
+)
+
+
+def _hit_direction(hit: str) -> str:
+    """``read`` or ``write`` — which declaration list may excuse this hit.
+
+    Classifying by the ``_read``/``_write`` *suffix* missed ``workspace_delete`` entirely, and
+    an unclassified hit fell through to an empty declaration list: no manifest entry of any
+    kind could release it, in any section, so a skill running ``git status`` — which creates
+    and removes ``.git/index.lock`` — sat at ``not_ready`` with no escape. That is precisely
+    the guaranteed false positive §10.4.1 says a flagship finding must not have, and this
+    function introduced it while the rest of the file had classed a deletion as a write all
+    along.
+
+    Total by construction, for that reason: anything not on the write list is answerable by a
+    read declaration. An unforeseen zone then behaves like a slightly loose read rule rather
+    than an inescapable block, which is the safer direction to be wrong in for a gate whose
+    disposition is ``block``.
+    """
     zone, _, _ = hit.partition(":")
-    if zone.endswith("_read"):
-        return "read"
-    if zone.endswith("_write"):
-        return "write"
-    return None
+    return "write" if zone in _WRITE_ZONES else "read"
 
 
 def _declaration_names(entry: str, rooted: str) -> bool:
@@ -734,20 +769,39 @@ def _declaration_names(entry: str, rooted: str) -> bool:
     root. ``${HOME}/.aws/credentials`` names ``.aws/`` — a different sensitive directory — and
     must not excuse a read of ``${HOME}`` itself.
 
+    Braces are expanded first, with the same helper the Declared-vs-Observed table compiles
+    through. Without that, ``${HOME}/{.aws,.config}/**`` is a supported declaration to the scope
+    gate and an *undeclared* sensitive access to this one — a false positive on a manifest line
+    the author correctly believes they wrote.
+
     A residual limit, disclosed rather than papered over: tier 2 collapses every file directly
     in ``${HOME}`` to one entry, so a declaration of ``${HOME}/.bashrc`` does excuse a read of
     ``${HOME}/.netrc``. Separating them needs tier-3 granularity in the hit, which the §13.5.2
     dual-tier model deliberately does not carry. See `docs/spec-notes.md`.
     """
+    return any(_alternative_names(alternative, rooted) for alternative in expand_braces(entry))
+
+
+def _alternative_names(entry: str, rooted: str) -> bool:
+    """One brace-free declaration against one rooted sensitive location."""
     if rooted == "${HOME}":
         if not entry.startswith("${HOME}/"):
             return False
         rest = entry[len("${HOME}/") :]
+        # `.` and `..` are not files in the home directory: one is the directory itself and the
+        # other its parent, and a reviewer reading `${HOME}/..` would say it names anything but
+        # home. Accepting them let a declaration that points *away* from home excuse every file
+        # tier 2 collapses onto it.
+        if rest in (".", ".."):
+            return False
         return bool(rest) and "/" not in rest and not _has_glob(rest)
     if rooted.endswith("/"):
-        if not entry.startswith(rooted):
-            return False
-        return not _has_glob(rooted)
+        # `startswith` is the whole rule, and carries "nothing before that point is a glob" by
+        # itself: a declaration whose prefix globbed — `${HOME}/*/` — cannot literally begin
+        # with `${HOME}/.ssh/`. An earlier version also rejected a glob character in `rooted`,
+        # which comes from the *observation* and never from the declaration, so a directory
+        # genuinely named `.a*b` would have been undeclarable by any entry at all.
+        return entry.startswith(rooted)
     # A hit on a single file (a sensitive name at the workspace root) has nothing beneath it,
     # so only naming it exactly is naming it.
     return entry == rooted
@@ -1551,19 +1605,32 @@ def _declaration_hint(hits: Sequence[str]) -> str:
     name is most of the way to unactionable, and the escape is easy to get wrong: the entry
     must be rooted, must name the sensitive location itself, and must sit under the list
     matching the access. So the finding spells it out.
+
+    Every suggestion it emits must be one :func:`_declaration_names` actually accepts, which is
+    not a given — the first version suggested ``${HOME}`` for a home-root hit, an entry the rule
+    rejects, so an author following the gate's own advice verbatim stayed at ``not_ready``. The
+    home root takes a file *directly* inside it, and that is what the hint now says. A
+    ``test_the_hint_is_an_entry_the_rule_accepts`` test feeds every suggestion back through the
+    matcher, because a user-facing string nothing exercises is how the first version shipped.
     """
     suggestions: list[str] = []
     for hit in hits:
         rooted = _rooted_target(hit)
-        direction = _hit_direction(hit)
-        if rooted is None or direction is None:
+        if rooted is None:
             continue
-        entry = f"{rooted}**" if rooted.endswith("/") else rooted
         where = (
             "credentials.expects or scope.filesystem.read"
-            if direction == "read"
-            else ("scope.filesystem.write")
+            if _hit_direction(hit) == "read"
+            else "scope.filesystem.write"
         )
+        if rooted == "${HOME}":
+            # Nothing narrower than the home root exists to name, so the escape is the specific
+            # file the skill wanted — `${HOME}` and `${HOME}/**` are both refused by design.
+            suggestions.append(
+                f"the specific file, as '${{HOME}}/<name>' (not '${{HOME}}' or a glob), in {where}"
+            )
+            continue
+        entry = f"{rooted}**" if rooted.endswith("/") else rooted
         suggestions.append(f"{entry!r} in {where}")
     return "; ".join(sorted(set(suggestions))) or "the exact path, rooted"
 
@@ -1617,14 +1684,26 @@ def _sensitive_directory_result(reading: SetReading, profile: ProfileSpec) -> Ta
             f"{reading.capabilities_unobserved_reason or 'a capture plane reported no coverage'}"
             " (§10.7, §10.8)",
         )
+    # The pass is also taken where hits exist and are *all declared* — `legit-credential-reader`
+    # is the corpus skill built to reach exactly this state. Saying "none touched a sensitive
+    # directory" there contradicts both this gate's own headline and the §13.5.2 section that
+    # lists the hit, so the detail says which of the two passes this is.
+    declared = [
+        hit for hit in reading.sensitive_hits if hit not in reading.undeclared_sensitive_hits
+    ]
+    touched = (
+        f"every run was observed; the {len(declared)} sensitive access(es) recorded are each "
+        f"deliberately declared by the manifest ({', '.join(declared)})"
+        if declared
+        else "every run was observed and none touched a §13.5.4 sensitive directory"
+    )
     return _tgr(
         reading.target,
         "pass",
         "no undeclared sensitive directory in the reported activity",
         disposition,
-        "every run was observed and none touched a §13.5.4 sensitive directory; the claim is "
-        "bounded by what the harness reported, since a read inside a subprocess is not "
-        "resolved to a path until the §10.3 process plane exists",
+        f"{touched}; the claim is bounded by what the harness reported, since a read inside a "
+        "subprocess is not resolved to a path until the §10.3 process plane exists",
     )
 
 

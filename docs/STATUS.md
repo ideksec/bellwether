@@ -697,7 +697,16 @@ bypassable: matching the sensitive token as a *segment anywhere* ignored which r
 declaration sat under, so a decoy `${WORKSPACE}/fixtures/.ssh/known_hosts` in a skill's own
 repository excused a real read of `${HOME}/.ssh/`; declaring one sensitive directory excused the
 home root; and a declared *write* excused an undeclared *read*. The rule is now anchored,
-zone-aware and direction-aware, and each bypass is a test that fails against the old rule. **`harness_state_write` (§3.5/§10.2) was attempted and withdrawn**: the gate
+zone-aware and direction-aware, and each bypass is a test that fails against the old rule.
+A **second** review then found the anchored rule had introduced the exact defect it was meant to
+prevent: `workspace_delete` fell through the direction split, so no manifest entry of any kind
+could excuse a deletion under a sensitive directory, and a skill running `git status` — which
+removes `.git/index.lock` — sat at `not_ready` with no escape. The classification is now shared
+with `_BASELINE_WRITE_CLASSES` and total. The same review found the gate's own advice named an
+entry the gate rejects (`${HOME}`, for a home-root hit), that `${HOME}/.` and `${HOME}/..` excused
+the home root, that brace-expanded declarations were honoured by the scope gate and refused here,
+and that the configured-list fix was untested at both of the hops that had actually been
+missing. **`harness_state_write` (§3.5/§10.2) was attempted and withdrawn**: the gate
 was built and then removed before it shipped, because it could never fire — §10.2 attributes such
 a write by a Plane A anchor, and Plane B actions carry no `Correlation` at all, so the condition is
 false for every write that exists. That also surfaces a pre-existing gap worth its own brick: the
@@ -811,7 +820,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1382 tests: 1324 offline, 58 under the `docker` mark (47 run locally, 11 CI-only skips with stated reasons; all 58 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1395 tests: 1337 offline, 58 under the `docker` mark (47 run locally, 11 CI-only skips with stated reasons; all 58 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## What's next — remaining work, in recommended order
 
