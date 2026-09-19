@@ -25,6 +25,7 @@ import datetime as dt
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path, PurePosixPath
 
 from bellwether.capture import (
@@ -870,9 +871,12 @@ class SandboxRunExecutor:
             # where nothing else will ever come back for them. The resolver goes before the
             # proxy: when it joined the proxy's bridge, the proxy's close removes that bridge,
             # which a still-attached resolver container would block.
+            # `partial` rather than `lambda`: a lambda body inside a `finally` reads to a
+            # static analyser as a `return` in a finally block, which is a real defect when it
+            # is one — it swallows the exception on its way out — and worth not looking like.
             _tear_down(
-                ("the sandbox container", lambda: self.backend.stop_persistent(prepared)),
-                ("the sandbox overlay", lambda: self.backend.unmount(prepared)),
+                ("the sandbox container", partial(self.backend.stop_persistent, prepared)),
+                ("the sandbox overlay", partial(self.backend.unmount, prepared)),
                 # Idempotent: the adapter normally drained it already.
                 ("the hook event sink", sink.stop if sink is not None else None),
                 (

@@ -559,7 +559,9 @@ def test_every_commands_out_default_is_the_directory_the_exclusion_names() -> No
         "diff",
         "demo",
     }, sorted(defaults)
-    assert defaults.pop("demo") == Path("examples/reports")
+    # Popped outside the assert: an assertion with a side effect stops having it under `-O`.
+    demo_default = defaults.pop("demo")
+    assert demo_default == Path("examples/reports")
     for name, default in defaults.items():
         assert default is RUN_OUTPUT_DIR, f"{name} re-spells the run output directory: {default}"
 

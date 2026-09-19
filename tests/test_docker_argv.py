@@ -762,14 +762,18 @@ def test_a_teardown_failure_never_replaces_the_runs_own_error() -> None:
     def _boom() -> None:
         raise BellwetherError("docker network rm: resource busy")
 
-    with pytest.raises(SkillError) as caught:
-        try:
-            raise SkillError("two skills cannot share an install directory")
-        except SkillError:
-            _tear_down(("the recording proxy", _boom))
-            raise
+    # Written as a plain capture rather than a re-raise inside `pytest.raises`: the claim is
+    # about what `_tear_down` does to the exception being handled, and the control flow should
+    # say so without a reader (or an analyser) having to work out where the raise lands.
+    caught: SkillError | None = None
+    try:
+        raise SkillError("two skills cannot share an install directory")
+    except SkillError as error:
+        _tear_down(("the recording proxy", _boom))
+        caught = error
 
-    assert "share an install directory" in str(caught.value)
-    notes = getattr(caught.value, "__notes__", [])
+    assert caught is not None
+    assert "share an install directory" in str(caught)
+    notes = getattr(caught, "__notes__", [])
     assert any("resource busy" in note for note in notes), notes
     assert any("the recording proxy" in note for note in notes), notes
