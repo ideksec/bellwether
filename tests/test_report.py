@@ -14,6 +14,7 @@ from pathlib import Path
 
 from bellwether.constants import REPORT_LIMITATIONS
 from bellwether.report import (
+    SCHEMA_VERSION,
     CapabilityProfileSummary,
     CapabilityRow,
     ConsistencySummary,
@@ -21,6 +22,7 @@ from bellwether.report import (
     FunctionalSummary,
     GateSummary,
     MatrixSummary,
+    PlatformBaselineSummary,
     PolicyRef,
     ScopeRow,
     SecuritySummary,
@@ -31,6 +33,7 @@ from bellwether.report import (
     VerdictSummary,
     default_limitations,
     render_capability_heatmap,
+    render_html_report,
     render_pr_comment,
     render_strip_chart,
     render_summary_json,
@@ -175,7 +178,22 @@ def test_committed_schema_matches_the_model() -> None:
 
 def test_summary_carries_the_schema_version() -> None:
     data = json.loads(render_summary_json(make_summary()))
-    assert data["schema_version"] == "1.3"
+    assert data["schema_version"] == SCHEMA_VERSION
+
+
+def test_the_version_command_reports_the_schema_the_tool_emits() -> None:
+    """They were two constants and they drifted: `bellwether version` said 1.0 while every
+    summary it wrote said 1.3. A consumer reading `version` to decide whether it can parse the
+    file got the wrong answer, which is the one job that line has."""
+    from typer.testing import CliRunner
+
+    from bellwether.cli.app import app
+
+    result = CliRunner().invoke(app, ["version", "--json"])
+    assert result.exit_code == 0, result.output
+    reported = json.loads(result.output)["summary_schema_version"]
+    assert reported == SCHEMA_VERSION
+    assert reported == json.loads(render_summary_json(make_summary()))["schema_version"]
 
 
 def test_pr_comment_renders_byte_identical_across_two_invocations() -> None:
@@ -271,3 +289,88 @@ def test_descriptive_only_ceiling_is_surfaced() -> None:
     )
     comment = render_pr_comment(descriptive, make_figures())
     assert "descriptive_only" in comment
+
+
+# ---------------------------------------------------------------------------
+# §12.6: the platform baseline is an allowlist, so it is rendered
+# ---------------------------------------------------------------------------
+
+
+def _baseline_summary(**overrides: object) -> PlatformBaselineSummary:
+    fields: dict[str, object] = {
+        "version": "2026.08.1",
+        "applies_to_image": "sandbox@sha256:aa",
+        "applied": True,
+        "paths_read": ("/etc/{passwd,group}", "${HOME}/.cache/**"),
+        "paths_write": ("${TMP}/**",),
+        "processes_always": ("sh", "env"),
+        "processes_helpers_of": {"git": ("git-remote-https",)},
+        "tools": (),
+        "absorbed": ("${HOME}/.cache/pip/http", "/etc/passwd"),
+        "near_misses": ("read ${HOME}/.cache/../.aws/credentials resolved outside the entry",),
+    }
+    fields.update(overrides)
+    return PlatformBaselineSummary(**fields)  # type: ignore[arg-type]
+
+
+def test_the_html_report_renders_the_whole_allowlist_collapsed() -> None:
+    """§12.6, verbatim: a hidden allowlist in a security tool is a liability.
+
+    Scope evaluation runs against `observed − platform_baseline`, so every entry is something
+    the skill did that the declared-vs-observed section does not show. Before this the report
+    carried only a version string — the subtraction was real and its terms were unpublished.
+    """
+    summary = make_summary().model_copy(update={"platform_baseline": _baseline_summary()})
+    html = render_html_report(summary, make_figures())
+
+    assert "Platform baseline" in html
+    assert "<details>" in html.split("Platform baseline", 1)[1]
+    # Every area of the §12.6 document, not a selection of it.
+    for entry in ("/etc/{passwd,group}", "${TMP}/**", "sh", "git-remote-https"):
+        assert entry in html, entry
+    # And what this evaluation actually took out, which is a different fact from the list.
+    assert "${HOME}/.cache/pip/http" in html
+
+
+def test_near_misses_are_not_folded_behind_the_disclosure_triangle() -> None:
+    """§12.6 asks that a near-miss be raised rather than silently absorbed. A finding hidden
+    inside a collapsed block is most of the way back to silent, so it renders outside."""
+    summary = make_summary().model_copy(update={"platform_baseline": _baseline_summary()})
+    html = render_html_report(summary, make_figures())
+
+    section = html.split("Platform baseline", 1)[1].split("</section>", 1)[0]
+    near = "read ${HOME}/.cache/../.aws/credentials resolved outside the entry"
+    assert near in section
+    # After the last </details> in the section: not inside a collapsed block.
+    assert section.index(near) > section.rindex("</details>")
+
+
+def test_a_baseline_that_did_not_apply_still_renders_and_says_so() -> None:
+    """ "Not applied" and "nothing to absorb" are different facts. A section that vanished when
+    the baseline did not apply would let the second stand for the first."""
+    summary = make_summary().model_copy(
+        update={"platform_baseline": _baseline_summary(applied=False, absorbed=(), near_misses=())}
+    )
+    html = render_html_report(summary, make_figures())
+
+    assert "Platform baseline" in html
+    assert "NOT applied" in html
+
+
+def test_no_configured_baseline_renders_no_section() -> None:
+    """Absent is not empty: an evaluation that ran without a baseline must not show a section
+    implying one was consulted and matched nothing."""
+    html = render_html_report(make_summary(), make_figures())
+    assert "Platform baseline" not in html
+
+
+def test_the_pr_comment_carries_the_allowlist_and_raises_near_misses() -> None:
+    """The PR comment is where a reviewer actually looks; an allowlist auditable only inside
+    an uploaded HTML artifact is close to not auditable."""
+    summary = make_summary().model_copy(update={"platform_baseline": _baseline_summary()})
+    comment = render_pr_comment(summary, make_figures())
+
+    assert "Platform baseline" in comment
+    assert "/etc/{passwd,group}" in comment
+    # The near-miss heading is a real section, not a <details> summary line.
+    assert "### Platform baseline near-misses" in comment

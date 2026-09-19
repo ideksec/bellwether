@@ -163,3 +163,64 @@ def test_the_literal_set_and_the_baseline_compose(tmp_path: Path) -> None:
     )
     assert "${WORKSPACE}/notes/a.md" not in result.caps_t3
     assert "/etc/passwd" not in result.caps_t3
+
+
+# ---------------------------------------------------------------------------
+# §12.6: computing the audit trail is not the same as publishing it
+# ---------------------------------------------------------------------------
+
+
+def test_what_the_baseline_absorbed_and_nearly_absorbed_reaches_the_summary() -> None:
+    """The regression this closes: both were computed and then dropped on the floor.
+
+    `analyse_run` produced `baseline_absorbed` and `baseline_near_misses`, the aggregation
+    carried them onto the set reading, and nothing downstream ever read either — no summary,
+    no verdict, no renderer. So the subtraction that makes declared-vs-observed readable was
+    itself unobservable, and a near-miss §12.6 asks be *raised* was computed and discarded.
+    """
+    from bellwether.cli.orchestrator import _platform_baseline_summary
+
+    analysed = analyse_run(_plan(), _executed(), scope=None, platform_baseline=_baseline())
+
+    class _Reading:
+        baseline_absorbed = analysed.baseline_absorbed
+        baseline_near_misses = analysed.baseline_near_misses
+
+    block = _platform_baseline_summary(
+        _baseline(), [_Reading()], applied_version=_baseline().version
+    )
+    assert block is not None
+    assert block.applied is True
+    # The audit trail: what came out of this evaluation.
+    assert "/etc/passwd" in block.absorbed
+    assert "${HOME}/.cache/pip/x" in block.absorbed
+    # And the near-miss, said out loud rather than absorbed.
+    assert block.near_misses == analysed.baseline_near_misses
+    assert block.near_misses, "a near-miss was computed and then lost again"
+    # The allowlist itself, which is what makes the subtraction checkable.
+    assert block.paths_read == _baseline().paths.read
+    assert block.paths_write == _baseline().paths.write
+
+
+def test_a_baseline_that_did_not_apply_is_reported_as_such_not_as_empty() -> None:
+    """`applied` is carried separately from an empty `absorbed`: a baseline not keyed to this
+    run's image absorbed nothing for a different reason than one that matched nothing."""
+    from bellwether.cli.orchestrator import _platform_baseline_summary
+
+    class _Reading:
+        baseline_absorbed: tuple[str, ...] = ()
+        baseline_near_misses: tuple[str, ...] = ()
+
+    block = _platform_baseline_summary(_baseline(), [_Reading()], applied_version="")
+    assert block is not None
+    assert block.applied is False
+    assert block.absorbed == ()
+    # The contents still travel, so a reader can see what *would* have been subtracted.
+    assert block.paths_read
+
+
+def test_no_baseline_yields_no_block_at_all() -> None:
+    """Absent is not empty."""
+    from bellwether.cli.orchestrator import _platform_baseline_summary
+
+    assert _platform_baseline_summary(None, [], applied_version="") is None

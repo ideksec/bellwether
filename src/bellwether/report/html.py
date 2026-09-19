@@ -87,6 +87,7 @@ def render_html_report(summary: Summary, figures: Figures) -> str:
         _heatmap_section(figures),
         *_peripheral_section(summary),
         _declared_vs_observed(figures),
+        *_platform_baseline_section(summary),
         _limitations(summary),
         _provenance(summary),
     ]
@@ -422,6 +423,71 @@ def _scope_row(row: ScopeRow) -> str:
         f'      <td><span class="chip {css}">{_esc(row.disposition)}</span></td>\n'
         "    </tr>"
     )
+
+
+def _platform_baseline_section(summary: Summary) -> list[str]:
+    """The §12.6 baseline, collapsed by default, because it is an allowlist (§12.6).
+
+    Scope evaluation runs against ``observed − platform_baseline``, so every entry here is
+    something the skill did that Declared-vs-Observed above does not show. §12.6 requires the
+    full contents in the report for exactly that reason — a hidden allowlist in a security tool
+    is a liability — and collapsed rather than omitted, since it is reference material a
+    reviewer opens when a row looks too clean, not something to read every time.
+
+    Rendered even when the baseline did not apply: "not applied" and "nothing to absorb" are
+    different facts, and a section that vanished would let the second stand for the first.
+    """
+    baseline = summary.platform_baseline
+    if baseline is None:
+        return []
+
+    def _list(title: str, entries: tuple[str, ...]) -> str:
+        if not entries:
+            return f'    <p class="muted-text">{_esc(title)}: none</p>'
+        items = "\n".join(f"      <li><code>{_esc(entry)}</code></li>" for entry in entries)
+        return f"    <p>{_esc(title)}</p>\n    <ul>\n{items}\n    </ul>"
+
+    helpers = tuple(
+        f"{root}: {', '.join(helpers)}" for root, helpers in baseline.processes_helpers_of.items()
+    )
+    state = (
+        f"applied, version {baseline.version}"
+        if baseline.applied
+        else f"configured (version {baseline.version}) but NOT applied to this run"
+    )
+    near = (
+        _list("Near-misses — surfaced, never absorbed", baseline.near_misses)
+        if baseline.near_misses
+        else '    <p class="muted-text">Near-misses: none</p>'
+    )
+    return [
+        '<section class="block-section platform-baseline">\n'
+        "  <h2>Platform baseline</h2>\n"
+        f'  <p class="muted-text">{_esc(state)}'
+        + (
+            f" &middot; image <code>{_esc(baseline.applies_to_image)}</code>"
+            if baseline.applies_to_image
+            else ""
+        )
+        + "</p>\n"
+        "  <p>Scope evaluation runs against <em>observed &minus; platform baseline</em>. "
+        "Everything listed here was subtracted before the section above was built.</p>\n"
+        "  <details>\n"
+        "    <summary>What this evaluation absorbed "
+        f"({len(baseline.absorbed)})</summary>\n"
+        f"{_list('Absorbed targets', baseline.absorbed)}\n"
+        "  </details>\n"
+        "  <details>\n"
+        "    <summary>The allowlist in full</summary>\n"
+        f"{_list('Paths read', baseline.paths_read)}\n"
+        f"{_list('Paths written', baseline.paths_write)}\n"
+        f"{_list('Processes permitted anywhere', baseline.processes_always)}\n"
+        f"{_list('Process helpers', helpers)}\n"
+        f"{_list('Tools', baseline.tools)}\n"
+        "  </details>\n"
+        f"{near}\n"
+        "</section>"
+    ]
 
 
 def _limitations(summary: Summary) -> str:

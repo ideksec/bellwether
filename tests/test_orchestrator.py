@@ -524,3 +524,70 @@ def test_every_repetition_is_filed_as_an_artifact(tmp_path: Path, repetitions: i
         p.name for p in (result.artifacts.root / "traces" / "benign-stable").rglob("*.arf.jsonl")
     )
     assert len(reps_on_disk) == repetitions
+
+
+def test_orchestrate_publishes_the_platform_baseline_into_the_summary(
+    tmp_path: Path,
+) -> None:
+    """The wiring itself, through the real entry point.
+
+    Testing the builder and the renderers in isolation leaves the one link that matters
+    unasserted — whether `orchestrate` ever calls them. That is the same shape as the defect
+    this closes, where the absorbed set and the near-misses were computed correctly and simply
+    never handed to anything, so the first version of these tests passed with the wiring
+    reverted.
+    """
+    from bellwether.config.models.baseline import BaselinePaths, PlatformBaseline
+
+    baseline = PlatformBaseline(
+        apiVersion="bellwether/v1",
+        kind="PlatformBaseline",
+        version="2026.08.1",
+        applies_to_image="scripted@sha256:" + "2" * 64,
+        paths=BaselinePaths(read=("/etc/{passwd,group}",), write=("${TMP}/**",)),
+    )
+
+    # No baseline configured: absent, not an empty block.
+    assert _run_pipeline(tmp_path, tmp_path / "out-none").summary.platform_baseline is None
+
+    scenario = _scenario()
+    target = TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
+    analysed = [
+        analyse_run(
+            RunPlan(scenario=scenario, target=target, repetition=rep),
+            _executed_run(rep, tmp_path),
+            scope=None,
+            platform_baseline=baseline,
+        )
+        for rep in range(1, 7)
+    ]
+    reading = aggregate("benign-stable", target, analysed, profile=_firstlight_profile())  # type: ignore[arg-type]
+
+    result = orchestrate(
+        skill_name="security-review",
+        package_digest="sha256:" + "a" * 64,
+        payload_digest="sha256:" + "b" * 64,
+        criticality="high",
+        profile_name="low",
+        profile=_firstlight_profile(),  # type: ignore[arg-type]
+        policy_digest="sha256:" + "c" * 64,
+        readings=[reading],
+        eval_id="baseline-published",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+        out_dir=tmp_path / "out-published",
+        platform_baseline_version=baseline.version,
+        platform_baseline=baseline,
+    )
+
+    block = result.summary.platform_baseline
+    assert block is not None, "orchestrate did not publish the baseline it was given"
+    assert block.version == "2026.08.1"
+    assert block.applied is True
+    assert block.paths_read == ("/etc/{passwd,group}",)
+    # And it reaches the rendered artifacts, not just the model.
+    written = (
+        tmp_path / "out-published" / "baseline-published" / "report" / "report.html"
+    ).read_text(encoding="utf-8")
+    assert "Platform baseline" in written
+    assert "/etc/{passwd,group}" in written

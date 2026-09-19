@@ -3176,3 +3176,50 @@ dead keys taking the floor weight — the policy names finding kinds, the metric
 classes. They are not dead: `resolve_capability_weights` translates between the two, and the first
 test of this bypassed it and read the raw policy dict. The lesson is the project's own and was
 applied in the wrong direction: run the real path, not a shortcut through it.
+
+## §12.6, §17.2 — The platform baseline is an allowlist, so the report publishes it
+
+§12.6 requires the baseline's full contents in the report, collapsed by default, and gives the
+reason in one line: *a hidden allowlist in a security tool is a liability*. That requirement was
+unimplemented. The report carried `platform_baseline_version` — a string — and nothing else.
+
+The consequence is worse than a missing section. Scope evaluation runs against
+`observed − platform_baseline`, so every baseline entry is something the skill *did* that the
+declared-vs-observed table does not show. Publishing the verdict without the terms of that
+subtraction asks a reviewer to trust the most valuable section in the tool on the strength of a
+version number.
+
+**Two things were computed and then dropped on the floor.** `analyse_run` produced
+`baseline_absorbed` — its own docstring calls it "the audit trail" — and `baseline_near_misses`,
+`aggregate` carried both onto the set reading, and nothing downstream ever read either. No
+summary, no verdict, no renderer. The near-misses are the sharper loss: §12.6 says a suspicious
+near-match (`~/.cache/../.aws/credentials`, a process whose argv0 matches a helper but whose
+parent does not) MUST raise a finding rather than be silently absorbed. The code correctly refused
+to absorb them and then discarded the finding, which lands in the same place as absorbing them
+quietly.
+
+`Summary.platform_baseline` now carries the contents, what this evaluation absorbed, and the
+near-misses. The HTML report renders it collapsed; the PR comment carries it too, because an
+allowlist auditable only inside an uploaded artifact is close to not auditable. The near-misses
+render **outside** the collapsed block in both, since a finding folded behind a disclosure
+triangle is most of the way back to silent.
+
+Two distinctions are kept deliberately. `applied` travels separately from an empty `absorbed`: a
+baseline not keyed to this run's image absorbed nothing for a different reason than one that
+applied and matched nothing, and a section that disappeared would let the second stand for the
+first — so it renders either way, with the state named. And an evaluation with no baseline
+configured gets no block at all, because absent is not empty.
+
+`SCHEMA_VERSION` goes to `1.4` (an added optional key, so a minor bump) and the committed JSON
+Schema is regenerated.
+
+**A second schema-version constant had drifted.** `bellwether version` printed
+`summary.json schema 1.0` from `bellwether.SUMMARY_SCHEMA_VERSION` while every summary it wrote
+stamped `1.3` from `report.summary.SCHEMA_VERSION`. Reporting the schema a consumer should expect
+is the only job that line has. The duplicate is gone and `version` reads the constant that does
+the stamping, with a test asserting the two agree — which is the kind of test that would have
+caught it at the point the second copy was introduced.
+
+**What is still not done here.** `tools` and `processes` are published but not yet *applied*:
+`baseline_absorption` handles paths only. Tool attribution needs no new capture plane and is the
+next increment; process attribution waits on the §10.3 process plane, which is v0.3 work.

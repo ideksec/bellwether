@@ -34,6 +34,7 @@ __all__ = [
     "GateSummary",
     "MatrixSummary",
     "NoiseFloor",
+    "PlatformBaselineSummary",
     "PolicyRef",
     "RegressionSummary",
     "SecuritySummary",
@@ -48,7 +49,7 @@ __all__ = [
 #: The ``summary.json`` schema version. Bumped on any change to the shape below. A minor
 #: bump adds optional keys; a major bump is a break. Producers stamp it; consumers read it
 #: before trusting anything else in the file.
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 
 class ReportModel(BaseModel):
@@ -213,6 +214,42 @@ class SecuritySummary(ReportModel):
     canary_leaks: tuple[Mapping[str, object], ...] = ()
 
 
+class PlatformBaselineSummary(ReportModel):
+    """The §12.6 platform baseline, rendered so the subtraction is auditable.
+
+    §12.6 requires the baseline's full contents in the report, collapsed by default, and the
+    reason is stated there in one line: *a hidden allowlist in a security tool is a liability*.
+    Scope evaluation runs against ``observed − platform_baseline``, so every entry here is a
+    thing the skill did that the report will not show as having been done. Without the list,
+    the most valuable section in the tool is a subtraction nobody can check.
+
+    ``absorbed`` is what this evaluation actually took out — the audit trail, distinct from the
+    allowlist itself, because an entry that never matched anything and an entry that swallowed
+    forty reads are very different facts about the same line of YAML.
+
+    ``near_misses`` are §12.6's other half: activity that differs from a baseline entry only by
+    a suspicious margin — ``~/.cache/../.aws/credentials``, a process whose argv0 matches a
+    helper but whose parent does not. The spec says raise a finding rather than silently
+    absorbing it, and they are never absorbed; this is where they are said out loud.
+    """
+
+    version: str = ""
+    applies_to_image: str = ""
+    #: Whether the baseline was keyed to this run's image and therefore applied at all. A
+    #: baseline that did not apply absorbed nothing, which is a different report from one that
+    #: applied and matched nothing.
+    applied: bool = False
+    paths_read: tuple[str, ...] = ()
+    paths_write: tuple[str, ...] = ()
+    processes_always: tuple[str, ...] = ()
+    processes_helpers_of: Mapping[str, tuple[str, ...]] = Field(default_factory=dict)
+    tools: tuple[str, ...] = ()
+    #: Tier-3 targets this evaluation subtracted, sorted (§24).
+    absorbed: tuple[str, ...] = ()
+    #: Suspicious near-matches, surfaced rather than absorbed (§12.6).
+    near_misses: tuple[str, ...] = ()
+
+
 class RegressionSummary(ReportModel):
     """The §17.5 comparison against the stored baseline, as the regression gate read it.
 
@@ -272,6 +309,10 @@ class Summary(ReportModel):
     schema_version: str = SCHEMA_VERSION
     canon_version: str = "1"
     platform_baseline_version: str = ""
+    #: The §12.6 baseline in full, plus what it absorbed and what it nearly absorbed. Optional
+    #: because an evaluation may run without one; absent reads as "no baseline", which is not
+    #: the same claim as an empty one.
+    platform_baseline: PlatformBaselineSummary | None = None
     noise_floor: NoiseFloor | None = None
     crossmodel: CrossModelSummary | None = None
     regression: RegressionSummary | None = None
