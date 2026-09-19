@@ -329,6 +329,7 @@ def test_benign_stable_is_conditional_because_egress_cannot_be_evaluated_yet(
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
     assert [g.name for g in non_pass] == [
         "security_runtime.egress",
+        "security_runtime.harness_state",
         "security_runtime.canaries",
         "security_runtime.dns",
         "security_runtime.canary_reads",
@@ -415,6 +416,8 @@ def test_an_observed_clean_canary_plane_passes_under_block(tmp_path: Path) -> No
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
     assert [g.name for g in non_pass] == [
         "security_runtime.egress",
+        # As above: no overlay in this scripted path, so the harness-state gate defers.
+        "security_runtime.harness_state",
         "security_runtime.dns",
         "security_runtime.canary_reads",
     ]
@@ -469,6 +472,10 @@ def test_an_observed_clean_dns_plane_passes_under_block(tmp_path: Path) -> None:
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
     assert [g.name for g in non_pass] == [
         "security_runtime.egress",
+        # `harness_state` defers here rather than passing: this scripted path has no overlay,
+        # so the write plane cannot support "nothing was written to harness state" (§10.8).
+        # `sensitive_directories` *passes* — Plane A is full, so its absence claim is earned.
+        "security_runtime.harness_state",
         "security_runtime.canaries",
         "security_runtime.canary_reads",
     ]

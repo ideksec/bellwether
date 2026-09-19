@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -906,3 +906,88 @@ def test_a_blanket_glob_does_not_excuse_a_sensitive_directory() -> None:
     # No manifest at all declares nothing — the case the gate is really for, since with no
     # declared scope the scope gate is not composed either.
     assert undeclared_sensitive_hits(hits, None) == hits
+
+
+# ---------------------------------------------------------------------------
+# §3.5 / §10.2: writing to the harness's own state is a finding
+# ---------------------------------------------------------------------------
+
+
+def _trace_of(*actions: object) -> object:
+    """A minimal trace carrying just these actions, for evidence-index assertions."""
+    from bellwether.trace import Trace
+    from tests.factories import make_footer, make_header
+
+    return Trace(header=make_header(), actions=tuple(actions), footer=make_footer())  # type: ignore[arg-type]
+
+
+@dataclass
+class _GateInput:
+    """The three fields `_harness_state_write_result` reads, and nothing else.
+
+    A stub rather than a real `SetReading` because the gate is a pure function of these:
+    building a forty-field reading to vary one boolean would test the constructor. The
+    *integration* — that the gate is registered, ordered and composed into the verdict — is
+    covered where it belongs, by the first-light and demo gate-list assertions.
+    """
+
+    target: TargetInfo
+    harness_state_written: bool
+    writes_observed: bool
+
+
+def test_the_harness_state_gate_fires_only_on_an_attributed_write() -> None:
+    """A skill that writes into the harness's own config is editing the instrument.
+
+    Settings a hook is read from, configuration that outlives the run, state a later
+    repetition inherits — §3.5's concern is that a skill able to change the instrument can
+    change what the instrument reports about it. The policy has carried a
+    `harness_state_write` disposition all along with no gate reading it.
+    """
+    from bellwether.cli.orchestrator import _harness_state_write_result
+
+    profile = _profile("low")
+
+    def _result(*, wrote: bool, observed: bool) -> str:
+        reading = _GateInput(_TARGET, wrote, observed)
+        return _harness_state_write_result(reading, profile).status  # type: ignore[arg-type]
+
+    assert _result(wrote=True, observed=True) == "warn"
+    assert _result(wrote=True, observed=False) == "warn"  # presence survives a degraded plane
+    assert _result(wrote=False, observed=True) == "pass"
+    # An unobserved write plane never reads as clean (§10.7).
+    assert _result(wrote=False, observed=False) == "not_evaluable"
+
+
+def test_an_unanchored_harness_state_write_is_the_harnesss_own_churn() -> None:
+    """The false positive this gate would have had, asserted where the rule lives.
+
+    §10.2 admits a harness-state write into the capability set only where a tool call anchors
+    it, and the gate reads the same anchor off the write evidence. Without it, every
+    `claude-code` run would warn on the CLI writing its own settings file — the guaranteed
+    false positive again, and the reason to check the attribution before scoring, not after.
+    """
+    import datetime as dt
+
+    from bellwether.assertions.evidence import EvidenceIndex
+    from bellwether.trace import Action, Correlation
+
+    context = NormalizationContext(workspace_root="/work")
+    path = f"{context.home}/.claude/settings.json"
+
+    def _write(seq: int, anchor: int | None) -> Action:
+        return Action(
+            seq=seq,
+            ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            plane="filesystem",
+            kind="file_write",
+            action={"path": path, "zone": "harness_state"},
+            correlation=Correlation(anchor_seq=anchor),
+        )
+
+    index = EvidenceIndex.from_trace(_trace_of(_write(1, None), _write(2, 10)), context)  # type: ignore[arg-type]
+    harness_writes = [w for w in index.writes if w.zone == "harness_state"]
+
+    # Both are still recorded — the churn is not hidden, it is attributed differently.
+    assert [w.anchor_seq for w in harness_writes] == [None, 10]
+    assert len([w for w in harness_writes if w.anchor_seq is not None]) == 1

@@ -37,7 +37,7 @@ def _run(tmp_path: Path) -> dict[str, DemoOutput]:
 
 
 def test_benign_is_conditional_and_consistent(tmp_path: Path) -> None:
-    """The clean skill: every evaluable gate passes and the BCI is high; the four unobserved
+    """The clean skill: every evaluable gate passes and the BCI is high; the unobserved
     channels this offline demo cannot watch (egress — no proxy; canaries — nothing planted;
     DNS — no resolver; the model-channel scan — no canaries to scan for) hold it at
     ``conditional`` as advisory not_evaluable, exactly as first-light `run` does."""
@@ -47,6 +47,9 @@ def test_benign_is_conditional_and_consistent(tmp_path: Path) -> None:
     non_pass = [gate.name for gate in result.verdict.gates if gate.status != "pass"]
     assert non_pass == [
         "security_runtime.egress",
+        # The demo writes no overlay, so the harness-state gate cannot make its absence
+        # claim and defers — advisory, like the other four, never a silent pass.
+        "security_runtime.harness_state",
         "security_runtime.canaries",
         "security_runtime.dns",
         "security_runtime.canary_reads",
