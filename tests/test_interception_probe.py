@@ -230,8 +230,8 @@ def test_doctor_probes_the_sandbox_image_not_the_sidecar(monkeypatch, tmp_path: 
     rendered an `ok` about a container no evaluation uses, and could not fail for the one state
     the probe exists to rule out."""
     app_module = importlib.import_module("bellwether.cli.app")
-    import bellwether.cli.interception_probe as probe_module
-    import bellwether.cli.run as run_module
+    probe_module = importlib.import_module("bellwether.cli.interception_probe")
+    run_module = importlib.import_module("bellwether.cli.run")
 
     seen: dict[str, object] = {}
 
@@ -259,8 +259,8 @@ def test_doctor_survives_a_probe_that_cannot_run(monkeypatch, tmp_path: Path, er
     """A missing docker binary, or a pull that outruns the client timeout, says nothing about
     the CA — and must not abort doctor with a traceback in place of its remaining rows."""
     app_module = importlib.import_module("bellwether.cli.app")
-    import bellwether.cli.interception_probe as probe_module
-    import bellwether.cli.run as run_module
+    probe_module = importlib.import_module("bellwether.cli.interception_probe")
+    run_module = importlib.import_module("bellwether.cli.run")
 
     def _raise(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         raise error
@@ -280,7 +280,7 @@ def test_doctor_says_so_when_no_proxy_is_wired(tmp_path: Path, monkeypatch) -> N
     """A first-light configuration has no egress plane at all, so there is nothing to establish
     — a warn that says why, not a pass and not a failure."""
     app_module = importlib.import_module("bellwether.cli.app")
-    import bellwether.cli.run as run_module
+    run_module = importlib.import_module("bellwether.cli.run")
     from bellwether.config.models.config import Config
 
     monkeypatch.setattr(run_module, "build_proxy_provider", lambda *_a, **_k: None)
