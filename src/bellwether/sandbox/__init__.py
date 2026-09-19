@@ -53,7 +53,13 @@ from bellwether.sandbox.session import (
     ZoneOverlay,
     prepare_sandbox,
 )
-from bellwether.sandbox.staging import StagedPayload, stage_companions, stage_payload
+from bellwether.sandbox.staging import (
+    StagedBundle,
+    StagedPayload,
+    stage_companions,
+    stage_payload,
+    stage_plugin_bundle,
+)
 from bellwether.sandbox.zones import (
     ZONE_RULES,
     Zone,
@@ -81,6 +87,7 @@ __all__ = [
     "PreparedSandbox",
     "SandboxBackend",
     "SandboxIdentifiers",
+    "StagedBundle",
     "StagedPayload",
     "Zone",
     "ZoneMap",
@@ -98,4 +105,5 @@ __all__ = [
     "read_overlay_diff",
     "stage_companions",
     "stage_payload",
+    "stage_plugin_bundle",
 ]

@@ -34,8 +34,10 @@ from bellwether.capture.ca import (
     CA_MECHANISMS,
     DEFAULT_CA_CONTAINER_PATH,
     CaMechanism,
+    InterceptionProbe,
     ca_trust_environment,
     interception_confirmed,
+    interpret_interception_probe,
     system_store_install_commands,
 )
 from bellwether.capture.canary import (
@@ -139,6 +141,7 @@ __all__ = [
     "EgressFlow",
     "FilesystemEvent",
     "HostEventSink",
+    "InterceptionProbe",
     "MitmproxySidecar",
     "ModelChannelScanner",
     "ModelRequestScan",
@@ -169,6 +172,7 @@ __all__ = [
     "filesystem_writes_status",
     "flow_record_line",
     "interception_confirmed",
+    "interpret_interception_probe",
     "make_flow",
     "mint_canaries",
     "mint_sandbox_token",

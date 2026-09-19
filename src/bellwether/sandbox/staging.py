@@ -21,7 +21,13 @@ from bellwether.errors import SkillError
 from bellwether.sandbox.fixtures import normalize_metadata
 from bellwether.skill import EVALS_DIR, SkillPackage
 
-__all__ = ["StagedPayload", "stage_companions", "stage_payload"]
+__all__ = [
+    "StagedBundle",
+    "StagedPayload",
+    "stage_companions",
+    "stage_payload",
+    "stage_plugin_bundle",
+]
 
 
 @dataclass(frozen=True)
@@ -188,4 +194,112 @@ def stage_companions(
             owner=owner,
         )
         for companion in companions
+    )
+
+
+@dataclass(frozen=True)
+class StagedBundle:
+    """An Agent Plugin staged whole, ready to be mounted and loaded with ``--plugin-dir``."""
+
+    root: Path
+    #: Path *inside* the container the bundle is mounted at, and what ``--plugin-dir`` names.
+    install_path: PurePosixPath
+    #: Every file staged, relative to the bundle root, sorted (§24).
+    files: tuple[str, ...]
+    #: Skill directory names under ``skills/``, sorted — what the harness will discover.
+    skill_names: tuple[str, ...]
+    #: Machinery directories refused: every ``evals/`` under the bundle (§3.5).
+    refused_machinery: tuple[str, ...] = ()
+
+
+def stage_plugin_bundle(
+    bundle_root: Path,
+    destination: Path,
+    *,
+    install_path: str | PurePosixPath = "/home/agent/.claude/plugins",
+    owner: tuple[int, int] | None = None,
+) -> StagedBundle:
+    """Copy an Agent Plugin bundle whole, in the layout a real client installs (§5, §6, §18).
+
+    Bare-directory staging installs each skill on its own, which loses everything the bundle
+    holds *outside* a skill directory — shared references a skill's body points at, the
+    manifest itself — so a skill that reads a sibling path works in a real client and fails
+    under evaluation for a reason that is about Bellwether, not the skill. Staging the bundle
+    whole is what makes the evaluated arrangement the deployed one.
+
+    The §3.5 invariant is unchanged and applies bundle-wide: **no ``evals/`` directory is
+    copied**, anywhere under the bundle, because a skill that can see the test machinery can
+    behave only while it is being watched. Each one skipped is named in ``refused_machinery``
+    rather than silently dropped, and the outcome is asserted rather than trusted.
+    """
+    if destination.exists() and any(destination.iterdir()):
+        raise SkillError(f"{destination} is not empty; the bundle is staged into a fresh directory")
+    destination.mkdir(parents=True, exist_ok=True)
+
+    staged: list[str] = []
+    refused: list[str] = []
+    # Sorted walk (§24): the same bundle must stage to the same bytes on every machine.
+    for origin in sorted(bundle_root.rglob("*"), key=lambda path: path.as_posix()):
+        relative = origin.relative_to(bundle_root)
+        parts = relative.parts
+        if EVALS_DIR.rstrip("/") in parts:
+            if parts[-1] == EVALS_DIR.rstrip("/"):
+                refused.append(relative.as_posix())
+            continue
+        target = destination / relative
+        if origin.is_symlink():
+            # A link out of the bundle places host content inside the container's view of it.
+            if not _target_stays_inside(bundle_root, origin):
+                refused.append(relative.as_posix())
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(origin.readlink())
+            staged.append(relative.as_posix())
+            continue
+        if origin.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(origin.read_bytes())
+        normalize_metadata(
+            target,
+            is_dir=False,
+            executable=bool(origin.stat().st_mode & 0o100),
+            owner=owner,
+        )
+        staged.append(relative.as_posix())
+
+    for directory in sorted(
+        (path for path in destination.rglob("*") if path.is_dir() and not path.is_symlink()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        normalize_metadata(directory, is_dir=True, executable=False, owner=owner)
+    normalize_metadata(destination, is_dir=True, executable=False, owner=owner)
+
+    skills_dir = destination / "skills"
+    skill_names = tuple(
+        sorted(child.name for child in skills_dir.iterdir() if child.is_dir())
+        if skills_dir.is_dir()
+        else ()
+    )
+
+    # Asserted, not assumed — the §3.5 invariant is the one that silently ruins every run.
+    leaked = sorted(
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file() and EVALS_DIR.rstrip("/") in path.relative_to(destination).parts
+    )
+    if leaked:
+        raise SkillError(
+            f"refusing to install the bundle: {', '.join(leaked)} reached the staging "
+            "directory, which would let a skill detect that it is being evaluated (§3.5)"
+        )
+
+    return StagedBundle(
+        root=destination,
+        install_path=PurePosixPath(install_path) / bundle_root.name,
+        files=tuple(sorted(staged)),
+        skill_names=skill_names,
+        refused_machinery=tuple(sorted(refused)),
     )

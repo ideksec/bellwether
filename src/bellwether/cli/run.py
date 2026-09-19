@@ -623,6 +623,7 @@ def sandbox_executor_factory(
     plant_canaries: bool = False,
     provider_base_urls: Mapping[str, str | None] | None = None,
     provider_types: Mapping[str, str] | None = None,
+    plugin_root: Path | None = None,
     platform_baseline_version: str | None = None,
     sampling: SamplingSpec | None = None,
 ) -> ExecutorFactory:
@@ -671,6 +672,7 @@ def sandbox_executor_factory(
             plant_canaries=plant_canaries,
             provider_base_urls=dict(provider_base_urls or {}),
             provider_types=dict(provider_types or {}),
+            plugin_root=plugin_root,
             platform_baseline_version=platform_baseline_version,
             sampling=sampling,
         )

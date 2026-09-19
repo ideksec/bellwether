@@ -59,9 +59,34 @@ def evaluate(spec: AssertionSpec, index: EvidenceIndex) -> AssertionResult:
 # ---------------------------------------------------------------------------
 
 
+def skill_name_matches(recorded: str, expected: str) -> bool:
+    """Whether a harness-reported skill name refers to ``expected`` (§5, §9.4).
+
+    Observed on the real CLI 2.1.274: a skill loaded from an Agent Plugin installed whole is
+    reported **qualified by its bundle** — ``demo-bundle:demo-skill``, not ``demo-skill``. The
+    trace records what the harness said, because that is the observation; the comparison has to
+    understand the qualification, or every plugin-staged run would score its skill as never
+    activating. That would be a false negative produced entirely by how Bellwether staged the
+    skill, which is the worst kind: it looks like evidence about the skill.
+
+    Only the bundle qualifier is stripped, and only from the recorded side. An expected name
+    that carries its own qualifier is compared whole, so a scenario can still name exactly one
+    bundle's skill when two bundles carry the same skill name.
+    """
+    if recorded == expected:
+        return True
+    if ":" in expected:
+        return False
+    return recorded.rsplit(":", 1)[-1] == expected
+
+
 def _skill_activated(params: Any, index: EvidenceIndex) -> AssertionResult:
     expected = params if isinstance(params, bool) else True
-    hits = [(seq, name) for seq, name in index.activated_skills if name == index.skill_name]
+    hits = [
+        (seq, name)
+        for seq, name in index.activated_skills
+        if skill_name_matches(name, index.skill_name)
+    ]
     activated = bool(hits)
     if not expected and not activated:
         # `expected=False` with no observed activation is an absence claim over Plane A.
@@ -85,7 +110,9 @@ def _skill_activated(params: Any, index: EvidenceIndex) -> AssertionResult:
 
 def _other_skill_activated(params: Any, index: EvidenceIndex) -> AssertionResult:
     name = params if isinstance(params, str) else str(params)
-    hits = [(seq, skill) for seq, skill in index.activated_skills if skill == name]
+    hits = [
+        (seq, skill) for seq, skill in index.activated_skills if skill_name_matches(skill, name)
+    ]
     if not hits:
         # No observed activation is a "did not load" verdict — an absence claim over
         # Plane A. Degraded harness coverage cannot support it; a hit (below) is a

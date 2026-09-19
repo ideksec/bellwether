@@ -66,6 +66,7 @@ from bellwether.sandbox import (
     ZoneMap,
     prepare_sandbox,
     stage_companions,
+    stage_plugin_bundle,
 )
 from bellwether.sandbox.docker import StreamedExec
 from bellwether.skill import SkillPackage
@@ -397,6 +398,10 @@ class SandboxRunExecutor:
     #: ``claude-code`` target whose CLI talks to the API from inside the sandbox and needs to
     #: be pointed at the same endpoint the proxy allowlists as ``model_api``.
     provider_base_urls: Mapping[str, str | None] = field(default_factory=dict)
+    #: The Agent Plugin bundle this skill came from, staged whole and installed with
+    #: ``--plugin-dir`` so the evaluated layout is the deployed one (§5/§6/§18). ``None`` for
+    #: a bare skill directory, which stages exactly as before.
+    plugin_root: Path | None = None
     #: Provider name → configured type (``anthropic`` / ``openai_compatible``). Read only to
     #: record the sampling a provider actually sends (§9.3); unknown names claim nothing.
     provider_types: Mapping[str, str] = field(default_factory=dict)
@@ -472,6 +477,19 @@ class SandboxRunExecutor:
         # install root. The api-loop harness offers them host-side instead (`offered_skills_for`).
         # Whether the CLI actually discovered them is *observed*, not assumed: its init record
         # names every skill it loaded, and the adapter records each as `skill_offered`.
+        # §5/§6/§18: an Agent Plugin is installed *whole* for the CLI, in the layout a real
+        # client uses. Bare-directory staging loses everything outside a skill's own directory
+        # — shared references a skill body points at, the manifest — so a skill that reads a
+        # sibling path works in a client and fails here for a reason that is about Bellwether.
+        plugin_dirs: list[str] = []
+        if plan.target.harness == "claude-code" and self.plugin_root is not None:
+            staged_bundle = stage_plugin_bundle(
+                self.plugin_root,
+                run_dir / "plugin",
+                owner=prepared.isolation.owner,
+            )
+            ro_binds.append((staged_bundle.root, staged_bundle.install_path))
+            plugin_dirs.append(str(staged_bundle.install_path))
         if plan.target.harness == "claude-code" and plan.companions:
             ro_binds += [
                 (staged.root, staged.install_path)
@@ -539,6 +557,7 @@ class SandboxRunExecutor:
                     _DockerLaunch(self.backend, prepared, run_dir),
                     hook_source=lambda: [event.payload for event in hook_sink.stop()],
                     settings=hook_settings(str(prepared.identifiers.event_sink_path)),
+                    plugin_dirs=plugin_dirs,
                 )
                 adapter = claude
                 _client, model_id = self.client_factory(plan)

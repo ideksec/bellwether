@@ -151,6 +151,15 @@ def init(
 def doctor(
     config: Annotated[Path, typer.Option("--config", help="Path to config.yaml.")] = CONFIG_FILE,
     policy: Annotated[Path, typer.Option("--policy", help="Path to policy.yaml.")] = POLICY_FILE,
+    probe_interception: Annotated[
+        bool,
+        typer.Option(
+            "--probe-interception",
+            help="Confirm TLS interception with a real HTTPS request from inside a container "
+            "(§9.2, WP-14). Stands the recording proxy up and tears it down; needs a Docker "
+            "daemon and egress.image. Off by default because it costs a container standup.",
+        ),
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
     """Check the environment before a run rather than after it.
@@ -325,6 +334,15 @@ def doctor(
             }
         )
 
+    # §9.2 / WP-14: the CA-in-the-loop probe. Opt-in because it stands a sidecar and a client
+    # container up, but when asked for it *executes* rather than reporting a configured proxy
+    # as though that settled anything — a container that rejects the CA produces zero-egress
+    # traces that read as a clean skill, and nothing short of a real request rules that out.
+    if probe_interception:
+        checks.append(_interception_probe_check(loaded_config))
+        if checks[-1]["status"] == "critical":
+            problems += 1
+
     # §9.2/§12.7: the per-run bounds, stated before a forty-minute run rather than discovered
     # as a wave of "timeout" outcomes afterwards. A turn or tool-call ceiling is scored as a
     # failure, so a tight one turns the operator's choice into the skill's score — which is a
@@ -473,7 +491,8 @@ _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
     ("sandbox image pullable by digest", "needs a registry round-trip; lands with WP-20"),
     (
         "proxy CA trusted by every mechanism in §9.2, checked by a real request",
-        "the CA-in-the-loop probe is CI-only (WP-14's live half)",
+        "run it with --probe-interception: it stands the proxy up and issues a real HTTPS "
+        "request, so it is opt-in rather than part of every doctor",
     ),
     (
         "internal bridge blocks direct UDP/53 to a public resolver",
@@ -675,7 +694,7 @@ def run(
 
     worst = ExitCode.OK
     results: list[dict[str, Any]] = []
-    for skill_dir, bundle_notes in work:
+    for skill_dir, bundle_notes, plugin_root in work:
         try:
             package = load_skill(skill_dir)
             if bundle_notes:
@@ -753,6 +772,10 @@ def run(
                     provider_types={
                         name: provider.type for name, provider in loaded_config.providers.items()
                     },
+                    # §5/§6/§18: where the skill came from an Agent Plugin, the bundle is
+                    # installed whole and the CLI loads it with --plugin-dir, so the evaluated
+                    # arrangement is the deployed one.
+                    plugin_root=plugin_root,
                     # Wired only when dns.image is set; otherwise None and DNS stays not_evaluable
                     # (§10.6). When both are on, the resolver shares the proxy's internal bridge.
                     resolver=build_resolver_provider(loaded_config),
@@ -970,6 +993,45 @@ def pr_comment(
     )
 
 
+def _interception_probe_check(loaded_config: Any) -> dict[str, str]:
+    """Run the §9.2 probe and render its doctor row, or say why it could not run.
+
+    An unwired proxy is a ``warn``, not a failure: a first-light configuration deliberately has
+    no egress plane, and there is no trust chain to establish. A *rejected* CA is ``critical``
+    and makes
+    doctor exit non-zero, because that is the state in which every later run looks clean while
+    observing nothing. An inconclusive probe is a ``warn`` that says so rather than passing.
+    """
+    from bellwether.cli.interception_probe import run_interception_probe
+    from bellwether.cli.run import build_proxy_provider
+
+    provider = build_proxy_provider(loaded_config, environ=os.environ)
+    if provider is None:
+        return {
+            "check": "TLS interception (§9.2)",
+            "status": "warn",
+            "detail": (
+                "not probed: egress.image is empty, so no recording proxy is wired and the "
+                "sandbox runs with no network at all (the first-light configuration). There is "
+                "no trust chain to establish until a live config sets the sidecar image."
+            ),
+        }
+    try:
+        probe = run_interception_probe(provider, client_image=loaded_config.egress.image)
+    except BellwetherError as error:
+        return {
+            "check": "TLS interception (§9.2)",
+            "status": "warn",
+            "detail": f"not probed: {error}",
+        }
+    status = "ok" if probe.confirmed else ("critical" if probe.ca_rejected else "warn")
+    return {
+        "check": "TLS interception (§9.2)",
+        "status": status,
+        "detail": f"{probe.reason} (probe host {probe.probe_host}, client exit {probe.exit_code})",
+    }
+
+
 def _estimate_gate(yes: bool) -> Callable[[RunEstimate], bool]:
     """Print the §19.1 estimate (always) and ask to proceed (only on an interactive terminal).
 
@@ -1022,7 +1084,7 @@ def _parse_looks(text: str | None) -> tuple[int, ...] | None:
     return tuple(looks)
 
 
-def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...]]]:
+def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...], Path | None]]:
     """Resolve each ``run`` argument to the skill directories it names.
 
     A plain skill directory passes through unchanged. A directory holding a
@@ -1032,14 +1094,18 @@ def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...]]]:
     ``mcp.json`` whose servers this version never stands up — are returned alongside every
     expanded skill, so what was not evaluated travels with the skills that were. A plugin
     carrying no skills is a refusal, not an empty clean run.
+
+    The bundle root travels with each expanded skill (``None`` for a bare directory) so the
+    executor can install the plugin *whole* — the layout a real client uses — rather than
+    lifting each skill out of it (§5/§6/§18).
     """
     from bellwether.skill import SKILL_FILE, is_plugin_root, load_plugin
 
-    expanded: list[tuple[Path, tuple[str, ...]]] = []
+    expanded: list[tuple[Path, tuple[str, ...], Path | None]] = []
     for arg in args:
         directory = Path(arg)
         if not is_plugin_root(directory) or (directory / SKILL_FILE).is_file():
-            expanded.append((directory, ()))
+            expanded.append((directory, (), None))
             continue
         bundle = load_plugin(directory)
         if not bundle.skill_dirs:
@@ -1055,7 +1121,7 @@ def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...]]]:
                 "is unobserved and outside this verdict — the evaluation covers the "
                 "skill files alone"
             )
-        expanded.extend((skill_dir, tuple(notes)) for skill_dir in bundle.skill_dirs)
+        expanded.extend((skill_dir, tuple(notes), bundle.root) for skill_dir in bundle.skill_dirs)
     return expanded
 
 

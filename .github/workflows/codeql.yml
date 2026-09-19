@@ -1,0 +1,58 @@
+# CodeQL — static analysis of Bellwether's own source (§26).
+#
+# A tool that renders security verdicts on other people's code and runs no static analysis of
+# its own is asking for a trust it does not extend to itself. This is that analysis: the
+# default `security-and-quality` queries over the Python package, on every pull request, on
+# main, and weekly so a newly published query reaches existing code rather than only new code.
+#
+# The weekly schedule is the part that is easy to leave out and the part that earns the most:
+# most of what CodeQL will ever find in this repository is already written.
+#
+# Every action is SHA-pinned, like the rest of the workflows — `tools/pin_lint.py` fails the
+# build otherwise, and a supply-chain tool that pulled a mutable tag in its own CI would be
+# undermining its own thesis.
+name: CodeQL
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  schedule:
+    # Weekly, at an arbitrary off-peak minute. Not on the hour: GitHub's scheduler is
+    # heavily contended at :00 and a delayed run is a run that reports late.
+    - cron: "37 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # The result upload is the whole point; without it the analysis runs and reports nowhere.
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@e429ea58a9912cadc53f8132ad35562b54de1b30 # v3.38.1
+        with:
+          languages: python
+          # Beyond the default set: `quality` adds correctness queries that are cheap here and
+          # catch the class of defect this project keeps finding by hand.
+          queries: security-and-quality
+
+      # No build step: Python needs none, and CodeQL's autobuild would only add a way for the
+      # analysis to fail for reasons that have nothing to do with the code.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@e429ea58a9912cadc53f8132ad35562b54de1b30 # v3.38.1
+        with:
+          category: "/language:python"
