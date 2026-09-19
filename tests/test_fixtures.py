@@ -162,3 +162,76 @@ def test_a_missing_fixture_refuses_before_any_plan_is_built(tmp_path: Path) -> N
             repetitions=2,
             fixture_for=fixture_resolver(tmp_path, suite),
         )
+
+
+# ---------------------------------------------------------------------------
+# R2 — a fixture name selects a directory inside its root, never outside it
+# ---------------------------------------------------------------------------
+
+
+def test_an_absolute_fixture_name_cannot_select_a_host_directory(tmp_path: Path) -> None:
+    """R2: joining a configured name onto the fixture root with ``/`` means an *absolute* name
+    replaces the root outright — pathlib's documented behaviour — so a scenario could name any
+    directory the evaluator can read and have it materialised into the sandbox workspace.
+
+    A scenario is evaluated content, not operator configuration: it arrives in the same pull
+    request as the skill under test.
+    """
+    skill = tmp_path / "skill"
+    (skill / "evals" / "fixtures").mkdir(parents=True)
+    outside = tmp_path / "host-secrets"
+    outside.mkdir()
+    (outside / "id_rsa").write_text("SYNTHETIC-PRIVATE-KEY", encoding="utf-8")
+
+    with pytest.raises(BellwetherError, match="resolves outside the fixture roots"):
+        resolve_fixture(skill, str(outside))
+
+
+def test_a_traversing_fixture_name_cannot_climb_out_of_its_root(tmp_path: Path) -> None:
+    """The other spelling of the same escape. Refused by the same containment test, not by a
+    clause that names ``..`` — the normalised comparison answers every spelling at once."""
+    skill = tmp_path / "skill"
+    (skill / "evals" / "fixtures").mkdir(parents=True)
+    (tmp_path / "host-secrets").mkdir()
+
+    with pytest.raises(BellwetherError, match="resolves outside the fixture roots"):
+        resolve_fixture(skill, "../../../host-secrets")
+
+
+def test_a_symlinked_fixture_pointing_out_of_the_tree_is_refused(tmp_path: Path) -> None:
+    """A containment check that compared the *unresolved* path would pass this: the name has no
+    ``..`` and is not absolute, and only following the link shows where it lands."""
+    skill = tmp_path / "skill"
+    local = skill / "evals" / "fixtures"
+    local.mkdir(parents=True)
+    outside = tmp_path / "host-secrets"
+    outside.mkdir()
+    (local / "innocent").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(BellwetherError, match="resolves outside the fixture roots"):
+        resolve_fixture(skill, "innocent")
+
+
+def test_an_escaping_name_refuses_rather_than_falling_back_to_the_legacy_tree(
+    tmp_path: Path,
+) -> None:
+    """The legacy flat-layout fallback must not absorb the refusal. Silently running on a
+    different tree from the one named is the failure mode §7.2's refusal exists to prevent, and
+    here it would also hide that a scenario had just tried to read outside its root."""
+    skill = tmp_path / "skill"
+    local = skill / "evals" / "fixtures"
+    local.mkdir(parents=True)
+    (local / "README.md").write_text("flat legacy tree", encoding="utf-8")
+
+    with pytest.raises(BellwetherError, match="resolves outside the fixture roots"):
+        resolve_fixture(skill, "/etc")
+
+
+def test_an_ordinary_nested_fixture_name_still_resolves(tmp_path: Path) -> None:
+    """The containment test must not cost a legitimate nested name, which is how a reject-list
+    usually gets loosened back into a hole."""
+    skill = tmp_path / "skill"
+    nested = skill / "evals" / "fixtures" / "group" / "case-a"
+    nested.mkdir(parents=True)
+
+    assert resolve_fixture(skill, "group/case-a").path == nested

@@ -796,3 +796,93 @@ def test_a_declared_host_nothing_reached_is_unused_only_where_the_plane_could_se
     assert _network_rows_of(_network_scope("example.com"), unobserved) == {
         "example.com": "not_evaluable"
     }
+
+
+# ---------------------------------------------------------------------------
+# R3 / R4 — the scope table is what the live path judges by, so every rule has to be in it
+# ---------------------------------------------------------------------------
+
+
+def test_an_explicitly_denied_tool_is_exceeded_even_with_no_allow_list() -> None:
+    """R3: ``bellwether run`` passes ``scope=None`` and drives the ``scope`` gate off this table
+    alone, and the table was built entirely from allow-lists — so a manifest whose only tools
+    statement was ``deny: [bash]`` produced no rows at all and the skill used bash to a clean
+    gate. ``derive_assertions`` compiles the deny correctly; nothing on the live path ran it."""
+    scope = make_scope(
+        tools={"allow": [], "deny": ["bash"]},
+        filesystem={"read": [], "write": [], "deny_read": []},
+    )
+    table = evaluate_scope(scope, index_of(make_trace(session_actions())))
+
+    (exceeded,) = table.exceeded()
+    assert (exceeded.area, exceeded.subject) == ("tools", "bash")
+    assert "deny" in exceeded.reason
+    assert exceeded.evidence == (5,)
+
+
+def test_a_deny_only_manifest_does_not_make_every_other_tool_exceeded() -> None:
+    """The other half of the same rule. A manifest that states prohibitions and no allow-list has
+    not claimed to enumerate what it uses, so the tools it does not mention are unstated, not
+    exceeded — otherwise closing R3 would block every ``deny``-only skill on its first call."""
+    scope = make_scope(
+        tools={"allow": [], "deny": ["fetch"]},
+        filesystem={"read": [], "write": [], "deny_read": []},
+    )
+    table = evaluate_scope(scope, index_of(make_trace(session_actions())))
+
+    assert table.exceeded() == ()
+
+
+def test_deny_read_wins_over_a_broader_declared_read_glob() -> None:
+    """R3, the filesystem half. ``read: [${WORKSPACE}/src/**]`` with
+    ``deny_read: [${WORKSPACE}/src/auth.py]`` is the shape a deny exists for — carving an
+    exception out of something broader — and evaluating the allow first made the deny
+    unreachable in exactly that case. The read matched the allow glob and the row read
+    ``supported``."""
+    scope = make_scope(
+        filesystem={
+            "read": ["${WORKSPACE}/src/**"],
+            "write": [],
+            "deny_read": ["${WORKSPACE}/src/auth.py"],
+        }
+    )
+    table = evaluate_scope(scope, index_of(make_trace(session_actions())))
+
+    exceeded = [entry for entry in table.exceeded() if entry.area == "filesystem.read"]
+    assert [entry.subject for entry in exceeded] == ["${WORKSPACE}/src/auth.py"]
+    assert "denies" in exceeded[0].reason
+
+
+def test_a_deletion_outside_the_declared_write_globs_is_exceeded() -> None:
+    """R4: write-scope evaluation filtered out entries marked ``deleted``, so deleting a
+    protected file was not a write-scope violation — the most destructive thing a skill can do to
+    a path was the one thing the mutation boundary did not cover."""
+    scope = make_scope(
+        tools={"allow": [], "deny": []},
+        filesystem={"read": [], "write": ["${WORKSPACE}/allowed.txt"], "deny_read": []},
+    )
+    table = evaluate_scope(
+        scope, index_of(make_trace([fs_write(9, "/work/t1/important.txt", deleted=True)]))
+    )
+
+    (exceeded,) = table.exceeded()
+    assert (exceeded.area, exceeded.subject) == ("filesystem.write", "${WORKSPACE}/important.txt")
+
+
+def test_a_deletion_inside_the_declared_write_globs_is_supported() -> None:
+    """Counting deletions must not make a declared mutation area undeclarable: a skill that
+    declares it may write a path can also remove it. (§13.5.4's `workspace_delete` was
+    undeclarable by any entry at all, which put every git-using skill at not_ready with no
+    escape — the same mistake, one gate over.)"""
+    scope = make_scope(
+        tools={"allow": [], "deny": []},
+        filesystem={"read": [], "write": ["${WORKSPACE}/**"], "deny_read": []},
+    )
+    table = evaluate_scope(
+        scope, index_of(make_trace([fs_write(9, "/work/t1/scratch.txt", deleted=True)]))
+    )
+
+    assert table.exceeded() == ()
+    assert [entry.status for entry in table.entries if entry.area == "filesystem.write"] == [
+        "supported"
+    ]
