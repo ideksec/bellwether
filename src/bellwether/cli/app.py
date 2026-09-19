@@ -33,6 +33,7 @@ from bellwether.cli.preflight import available_planes, preflight_failures
 from bellwether.config import (
     CONFIG_FILE,
     POLICY_FILE,
+    RUN_OUTPUT_DIR,
     load_config,
     load_platform_baseline,
     load_policy,
@@ -529,9 +530,9 @@ def run(
     profile: Annotated[
         str | None, typer.Option("--profile", help="Override the policy profile.")
     ] = None,
-    out: Annotated[Path, typer.Option("--out", help="Where artifact trees are written.")] = Path(
-        "bellwether-runs"
-    ),
+    out: Annotated[
+        Path, typer.Option("--out", help="Where artifact trees are written.")
+    ] = RUN_OUTPUT_DIR,
     max_tokens: Annotated[
         int,
         typer.Option(
@@ -1194,7 +1195,7 @@ def init_manifest(
     ],
     out: Annotated[
         Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
-    ] = Path("bellwether-runs"),
+    ] = RUN_OUTPUT_DIR,
     force: Annotated[
         bool, typer.Option("--force", help="Overwrite an existing evals/manifest.yaml.")
     ] = False,
@@ -1238,7 +1239,7 @@ def show_trace(
     ],
     out: Annotated[
         Path, typer.Option("--out", help="The artifact directory `bellwether run` wrote to.")
-    ] = Path("bellwether-runs"),
+    ] = RUN_OUTPUT_DIR,
     eval_id: Annotated[
         str | None, typer.Option("--eval", help="Search only this evaluation's traces.")
     ] = None,
@@ -1287,7 +1288,7 @@ def render_report(
     ],
     out: Annotated[
         Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
-    ] = Path("bellwether-runs"),
+    ] = RUN_OUTPUT_DIR,
     fmt: Annotated[str, typer.Option("--format", help="md, html, or all.")] = "all",
     to: Annotated[
         Path | None,
@@ -1327,7 +1328,7 @@ def diff(
     eval_b: Annotated[str, typer.Argument(help="Candidate, same forms.")],
     out: Annotated[
         Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
-    ] = Path("bellwether-runs"),
+    ] = RUN_OUTPUT_DIR,
     json_output: JsonFlag = False,
 ) -> None:
     """Diff two evaluations by their summary.json (§17.5, §20).
@@ -1385,7 +1386,7 @@ def baseline_set(
     ],
     out: Annotated[
         Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
-    ] = Path("bellwether-runs"),
+    ] = RUN_OUTPUT_DIR,
     baselines: _BaselinesDir = Path(".bellwether/baselines"),
     json_output: JsonFlag = False,
 ) -> None:

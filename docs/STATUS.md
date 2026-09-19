@@ -670,6 +670,16 @@ escaping symlinks the copy refuses; and on the probe, `probe_host` reached the i
 the command, and the client container had neither a name nor a deadline, so a timeout left it
 attached to the bridge it was supposed never to leak.
 
+A **fourth round** found three more, all inside round three's own code. The exclusion list added to
+close the §3.5 hole named `.bellwether-out/` — taken from the documentation — while the name `--out`
+actually defaults to is `bellwether-runs`: the fix for a check that did not check what it said
+contained one. Both names now come from `config.document`, the repeated `--out` literal is gone, and
+a test asserts every command sharing that default shares the object. The teardown guard started one
+statement too late (the resolver's own standup sat above it, the one case where a proxy is up and
+nothing else would close it) and ran its closes in sequence, so the first to raise skipped the rest;
+both were proven by reverting them. Two further findings are left for their own brick because they
+are in files this change does not touch — see the list below.
+
 ---
 
 ## Where the build is
@@ -709,7 +719,7 @@ attached to the bridge it was supposed never to leak.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1306 tests: 1248 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
+1310 tests: 1252 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -849,7 +859,13 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    second harness and the loose ends below.
 
 Loose ends to fold in along the way: **process and tool attribution against the platform baseline**
-(the path half is wired; §10.3 process trees need the process plane). *(WP-14's live doctor
+(the path half is wired; §10.3 process trees need the process plane); **`also_load_skills` accepts a
+path, not a name** (`cli/companions.py` joins the entry onto the skills directory with no
+single-component check, so `../…` escapes the tree and `./<name>` slips past the self-companion
+refusal — §5 says a companion is a sibling); and **`init-manifest` declares infrastructure egress**
+(`cli/infer_manifest.py` turns every `egress:<host>` capability into a `network.egress_allow` entry
+without filtering on egress class, so the model API and the harness's own hosts land in the skill's
+declaration; the class is on the action payload, the canonical capability drops it). *(WP-14's live doctor
 interception probe and plugin-layout staging have since landed — see the entries at the top.)*
 (`openai_compatible` provider support and the per-run §3.5 **sink path** have since landed — see the
 entries at the top.)

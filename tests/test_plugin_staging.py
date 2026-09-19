@@ -13,6 +13,7 @@ negative produced entirely by how Bellwether staged the skill.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -501,3 +502,56 @@ def test_the_cache_key_ignores_a_symlink_the_copy_refuses(tmp_path: Path) -> Non
     link.unlink()
     link.symlink_to(outside / "b")
     assert plugin_bundle_digest(bundle) == before
+
+
+def test_the_default_run_output_directory_never_reaches_the_container(tmp_path: Path) -> None:
+    """The first cut of the exclusion list guessed the name from the documentation.
+
+    `.bellwether-out/` appears in the workflows and the docs; the name `--out` actually
+    defaults to is `bellwether-runs`, and that is where a self-checkout bundle keeps previous
+    evaluations' traces, summaries and verdicts. Guessing meant the exclusion read as though it
+    covered the case and did not — which is the shape of defect this project keeps finding.
+    Both names are taken from `config.document` now, so the definition and the exclusion cannot
+    drift apart again.
+    """
+    from bellwether.config.document import RUN_OUTPUT_DIR
+
+    bundle = _bundle(tmp_path)
+    previous = bundle / RUN_OUTPUT_DIR.name / "eval-7"
+    previous.mkdir(parents=True)
+    (previous / "summary.json").write_text('{"verdict": "ready"}', encoding="utf-8")
+    (previous / "trace.arf.jsonl").write_text("{}\n", encoding="utf-8")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+
+    assert RUN_OUTPUT_DIR.name == "bellwether-runs"  # the name the CLI actually defaults to
+    assert not any(path.startswith(RUN_OUTPUT_DIR.name) for path in staged.files), staged.files
+    assert not (staged.root / RUN_OUTPUT_DIR.name).exists()
+    assert RUN_OUTPUT_DIR.name in staged.refused_machinery
+
+
+def test_every_commands_out_default_is_the_directory_the_exclusion_names() -> None:
+    """The same object, not two strings that happen to agree today.
+
+    A `--out` default that drifts from the excluded name puts previous evaluations' verdicts
+    back inside the container, and nothing would fail until a skill read them. Asserted across
+    every command that takes `--out`, because the literal used to be repeated at each one and
+    that is how the exclusion came to name a directory the code does not use.
+    """
+    from bellwether.cli.app import app
+    from bellwether.config.document import RUN_OUTPUT_DIR
+
+    shared = 0
+    for command in app.registered_commands:
+        parameters = inspect.signature(command.callback).parameters
+        if "out" not in parameters:
+            continue
+        default = parameters["out"].default
+        name = command.callback.__name__
+        if default != RUN_OUTPUT_DIR:
+            # `demo` deliberately writes somewhere else; a command with its own default is
+            # fine, a command that re-spells this one is the drift.
+            continue
+        shared += 1
+        assert default is RUN_OUTPUT_DIR, f"{name} re-spells the run output directory: {default}"
+    assert shared >= 5, f"only found {shared} commands defaulting --out to the run output dir"

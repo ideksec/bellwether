@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
@@ -490,26 +491,30 @@ class SandboxRunExecutor:
         # its own cleanup on a failed open (no network or container leaks). It is handed the run's
         # canaries so it scans each request body for them (§10.5.2).
         run_proxy = self._open_proxy(plan, run_dir, canaries)
-        # The controlled resolver shares the proxy's internal bridge when egress is on (one network,
-        # both peers on it) and creates its own when egress is off; either way the sandbox is pointed
-        # at it by IP with --dns. Opened after the proxy so it can join that bridge and be handed the
-        # proxy's container name to resolve (§10.6).
-        run_resolver = self._open_resolver(plan, run_dir, run_proxy)
-        if run_proxy is not None:
-            network = run_proxy.sandbox_network()
-        elif run_resolver is not None:
-            network = run_resolver.sandbox_network()
-        else:
-            network = "none"
-        dns = run_resolver.sandbox_dns() if run_resolver is not None else None
-        # Everything between the proxy/resolver standup and the run's own try/finally is
-        # guarded, because anything that raises here — a bundle that refuses to stage, a
-        # companion slug collision, a claude-code target with no proxy, a sink that cannot
-        # open its FIFO — used to leave the sidecar containers running and their bridges
-        # behind. A refusal that costs the operator a manual `docker network rm` is a refusal
-        # that discourages refusing, and refusing is how most of this file stays honest.
+        # Everything after the *proxy's* standup is guarded, because anything that raises
+        # between here and the run's own try/finally — the resolver's own standup, a bundle
+        # that refuses to stage, a companion slug collision, a claude-code target with no
+        # proxy, a sink that cannot open its FIFO — used to leave the sidecar containers
+        # running and their bridges behind. A refusal that costs the operator a manual
+        # `docker network rm` is a refusal that discourages refusing, and refusing is how most
+        # of this file stays honest. The resolver's standup is *inside* the guard rather than
+        # above it: a resolver that fails to come up is the case where a proxy is already
+        # running and nothing else would ever close it.
+        run_resolver: RunResolver | None = None
         sink: HostEventSink | None = None
         try:
+            # The controlled resolver shares the proxy's internal bridge when egress is on (one
+            # network, both peers on it) and creates its own when egress is off; either way the
+            # sandbox is pointed at it by IP with --dns. Opened after the proxy so it can join
+            # that bridge and be handed the proxy's container name to resolve (§10.6).
+            run_resolver = self._open_resolver(plan, run_dir, run_proxy)
+            if run_proxy is not None:
+                network = run_proxy.sandbox_network()
+            elif run_resolver is not None:
+                network = run_resolver.sandbox_network()
+            else:
+                network = "none"
+            dns = run_resolver.sandbox_dns() if run_resolver is not None else None
             extra_env = self._extra_env(plan, run_proxy, planting)
             ro_binds: list[tuple[Path, PurePosixPath]] = (
                 list(run_proxy.sandbox_ro_binds()) if run_proxy is not None else []
@@ -584,14 +589,20 @@ class SandboxRunExecutor:
                 )
 
         except BaseException:
-            if sink is not None:
-                sink.stop()
-            # The resolver first: it may have joined the proxy's bridge, which the proxy's
-            # close then removes — a still-attached container would block it.
-            if run_resolver is not None:
-                run_resolver.close()
-            if run_proxy is not None:
-                run_proxy.close()
+            # Each teardown is isolated. Run in sequence, the first one to raise would skip the
+            # rest and reinstate exactly the leak this handler exists to prevent — and it would
+            # do it while replacing the original error with a teardown error, which is the
+            # worse of the two to be told about. The resolver goes before the proxy: it may
+            # have joined the proxy's bridge, which the proxy's close then removes, and a
+            # still-attached container blocks that.
+            for close in (
+                (sink.stop if sink is not None else None),
+                (run_resolver.close if run_resolver is not None else None),
+                (run_proxy.close if run_proxy is not None else None),
+            ):
+                if close is not None:
+                    with suppress(Exception):
+                        close()
             raise
 
         try:

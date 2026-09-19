@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from bellwether.config.document import CONFIG_DIR
+from bellwether.config.document import CONFIG_DIR, RUN_OUTPUT_DIR
 from bellwether.determinism import sorted_walk
 from bellwether.errors import SkillError
 from bellwether.sandbox.fixtures import fixture_digest, normalize_metadata
@@ -35,11 +35,16 @@ _VCS_DIRS = frozenset({".git", ".hg", ".svn", ".bzr"})
 #: are the evaluating repository's, and a plugin bundle that is its own checkout carries them
 #: at its root. ``.bellwether/`` holds the config, the **policy** — the gates the skill is
 #: about to be judged against — the platform baseline and the stored baselines;
-#: ``.bellwether-out/`` holds the traces of previous evaluations. Either inside the container
-#: tells the skill under test not merely that it is being watched but exactly what would clear
-#: it, which is the §3.5 invariant at its most load-bearing. Taken from the config module
-#: rather than spelled again, so renaming the directory cannot leave this behind.
-_MACHINERY_DIRS = frozenset({CONFIG_DIR.name, f"{CONFIG_DIR.name}-out"})
+#: ``bellwether-runs/`` is where ``--out`` writes by default, so it holds previous
+#: evaluations' traces, summaries and verdicts. Either inside the container tells the skill
+#: under test not merely that it is being watched but exactly what would clear it, which is
+#: the §3.5 invariant at its most load-bearing.
+#:
+#: Both names come from the config module rather than being spelled here: the first cut of
+#: this list guessed ``.bellwether-out`` from the documentation and missed the default the
+#: code actually uses, which is the whole argument for taking them from the definition.
+#: ``.bellwether-out`` stays because the workflows and older checkouts use it.
+_MACHINERY_DIRS = frozenset({CONFIG_DIR.name, f"{CONFIG_DIR.name}-out", RUN_OUTPUT_DIR.name})
 
 __all__ = [
     "StagedBundle",

@@ -3042,3 +3042,36 @@ had no name and no deadline of its own: `subprocess.run` kills the `docker run` 
 and leaves the container attached to the sandbox bridge, which then refuses to be removed — the one
 thing the module's docstring says it never does. The container is named, removed before the proxy
 closes, and the Node client carries its own 20-second deadline.
+
+### Round four — the exclusion list was guessed, and the guard started one statement late
+
+Three more, all in code the previous round introduced.
+
+**The exclusion list named a directory the code does not use.** Round three excluded
+`.bellwether/` and `.bellwether-out/` from a staged bundle. `.bellwether-out/` came from the
+documentation; the name `--out` actually defaults to is `bellwether-runs`, and that is where a
+self-checkout bundle keeps previous evaluations' traces, summaries and verdicts. So the exclusion
+read as though it covered the case and did not — the exact shape of defect the §3.5 assertion exists
+to catch, committed *inside* the fix for it. Both names now come from `config.document`
+(`CONFIG_DIR`, `RUN_OUTPUT_DIR`), the `--out` literal that was repeated at six commands is gone, and
+a test asserts every command sharing that default shares the object rather than re-spelling it.
+`.bellwether-out` stays excluded because the workflows and older checkouts use it.
+
+**The teardown guard started one statement too late and ended too trusting.** The resolver's own
+standup sat above the guard, and that is precisely the case where a proxy is already up and nothing
+else would ever close it — a resolver image that will not pull, a bridge name already taken. And
+the handler's three closes ran in sequence, so the first to raise skipped the rest, reinstating the
+leak it was added to prevent *and* replacing the original refusal with a teardown error, which is
+the less useful of the two to be told about. The resolver standup is inside the guard now and each
+close is isolated. Both were proven by reverting them: each test fails without its fix.
+
+**Two findings left for their own brick**, because they are in files this change does not touch and
+widening a PR to reach them is how a diff stops being reviewable:
+
+- `cli/companions.py` joins `also_load_skills` entries as paths with no single-component check, so
+  `../…` escapes the skills tree and `./<name>` slips past the self-companion refusal. §5 says a
+  companion is a sibling; the loader should require one.
+- `cli/infer_manifest.py` turns every `egress:<host>` capability into a `network.egress_allow`
+  entry without filtering on egress class, so `init-manifest` writes the model API and harness
+  infrastructure hosts into the skill's own declaration. The class is already on the action
+  payload (`egress_class`); it is the canonical capability that drops it.
