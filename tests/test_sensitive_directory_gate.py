@@ -56,6 +56,22 @@ def _scope(**sections: object) -> DeclaredScope:
     return DeclaredScope.model_validate(sections)
 
 
+def _firstlight_profile() -> object:
+    """The shipped low profile with the sensitive gate softened, as the scripted paths use it."""
+    import yaml
+
+    from bellwether.config import template_path
+    from bellwether.config.policy_loader import parse_policy
+
+    policy = parse_policy(yaml.safe_load(template_path("policy.yaml").read_text(encoding="utf-8")))
+    profile = policy.profile("low")
+    security = profile.gates.security_runtime.model_copy(
+        update={"sensitive_directory_access": "warn"}
+    )
+    gates = profile.gates.model_copy(update={"security_runtime": security})
+    return profile.model_copy(update={"gates": gates})
+
+
 # ---------------------------------------------------------------------------
 # The three bypasses
 # ---------------------------------------------------------------------------
@@ -352,15 +368,14 @@ def test_the_hint_is_an_entry_the_rule_accepts(hit: str) -> None:
 
     entries = re.findall(r"'([^']+)'", hint)
     assert entries, f"the hint names no entry: {hint}"
-    # The hint for a home-root hit names a shape, not a literal, so substitute the placeholder.
-    candidates = [entry.replace("<name>", ".bashrc") for entry in entries]
+    # The *primary* suggestion, not any quoted substring. The home-root hint also quotes
+    # `${HOME}` as the counter-example it tells the author not to use, so an `any` over every
+    # quoted fragment would pass a hint whose actual advice is rejected.
+    suggestion = entries[0].replace("<name>", ".bashrc")
     section = "write" if "filesystem.write" in hint else "read"
-    accepted = [
-        entry
-        for entry in candidates
-        if undeclared_sensitive_hits((hit,), _scope(filesystem={section: [entry]})) == ()
-    ]
-    assert accepted, f"no entry the hint suggests is accepted by the rule: {hint}"
+    assert undeclared_sensitive_hits((hit,), _scope(filesystem={section: [suggestion]})) == (), (
+        f"the rule rejects the entry its own finding tells the author to add: {hint}"
+    )
 
 
 def test_a_brace_expanded_declaration_is_honoured() -> None:
@@ -389,3 +404,161 @@ def test_a_dot_entry_does_not_name_the_home_root(entry: str) -> None:
     assert undeclared_sensitive_hits((_HOME_ROOT,), _scope(filesystem={"read": [entry]})) == (
         _HOME_ROOT,
     )
+
+
+# ---------------------------------------------------------------------------
+# The third review
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "hit",
+    ["process:curl", "tool:Bash", "egress:evil.com", "dns_query:evil.com"],
+)
+def test_a_filesystem_declaration_never_excuses_a_non_filesystem_capability(hit: str) -> None:
+    """What making `_hit_direction` total cost, if nothing else had changed.
+
+    `sensitive_directory_of` reads a basename off any tier-2 target without asking which zone
+    produced it, so `egress:evil.com` yields `evil.com`. Once every non-write zone answered to
+    the *read* list, an operator adding a hostname to `metrics.sensitive_directories` let the
+    skill's own `filesystem.read` entry excuse a network capability. Before the totality change
+    the direction was `None` and nothing could excuse it — so the fix for an undeclarable hit
+    opened a bypass one zone over.
+    """
+    token = sensitive_directory_of(hit)
+    assert token is not None, "the fixture must be a shape the extractor reads a token from"
+    scope = _scope(filesystem={"read": [token], "write": [token]})
+    assert undeclared_sensitive_hits((hit,), scope) == (hit,)
+
+
+def test_the_hit_list_itself_holds_only_filesystem_zones() -> None:
+    """The same door, locked at the source: such a hit is no longer formed at all."""
+    from bellwether.trace import FILESYSTEM_ZONES
+    from bellwether.trace.canonical import canonicalize
+
+    call = make_action(
+        0,
+        action={"tool": "bash", "input": {"command": "curl http://evil.example"}},
+        capability=None,
+    )
+    canon = canonicalize([call], _CONTEXT, sensitive_directories=("bash", "curl"))
+    assert canon.sensitive_hits == ()
+    assert all(hit.partition(":")[0] in FILESYSTEM_ZONES for hit in canon.sensitive_hits)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["${HOME}/.ssh/../public/**", "${HOME}/.ssh/../../etc/passwd", "${HOME}/.ssh/.."],
+)
+def test_a_traversal_declaration_does_not_name_what_it_walks_out_of(entry: str) -> None:
+    """The `${HOME}/..` hole, one branch over.
+
+    The directory branch was a bare `startswith` with no `..` rejection, so an entry reading to
+    a reviewer as naming `${HOME}/public` bought a blanket pass on `~/.ssh/`. `FilesystemScope`
+    does no path validation, so these are legal manifest lines.
+    """
+    assert undeclared_sensitive_hits((_HOME_SSH,), _scope(filesystem={"read": [entry]})) == (
+        _HOME_SSH,
+    )
+
+
+def test_a_location_whose_name_contains_braces_is_still_declarable() -> None:
+    """Brace expansion re-created the undeclarable-hit class on a new axis.
+
+    `expand_braces` has no escape syntax, so a directory genuinely named `{a,b}` was named by
+    no entry at all — the same shape as the `.a*b` case, introduced in the commit that fixed it.
+    The unexpanded entry is tried alongside the expansions.
+    """
+    hit = "outside_workspace_read:${HOME}/{a,b}/"
+    literal = _scope(filesystem={"read": ["${HOME}/{a,b}/**"]})
+    assert undeclared_sensitive_hits((hit,), literal) == ()
+    # And expansion still works for the ordinary case.
+    braced = _scope(filesystem={"read": ["${HOME}/{.aws,.config}/**"]})
+    assert undeclared_sensitive_hits((_HOME_AWS,), braced) == ()
+
+
+def test_a_directory_whose_name_contains_a_glob_character_is_declarable() -> None:
+    """The `.a*b` fix, which shipped untested and reverted green.
+
+    The glob check ran against `rooted` — derived from the *observation*, never the declaration
+    — so a directory literally named `.a*b` was undeclarable by any entry at all.
+    """
+    hit = "outside_workspace_read:${HOME}/.a*b/"
+    assert undeclared_sensitive_hits((hit,), _scope(filesystem={"read": ["${HOME}/.a*b/**"]})) == ()
+
+
+def test_the_hint_placeholder_is_not_itself_accepted() -> None:
+    """A placeholder that silently works is a trap set for the author the hint is written for."""
+    verbatim = _scope(filesystem={"read": ["${HOME}/<name>"]})
+    assert undeclared_sensitive_hits((_HOME_ROOT,), verbatim) == (_HOME_ROOT,)
+
+
+def test_a_whitespace_only_configured_entry_is_refused_by_its_own_name() -> None:
+    """`StrictModel` strips before validation, so `' '` arrives empty.
+
+    A separate "leading or trailing whitespace" branch was added for this and was unreachable —
+    it could not be revert-proved, and its advice for a whitespace-only entry was to write it as
+    `''`, which the validator rejects.
+    """
+    assert MetricsConfig(sensitive_directories=[" .aws/ "]).sensitive_directories == [".aws/"]
+    with pytest.raises(ValidationError) as error:
+        MetricsConfig(sensitive_directories=[" "])
+    assert "whitespace" in str(error.value)
+
+
+def test_the_pass_detail_does_not_deny_an_access_that_happened() -> None:
+    """The branch added so the gate would stop contradicting itself, which shipped untested.
+
+    The pass is also taken where hits exist and are *all declared* — `legit-credential-reader`
+    is the corpus skill built to reach exactly that state. The detail said "none touched a
+    §13.5.4 sensitive directory", contradicting both this gate's own headline and the §13.5.2
+    section listing the hit. Deleting the fix left the whole offline suite green: no demo or
+    corpus skill reaches the all-declared pass, so nothing exercised the wording.
+    """
+    from bellwether.cli.orchestrator import SetReading, _sensitive_directory_result
+
+    def _reading(**overrides: object) -> SetReading:
+        return SetReading(
+            scenario_id="s",
+            target=_TARGET,
+            n_completed=6,
+            n_evaluable=6,
+            pass_rate=1.0,
+            lower_bound=0.6,
+            functional_threshold=0.5,
+            look=6,
+            look_outcome="pass",
+            bci=100.0,
+            consistently_failing=False,
+            jaccard_weighted=1.0,
+            jaccard_plain=1.0,
+            modal_trajectory_share=1.0,
+            mean_pairwise_distance=0.0,
+            rare_capability_risk="none",
+            rare_capability_blocking=False,
+            tier1_agreement=True,
+            scope_exceeded=(),
+            egress_observed=True,
+            egress_blocked=False,
+            weights_digest="sha256:0",
+            runs=(),
+            capabilities_observed=True,
+            **overrides,  # type: ignore[arg-type]
+        )
+
+    profile = _firstlight_profile()
+
+    clean = _sensitive_directory_result(_reading(), profile)  # type: ignore[arg-type]
+    assert clean.status == "pass"
+    assert "none touched" in clean.reason
+
+    declared = _sensitive_directory_result(
+        _reading(sensitive_hits=(_HOME_AWS,), undeclared_sensitive_hits=()),
+        profile,  # type: ignore[arg-type]
+    )
+    assert declared.status == "pass"
+    assert "none touched" not in declared.reason, (
+        "the gate denied a sensitive access its own §13.5.2 section lists"
+    )
+    assert _HOME_AWS in declared.reason
+    assert "deliberately declared" in declared.reason

@@ -74,28 +74,39 @@ def test_spec_notes_names_every_inert_disposition() -> None:
     assert not missing, f"inert dispositions not named in spec-notes: {missing}"
 
 
-def test_readme_gate_list_matches_the_composed_verdict() -> None:
-    """README's `security_runtime.*` bullets against the gates the pipeline actually composes."""
+def test_readme_gate_list_matches_the_composed_verdict(tmp_path: Path) -> None:
+    """README's `security_runtime.*` bullets against the gates the pipeline actually composes.
+
+    Twice now this test has claimed a code linkage it did not have. The first version compared
+    README to a hard-coded Python set; the second to the *committed* demo verdicts — two
+    committed literals agreeing with each other. Renaming the composed gate left both green,
+    because nothing in this file ran the pipeline: the linkage was supplied by a different test
+    (`test_demo.py`, which byte-compares the committed artifacts against a regeneration), so
+    this one only caught README drift after someone remembered to regenerate.
+
+    It now composes. `bellwether demo` takes half a second and runs the real gate assembly, so
+    a renamed or dropped gate fails here, in the file whose whole subject is claims nobody
+    verifies.
+    """
+    from bellwether.cli.demo import generate_demo
+
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
     documented = set(re.findall(r"\*\*(security_runtime\.[a-z_]+)\*\*", readme))
 
-    # Against the gates the pipeline really composed, not against a literal restating them.
-    # The first version of this test compared README to a hard-coded set: renaming the composed
-    # gate to `security_runtime.DELETED` left it fully green, so it was a docs-vs-constant check
-    # wearing a docs-vs-code label — in the file whose whole subject is claims nobody verifies.
-    # The demo verdicts are the pipeline's own output; `test_demo.py` byte-compares them against
-    # a fresh regeneration, so they cannot drift from the code without that failing first.
+    generate_demo(
+        skills_root=_ROOT / "examples" / "skills",
+        out_dir=tmp_path / "out",
+        tmp_dir=tmp_path / "traces",
+    )
     composed: set[str] = set()
-    for verdict in sorted((_ROOT / "examples" / "reports").glob("*/verdict.json")):
+    for verdict in sorted((tmp_path / "out").glob("*/verdict.json")):
         payload = json.loads(verdict.read_text(encoding="utf-8"))
         composed |= {
             gate["name"]
             for gate in payload["gates"]
             if gate["name"].startswith("security_runtime.")
         }
-    assert composed, (
-        "no demo verdict carried a security_runtime gate; regenerate with `bellwether demo`"
-    )
+    assert composed, "the demo composed no security_runtime gate"
     assert documented == composed
 
 

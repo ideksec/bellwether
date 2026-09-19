@@ -35,6 +35,7 @@ from bellwether.trace.models import Action, CanonBlock, Capability
 from bellwether.trace.tool_vocabulary import filesystem_access, tool_target
 
 __all__ = [
+    "FILESYSTEM_ZONES",
     "CanonicalTrace",
     "NormalizationContext",
     "StepSignature",
@@ -195,7 +196,7 @@ def canonicalize(
         sorted(
             entry
             for entry in t2
-            if sensitive_directory_of(entry) is not None
+            if entry.partition(":")[0] in FILESYSTEM_ZONES
             and sensitive_directory_of(entry) in sensitive_directories
         )
     )
@@ -440,6 +441,24 @@ def _top_level(normalized: str) -> str:
     if parts[0] == "/" and len(parts) > 1:
         return f"/{parts[1]}/"
     return normalized
+
+
+#: The tier-1 zones §13.5.4 is about. A sensitive *directory* is a filesystem idea, and
+#: ``sensitive_directory_of`` reads a basename off any tier-2 target without asking which zone
+#: produced it — so ``process:curl`` yields ``curl`` and ``egress:evil.com`` yields
+#: ``evil.com``. With the list configurable, an operator adding a hostname turned a network
+#: capability into a "sensitive directory" hit that a *filesystem* declaration could then
+#: excuse. Restricting the hit list at its source keeps §13.5.4 to the plane it describes.
+FILESYSTEM_ZONES: frozenset[str] = frozenset(
+    {
+        "workspace_read",
+        "workspace_write",
+        "workspace_delete",
+        "outside_workspace_read",
+        "outside_workspace_write",
+        "harness_state_write",
+    }
+)
 
 
 def sensitive_directory_of(tier2: str) -> str | None:

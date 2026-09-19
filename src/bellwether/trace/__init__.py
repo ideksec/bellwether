@@ -33,6 +33,7 @@ from bellwether.trace.build import (
     written_file_actions,
 )
 from bellwether.trace.canonical import (
+    FILESYSTEM_ZONES,
     CanonicalTrace,
     NormalizationContext,
     StepSignature,
@@ -69,6 +70,7 @@ from bellwether.trace.writer import TraceWriter, serialize_record, write_trace
 
 __all__ = [
     "ARF_VERSION",
+    "FILESYSTEM_ZONES",
     "PLANE_PRIORITY",
     "Action",
     "Actor",

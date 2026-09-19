@@ -217,18 +217,17 @@ class MetricsConfig(StrictModel):
             if entry == "~":
                 continue
             if not entry:
+                # `StrictModel` sets `str_strip_whitespace`, so pydantic has already stripped
+                # every entry before this runs: `" .aws/"` arrives as `".aws/"` and works, and a
+                # whitespace-only entry arrives empty and lands here. An earlier version of this
+                # validator carried a separate "leading or trailing whitespace" branch to make
+                # that message clearer — it was unreachable, could not be revert-proved, and its
+                # own advice for a whitespace-only entry was to "write it as ''", which this
+                # branch rejects. Saying it here, once, is the whole fix.
                 raise ValueError(
-                    "sensitive_directories carries an empty entry; each entry names one "
+                    "sensitive_directories carries an empty entry (or one that is only "
+                    "whitespace, which is stripped before validation); each entry names one "
                     "directory (with a trailing slash) or one workspace-root file"
-                )
-            if entry.strip() != entry:
-                # Said separately from the empty case: membership is exact, so the leading or
-                # trailing space is the whole defect, and calling it "blank" sends the reader
-                # looking for an empty string that is not there.
-                raise ValueError(
-                    f"sensitive_directories entry {entry!r} has leading or trailing whitespace, "
-                    "which membership is exact about; write it as "
-                    f"{entry.strip()!r}"
                 )
             if entry.startswith("~") or entry in ("${HOME}", "$HOME"):
                 raise ValueError(

@@ -25,6 +25,7 @@ import fnmatch
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Literal
 
 from bellwether.config.models.baseline import PlatformBaseline
@@ -251,8 +252,20 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("|".join(f"(?:{_translate(alt)})" for alt in alternatives))
 
 
-def expand_braces(pattern: str) -> list[str]:
+#: The most alternatives one entry may stand for. Expansion is 2ⁿ in the number of groups, and
+#: the manifest is part of the package *under review* — a 121-character entry with 22 groups
+#: expands to 4.2 million alternatives in 13 seconds, and 26 groups exhausts memory. Past the cap
+#: the entry is matched literally: it stops being a convenience, never a crash.
+_MAX_BRACE_ALTERNATIVES = 1024
+
+
+@lru_cache(maxsize=4096)
+def expand_braces(pattern: str) -> tuple[str, ...]:
     """The public name for brace expansion, for callers matching declarations themselves.
+
+    Cached and capped. The §13.5.4 declaration rule re-expands the same entry for every
+    (hit, entry) pair of every run, so an uncached expansion multiplies a cost the manifest
+    author controls.
 
     The §13.5.4 declaration rule anchors a literal prefix rather than compiling a regex, so it
     needs the alternatives a braced entry stands for. Without this, one manifest line is
@@ -260,10 +273,20 @@ def expand_braces(pattern: str) -> list[str]:
     through :func:`glob_to_regex`, and so expands braces) and an *undeclared* sensitive access
     to the gate — a false positive on a declaration the author correctly believes they wrote.
     """
-    return _expand_braces(pattern)
+    # Counted before recursing, not while: checking the accumulated length only trims the
+    # *result*, and the recursion has already walked 2ⁿ branches to build it. The groups are
+    # cheap to count and bound the size exactly.
+    groups = sum(
+        1
+        for index, char in enumerate(pattern)
+        if char == "{" and (index == 0 or pattern[index - 1] != "$")
+    )
+    if groups and 2**groups > _MAX_BRACE_ALTERNATIVES:
+        return (pattern,)
+    return tuple(_expand_braces(pattern))
 
 
-def _expand_braces(pattern: str) -> list[str]:
+def _expand_braces(pattern: str, *, limit: int | None = None) -> list[str]:
     """``/etc/{passwd,group}`` → ``["/etc/passwd", "/etc/group"]``, recursively.
 
     A ``{`` preceded by ``$`` is a placeholder, not alternation: expanding
@@ -288,7 +311,11 @@ def _expand_braces(pattern: str) -> list[str]:
                 head, body, tail = pattern[:start], pattern[start + 1 : index], pattern[index + 1 :]
                 expanded: list[str] = []
                 for choice in _split_alternatives(body):
-                    expanded.extend(_expand_braces(head + choice + tail))
+                    expanded.extend(_expand_braces(head + choice + tail, limit=limit))
+                    if limit is not None and len(expanded) > limit:
+                        # Past the cap the pattern is its own single alternative: a manifest
+                        # cannot spend the evaluation's time on expansion it controls.
+                        return [pattern]
                 return expanded
     return [pattern]  # unbalanced brace: treat literally rather than guessing
 

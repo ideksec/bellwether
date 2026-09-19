@@ -3362,6 +3362,59 @@ undeclared in production. They are computed where the manifest table is applied,
 skill worth showing; it is simply not a gate finding, so the report section and the §17.5
 regression comparison are unchanged.
 
+### A correction: "every fix revert-proved" was not true
+
+The commit that fixed round 2's findings claimed *"Every fix revert-proved"*, and `docs/STATUS.md`
+and `docs/spec-notes.md` repeated it. A third review measured it: eleven fixes reverted
+individually against the whole offline suite, and **three left it fully green** —
+
+- the `.a*b` fix (the glob check that ran against the observation rather than the declaration):
+  no test anywhere exercised a glob character in an observed directory name;
+- the gate's pass-detail branch, added so it would stop denying a sensitive access that happened:
+  no demo or corpus skill reaches the all-declared pass, so nothing read the wording;
+- the config validator's whitespace branch, which was **unreachable dead code** — `StrictModel`
+  sets `str_strip_whitespace`, so pydantic strips every entry before the field validator runs.
+  The branch could never fire, the defect it claimed to fix was therefore still there, and its own
+  advice for a whitespace-only entry was to write it as `''`, which the validator rejects.
+
+Each now has a test that fails without it, and the whitespace branch is gone in favour of saying
+the thing once, in the message that can actually be reached.
+
+The general claim was made from memory of the fixes that *were* proved rather than from a
+measurement of all of them, which is the same failure this branch keeps finding in the code: a
+statement of assurance standing in for the observation. It is recorded here rather than quietly
+corrected, because a notes file that improves its own history is worth less than one that does not.
+
+### §13.5.4 — what round 2's fixes cost, and a third round
+
+Making `_hit_direction` *total* removed the undeclarable-hit class and opened a bypass one zone
+over. `sensitive_directory_of` reads a basename off any tier-2 target without asking which zone
+produced it — `process:curl` yields `curl`, `egress:evil.com` yields `evil.com` — so once every
+non-write zone answered to the *read* list, an operator adding a hostname to
+`metrics.sensitive_directories` let the skill's own `filesystem.read` entry excuse a network
+capability. Before the totality change the direction was `None` and nothing could excuse it. The
+hit list is now restricted to filesystem zones at its source, with the same test at the function
+the gate reads: §13.5.4 is about directories, and a hostname is not one.
+
+Brace expansion re-created the undeclarable class on a new axis. `_expand_braces` has no escape
+syntax, so a location whose name genuinely contains `{a,b}` was named by no entry at all — the
+same shape as the `.a*b` case, introduced in the commit that fixed it. The unexpanded entry is now
+tried alongside the expansions. Expansion is also capped and cached: it is 2ⁿ in the number of
+groups, the manifest is part of the package *under review*, and a 121-character entry with 22
+groups took 13 seconds before this rule re-expanded it once per (hit, entry) pair of every run.
+Counting the groups before recursing rather than trimming the result afterwards is what makes the
+cap actually cheap.
+
+Two more holes of the shape already closed elsewhere: a `..` segment anywhere in a declaration now
+disqualifies it, because `${HOME}/.ssh/../public/**` reads to a reviewer as naming
+`${HOME}/public` and bought a blanket pass on `~/.ssh/`; and the hint's own placeholder,
+`${HOME}/<name>`, was literally accepted by the rule when pasted verbatim — a placeholder that
+silently works is a trap set for exactly the author the hint is written for.
+
+A §24 violation: the spelling near-miss built its fold map from an unordered set, so where two
+observed tool names differed only by case the spelling the finding named depended on
+`PYTHONHASHSEED` — and that text reaches `summary.json` and the byte-compared HTML report.
+
 ### §12.6 — the tools near-miss, reached by a second route
 
 Flagging a baseline entry whose tool is classed differently closed the inert-allowlist trap by

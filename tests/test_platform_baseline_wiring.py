@@ -454,3 +454,38 @@ def test_a_tool_seen_under_its_own_class_is_never_called_inert() -> None:
     )
     if "tool:read" in tools:
         assert not [detail for detail in near if "'read'" in detail and "absorbs nothing" in detail]
+
+
+def test_the_spelling_near_miss_names_the_same_tool_on_every_machine() -> None:
+    """§24: the near-miss text reaches `summary.json` and the byte-compared HTML report.
+
+    `by_fold` was built from an unordered set, so where several observed names differ only by
+    case the survivor — and therefore the spelling the finding names — depended on
+    `PYTHONHASHSEED`. Same input, different bytes.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    def _call(seq: int, tool: str) -> Action:
+        return Action(
+            seq=seq,
+            ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            plane="harness",
+            kind="tool_call",
+            action={"tool": tool, "input": {"command": "ls"}},
+        )
+
+    actions = (_call(1, "Bash"), _call(2, "bash"), _call(3, "baSh"))
+    details = {
+        baseline_absorption(actions, _CONTEXT, _baseline_with_tools("BASH"), sandbox_image=_IMAGE)[
+            2
+        ]
+        for _ in range(8)
+    }
+    assert len(details) == 1, "the near-miss text varies across runs"
+    (only,) = details
+    spelling = [detail for detail in only if "case-sensitive" in detail]
+    assert spelling
+    # Deterministically the *lowest* spelling, not whichever the set happened to yield.
+    assert "'Bash'" in spelling[0]

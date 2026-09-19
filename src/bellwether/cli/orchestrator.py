@@ -98,6 +98,7 @@ from bellwether.report import (
 )
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
+    FILESYSTEM_ZONES,
     Action,
     NormalizationContext,
     StepSignature,
@@ -675,7 +676,13 @@ def baseline_absorption(
         # §12.6 says a suspicious near-match must raise a finding rather than vanish. An entry
         # that can never match is the strongest form of that: it reads as an accounted-for
         # tool and subtracts nothing, on every run, for ever.
-        by_fold = {name.casefold(): name for name in seen_names}
+        # Sorted, not set order: where two observed names differ only by case the survivor
+        # decided which spelling the near-miss text names, and that text reaches `summary.json`
+        # and the HTML report — both byte-compared. Same input, different bytes, under
+        # `PYTHONHASHSEED` (§24).
+        by_fold: dict[str, str] = {}
+        for name in sorted(seen_names):
+            by_fold.setdefault(name.casefold(), name)
         misclassed = tuple(
             f"platform baseline names tool {name!r}, but this harness classes it as "
             f"{otherwise_classed[name]!r}, not 'tool:{name}' — the entry absorbs nothing (§12.6)"
@@ -686,10 +693,21 @@ def baseline_absorption(
         # api-loop, `Read` on claude-code. A baseline written against one and applied to the
         # other absorbs nothing *and*, without this, says nothing: the same inert-allowlist trap
         # reached by a different route.
+        # Naming the corrected spelling is only useful where that spelling *would* absorb.
+        # Where the tool is classed by what it touched, fixing the case leaves the entry just as
+        # inert and the class message appears instead — two round trips for one diagnosis — so
+        # this says both things at once.
         misspelled = tuple(
             f"platform baseline names tool {name!r}, but this run's harness spells it "
             f"{by_fold[name.casefold()]!r} — tool names are case-sensitive, so the entry "
-            "absorbs nothing (§12.6)"
+            "absorbs nothing"
+            + (
+                " (§12.6)"
+                if f"tool:{by_fold[name.casefold()]}" in observed_tools
+                else f"; note that {by_fold[name.casefold()]!r} is classed "
+                f"{otherwise_classed.get(by_fold[name.casefold()], 'by what it touched')!r}, "
+                "so correcting the spelling alone will not absorb it either (§12.6)"
+            )
             for name in baseline.tools
             if name not in seen_names and name.casefold() in by_fold
         )
@@ -779,7 +797,24 @@ def _declaration_names(entry: str, rooted: str) -> bool:
     ``${HOME}/.netrc``. Separating them needs tier-3 granularity in the hit, which the §13.5.2
     dual-tier model deliberately does not carry. See `docs/spec-notes.md`.
     """
-    return any(_alternative_names(alternative, rooted) for alternative in expand_braces(entry))
+    if _traverses(entry):
+        # A declaration that walks back out of what it names does not name it. Rejected for
+        # every shape, not just the home root: `${HOME}/.ssh/../public/**` reads to a reviewer
+        # as naming `${HOME}/public` and bought a blanket pass on `~/.ssh/`, which is the same
+        # hole the home-root branch closes for `${HOME}/..`.
+        return False
+    # The unexpanded entry is tried alongside the expansions, because `expand_braces` has no
+    # escape syntax: a location whose name really contains `{a,b}` is named by the literal
+    # entry and by nothing else, and dropping it would recreate the undeclarable-hit class this
+    # rule has already produced twice.
+    return any(
+        _alternative_names(alternative, rooted) for alternative in (entry, *expand_braces(entry))
+    )
+
+
+def _traverses(entry: str) -> bool:
+    """Whether a declaration contains a ``..`` path segment."""
+    return ".." in entry.split("/")
 
 
 def _alternative_names(entry: str, rooted: str) -> bool:
@@ -788,11 +823,14 @@ def _alternative_names(entry: str, rooted: str) -> bool:
         if not entry.startswith("${HOME}/"):
             return False
         rest = entry[len("${HOME}/") :]
-        # `.` and `..` are not files in the home directory: one is the directory itself and the
-        # other its parent, and a reviewer reading `${HOME}/..` would say it names anything but
-        # home. Accepting them let a declaration that points *away* from home excuse every file
-        # tier 2 collapses onto it.
-        if rest in (".", ".."):
+        # `.` is the directory itself, not a file in it. (`..` is caught by `_traverses`.)
+        if rest == ".":
+            return False
+        # `<` and `>` are not path characters in any manifest anyone means: they are how the
+        # gate's own hint spells its placeholder, and `${HOME}/<name>` pasted verbatim would
+        # otherwise satisfy this branch — a placeholder that silently "works" is a trap set for
+        # exactly the author the hint is written for.
+        if "<" in rest or ">" in rest:
             return False
         return bool(rest) and "/" not in rest and not _has_glob(rest)
     if rooted.endswith("/"):
@@ -835,10 +873,15 @@ def undeclared_sensitive_hits(hits: Sequence[str], scope: DeclaredScope | None) 
     remaining = []
     for hit in hits:
         rooted = _rooted_target(hit)
-        direction = _hit_direction(hit)
-        declared = declared_by_direction.get(direction or "", ())
+        declared = declared_by_direction[_hit_direction(hit)]
+        # Filesystem zones only. `sensitive_directory_of` reads a basename off any tier-2
+        # target without asking which zone produced it, so `egress:evil.com` yields
+        # `evil.com`; once `_hit_direction` became total, a *filesystem* read declaration
+        # could excuse a network capability. `canonicalize` no longer forms such a hit, and
+        # this is the second lock on the same door, at the function the gate reads.
         if (
             rooted is not None
+            and hit.partition(":")[0] in FILESYSTEM_ZONES
             and sensitive_directory_of(hit) is not None
             and any(_declaration_names(entry, rooted) for entry in declared)
         ):
@@ -1688,9 +1731,9 @@ def _sensitive_directory_result(reading: SetReading, profile: ProfileSpec) -> Ta
     # is the corpus skill built to reach exactly this state. Saying "none touched a sensitive
     # directory" there contradicts both this gate's own headline and the §13.5.2 section that
     # lists the hit, so the detail says which of the two passes this is.
-    declared = [
-        hit for hit in reading.sensitive_hits if hit not in reading.undeclared_sensitive_hits
-    ]
+    # Every hit, because this branch is only reached once `undeclared_sensitive_hits` is empty —
+    # filtering against it here read as though it selected something and could not.
+    declared = list(reading.sensitive_hits)
     touched = (
         f"every run was observed; the {len(declared)} sensitive access(es) recorded are each "
         f"deliberately declared by the manifest ({', '.join(declared)})"
