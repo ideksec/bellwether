@@ -185,6 +185,17 @@ class ExecutedRun:
     trace: Trace
     context: NormalizationContext
     trace_jsonl: str
+    #: The **host-side** directory holding this run's final workspace, where the executor
+    #: retained a snapshot of it. Content-inspecting assertions (``artifact_valid``,
+    #: ``file_written`` with a ``content_match``) read real bytes from here.
+    #:
+    #: ``None`` means no workspace was retained — a replay from the run cache, a backend with
+    #: no host-side merged view, a snapshot that crossed its bounds — and those assertions
+    #: report ``not_evaluable`` rather than reading something else. This field exists because
+    #: they used to be handed ``context.workspace_root``, which is the path *inside the
+    #: container*: on the host it does not exist, so every content assertion failed, and where a
+    #: host path of that name did exist they would have read it.
+    workspace: Path | None = None
 
 
 class RunExecutor(Protocol):
@@ -435,9 +446,7 @@ def scope_unused_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str
 
 def scope_table_of(executed: ExecutedRun, declared: DeclaredScope) -> ScopeTable:
     """The full Declared-vs-Observed table for one run against a declared scope (§12.5)."""
-    index = EvidenceIndex.from_trace(
-        executed.trace, executed.context, workspace=Path(executed.context.workspace_root)
-    )
+    index = EvidenceIndex.from_trace(executed.trace, executed.context, workspace=executed.workspace)
     return evaluate_scope(declared, index)
 
 
@@ -970,7 +979,10 @@ def analyse_run(
         )
         absorbed = absorbed | matched
     platform_baseline_t3 = absorbed
-    index = EvidenceIndex.from_trace(trace, context, workspace=Path(context.workspace_root))
+    # The host-side snapshot the executor retained, never `context.workspace_root` — that is
+    # the path inside the container, and reading it on the host is either a guaranteed miss or a
+    # read of an unrelated host directory that happens to share the name.
+    index = EvidenceIndex.from_trace(trace, context, workspace=executed.workspace)
 
     specs: list[AssertionSpec] = list(plan.scenario.assertions)
     if scope is not None:

@@ -588,3 +588,24 @@ def test_a_skill_with_no_manifest_has_no_review() -> None:
     assert package.manifest is None
     assert package.review_state() == "absent"
     assert package.review_age_days(dt.date(2026, 8, 4)) is None
+
+
+def test_the_payload_digest_follows_the_executable_bit(tmp_path: Path) -> None:
+    """R9: ``FileRecord`` has always carried ``is_executable`` and staging has always preserved
+    it, but the merkle preimage ignored it. A script flipped from 0644 to 0755 — from inert text
+    to something the agent can run — kept its ``payload_digest``, which means the change carried
+    its review attestation forward (§6.3) and replayed from the run cache under the old identity
+    (§19.2). Every property the container can act on differently belongs in the identity that
+    says two inputs are the same input.
+    """
+    inert = tmp_path / "inert"
+    inert.mkdir()
+    (inert / "run.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    (inert / "run.sh").chmod(0o644)
+
+    runnable = tmp_path / "runnable"
+    runnable.mkdir()
+    (runnable / "run.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    (runnable / "run.sh").chmod(0o755)
+
+    assert merkle_digest(read_file_records(inert)) != merkle_digest(read_file_records(runnable))

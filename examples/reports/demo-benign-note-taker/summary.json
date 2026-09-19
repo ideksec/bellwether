@@ -137,8 +137,8 @@
   "skill": {
     "criticality": "low",
     "name": "benign-note-taker",
-    "package_digest": "sha256:6ffd753975aee781df3d64f2dd1176a401519db34c65c99b6e307f48749b33cf",
-    "payload_digest": "sha256:d3f79fa49679aa65a7b4b41ac0f466d5db8edd67e8756be6c0bcd332cc5c3731"
+    "package_digest": "sha256:815d0d1620d61105164a740f115ea9bd1fadc4e9abc581a55f9effff32643dc4",
+    "payload_digest": "sha256:4e48bc646e3845c21cc21c5df0e2a6d3fed9031969710c21375d8b6d982db6cc"
   },
   "verdict": {
     "gates": [

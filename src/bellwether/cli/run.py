@@ -338,6 +338,11 @@ def run_evaluation(
         companions_for=companions_for,
     )
 
+    # §9.2/§12.7/§19.2: the limits the executor will actually enforce — the configured ones
+    # with `--max-tokens` applied. Resolved here, above both the cache key and the executor,
+    # because a key formed from the *configured* limits describes a run nobody is about to make.
+    configured_limits = run_limits_from_config(config, max_total_tokens=max_tokens_per_run)
+
     def pricing_for(target: TargetInfo) -> ModelPricing | None:
         return config.providers[target.provider].pricing_for(target.model_alias)
 
@@ -409,7 +414,7 @@ def run_evaluation(
         )
         # What this configuration can watch, and the limits it runs under: a trace captured
         # with no proxy is a different observation from one captured behind it (§19.2).
-        observability = observability_key(config)
+        observability = observability_key(config, run_limits=configured_limits)
 
         def inputs_for(plan: RunPlan) -> CacheKeyInputs | None:
             harness_version = harness_versions.get(plan.target.harness)
@@ -470,7 +475,6 @@ def run_evaluation(
     # §19.1: the executor's per-run wall-clock cap (the scenario's timeout, §7.2) is what
     # bounds a footerless run's duration for the budget gate; pricing resolves per target
     # alias so reported tokens become dollars only at a configured rate, never a guessed one.
-    configured_limits = run_limits_from_config(config, max_total_tokens=max_tokens_per_run)
     per_run_wall_cap_ms = max(
         int(run_limits_for(configured_limits, scenario, suite.defaults).wall_seconds * 1000)
         for scenario in scenarios

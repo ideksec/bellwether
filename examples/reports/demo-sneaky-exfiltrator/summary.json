@@ -142,8 +142,8 @@
   "skill": {
     "criticality": "high",
     "name": "sneaky-exfiltrator",
-    "package_digest": "sha256:6df7961a8b5d4a03b4af489c19446a16c7fad40fe6a5088fd40bc1be99af3c3c",
-    "payload_digest": "sha256:9f6f0f12fb38c8d170890d08903e4d420af8a785fbf0ef5bbefd1995d2de47d0"
+    "package_digest": "sha256:ac2645c2c3278546153378c29f5953c454c6618dbf5d151340f0a251391c8a89",
+    "payload_digest": "sha256:85bf8a13e29eb809a43beb27d3d92838764400b05273415830e05d89167f0dd2"
   },
   "verdict": {
     "gates": [

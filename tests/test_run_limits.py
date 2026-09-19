@@ -130,3 +130,23 @@ def test_a_token_ceiling_is_budget_exceeded_not_a_failure() -> None:
         )
     )
     assert exit_reason_from_events(events) == "budget_exceeded"
+
+
+def test_the_cli_token_override_reaches_the_cache_key() -> None:
+    """R10: the key hashed ``config.execution.limits`` — the *configured* cap — while the run
+    enforced the cap ``--max-tokens`` had overridden it to. So an evaluation at a generous cap
+    executed the matrix, and a second at a tight one replayed every run from the cache and
+    reported them under a limit that had never been exercised: results presented under limits
+    that were not actually applied, which is the cache's one job not to do (§19.2)."""
+    config = _config(max_total_tokens=10_000)
+    configured = run_limits_from_config(config)
+    tightened = run_limits_from_config(config, max_total_tokens=1)
+
+    assert observability_key(config, run_limits=tightened) != observability_key(
+        config, run_limits=configured
+    )
+    # And the override is what the key follows, not the config it overrode: two configs whose
+    # effective cap is the same must agree, or the key would miss where it should hit.
+    assert observability_key(config, run_limits=tightened) == observability_key(
+        _config(max_total_tokens=99), run_limits=tightened
+    )

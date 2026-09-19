@@ -46,7 +46,7 @@ DIRECTORY_MODE = 0o755
 #: Domain separator for the fixture digest. Distinct from the skill digest's, so a
 #: fixture and a skill package containing identical bytes do not produce the same digest
 #: and cannot be confused for one another in a cache key.
-FIXTURE_DIGEST_FORMAT = "bellwether/fixture-digest/1"
+FIXTURE_DIGEST_FORMAT = "bellwether/fixture-digest/2"
 
 
 @dataclass(frozen=True)
@@ -180,7 +180,23 @@ def fixture_digest(root: Path, exclude: frozenset[str] | None = None) -> str:
 
 
 def _digest_tree(root: Path, exclude: frozenset[str]) -> tuple[str, int, int]:
-    """Digest content and paths, length-prefixed so no name can be read as another."""
+    """Digest content, paths, entry kind and executability, each field length-prefixed.
+
+    Three fields, and the last two are why the format is at ``/2``. Length-prefixing stops one
+    name being read as another. The **kind tag** stops a symlink being read as a regular file:
+    a symlink's stand-in content is ``symlink:<target>``, which is byte-identical to the content
+    of an ordinary file holding that text, so without the tag the two hash the same tree to the
+    same value. The **executable bit** is here because ``materialize_fixture`` preserves it —
+    §9.3 normalises the mode to 0644 or 0755 and a fixture whose script stops being executable
+    is a broken fixture — so a tree that stages differently must digest differently. The digest
+    is a cache key (§19.2) and a provenance record; two inputs that behave differently in the
+    container must not share one.
+
+    `skill/digests.py` learned the kind tag at ``DIGEST_FORMAT/3`` after the same collision was
+    found in the package merkle. This is the identical bug in the sibling digest, which the fix
+    there did not reach — worth saying, because "we fixed that class of thing" is not the same
+    statement as "we fixed it everywhere it occurs".
+    """
     hasher = hashlib.sha256()
     _feed(hasher, FIXTURE_DIGEST_FORMAT.encode("utf-8"))
 
@@ -192,11 +208,17 @@ def _digest_tree(root: Path, exclude: frozenset[str]) -> tuple[str, int, int]:
             continue
         path = root / relative
         if path.is_symlink():
+            kind = b"symlink"
+            executable = b"0"
             content = f"symlink:{path.readlink()}".encode()
         else:
+            kind = b"file"
+            executable = b"1" if path.stat().st_mode & 0o100 else b"0"
             content = path.read_bytes()
             total += len(content)
         count += 1
+        _feed(hasher, kind)
+        _feed(hasher, executable)
         _feed(hasher, posix.encode("utf-8"))
         _feed(hasher, stable_hash_bytes(content).encode("utf-8"))
 

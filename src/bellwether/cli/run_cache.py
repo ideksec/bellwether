@@ -43,7 +43,7 @@ from bellwether.config.models.config import Config, HarnessConfig
 from bellwether.config.models.scenarios import Scenario
 from bellwether.determinism import canonical_json, stable_hash
 from bellwether.errors import BellwetherError, TraceError
-from bellwether.harness import SamplingSpec
+from bellwether.harness import RunLimits, SamplingSpec
 from bellwether.trace import NormalizationContext, read_trace, write_trace
 
 __all__ = [
@@ -59,7 +59,7 @@ __all__ = [
 ]
 
 #: Bumped on any change to what an entry holds or how the key is formed.
-CACHE_FORMAT = "3"
+CACHE_FORMAT = "4"
 
 #: Exit reasons never cached. Infrastructure failures (§13.2) are retried on the next run. The
 #: rest are *operator-limit* outcomes (§12.7): each is decided by a bound — the token cap, the
@@ -116,8 +116,14 @@ def render_sampling(sampling: SamplingSpec | None) -> str:
     return f"temperature={sampling.temperature},seed={sampling.seed}"
 
 
-def observability_key(config: Config) -> str:
+def observability_key(config: Config, *, run_limits: RunLimits | None = None) -> str:
     """What this configuration lets a run *observe*, and the limits it runs under (§19.2).
+
+    ``run_limits`` is the resolved :class:`RunLimits` the executor will actually enforce —
+    config overlaid with the CLI's ``--max-tokens`` — and the caller passes it because only the
+    caller knows what the flag said. Omitted, the configured limits are used, which is right for
+    a caller that applies no override and wrong for one that forgets: see the ``run_limits``
+    comment below for what that cost.
 
     §19.2's key names the sandbox image, which fixes what is inside the container but says
     nothing about what watches it from outside. Wiring the recording proxy, pointing the sandbox
@@ -130,11 +136,27 @@ def observability_key(config: Config) -> str:
     Rendered as a digest of the settings themselves, so adding a field here is a key change and
     an old entry simply misses rather than being served under a new meaning.
     """
+    limits = (
+        config.execution.limits.model_dump(mode="json")
+        if run_limits is None
+        else {
+            "max_turns": run_limits.max_turns,
+            "max_tool_calls": run_limits.max_tool_calls,
+            "max_total_tokens": run_limits.max_total_tokens,
+        }
+    )
     material = {
         "capture": config.capture.model_dump(mode="json"),
         # §9.2/§12.7: a run stopped at a turn or tool-call ceiling is a different
         # observation from one that ran to its own end, so raising a ceiling must miss.
-        "run_limits": config.execution.limits.model_dump(mode="json"),
+        #
+        # The *effective* limits, after `--max-tokens` has overridden the configured cap, not
+        # the configured ones. Hashing `config.execution.limits` described a run nobody was
+        # about to make: a first evaluation at a 1,000,000-token cap executed the matrix, and a
+        # second at a 1-token cap replayed every one of those runs from the cache and reported
+        # them under the tighter limit. The flag is the documented per-invocation cost control,
+        # so it has to reach the identity that decides whether a trace may be replayed (§19.2).
+        "run_limits": limits,
         "egress": config.egress.model_dump(mode="json"),
         "dns": config.dns.model_dump(mode="json"),
         "canaries": config.canaries.model_dump(mode="json"),

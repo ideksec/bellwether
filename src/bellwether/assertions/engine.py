@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from bellwether.assertions.baseline import glob_to_regex
@@ -556,6 +557,44 @@ def _token_budget(params: Any, index: EvidenceIndex) -> AssertionResult:
     )
 
 
+#: Bound on a single artifact read (§12.2). An assertion runs on the host, outside the
+#: container's resource limits, so a skill that writes a very large file must not be able to
+#: make the evaluator read it into memory whole.
+_ARTIFACT_READ_BYTES = 4 * 1024 * 1024
+
+
+def _read_contained(workspace: Path, relative: str) -> str | None:
+    """The text of ``workspace/relative``, or ``None`` where it may not be read.
+
+    Two refusals, both about the same thing: the workspace holds bytes the evaluated skill
+    wrote, so a path inside it is an *attacker-chosen* path.
+
+    - **Containment.** The resolved target must stay under the resolved workspace. A skill that
+      plants ``report.md -> /etc/shadow`` otherwise has an assertion read the evaluator's own
+      filesystem and report on it as the skill's output; a ``..`` in the assertion's own glob
+      does the same thing without a symlink. Resolving both sides and comparing answers both,
+      and a target that cannot be resolved is refused rather than guessed at.
+    - **Bounded.** The read stops at :data:`_ARTIFACT_READ_BYTES`.
+
+    ``None`` is *not* "the file is invalid": the caller turns it into ``not_evaluable``, because
+    refusing to read something is a statement about this evaluator, not about the skill.
+    """
+    try:
+        base = workspace.resolve(strict=True)
+        target = (workspace / relative).resolve(strict=True)
+    except OSError:
+        return None
+    if target != base and base not in target.parents:
+        return None
+    if not target.is_file():
+        return None
+    try:
+        with target.open("rb") as handle:
+            return handle.read(_ARTIFACT_READ_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return None
+
+
 def _artifact_valid(params: Any, index: EvidenceIndex) -> AssertionResult:
     options = params if isinstance(params, dict) else {"path": params}
     rel_path = str(options.get("path", ""))
@@ -565,15 +604,22 @@ def _artifact_valid(params: Any, index: EvidenceIndex) -> AssertionResult:
             "artifact_valid", "the final workspace was not retained for validation", params
         )
     candidate = index.workspace / rel_path
-    if not candidate.is_file():
+    if candidate.is_symlink() or not candidate.exists():
         return AssertionResult(
             name="artifact_valid",
             status="fail",
             reason=f"{rel_path!r} does not exist in the final workspace",
             params=params,
         )
+    text = _read_contained(index.workspace, rel_path)
+    if text is None:
+        return _blocked(
+            "artifact_valid",
+            f"{rel_path!r} could not be read as a contained regular file of the final "
+            "workspace, so its validity is not decided",
+            params,
+        )
     try:
-        text = candidate.read_text(encoding="utf-8")
         if validator == "json":
             json.loads(text)
         elif validator == "yaml":
@@ -668,11 +714,8 @@ def _workspace_glob(glob: str) -> str:
 def _content_matches(path: str, pattern: re.Pattern[str], index: EvidenceIndex) -> bool:
     assert index.workspace is not None
     relative = path.removeprefix("${WORKSPACE}/")
-    candidate = index.workspace / relative
-    try:
-        return pattern.search(candidate.read_text(encoding="utf-8")) is not None
-    except OSError:
-        return False
+    text = _read_contained(index.workspace, relative)
+    return text is not None and pattern.search(text) is not None
 
 
 _CATALOGUE: dict[str, Callable[[Any, EvidenceIndex], AssertionResult]] = {
