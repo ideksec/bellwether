@@ -40,6 +40,7 @@ __all__ = [
     "RecordingProxy",
     "classify_egress",
     "correlate_egress_induced_failure",
+    "identity_mismatch",
     "make_flow",
     "provider_hosts",
     "redact_headers",
@@ -239,6 +240,9 @@ class EgressCanaryHit:
     offset: int
     length: int
     via: str
+    #: Where in the request the marker sat: ``body``, or ``header:<name>``. A header is as good
+    #: an exfiltration channel as a body, and the two are told apart here rather than merged.
+    channel: str = "body"
 
 
 @dataclass(frozen=True)
@@ -268,6 +272,11 @@ class EgressFlow:
     sni: str = ""
     block_reason: str = ""
     canary_hits: tuple[EgressCanaryHit, ...] = ()
+    #: The authority the *client* asserted — the ``Host``/``:authority`` header — when it names
+    #: a different host from the one the proxy actually connects to (``host``). Empty when the
+    #: two agree, which is the ordinary case, so the record only carries the discrepancy.
+    #: §10.5.0: the allowlist and credential injection are decided on ``host``, never on this.
+    claimed_host: str = ""
 
     @property
     def counts_as_egress(self) -> bool:
@@ -276,31 +285,84 @@ class EgressFlow:
         return self.egress_class == "skill_attributed" and not self.blocked
 
 
-def _scan_body_for_canaries(
-    body: bytes, egress_class: EgressClass, canaries: Sequence[Canary]
-) -> tuple[EgressCanaryHit, ...]:
-    """Scan a request body for planted markers, by reference (§10.5.2, §10.4.1).
+def _hits_from(text: str, canaries: Sequence[Canary], *, channel: str) -> list[EgressCanaryHit]:
+    """The canary findings in one corpus string, as flow-level hits by reference.
 
-    Only *non-model* bodies are scanned here: a marker on its way to an arbitrary host is exfiltration,
-    a critical ``other_host`` leak needing no read state. A body to the model API is skipped — that is
-    the ``canary_in_context`` vs ``canary_without_read`` grading, which needs the per-request read
-    state the host holds, and is a follow-on (the same reason model-API *URLs* are skipped). The scan
-    is bounded inside ``scan_for_canaries``; the body is decoded leniently so binary payloads do not
-    abort it.
+    ``channel`` names *where in the request* the corpus came from — the body, or the header
+    that carried it — and rides on the hit so a reader can tell a body leak from a header one
+    without the value. ``via`` stays what it has always been: the encoding the marker was
+    found under.
     """
-    if egress_class == "model_api" or not body or not canaries:
-        return ()
-    text = body.decode("utf-8", "replace")
-    return tuple(
+    return [
         EgressCanaryHit(
             canary_id=finding.canary_id,
             destination=finding.destination,
             offset=finding.offset,
             length=finding.length,
             via=finding.via,
+            channel=channel,
         )
         for finding in scan_for_canaries(text, canaries, destination="other_host")
-    )
+    ]
+
+
+def _scan_request_for_canaries(
+    headers: Mapping[str, str], body: bytes, egress_class: EgressClass, canaries: Sequence[Canary]
+) -> tuple[EgressCanaryHit, ...]:
+    """Scan a request's headers *and* body for planted markers, by reference (§10.5.2, §10.4.1).
+
+    The headers are scanned **before** :func:`redact_headers` replaces their values: redaction is
+    what makes the record fit for an artifact, and scanning the redacted set would look at
+    ``<redacted>``. A header is as good an exfiltration channel as a body — ``X-Export: <marker>``
+    to an allowlisted host leaves no body hit at all — so both corpora feed the same scan and only
+    the reference (id, offset, length, encoding) survives, never the value. Header *names* are
+    scanned too: a marker can be spelled as a name with an empty value.
+
+    Only *non-model* requests are scanned here: a marker on its way to an arbitrary host is
+    exfiltration, a critical ``other_host`` leak needing no read state. A model-API request is
+    skipped — that is the ``canary_in_context`` vs ``canary_without_read`` grading, which needs
+    the per-request read state the host holds, and is the model-channel scanner's job. The scan is
+    bounded inside ``scan_for_canaries``; the body is decoded leniently so binary payloads do not
+    abort it.
+    """
+    if egress_class == "model_api" or not canaries:
+        return ()
+    hits: list[EgressCanaryHit] = []
+    # One corpus per header, so an offset points inside the header that carried the marker
+    # rather than into a synthetic join whose coordinates mean nothing to a reader.
+    for name, value in sorted(headers.items()):
+        hits.extend(_hits_from(f"{name}: {value}", canaries, channel=f"header:{name.lower()}"))
+    if body:
+        hits.extend(_hits_from(body.decode("utf-8", "replace"), canaries, channel="body"))
+    return tuple(hits)
+
+
+def identity_mismatch(host: str, *, claimed_host: str = "", sni: str = "") -> str:
+    """The reason this request's asserted identity disagrees with where it is going, or ``""``.
+
+    ``host`` is the destination the proxy will actually dial — the request-line authority, or
+    the ``CONNECT`` authority for a tunnelled request. ``claimed_host`` is the authority the
+    *client* asserted in its ``Host``/``:authority`` header, and ``sni`` the name it offered in
+    the TLS handshake. Any of the three can differ, and only the first is where the bytes go.
+
+    A disagreement is refused rather than resolved: authorising one identity while connecting to
+    another is how a default-deny allowlist is talked out of its own decision, and how a brokered
+    credential minted for a provider is handed to a host that merely claimed the provider's name
+    (§10.5.0, §10.5.1). There is no legitimate reason for a client behind this proxy to address
+    one host and name another, so the request is blocked and recorded — evidence, not an error.
+    """
+    destination = _norm_host(host)
+    for label, asserted in (("Host header", claimed_host), ("TLS SNI", sni)):
+        if not asserted:
+            continue
+        named = _norm_host(asserted)
+        if named and named != destination:
+            return (
+                f"{label} names {named}, but the connection goes to "
+                f"{destination or '(unroutable)'} — a request may not authorise one host and "
+                "connect to another (§10.5.0)"
+            )
+    return ""
 
 
 def make_flow(
@@ -319,22 +381,29 @@ def make_flow(
     response_status: int | None = None,
     response_size: int | None = None,
     sni: str = "",
+    claimed_host: str = "",
     canaries: Sequence[Canary] = (),
 ) -> EgressFlow:
     """Build a classified, allowlist-checked, redacted :class:`EgressFlow` from a request.
 
     This is the one place a raw request becomes a record fit for an artifact: it classifies
-    (§10.5.0), applies the default-deny allowlist, redacts headers, scans the body for planted
-    canaries (§10.5.2), and reduces the body to a digest and a length so no credential or canary
-    value survives. The proxy sidecar calls it per flow, passing the run's ``canaries`` so a marker
-    in a body is recorded by reference before the body is dropped.
+    (§10.5.0), applies the default-deny allowlist, redacts headers, scans the headers and body for
+    planted canaries (§10.5.2), and reduces the body to a digest and a length so no credential or
+    canary value survives. The proxy sidecar calls it per flow, passing the run's ``canaries`` so a
+    marker in a header or body is recorded by reference before the values are dropped.
+
+    ``host`` is the **actual destination**, never an asserted one. ``claimed_host`` and ``sni``
+    are what the client said it was talking to; where either disagrees with ``host`` the flow is
+    blocked by :func:`identity_mismatch` before the allowlist is consulted, and the discrepancy is
+    recorded on the flow so the attempt is legible.
     """
     egress_class = classify_egress(
         host,
         provider_endpoints=provider_endpoints,
         infrastructure_endpoints=infrastructure_endpoints,
     )
-    permitted = allowlist.permits(host)
+    mismatch = identity_mismatch(host, claimed_host=claimed_host, sni=sni)
+    permitted = not mismatch and allowlist.permits(host)
     return EgressFlow(
         ts=ts,
         method=method,
@@ -350,8 +419,11 @@ def make_flow(
         response_status=response_status,
         response_size=response_size,
         sni=sni,
-        block_reason=allowlist.block_reason(host),
-        canary_hits=_scan_body_for_canaries(request_body, egress_class, canaries),
+        block_reason=mismatch or allowlist.block_reason(host),
+        canary_hits=_scan_request_for_canaries(
+            request_headers or {}, request_body, egress_class, canaries
+        ),
+        claimed_host=(_norm_host(claimed_host) if mismatch and _norm_host(claimed_host) else ""),
     )
 
 
