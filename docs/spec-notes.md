@@ -3415,6 +3415,48 @@ A §24 violation: the spelling near-miss built its fold map from an unordered se
 observed tool names differed only by case the spelling the finding named depended on
 `PYTHONHASHSEED` — and that text reaches `summary.json` and the byte-compared HTML report.
 
+### The `..` fix opened a worse hole than it closed, and a second false assurance
+
+A fourth review round. Two things worth recording, and the second is about method.
+
+**The traversal fix was a security regression against its own parent.** `_traverses` ran on the
+*raw* declaration text, and `{..}` is not a `..` segment — so `${HOME}/..` was refused while
+`${HOME}/{..}` excused every file tier 2 collapses onto the home root, and
+`${HOME}/.ssh/{..}/public/**` restored the exact blanket pass on `~/.ssh/` that the literal check
+had just removed. The same commit *deleted* the `rest == ".."` guard from `_alternative_names`
+with the comment "`..` is caught by `_traverses`", which was false. Checking each expanded
+alternative independently is not enough either, because the raw entry is tried alongside them:
+`${HOME}/{..}` satisfies the home-root branch as a single glob-free segment. The rule is now that
+**any** alternative traversing disqualifies the whole entry, and the home-root guard is back as a
+second lock — removing a check on the strength of another check is how this got in.
+
+**The cap did not cap, and was on the wrong door.** Counting opening braces and comparing 2ⁿ bounds
+nothing unless every group is binary: six ten-way groups count as 64 and expand to a million in
+1.1 s, while eleven *nested* groups standing for twelve alternatives were refused — the same
+false positive `expand_braces` exists to remove, recreated. And the cap sat on `expand_braces`,
+the cheap literal-prefix helper, while `glob_to_regex` — which `assertions/derive.py` calls on
+`scope.filesystem.read`/`.write` straight from the manifest **under review** — still expanded
+uncapped and compiled the result into one pattern: 78 seconds and a 41 MB regex at 20 groups,
+over two minutes at 22, on the very entry the cap's own comment cited as its motivation. The limit
+is now enforced inside the recursion by raising rather than returning (returning the sub-pattern
+spliced half-expanded strings into the caller's list), and both doors use it.
+
+**"Every fix revert-proved" was false for the second commit running.** Round 3 corrected the claim
+and the correcting commit made it again — 4 of 11 that time, measured. Two of those *cannot* be
+proved, which is itself the useful fact: `declared = list(reading.sensitive_hits)` is byte-identical
+behaviour because the branch is only reached once the undeclared list is empty. A claim that cannot
+be true of every item should not be phrased as though it were.
+
+The rule this leaves: **do not write a blanket assurance about a set of changes. Publish the
+per-change measurement, including the rows that come back unproved and why.** The commit message
+and this file now carry a table rather than a sentence. Twice is a pattern, and the pattern is the
+same one the code keeps showing — a statement of assurance standing in for the observation.
+
+A §24 test can be vacuous in its *mechanism* while looking substantive: the determinism test called
+the function eight times in one process and asserted the results agreed, but set iteration order is
+fixed within a process for a fixed hash seed, so eight repetitions of the buggy code agree too. It
+now runs real subprocesses under differing `PYTHONHASHSEED`.
+
 ### §12.6 — the tools near-miss, reached by a second route
 
 Flagging a baseline entry whose tool is classed differently closed the inert-allowlist trap by

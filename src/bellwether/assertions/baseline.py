@@ -248,18 +248,26 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
     """Compile one baseline glob: ``**`` crosses directories, ``*`` and ``?`` stay
     within a segment, ``{a,b}`` alternates, everything else — placeholders included —
     is literal."""
-    alternatives = _expand_braces(pattern)
-    return re.compile("|".join(f"(?:{_translate(alt)})" for alt in alternatives))
+    # Through the capped, cached path. The cap was first placed on `expand_braces` alone — the
+    # cheap literal-prefix helper — while this function, which `assertions/derive.py` calls on
+    # `scope.filesystem.read`/`.write` straight from the manifest *under review*, still expanded
+    # without one and then compiled the result into a single regex. Measured on the very entry
+    # the cap was written for, that was 78 seconds and a 41 MB pattern at 20 groups, and over
+    # two minutes at 22. The cap was on the wrong door.
+    return re.compile("|".join(f"(?:{_translate(alt)})" for alt in expand_braces(pattern)))
 
 
-#: The most alternatives one entry may stand for. Expansion is 2ⁿ in the number of groups, and
-#: the manifest is part of the package *under review* — a 121-character entry with 22 groups
-#: expands to 4.2 million alternatives in 13 seconds, and 26 groups exhausts memory. Past the cap
-#: the entry is matched literally: it stops being a convenience, never a crash.
+class _TooManyAlternativesError(Exception):
+    """One entry stands for more alternatives than the cap allows."""
+
+
+#: The most alternatives one entry may stand for. Expansion is the *product* of the groups'
+#: choice counts, and the manifest is part of the package *under review*. Past the cap the entry
+#: is matched literally: it stops being a convenience, never a crash.
 _MAX_BRACE_ALTERNATIVES = 1024
 
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=512)
 def expand_braces(pattern: str) -> tuple[str, ...]:
     """The public name for brace expansion, for callers matching declarations themselves.
 
@@ -273,17 +281,16 @@ def expand_braces(pattern: str) -> tuple[str, ...]:
     through :func:`glob_to_regex`, and so expands braces) and an *undeclared* sensitive access
     to the gate — a false positive on a declaration the author correctly believes they wrote.
     """
-    # Counted before recursing, not while: checking the accumulated length only trims the
-    # *result*, and the recursion has already walked 2ⁿ branches to build it. The groups are
-    # cheap to count and bound the size exactly.
-    groups = sum(
-        1
-        for index, char in enumerate(pattern)
-        if char == "{" and (index == 0 or pattern[index - 1] != "$")
-    )
-    if groups and 2**groups > _MAX_BRACE_ALTERNATIVES:
+    # The limit is enforced *during* the recursion, which is the only place it can be. Counting
+    # opening braces and comparing 2ⁿ — the first cut — assumed every group was binary: six
+    # ten-way groups count as 64 and expand to a million, so a 137-character entry sailed past
+    # a cap of 1024 by three orders of magnitude, while eleven *nested* groups standing for
+    # twelve alternatives were refused. The check inside the recursion bounds the accumulated
+    # list at every level, so the work is bounded too, not just the result.
+    try:
+        return tuple(_expand_braces(pattern, limit=_MAX_BRACE_ALTERNATIVES))
+    except _TooManyAlternativesError:
         return (pattern,)
-    return tuple(_expand_braces(pattern))
 
 
 def _expand_braces(pattern: str, *, limit: int | None = None) -> list[str]:
@@ -313,9 +320,12 @@ def _expand_braces(pattern: str, *, limit: int | None = None) -> list[str]:
                 for choice in _split_alternatives(body):
                     expanded.extend(_expand_braces(head + choice + tail, limit=limit))
                     if limit is not None and len(expanded) > limit:
-                        # Past the cap the pattern is its own single alternative: a manifest
-                        # cannot spend the evaluation's time on expansion it controls.
-                        return [pattern]
+                        # Raised, not returned: returning the *sub*-pattern here spliced a
+                        # half-expanded string into the caller's list, so the result was neither
+                        # the full expansion nor the literal entry. The caller catches this and
+                        # falls back to the whole pattern, which is the only honest answer once
+                        # the entry is too big to stand for its alternatives.
+                        raise _TooManyAlternativesError
                 return expanded
     return [pattern]  # unbalanced brace: treat literally rather than guessing
 

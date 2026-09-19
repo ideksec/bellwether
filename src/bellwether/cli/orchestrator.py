@@ -703,10 +703,14 @@ def baseline_absorption(
             "absorbs nothing"
             + (
                 " (§12.6)"
-                if f"tool:{by_fold[name.casefold()]}" in observed_tools
+                if any(
+                    f"tool:{spelling}" in observed_tools
+                    for spelling in seen_names
+                    if spelling.casefold() == name.casefold()
+                )
                 else f"; note that {by_fold[name.casefold()]!r} is classed "
-                f"{otherwise_classed.get(by_fold[name.casefold()], 'by what it touched')!r}, "
-                "so correcting the spelling alone will not absorb it either (§12.6)"
+                f"{otherwise_classed[by_fold[name.casefold()]]!r}, so correcting the spelling "
+                "alone will not absorb it either (§12.6)"
             )
             for name in baseline.tools
             if name not in seen_names and name.casefold() in by_fold
@@ -741,9 +745,7 @@ def _rooted_target(hit: str) -> str | None:
 #: Tier-1 zones a *write* declaration answers for. The same classification
 #: ``_BASELINE_WRITE_CLASSES`` uses — a deletion is a write, and reading the two tables
 #: differently is what made ``workspace_delete`` undeclarable.
-_WRITE_ZONES = frozenset(
-    {"workspace_write", "outside_workspace_write", "workspace_delete", "harness_state_write"}
-)
+_WRITE_ZONES = frozenset({"workspace_write", "outside_workspace_write", "workspace_delete"})
 
 
 def _hit_direction(hit: str) -> str:
@@ -797,19 +799,29 @@ def _declaration_names(entry: str, rooted: str) -> bool:
     ``${HOME}/.netrc``. Separating them needs tier-3 granularity in the hit, which the §13.5.2
     dual-tier model deliberately does not carry. See `docs/spec-notes.md`.
     """
-    if _traverses(entry):
-        # A declaration that walks back out of what it names does not name it. Rejected for
-        # every shape, not just the home root: `${HOME}/.ssh/../public/**` reads to a reviewer
-        # as naming `${HOME}/public` and bought a blanket pass on `~/.ssh/`, which is the same
-        # hole the home-root branch closes for `${HOME}/..`.
-        return False
+    # A declaration that walks back out of what it names does not name it:
+    # `${HOME}/.ssh/../public/**` reads to a reviewer as naming `${HOME}/public` and would
+    # otherwise buy a blanket pass on `~/.ssh/`.
+    #
+    # The check runs on every *expanded* alternative, not on the raw entry. Checking only the
+    # raw text — the first cut — let `${HOME}/{..}` walk straight past, which was worse than
+    # the hole it replaced: `${HOME}/..` was refused while its one-brace spelling excused every
+    # file tier 2 collapses onto the home root, and `${HOME}/.ssh/{..}/public/**` restored the
+    # very pass the literal check had just closed.
+    #
     # The unexpanded entry is tried alongside the expansions, because `expand_braces` has no
     # escape syntax: a location whose name really contains `{a,b}` is named by the literal
     # entry and by nothing else, and dropping it would recreate the undeclarable-hit class this
     # rule has already produced twice.
-    return any(
-        _alternative_names(alternative, rooted) for alternative in (entry, *expand_braces(entry))
-    )
+    alternatives = (entry, *expand_braces(entry))
+    if any(_traverses(alternative) for alternative in alternatives):
+        # *Any* alternative traversing disqualifies the whole entry, not just that one. Checking
+        # each alternative independently still let `${HOME}/{..}` through, because the raw entry
+        # is tried too and `{..}` is not a `..` segment — so the spelling the expansion existed
+        # to catch was excused by the literal fallback instead. A declaration that can walk out
+        # of what it names is not a declaration of it under any reading.
+        return False
+    return any(_alternative_names(alternative, rooted) for alternative in alternatives)
 
 
 def _traverses(entry: str) -> bool:
@@ -823,8 +835,11 @@ def _alternative_names(entry: str, rooted: str) -> bool:
         if not entry.startswith("${HOME}/"):
             return False
         rest = entry[len("${HOME}/") :]
-        # `.` is the directory itself, not a file in it. (`..` is caught by `_traverses`.)
-        if rest == ".":
+        # `.` is the directory itself and `..` its parent, so neither is a file declared inside
+        # it. `..` is also caught by `_traverses` on every alternative; kept here as well,
+        # because dropping it on the strength of that other check is exactly how `${HOME}/{..}`
+        # got in.
+        if rest in (".", ".."):
             return False
         # `<` and `>` are not path characters in any manifest anyone means: they are how the
         # gate's own hint spells its placeholder, and `${HOME}/<name>` pasted verbatim would

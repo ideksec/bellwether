@@ -9,6 +9,7 @@ trail, and never absorbs a traversal that names an entry but escapes it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from bellwether.cli.orchestrator import (
@@ -461,31 +462,68 @@ def test_the_spelling_near_miss_names_the_same_tool_on_every_machine() -> None:
 
     `by_fold` was built from an unordered set, so where several observed names differ only by
     case the survivor — and therefore the spelling the finding names — depended on
-    `PYTHONHASHSEED`. Same input, different bytes.
+    `PYTHONHASHSEED`.
+
+    Across **processes**, not repetitions. The first version of this test called
+    `baseline_absorption` eight times in one process and asserted the results agreed: set
+    iteration order is fixed within a process for a fixed hash seed, so eight repetitions of the
+    *buggy* code also agree and that assertion could never fail. The substantive half — naming
+    the lowest spelling — passed with the defect present for about a quarter of seeds. This runs
+    real subprocesses under seeds chosen to disagree.
     """
-    import datetime as dt
+    import subprocess
+    import sys
 
-    from bellwether.trace import Action
+    script = """
+import datetime as dt
+from bellwether.cli.orchestrator import baseline_absorption
+from bellwether.config.models.baseline import BaselinePaths, PlatformBaseline
+from bellwether.trace import Action, NormalizationContext
 
-    def _call(seq: int, tool: str) -> Action:
-        return Action(
-            seq=seq,
-            ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
-            plane="harness",
-            kind="tool_call",
-            action={"tool": tool, "input": {"command": "ls"}},
+IMAGE = "ghcr.io/example/bellwether-sandbox@sha256:" + "5" * 64
+CONTEXT = NormalizationContext(workspace_root="/work/a7f3c1", home="/home/agent", tmp="/tmp")
+
+
+def call(seq, tool):
+    return Action(
+        seq=seq,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": tool, "input": {"command": "ls"}},
+    )
+
+
+baseline = PlatformBaseline(
+    api_version="bellwether/v1",
+    kind="PlatformBaseline",
+    version="2026.09.1",
+    applies_to_image=IMAGE,
+    paths=BaselinePaths(),
+    tools=("BASH",),
+)
+_absorbed, _tools, near = baseline_absorption(
+    (call(1, "Bash"), call(2, "bash"), call(3, "baSh")),
+    CONTEXT,
+    baseline,
+    sandbox_image=IMAGE,
+)
+print([detail for detail in near if "case-sensitive" in detail][0])
+"""
+
+    outputs = set()
+    for seed in ("0", "1", "4", "7", "13"):
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            check=False,
+            cwd=Path(__file__).resolve().parent.parent,
         )
+        assert completed.returncode == 0, completed.stderr
+        outputs.add(completed.stdout.strip())
 
-    actions = (_call(1, "Bash"), _call(2, "bash"), _call(3, "baSh"))
-    details = {
-        baseline_absorption(actions, _CONTEXT, _baseline_with_tools("BASH"), sandbox_image=_IMAGE)[
-            2
-        ]
-        for _ in range(8)
-    }
-    assert len(details) == 1, "the near-miss text varies across runs"
-    (only,) = details
-    spelling = [detail for detail in only if "case-sensitive" in detail]
-    assert spelling
-    # Deterministically the *lowest* spelling, not whichever the set happened to yield.
-    assert "'Bash'" in spelling[0]
+    assert len(outputs) == 1, f"the near-miss text varies with PYTHONHASHSEED: {outputs}"
+    (only,) = outputs
+    assert "'Bash'" in only, "the lowest spelling is the deterministic choice"

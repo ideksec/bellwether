@@ -449,6 +449,14 @@ def _top_level(normalized: str) -> str:
 #: ``evil.com``. With the list configurable, an operator adding a hostname turned a network
 #: capability into a "sensitive directory" hit that a *filesystem* declaration could then
 #: excuse. Restricting the hit list at its source keeps §13.5.4 to the plane it describes.
+#: Exactly the classes :func:`_filesystem_capability` emits — no more. An earlier version also
+#: listed ``harness_state_write``, which is a *finding kind* and a policy disposition, never a
+#: tier-1 capability class (a harness-state write classifies as
+#: ``outside_workspace_write:${HOME}/.claude/``). Harmless, but it read as though harness state
+#: had a distinct class here that it does not, and a set used to decide what counts as a
+#: security finding should not carry a member that can never appear. A test asserts this set
+#: against what the canonicaliser really produces, so a new class cannot be added there and
+#: silently left out of the §13.5.4 hit list.
 FILESYSTEM_ZONES: frozenset[str] = frozenset(
     {
         "workspace_read",
@@ -456,7 +464,6 @@ FILESYSTEM_ZONES: frozenset[str] = frozenset(
         "workspace_delete",
         "outside_workspace_read",
         "outside_workspace_write",
-        "harness_state_write",
     }
 )
 

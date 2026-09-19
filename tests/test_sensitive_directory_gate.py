@@ -443,7 +443,17 @@ def test_the_hit_list_itself_holds_only_filesystem_zones() -> None:
     )
     canon = canonicalize([call], _CONTEXT, sensitive_directories=("bash", "curl"))
     assert canon.sensitive_hits == ()
-    assert all(hit.partition(":")[0] in FILESYSTEM_ZONES for hit in canon.sensitive_hits)
+    # …and the zone rule itself, on a run that *does* produce a hit. Asserting `all(...)` over
+    # the empty tuple above was unconditionally true — the "reads as a control, is not" shape
+    # this file's own docstring is about.
+    read = make_action(
+        1,
+        action={"tool": "read", "input": {"path": "/home/agent/.aws/credentials"}},
+        capability=None,
+    )
+    with_hit = canonicalize([call, read], _CONTEXT, sensitive_directories=("bash", ".aws/"))
+    assert with_hit.sensitive_hits == ("outside_workspace_read:${HOME}/.aws/",)
+    assert all(hit.partition(":")[0] in FILESYSTEM_ZONES for hit in with_hit.sensitive_hits)
 
 
 @pytest.mark.parametrize(
@@ -562,3 +572,112 @@ def test_the_pass_detail_does_not_deny_an_access_that_happened() -> None:
     )
     assert _HOME_AWS in declared.reason
     assert "deliberately declared" in declared.reason
+
+
+@pytest.mark.parametrize(
+    ("hit", "entry"),
+    [
+        (_HOME_ROOT, "${HOME}/{..}"),
+        (_HOME_SSH, "${HOME}/.ssh/{..}/public/**"),
+        (_HOME_SSH, "${HOME}/.ssh/{..,qq}/public/**"),
+        (_HOME_SSH, "${HOME}/{.ssh/..,x}/public/**"),
+    ],
+)
+def test_a_traversal_hidden_in_a_brace_group_does_not_excuse_a_hit(hit: str, entry: str) -> None:
+    """The regression the literal `..` check introduced, which was worse than the hole it closed.
+
+    `_traverses` ran on the raw entry, and `{..}` is not a `..` segment — so the brace spelling
+    walked past it while the literal one was refused, and `${HOME}/.ssh/{..}/public/**` restored
+    the exact blanket pass on `~/.ssh/` that the fix had just removed. Checking each *expanded*
+    alternative was not enough either: the raw entry is tried alongside them, so `${HOME}/{..}`
+    still satisfied the home-root branch as a single glob-free segment. Any alternative
+    traversing now disqualifies the whole entry.
+    """
+    assert undeclared_sensitive_hits((hit,), _scope(filesystem={"read": [entry]})) == (hit,)
+
+
+def test_brace_expansion_is_bounded_by_the_alternatives_not_the_group_count() -> None:
+    """The cap counted opening braces and compared 2ⁿ, which bounds nothing but binary groups.
+
+    Six ten-way groups count as 64 and expand to a million; eleven *nested* groups standing for
+    twelve alternatives were refused. The manifest is part of the package under review, so both
+    directions matter: one is a denial of service, the other a declaration the scope table
+    honours and this gate refuses.
+    """
+    from bellwether.assertions import expand_braces
+
+    wide = "${HOME}/" + "{a,b,c,d,e,f,g,h,i,j}" * 6 + "/**"
+    assert expand_braces(wide) == (wide,), "a million alternatives must not be expanded"
+
+    nested = "${HOME}/{a,{b,{c,d}}}/**"
+    assert len(expand_braces(nested)) == 4, "a small nested entry must still expand"
+    assert expand_braces("${HOME}/{.aws,.config}/**") == (
+        "${HOME}/.aws/**",
+        "${HOME}/.config/**",
+    )
+
+
+def test_the_manifest_cannot_spend_the_evaluation_on_regex_compilation() -> None:
+    """The cap was placed on the wrong door.
+
+    `glob_to_regex` is what `assertions/derive.py` calls on `scope.filesystem.read`/`.write`
+    straight from the manifest under review, and it expanded without a cap and compiled the
+    result into one pattern: 78 seconds and a 41 MB regex at 20 groups, over two minutes at 22
+    — the very entry the cap's own comment cited as its motivation.
+    """
+    import time
+
+    from bellwether.assertions.baseline import glob_to_regex
+
+    hostile = "${HOME}/" + "{a,b}" * 22 + "/**"
+    started = time.monotonic()
+    compiled = glob_to_regex(hostile)
+    assert time.monotonic() - started < 1.0
+    assert len(compiled.pattern) < 100_000
+
+
+def test_the_filesystem_zone_set_matches_what_the_canonicaliser_emits() -> None:
+    """The set decides what counts as a §13.5.4 finding, so a new class must not miss it.
+
+    It listed `harness_state_write`, which is a *finding kind* and a policy disposition and
+    never a tier-1 capability class — a harness-state write classifies as
+    `outside_workspace_write:${HOME}/.claude/`. Harmless, but a set used to decide what counts
+    as a security finding should not carry a member that can never appear, and the opposite
+    mistake — a real class left out — silently switches the gate off for it.
+    """
+    from bellwether.trace import FILESYSTEM_ZONES
+    from bellwether.trace.canonical import canonicalize
+
+    paths = [
+        "/work/a7f3c1/notes.md",
+        "/home/agent/.aws/credentials",
+        "/etc/passwd",
+        "/tmp/scratch/x",
+    ]
+    emitted: set[str] = set()
+    for seq, path in enumerate(paths):
+        for tool, payload in (
+            ("read", {"path": path}),
+            ("write", {"path": path, "content": "x"}),
+        ):
+            action = make_action(seq, action={"tool": tool, "input": payload}, capability=None)
+            emitted |= {
+                entry.partition(":")[0] for entry in canonicalize([action], _CONTEXT).caps_t2
+            }
+    # Deletions come from Plane B, not a tool call.
+    delete = make_action(
+        99,
+        plane="filesystem",
+        kind="file_delete",
+        action={"path": "/work/a7f3c1/.git/index.lock", "zone": "workspace"},
+        capability=None,
+    )
+    emitted |= {entry.partition(":")[0] for entry in canonicalize([delete], _CONTEXT).caps_t2}
+
+    assert emitted, "the fixture produced no capabilities"
+    missing = emitted - FILESYSTEM_ZONES
+    assert not missing, f"filesystem classes the §13.5.4 hit list would silently skip: {missing}"
+    assert emitted == FILESYSTEM_ZONES, (
+        f"FILESYSTEM_ZONES carries members the canonicaliser never emits: "
+        f"{FILESYSTEM_ZONES - emitted}"
+    )

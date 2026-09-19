@@ -41,9 +41,11 @@ sensitive directory excusing the home root, a declared write excusing a read) ar
 test — as is a fourth found by a second review round: a deletion (`workspace_delete`) was
 undeclarable by any entry at all, which put every git-using skill at `not_ready` with no escape.
 The configured `metrics.sensitive_directories` list now actually reaches the analysis; it never
-did before, and both wiring hops are revert-proved. Three review rounds; each found real defects in
-the previous round's fixes, and the third found that a blanket "every fix revert-proved" claim was
-false for three of eleven. **Measure that claim, do not remember it.** Five of thirteen `security_runtime` dispositions are enforced, eight remain
+did before, and both wiring hops are revert-proved. Four review rounds; each found real defects in the
+previous round's fixes. The fourth found that a `..` fix had opened a worse hole than it closed
+(`${HOME}/{..}`), and that a blanket "every fix revert-proved" claim was false for the **second
+commit running**. **Never write a blanket assurance about a set of changes — publish the per-change
+measurement, including the rows that come back unproved and why.** Five of thirteen `security_runtime` dispositions are enforced, eight remain
 inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. A `harness_state_write` gate was attempted and
 **withdrawn**: §10.2 attributes such a write by a Plane A anchor and Plane B carries no correlation,
 so it could never fire — see spec-notes. §12.6's `tools` are applied as well as parsed; its
