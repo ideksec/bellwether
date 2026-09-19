@@ -134,3 +134,74 @@ def test_a_claude_code_plan_carries_the_companions_the_executor_stages(tmp_path:
     )
     assert plans
     assert all([c.name for c in plan.companions] == ["k8s-debug"] for plan in plans)
+
+
+# ---------------------------------------------------------------------------
+# One copy of every skill, including the companions (§5/§6/§18 meets §7.4)
+# ---------------------------------------------------------------------------
+
+
+def _plugin_with_skills(root: Path, names: tuple[str, ...]) -> Path:
+    import json
+
+    bundle = root / "demo-bundle"
+    bundle.mkdir(parents=True)
+    (bundle / "plugin.json").write_text(
+        json.dumps({"name": "demo-bundle", "version": "1.0.0"}), encoding="utf-8"
+    )
+    (bundle / "skills").mkdir()
+    for name in names:
+        _skill(bundle / "skills", name)
+    return bundle
+
+
+def test_a_companion_already_inside_the_installed_bundle_is_not_staged_again(
+    tmp_path: Path,
+) -> None:
+    """The defect: whole-bundle staging stopped installing the skill under test twice, but a
+    §7.4 companion that is a *sibling in the same bundle* was still staged bare on top of it.
+    The harness would then see `k8s-debug` and `demo-bundle:k8s-debug` — two copies of the
+    competitor — in exactly the scenarios companions exist to decide, where which skill
+    activated is the whole question.
+    """
+    from bellwether.cli.execution import companions_to_stage
+
+    bundle = _plugin_with_skills(tmp_path, ("deploy-helper", "k8s-debug"))
+    companion = load_skill(bundle / "skills" / "k8s-debug")
+
+    assert companions_to_stage([companion], bundle) == ()
+
+
+def test_a_companion_from_outside_the_bundle_is_still_staged(tmp_path: Path) -> None:
+    """The converse, because a filter that drops everything offers no competitor at all and
+    every `other_skill_activated` assertion would pass vacuously."""
+    from bellwether.cli.execution import companions_to_stage
+
+    bundle = _plugin_with_skills(tmp_path, ("deploy-helper",))
+    outsider = load_skill(_skill(tmp_path / "lib", "k8s-debug"))
+
+    assert companions_to_stage([outsider], bundle) == (outsider,)
+
+
+def test_a_bare_skill_directory_stages_every_companion_as_before(tmp_path: Path) -> None:
+    """No bundle, no change: the filter is about what the bundle already installed."""
+    from bellwether.cli.execution import companions_to_stage
+
+    outsider = load_skill(_skill(tmp_path / "lib", "k8s-debug"))
+    assert companions_to_stage([outsider], None) == (outsider,)
+
+
+def test_a_companion_reached_through_a_symlink_is_recognised_as_the_bundles_own(
+    tmp_path: Path,
+) -> None:
+    """The comparison is about the same *files*, not the same spelling. A checkout reached
+    through a symlinked path is the same skill the bundle installs, and a lexical comparison
+    would stage a second copy of it."""
+    bundle = _plugin_with_skills(tmp_path, ("deploy-helper", "k8s-debug"))
+    link = tmp_path / "linked-bundle"
+    link.symlink_to(bundle, target_is_directory=True)
+    companion = load_skill(link / "skills" / "k8s-debug")
+
+    from bellwether.cli.execution import companions_to_stage
+
+    assert companions_to_stage([companion], bundle) == ()

@@ -17,7 +17,8 @@ import pytest
 
 from bellwether.capture import interpret_interception_probe
 from bellwether.cli.interception_probe import (
-    PROBE_CLIENT_SOURCE,
+    PROBE_CLIENT_NODE,
+    PROBE_CLIENT_PYTHON,
     PROBE_HOST,
     PROBE_SIDECAR_SETTINGS,
     probe_argv,
@@ -98,8 +99,8 @@ def test_the_probe_runs_on_the_internal_bridge_with_the_runs_own_trust_environme
         part.endswith(":/usr/local/share/ca-certificates/bellwether-proxy.crt:ro") for part in argv
     )
     # A real interpreter runs a real request; the command is re-runnable by a human.
-    assert argv[-3:-1] == ["python3", "-c"]
-    assert "urllib.request" in argv[-1]
+    assert argv[-3:-1] == ["sh", "-c"]
+    assert "command -v node" in argv[-1] and "urllib.request" in argv[-1]
 
 
 def test_the_probe_host_is_unresolvable_so_nothing_leaves_the_machine() -> None:
@@ -198,11 +199,46 @@ def test_a_run_gets_no_extra_mitmdump_settings(tmp_path: Path) -> None:
     assert SidecarProxyProvider.__dataclass_fields__["extra_settings"].default_factory() == {}
 
 
-def test_the_probe_client_exits_non_zero_when_the_request_fails() -> None:
+def test_every_probe_client_exits_non_zero_when_the_request_fails() -> None:
     """A client that always exits 0 makes the inconclusive message read "client exit 0" whether
     it ran or not — the uninformative signal that hid the eager-strategy failure in the first
-    CI run."""
-    assert "sys.exit(1)" in PROBE_CLIENT_SOURCE
+    CI run. Both interpreters, because the dispatcher picks one and the other is then the only
+    thing standing between a broken trust chain and a green row."""
+    assert "sys.exit(1)" in PROBE_CLIENT_PYTHON
+    assert "process.exit(1)" in PROBE_CLIENT_NODE
+
+
+def test_the_probe_client_runs_on_an_image_carrying_only_node() -> None:
+    """The finding that made this a dispatcher: the shipped ``claude-code`` sandbox image has
+    no ``python3``, no ``curl``, no ``openssl`` — ``node`` and ``sh``. A hard-coded ``python3``
+    client could only ever return *inconclusive* on the one image that matters."""
+    from bellwether.cli.interception_probe import probe_client_command
+
+    command = probe_client_command()
+    assert "command -v node" in command
+    # Node is tried first, so an image carrying both still exercises NODE_EXTRA_CA_CERTS —
+    # the §9.2 mechanism spec-notes calls not optional, and the one most likely to be missing.
+    assert command.index("command -v node") < command.index("command -v python3")
+
+
+def test_an_image_with_no_interpreter_is_inconclusive_not_a_pass() -> None:
+    """Exit 127 is "we could not tell", never "the CA is trusted": an image that cannot make a
+    request says nothing about its trust store, and saying so is the honest answer."""
+    from bellwether.cli.interception_probe import probe_client_command
+
+    completed = subprocess.run(
+        ["/bin/sh", "-c", probe_client_command()],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env={"PATH": "/nonexistent-bin"},
+    )
+    assert completed.returncode == 127
+    probe = interpret_interception_probe(
+        PROBE_HOST, [], exit_code=completed.returncode, stderr=completed.stderr
+    )
+    assert probe.inconclusive and not probe.confirmed and not probe.ca_rejected
 
 
 # ---------------------------------------------------------------------------

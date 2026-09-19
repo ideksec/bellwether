@@ -2944,3 +2944,57 @@ on pull requests and `main`, plus weekly — the weekly run being the part that 
 most of what the queries will ever find here is already written. SHA-pinned like every other action,
 because `tools/pin_lint.py` is not optional for the repository that ships it.
 
+
+## §3.5, §9.2, §19.2, §24 — A second review round: what the container actually holds, and what the key actually describes
+
+Four of the findings in the review of the bricks above share a shape, and it is the shape this
+project keeps finding: **a path that renders a clean-looking result without observing the thing it
+names.**
+
+**The probe client could not run on the image it claimed to probe.** The first round fixed the
+probe to use the *sandbox* image rather than the sidecar — the container a run actually places on
+the internal bridge. The client was still hard-coded to `python3`. Running the shipped
+`claude-code` sandbox base settled it: `curl`, `wget`, `openssl`, `python3` all missing; `node` and
+`sh` present. So the corrected probe could only ever report *inconclusive* on the one image that
+matters, while its CI proof passed by substituting the sidecar. The client is now a `sh` dispatcher
+preferring `node`, and Node is not a fallback here but the point: it ignores the system trust store
+and reads `NODE_EXTRA_CA_CERTS`, which §9.2 singles out as the mechanism that is **not optional**,
+so the probe exercises the trust path most likely to be the one that silently fails. Node's core
+`https` does not honour `HTTPS_PROXY`, so the tunnel is made explicitly — `CONNECT`, then TLS over
+that socket — which is exactly the sequence being established. Node also reports OpenSSL error
+*codes* rather than the prose Python and OpenSSL produce, so `_CA_REJECTION_MARKERS` gained them;
+without that, every real Node rejection would have read as "nothing established" rather than as the
+one `critical` outcome the feature exists to report. The container proof now runs on the sandbox's
+own digest-pinned base **and** the sidecar, one per branch of the dispatcher, and the client is
+additionally run against a real intercepting socket server offline, in both the trusted and the
+rejected case — a client that cannot fail establishes nothing.
+
+**A companion inside the bundle was installed twice.** Whole-bundle staging stopped installing the
+skill under test twice; a §7.4 companion that is a *sibling in the same bundle* was still staged
+bare on top of the bundle's copy. The harness would see `k8s-debug` and `demo-bundle:k8s-debug` —
+two copies of the competitor — in precisely the scenarios companions exist to decide, where *which*
+skill activated is the whole question. `companions_to_stage` drops a companion the bundle already
+installs, comparing resolved paths so a symlinked checkout is recognised as the same files.
+
+**The §3.5 exclusion was weaker in the bundle than in the payload.** `payload._is_machinery`
+deliberately folds case and Unicode form — `EVALS/manifest.yaml` is machinery just as much as
+`evals/manifest.yaml`. The bundle walk compared the exact string, and so did the leak assertion that
+is supposed to catch exactly that. Both now go through one shared predicate,
+`staging.bundle_exclusion`, over the public `names_machinery_dir`; version-control directories are
+folded the same way, since `.Git` on a case-insensitive filesystem is still a checkout.
+
+**The cache key described a different bundle from the one staged.** `plugin_digest` was
+`fixture_digest(plugin_root)` — the whole working directory, including `.git` and every `evals/`,
+none of which staging copies. A plugin developed in its own checkout therefore changed key on every
+commit while the bytes placed in the container were identical, and the cost of that miss is paid in
+model tokens. `plugin_bundle_digest` excludes exactly what `stage_plugin_bundle` refuses, through
+the same predicate, and a test asserts the two sets are equal rather than merely similar.
+
+**The container path followed the operator's directory name.** The install directory came from
+`bundle_root.resolve().name`, so the same bundle checked out as `plugin/` on CI and `plugin-dev/` on
+a laptop installed at two different container paths: the run cache becomes machine-local (§24) and
+the host layout leaks into a sandbox the skill can read. It now comes from `PluginBundle.name` —
+the manifest's declared name, or the directory name where it declares none — which is why the
+bundle rather than its root path is what travels from `_expand_skill_args` to the executor. The
+escape guard did not move: the spec's name rule admits periods, so `..` is a *well-formed* declared
+name, and where a value came from does not make it usable as a directory.

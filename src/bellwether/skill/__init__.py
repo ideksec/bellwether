@@ -39,6 +39,7 @@ from bellwether.skill.payload import (
     EVALS_DIR,
     PayloadAllowlist,
     PayloadSplit,
+    names_machinery_dir,
 )
 from bellwether.skill.plugin import (
     PLUGIN_MANIFEST,
@@ -75,6 +76,7 @@ __all__ = [
     "load_plugin",
     "load_skill",
     "merkle_digest",
+    "names_machinery_dir",
     "normalize_description",
     "parse_skill_markdown",
     "plugin_skill_dirs",

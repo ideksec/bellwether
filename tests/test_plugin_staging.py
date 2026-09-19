@@ -210,7 +210,7 @@ def test_a_relative_bundle_path_installs_under_the_directory_it_names(tmp_path: 
 
 def test_a_bundle_with_no_usable_directory_name_is_refused(tmp_path: Path) -> None:
     """The filesystem root resolves to no name at all: there is nowhere to install it."""
-    with pytest.raises(SkillError, match="no usable directory name"):
+    with pytest.raises(SkillError, match="not a usable directory name"):
         stage_plugin_bundle(Path("/"), tmp_path / "staged")
 
 
@@ -269,3 +269,124 @@ def _isolation():  # type: ignore[no-untyped-def]
     from bellwether.sandbox import IsolationProfile
 
     return IsolationProfile()
+
+
+# ---------------------------------------------------------------------------
+# Second review round: the container path, the exclusion rule, and the cache key
+# ---------------------------------------------------------------------------
+
+
+def test_the_bundle_installs_under_its_own_name_not_the_host_directorys(tmp_path: Path) -> None:
+    """The same plugin has to land at the same container path on every machine.
+
+    Deriving it from the host checkout's directory name made the path an accident of where the
+    operator cloned: `plugin/` on CI and `plugin-dev/` on a laptop install at two different
+    paths, which makes the run cache machine-local (§24) and leaks the operator's directory
+    layout into the sandbox the skill can read.
+    """
+    from bellwether.skill import load_plugin
+
+    checked_out_as = tmp_path / "checkout-2024-06"
+    checked_out_as.mkdir()
+    bundle_dir = _bundle(checked_out_as)
+    bundle_dir.rename(checked_out_as / "wherever-the-operator-put-it")
+    bundle = load_plugin(checked_out_as / "wherever-the-operator-put-it")
+
+    staged = stage_plugin_bundle(bundle.root, tmp_path / "staged", name=bundle.name)
+
+    # `plugin.json` declares `demo-bundle`; the directory is called something else entirely.
+    assert bundle.name == "demo-bundle"
+    assert staged.install_path == PurePosixPath(INSTALL_ROOT) / "demo-bundle"
+
+
+def test_a_declared_name_that_is_not_a_directory_name_is_refused(tmp_path: Path) -> None:
+    """The manifest's name reaches a container path, so it is validated there too.
+
+    The spec's name rule admits periods, so `..` is a well-formed declared name — and it would
+    put the bundle's mount one level above the plugin root. Refused by the same guard the host
+    directory name goes through, because where a value came from does not make it safe.
+    """
+    bundle = _bundle(tmp_path)
+    for declared in ("..", ".", "", "../elsewhere"):
+        with pytest.raises(SkillError, match="not a usable directory name"):
+            stage_plugin_bundle(bundle, tmp_path / f"staged-{declared or 'empty'}", name=declared)
+
+
+def test_an_upper_cased_evals_directory_is_still_machinery(tmp_path: Path) -> None:
+    """The §3.5 invariant must not depend on how a checkout spelled the directory.
+
+    `payload._is_machinery` already folds case and Unicode form for a skill; the bundle walk
+    compared the exact string, so a checkout on a case-insensitive filesystem — or an author
+    who typed `EVALS/` — would ship the evaluation machinery into the container, and every run
+    of that skill would observe a skill that knows it is being watched.
+    """
+    bundle = _bundle(tmp_path)
+    loud = bundle / "skills" / "demo-skill" / "EVALS"
+    loud.mkdir()
+    (loud / "scenarios.yaml").write_text("apiVersion: x\n", encoding="utf-8")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+
+    assert not any("EVALS" in path for path in staged.files)
+    assert "skills/demo-skill/EVALS" in staged.refused_machinery
+    assert not (staged.root / "skills" / "demo-skill" / "EVALS").exists()
+
+
+def test_an_upper_cased_vcs_directory_is_still_skipped(tmp_path: Path) -> None:
+    """Same rule, same reason: `.Git` on a case-insensitive filesystem is still a checkout,
+    and `git show HEAD:evals/scenarios.yaml` recovers the machinery from it."""
+    bundle = _bundle(tmp_path)
+    (bundle / ".Git").mkdir()
+    (bundle / ".Git" / "config").write_text("[core]\n", encoding="utf-8")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+
+    assert not any(path.startswith(".Git") for path in staged.files)
+    assert ".Git" in staged.refused_vcs
+
+
+def test_the_cache_key_digests_only_what_reaches_the_container(tmp_path: Path) -> None:
+    """A plugin developed in its own checkout must not thrash the run cache.
+
+    The digest keyed the run cache on the whole working directory, including `.git` and every
+    `evals/` — none of which staging copies. So a commit, or an edit to the scenarios that are
+    already part of the scenario digest, changed the key while the thing actually placed in the
+    container was byte-identical, and the cost of that miss is paid in model tokens (§19.2).
+    """
+    from bellwether.sandbox import plugin_bundle_digest
+
+    bundle = _bundle(tmp_path)
+    (bundle / ".git").mkdir()
+    (bundle / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    before = plugin_bundle_digest(bundle)
+
+    (bundle / ".git" / "HEAD").write_text("ref: refs/heads/other\n", encoding="utf-8")
+    (bundle / "skills" / "demo-skill" / "evals" / "scenarios.yaml").write_text(
+        "apiVersion: changed\n", encoding="utf-8"
+    )
+    assert plugin_bundle_digest(bundle) == before, "excluded content moved the cache key"
+
+    # And the converse, because a digest that never changes is worse than no digest: content
+    # the container *does* see moves it.
+    (bundle / "shared" / "reference.md").write_text("different\n", encoding="utf-8")
+    assert plugin_bundle_digest(bundle) != before
+
+
+def test_the_digest_and_the_copy_agree_on_what_is_excluded(tmp_path: Path) -> None:
+    """One rule, asserted against both users of it. A digest that describes a different set of
+    files from the one staged is the failure mode the shared predicate exists to prevent: the
+    cache would replay a trace recorded from a bundle that is not this one."""
+    from bellwether.determinism import sorted_walk
+    from bellwether.sandbox.staging import bundle_exclusion
+
+    bundle = _bundle(tmp_path)
+    (bundle / ".git").mkdir()
+    (bundle / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    staged = stage_plugin_bundle(bundle, tmp_path / "staged")
+    digested = {
+        relative.as_posix()
+        for relative in sorted_walk(bundle)
+        if bundle_exclusion(relative.parts) is None
+    }
+    assert digested == set(staged.files)

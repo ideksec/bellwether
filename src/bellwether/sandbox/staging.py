@@ -13,26 +13,66 @@ run of every skill is silently observing a different thing than it reports.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from bellwether.determinism import sorted_walk
 from bellwether.errors import SkillError
-from bellwether.sandbox.fixtures import normalize_metadata
-from bellwether.skill import EVALS_DIR, SkillPackage
+from bellwether.sandbox.fixtures import fixture_digest, normalize_metadata
+from bellwether.skill import EVALS_DIR, SkillPackage, names_machinery_dir
 
 #: Version-control metadata never staged into a container (§3.5). A plugin that is its own
 #: checkout carries the whole evaluation machinery inside ``.git`` — leaving the working-tree
 #: ``evals/`` behind is not enough when ``git show HEAD:evals/scenarios.yaml`` recovers it.
+#: Compared case- and form-folded for the same reason ``evals/`` is: a checkout on a
+#: case-insensitive filesystem can spell it ``.Git``.
 _VCS_DIRS = frozenset({".git", ".hg", ".svn", ".bzr"})
 
 __all__ = [
     "StagedBundle",
     "StagedPayload",
+    "bundle_exclusion",
+    "plugin_bundle_digest",
     "stage_companions",
     "stage_payload",
     "stage_plugin_bundle",
 ]
+
+
+def bundle_exclusion(parts: Sequence[str]) -> str | None:
+    """Why a path inside a plugin bundle is not staged, or ``None`` where it is.
+
+    One function, because the copy and the digest that keys the run cache have to agree. They
+    did not: the digest hashed the whole checkout, so a bundle that is its own git repository
+    changed digest on every commit and never hit the cache, while the thing actually placed
+    in the container had not changed at all.
+
+    Returns ``"machinery"`` for anything under an ``evals/`` directory at any depth (§3.5)
+    and ``"vcs"`` for anything under version-control metadata.
+    """
+    if names_machinery_dir(parts):
+        return "machinery"
+    if any(unicodedata.normalize("NFC", part).casefold() in _VCS_DIRS for part in parts):
+        return "vcs"
+    return None
+
+
+def plugin_bundle_digest(bundle_root: Path) -> str:
+    """Digest exactly what :func:`stage_plugin_bundle` would place in the container.
+
+    The run cache replays a recorded trace when its key matches (§19.2), so the key has to
+    describe the bundle *as installed*. Hashing the bundle's working directory instead counts
+    content the container never sees — a plugin developed in place would thrash the cache on
+    every commit, and the cost of that is paid in tokens.
+    """
+    excluded = frozenset(
+        relative.as_posix()
+        for relative in sorted_walk(bundle_root)
+        if bundle_exclusion(relative.parts) is not None
+    )
+    return fixture_digest(bundle_root, excluded)
 
 
 @dataclass(frozen=True)
@@ -231,6 +271,7 @@ def stage_plugin_bundle(
     bundle_root: Path,
     destination: Path,
     *,
+    name: str | None = None,
     install_path: str | PurePosixPath = "/home/agent/.claude/plugins",
     owner: tuple[int, int] | None = None,
 ) -> StagedBundle:
@@ -248,18 +289,20 @@ def stage_plugin_bundle(
     rather than silently dropped, and the outcome is asserted rather than trusted.
     """
     install_root = PurePosixPath(install_path)
-    # The *resolved* directory name, so ``bellwether run ..`` installs under the directory it
-    # actually names. Taking ``bundle_root.name`` verbatim would put ``..`` in the container
-    # path, and a lexical containment check does not catch that — ``plugins/..`` compares as
-    # relative to ``plugins`` while resolving to its parent, which would mount the bundle
-    # read-only over the harness-state zone.
-    name = bundle_root.resolve().name
-    if name in ("", ".", ".."):
+    # The bundle's own name (``PluginBundle.name``: the manifest's declared name, or the
+    # directory name where it declares none) decides the container path. The host checkout's
+    # directory name must not: the same bundle checked out as ``plugin`` on CI and
+    # ``plugin-dev`` on a laptop would install at two different paths, which makes the run
+    # cache machine-local (§24) and leaks the operator's directory layout into the sandbox.
+    # Falls back to the *resolved* directory name so ``bellwether run ..`` still names the
+    # directory it actually points at rather than putting ``..`` in the container path.
+    chosen = name if name is not None else bundle_root.resolve().name
+    if chosen in ("", ".", "..") or "/" in chosen or "\\" in chosen:
         raise SkillError(
-            f"refusing to install: {bundle_root} resolves to no usable directory name, so the "
-            "plugin has nowhere to install inside the container"
+            f"refusing to install: {chosen!r} is not a usable directory name, so the plugin "
+            f"at {bundle_root} has nowhere to install inside the container"
         )
-    resolved_install = install_root / name
+    resolved_install = install_root / chosen
 
     # Asserted, not assumed, exactly as ``stage_payload`` does for a skill.
     if not resolved_install.is_relative_to(install_root) or resolved_install == install_root:
@@ -282,13 +325,13 @@ def stage_plugin_bundle(
     for origin in sorted(bundle_root.rglob("*"), key=lambda path: path.as_posix()):
         relative = origin.relative_to(bundle_root)
         parts = relative.parts
-        if EVALS_DIR.rstrip("/") in parts:
-            if parts[-1] == EVALS_DIR.rstrip("/"):
-                refused_machinery.append(relative.as_posix())
-            continue
-        if _VCS_DIRS.intersection(parts):
-            if parts[-1] in _VCS_DIRS:
-                refused_vcs.append(relative.as_posix())
+        excluded = bundle_exclusion(parts)
+        if excluded is not None:
+            # Named once, at the directory that caused it, rather than once per file beneath.
+            if bundle_exclusion(parts[:-1]) is None:
+                (refused_machinery if excluded == "machinery" else refused_vcs).append(
+                    relative.as_posix()
+                )
             continue
         target = destination / relative
         if origin.is_symlink():
@@ -337,7 +380,7 @@ def stage_plugin_bundle(
     leaked = sorted(
         path.relative_to(destination).as_posix()
         for path in destination.rglob("*")
-        if path.is_file() and EVALS_DIR.rstrip("/") in path.relative_to(destination).parts
+        if path.is_file() and names_machinery_dir(path.relative_to(destination).parts)
     )
     if leaked:
         raise SkillError(

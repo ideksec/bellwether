@@ -13,6 +13,14 @@ handshake against the proxy and the flow appears in the proxy's own log.
 The counter-case is asserted too, because a probe that cannot fail proves nothing: the same
 request from a container with the CA *removed* from the trust environment is rejected, no flow
 is recorded, and the probe reports the dangerous state rather than an inconclusive shrug.
+
+Both images are exercised, and that is the point of the parametrisation rather than tidiness.
+The first cut proved the probe against the *sidecar* — the one image guaranteed to carry
+Python — while a run puts the **sandbox** on the internal bridge, and the shipped ``claude-code``
+sandbox carries ``node`` and ``sh`` and no Python at all. So the probe ran green on a container
+no evaluation uses and could not have worked on the one that matters. Here the sandbox's own
+digest-pinned base is read out of ``sandbox/claude-code/Dockerfile``, so the Node branch of the
+client is run on the interpreter surface a real ``claude-code`` run has.
 """
 
 from __future__ import annotations
@@ -40,6 +48,20 @@ pytestmark = [
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _IMAGE_TAG = "bw-proxy-sidecar:probe-test"
+_CLAUDE_CODE_DOCKERFILE = _REPO_ROOT / "sandbox" / "claude-code" / "Dockerfile"
+
+
+def _sandbox_base_image() -> str:
+    """The ``claude-code`` sandbox's digest-pinned base, read from its Dockerfile.
+
+    Read rather than repeated: a copy here would keep passing after the sandbox moved to a base
+    with a different interpreter surface, which is exactly the drift that made the first cut of
+    this probe green against an image no run uses.
+    """
+    for line in _CLAUDE_CODE_DOCKERFILE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("FROM "):
+            return line.split()[1]
+    raise AssertionError(f"no FROM line in {_CLAUDE_CODE_DOCKERFILE}")
 
 
 def _daemon_available() -> bool:
@@ -47,6 +69,22 @@ def _daemon_available() -> bool:
         ["docker", "info", "--format", "{{.ServerVersion}}"], capture_output=True, text=True
     )
     return probe.returncode == 0
+
+
+@pytest.fixture(scope="module")
+def client_images(sidecar_image: str) -> dict[str, str]:
+    """The two containers the probe has to work in, each exercising one client branch.
+
+    The sandbox base carries ``node`` and no Python; the sidecar carries Python and no Node. A
+    dispatcher that only ever ran one of them would leave the other untried until a live run
+    reported *inconclusive* — which reads as "we could not tell", the answer that costs a
+    labelled run to discover.
+    """
+    base = _sandbox_base_image()
+    pull = subprocess.run(["docker", "pull", "-q", base], capture_output=True, text=True)
+    if pull.returncode != 0:
+        pytest.fail(f"could not pull the claude-code sandbox base {base}: {pull.stderr[-2000:]}")
+    return {"claude-code-sandbox-base": base, "sidecar": sidecar_image}
 
 
 @pytest.fixture(scope="module")
@@ -87,21 +125,27 @@ def _provider(image: str) -> SidecarProxyProvider:
     )
 
 
+@pytest.mark.parametrize("which", ["claude-code-sandbox-base", "sidecar"])
 def test_a_real_container_completes_tls_against_the_proxy_and_the_flow_is_recorded(
-    sidecar_image: str,
+    sidecar_image: str, client_images: dict[str, str], which: str
 ) -> None:
     """The chain a run actually gets: internal bridge, the run's trust environment, the CA at
     the executor's container path, a genuine HTTPS request. The probe host is unresolvable, so
-    nothing leaves the machine — reaching the proxy is the whole of what is proven."""
-    probe = run_interception_probe(_provider(sidecar_image), client_image=sidecar_image)
+    nothing leaves the machine — reaching the proxy is the whole of what is proven.
 
-    assert probe.confirmed, f"interception not confirmed: {probe.reason}"
+    Run on the sandbox's own base as well as the sidecar, because the container that has to
+    trust the CA is the one a run puts on the bridge."""
+    client_image = client_images[which]
+    probe = run_interception_probe(_provider(sidecar_image), client_image=client_image)
+
+    assert probe.confirmed, f"interception not confirmed on {which}: {probe.reason}"
     assert not probe.ca_rejected
     assert PROBE_HOST in {host.lower().rstrip(".") for host in probe.recorded_hosts}
 
 
+@pytest.mark.parametrize("which", ["claude-code-sandbox-base", "sidecar"])
 def test_without_the_ca_the_same_request_is_refused_and_the_probe_says_so(
-    sidecar_image: str,
+    sidecar_image: str, client_images: dict[str, str], which: str
 ) -> None:
     """A probe that cannot fail proves nothing. Strip the CA from the trust environment and the
     client rejects the proxy's certificate: no flow is recorded, and the probe names the state
@@ -116,8 +160,8 @@ def test_without_the_ca_the_same_request_is_refused_and_the_probe_says_so(
             )
 
     probe = run_interception_probe(
-        _provider(sidecar_image), client_image=sidecar_image, runner=_WithoutCaTrust()
+        _provider(sidecar_image), client_image=client_images[which], runner=_WithoutCaTrust()
     )
-    assert not probe.confirmed, "a client with no CA must not confirm interception"
-    assert probe.ca_rejected, f"expected a certificate rejection, got: {probe.reason}"
+    assert not probe.confirmed, f"a client with no CA must not confirm interception ({which})"
+    assert probe.ca_rejected, f"expected a certificate rejection on {which}, got: {probe.reason}"
     assert not probe.recorded_hosts

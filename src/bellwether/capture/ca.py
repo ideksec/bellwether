@@ -122,6 +122,14 @@ _CA_REJECTION_MARKERS: tuple[str, ...] = (
     "self signed certificate",
     "ssl: certificate",
     "unable to verify the first certificate",
+    # Node's OpenSSL error codes, which arrive as the `code` rather than prose. Node is the
+    # interpreter the shipped sandbox image carries, so these are the wordings most likely to
+    # be seen in practice.
+    "self_signed_cert_in_chain",
+    "depth_zero_self_signed_cert",
+    "unable_to_verify_leaf_signature",
+    "unable_to_get_issuer_cert",
+    "cert_untrusted",
 )
 
 

@@ -39,17 +39,26 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from bellwether.capture import EgressAllowlist, InterceptionProbe, interpret_interception_probe
+from bellwether.capture import (
+    CredentialBroker,
+    EgressAllowlist,
+    InterceptionProbe,
+    interpret_interception_probe,
+)
 from bellwether.capture.ca import DEFAULT_CA_CONTAINER_PATH
 from bellwether.cli.proxy_run import SidecarProxyProvider
+from bellwether.determinism import SeededRng
 from bellwether.errors import BellwetherError
 
 __all__ = [
-    "PROBE_CLIENT_SOURCE",
+    "PROBE_CLIENT_NODE",
+    "PROBE_CLIENT_PYTHON",
     "PROBE_HOST",
     "PROBE_SIDECAR_SETTINGS",
     "ProbeRunner",
+    "probe_allowlist",
     "probe_argv",
+    "probe_client_command",
     "run_interception_probe",
 ]
 
@@ -58,29 +67,83 @@ __all__ = [
 #: is the whole of what is being established.
 PROBE_HOST = "bellwether-interception-probe.invalid"
 
-#: The client, run inside the container. ``urllib`` honours ``SSL_CERT_FILE``, one of the §9.2
-#: mechanisms, so a handshake here exercises the real trust path rather than a bespoke one.
+#: The probe client, as a ``sh`` dispatcher over the interpreters an image might carry.
 #:
-#: An HTTP error *is* a success for this purpose — a 403 from the default-deny allowlist means
-#: the proxy received the request over TLS the client accepted — so the exception text is
-#: printed for the interpreter to read. The exit code is still made non-zero on any exception:
-#: it is not what decides the outcome (the recorded flow is), but a client that always exits 0
-#: makes the inconclusive message read "client exit 0" whether it ran or not, which is exactly
-#: the kind of uninformative signal this project is supposed to refuse.
-PROBE_CLIENT_SOURCE = """
+#: The first cut hard-coded ``python3``, which the shipped ``claude-code`` sandbox image does
+#: not have — it carries ``node`` and ``sh`` and nothing else — so the probe could only ever
+#: return *inconclusive* on the one image that matters, while the CI proof passed by
+#: substituting the sidecar. Node is not a fallback here, it is the point: Node ignores the
+#: system trust store and reads ``NODE_EXTRA_CA_CERTS``, which §9.2 singles out as the
+#: mechanism that is **not optional**, so probing with it exercises the trust path most likely
+#: to be the one that silently fails.
+#:
+#: Node's core ``https`` does not honour ``HTTPS_PROXY``, so the tunnel is made explicitly:
+#: ``CONNECT`` to the proxy, then TLS over that socket. That is exactly the sequence being
+#: established — the proxy is reached, and the certificate it presents has to be trusted.
+PROBE_CLIENT_NODE = """
+const net = require('net'), tls = require('tls');
+const proxy = new URL(process.env.HTTPS_PROXY || process.env.https_proxy);
+const host = process.env.BW_PROBE_HOST;
+const fail = (m) => { console.error(m); process.exit(1); };
+const sock = net.connect(Number(proxy.port || 80), proxy.hostname, () => {
+  sock.write('CONNECT ' + host + ':443 HTTP/1.1\\r\\nHost: ' + host + ':443\\r\\n\\r\\n');
+});
+let head = '';
+sock.on('error', (e) => fail((e.code || '') + ' ' + e.message));
+sock.on('data', (chunk) => {
+  head += chunk.toString('latin1');
+  if (head.indexOf('\\r\\n\\r\\n') === -1) return;
+  sock.removeAllListeners('data');
+  if (head.split(' ')[1] !== '200') fail('CONNECT refused: ' + head.split('\\r\\n')[0]);
+  const wrapped = tls.connect({ socket: sock, servername: host }, () => {
+    wrapped.write('GET /bellwether-probe HTTP/1.1\\r\\nHost: ' + host +
+                 '\\r\\nConnection: close\\r\\n\\r\\n');
+  });
+  wrapped.on('error', (e) => fail((e.code || '') + ' ' + e.message));
+  wrapped.on('data', (d) => console.log(d.toString('latin1').split('\\r\\n')[0]));
+  wrapped.on('end', () => process.exit(0));
+});
+"""
+
+#: The same request for an image that carries Python instead. ``urllib`` honours
+#: ``SSL_CERT_FILE`` and ``HTTPS_PROXY`` without help, so this one is short.
+PROBE_CLIENT_PYTHON = """
 import os, sys, urllib.request
-url = "https://" + os.environ["BW_PROBE_HOST"] + "/bellwether-probe"
+url = 'https://' + os.environ['BW_PROBE_HOST'] + '/bellwether-probe'
 try:
     with urllib.request.urlopen(url, timeout=20) as response:
-        print("status", response.status)
-except Exception as exc:  # noqa: BLE001 - every outcome is data for the interpreter
+        print('status', response.status)
+except Exception as exc:
     print(type(exc).__name__, exc, file=sys.stderr)
     sys.exit(1)
 """
 
-#: mitmdump settings the probe's sidecar needs, and nothing a run uses. ``lazy`` completes the
-#: client handshake before any upstream connection, which is what lets the probe establish CA
-#: trust without a reachable destination (see the module docstring).
+
+def probe_client_command(
+    node_source: str = PROBE_CLIENT_NODE, python_source: str = PROBE_CLIENT_PYTHON
+) -> str:
+    """A ``sh`` command that runs the probe with whatever interpreter the image has.
+
+    An HTTP error *is* a success for this purpose — a 403 from the default-deny allowlist means
+    the proxy received the request over TLS the client accepted — so the client prints and the
+    recorded flow decides. Exit 127 with no interpreter at all, which the interpreter reads as
+    *inconclusive*: an image that cannot make a request tells us nothing about its trust store,
+    and saying so is the honest answer.
+    """
+    return (
+        "if command -v node >/dev/null 2>&1; then exec node -e "
+        + _sh_quote(node_source)
+        + "; elif command -v python3 >/dev/null 2>&1; then exec python3 -c "
+        + _sh_quote(python_source)
+        + "; else echo 'no node or python3 in this image' >&2; exit 127; fi"
+    )
+
+
+def _sh_quote(source: str) -> str:
+    """Single-quote ``source`` for ``sh -c``, closing and reopening around any quote."""
+    return "'" + source.replace("'", "'\\''") + "'"
+
+
 PROBE_SIDECAR_SETTINGS: dict[str, str] = {"connection_strategy": "lazy"}
 
 
@@ -118,7 +181,7 @@ def probe_argv(
         argv += ["-e", f"{name}={environment[name]}"]
     argv += ["-e", f"BW_PROBE_HOST={PROBE_HOST}"]
     argv += ["-v", f"{ca_host_path.resolve()}:{DEFAULT_CA_CONTAINER_PATH}:ro"]
-    argv += [image, "python3", "-c", PROBE_CLIENT_SOURCE]
+    argv += [image, "sh", "-c", probe_client_command()]
     return argv
 
 
@@ -131,9 +194,10 @@ def run_interception_probe(
 ) -> InterceptionProbe:
     """Stand the proxy up, issue one real HTTPS request from a container, and decide (§9.2).
 
-    ``client_image`` runs the probe. The sidecar image is the sound default: it is the one
-    image guaranteed to carry a Python interpreter, and using it keeps the probe from
-    depending on what a particular sandbox image happens to ship.
+    ``client_image`` is the **sandbox** image, and that is not interchangeable with the
+    sidecar: the container a run places on the internal bridge is the sandbox, so it is the
+    sandbox's trust store the question is about. Probing the sidecar renders an ``ok`` about a
+    container no evaluation uses, and cannot fail for the one state this exists to catch.
 
     The proxy is always torn down, including on failure, so a probe never leaks a bridge or a
     container. A standup that cannot complete raises rather than returning a negative result:
@@ -144,9 +208,18 @@ def run_interception_probe(
     # Applied here rather than asked of the caller, so a probe cannot be stood up without it and
     # then report "inconclusive" for a reason that is really about mitmproxy's defaults.
     provider = replace(
-        provider, extra_settings={**provider.extra_settings, **PROBE_SIDECAR_SETTINGS}
+        provider,
+        # Default-deny, naming nothing: the probe must not widen the egress policy of the run
+        # it is only checking, and a denied request is recorded anyway — the block is a
+        # decision the addon makes *after* receiving it, which is all this establishes.
+        allowlist=probe_allowlist(),
+        # No credential either. The probe sends no model traffic, so brokering a key into its
+        # sidecar would put the real key on a container that has no use for it.
+        broker=CredentialBroker.for_run({}, {}, rng=SeededRng(0, "interception-probe")),
+        provider_of_host={},
+        extra_settings={**provider.extra_settings, **PROBE_SIDECAR_SETTINGS},
     )
-    with TemporaryDirectory(prefix="bellwether-probe-") as shared:
+    with TemporaryDirectory(prefix="bellwether-probe-", ignore_cleanup_errors=True) as shared:
         try:
             proxy = provider.open("interception-probe", shared_dir=Path(shared))
         except BellwetherError as error:
@@ -165,12 +238,16 @@ def run_interception_probe(
             recorded = [flow.host for flow in proxy.flows()]
         finally:
             proxy.close()
-    return interpret_interception_probe(
-        probe_host,
-        recorded,
-        exit_code=completed.returncode,
-        stderr=completed.stderr,
-    )
+        # Decided *inside* the temporary directory's scope. The sidecar runs as root and leaves
+        # a root-owned confdir behind, so cleanup can raise for a non-root operator — and a
+        # PermissionError raised after a successful probe would be caught upstream as "not
+        # probed", silently downgrading the one critical outcome this feature exists to report.
+        return interpret_interception_probe(
+            probe_host,
+            recorded,
+            exit_code=completed.returncode,
+            stderr=completed.stderr,
+        )
 
 
 def probe_allowlist() -> EgressAllowlist:

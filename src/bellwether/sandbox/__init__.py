@@ -56,6 +56,7 @@ from bellwether.sandbox.session import (
 from bellwether.sandbox.staging import (
     StagedBundle,
     StagedPayload,
+    plugin_bundle_digest,
     stage_companions,
     stage_payload,
     stage_plugin_bundle,
@@ -101,6 +102,7 @@ __all__ = [
     "normalize_container_path",
     "normalize_metadata",
     "overlay_available",
+    "plugin_bundle_digest",
     "prepare_sandbox",
     "read_overlay_diff",
     "stage_companions",

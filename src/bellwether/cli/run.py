@@ -69,8 +69,8 @@ from bellwether.harness import (
     SamplingSpec,
     build_model_client,
 )
-from bellwether.sandbox import fixture_digest
-from bellwether.skill import SkillPackage
+from bellwether.sandbox import fixture_digest, plugin_bundle_digest
+from bellwether.skill import PluginBundle, SkillPackage
 from bellwether.verdict import validate_capability_weights
 
 __all__ = [
@@ -178,7 +178,7 @@ def run_evaluation(
     depth: str | None = None,
     platform_baseline: PlatformBaseline | None = None,
     run_cache: RunCache | None = None,
-    plugin_root: Path | None = None,
+    plugin: PluginBundle | None = None,
     deterministic_sampling: bool = False,
     max_tokens_per_run: int = 1_000_000,
     on_estimate: Callable[[RunEstimate], bool] | None = None,
@@ -393,7 +393,7 @@ def run_evaluation(
         )
         # §5/§6/§18: the bundle's content outside the skill's own directory reaches the
         # container, so it belongs in the key that decides whether a trace may be replayed.
-        plugin_digest = fixture_digest(plugin_root) if plugin_root is not None else ""
+        plugin_digest = plugin_bundle_digest(plugin.root) if plugin is not None else ""
         # What this configuration can watch, and the limits it runs under: a trace captured
         # with no proxy is a different observation from one captured behind it (§19.2).
         observability = observability_key(config)
@@ -628,7 +628,7 @@ def sandbox_executor_factory(
     plant_canaries: bool = False,
     provider_base_urls: Mapping[str, str | None] | None = None,
     provider_types: Mapping[str, str] | None = None,
-    plugin_root: Path | None = None,
+    plugin: PluginBundle | None = None,
     platform_baseline_version: str | None = None,
     sampling: SamplingSpec | None = None,
 ) -> ExecutorFactory:
@@ -677,7 +677,7 @@ def sandbox_executor_factory(
             plant_canaries=plant_canaries,
             provider_base_urls=dict(provider_base_urls or {}),
             provider_types=dict(provider_types or {}),
-            plugin_root=plugin_root,
+            plugin=plugin,
             platform_baseline_version=platform_baseline_version,
             sampling=sampling,
         )

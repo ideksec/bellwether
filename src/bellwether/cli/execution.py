@@ -69,7 +69,7 @@ from bellwether.sandbox import (
     stage_plugin_bundle,
 )
 from bellwether.sandbox.docker import StreamedExec
-from bellwether.skill import SkillPackage
+from bellwether.skill import PluginBundle, SkillPackage
 from bellwether.trace import (
     Action,
     IdentityBlock,
@@ -248,6 +248,39 @@ def _resolve_canary_path(slot_path: str, *, home: str, workspace_root: str) -> P
     return PurePosixPath(workspace_root) / slot_path
 
 
+def companions_to_stage(
+    companions: Sequence[SkillPackage], bundle_root: Path | None
+) -> tuple[SkillPackage, ...]:
+    """The §7.4 companions that still need staging beside a whole-bundle install.
+
+    A companion that is a *sibling inside the installed bundle* is already in the container —
+    the bundle brought it. Staging it bare as well puts two copies of the competitor in front
+    of the harness, ``k8s-debug`` and ``demo-bundle:k8s-debug``, and which one activated is
+    then undecidable. That is the same defect whole-bundle staging already fixed for the skill
+    under test, and it bites harder here: companions exist precisely for the scenarios where
+    *which* skill activated is the question being asked.
+
+    ``bundle_root`` of ``None`` (a bare skill directory) stages every companion, as before.
+    """
+    if bundle_root is None:
+        return tuple(companions)
+    return tuple(companion for companion in companions if not _inside(companion.root, bundle_root))
+
+
+def _inside(path: Path, root: Path) -> bool:
+    """Whether ``path`` lives within ``root``, both resolved.
+
+    Resolved, because the question is about the same *files*, not the same spelling: a
+    companion reached through a symlinked checkout is the same skill the bundle installs, and
+    a lexical comparison would stage a second copy of it.
+    """
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError):
+        # A path that resolves nowhere is not inside anything; stage it and let staging judge.
+        return False
+
+
 class _DockerLaunch:
     """The claude-code adapter's launcher, bound to a run's persistent container.
 
@@ -400,8 +433,10 @@ class SandboxRunExecutor:
     provider_base_urls: Mapping[str, str | None] = field(default_factory=dict)
     #: The Agent Plugin bundle this skill came from, staged whole and installed with
     #: ``--plugin-dir`` so the evaluated layout is the deployed one (§5/§6/§18). ``None`` for
-    #: a bare skill directory, which stages exactly as before.
-    plugin_root: Path | None = None
+    #: a bare skill directory, which stages exactly as before. The bundle rather than its
+    #: path: it installs under its own name, so the container path does not change with the
+    #: host checkout's directory name (§24).
+    plugin: PluginBundle | None = None
     #: Provider name → configured type (``anthropic`` / ``openai_compatible``). Read only to
     #: record the sampling a provider actually sends (§9.3); unknown names claim nothing.
     provider_types: Mapping[str, str] = field(default_factory=dict)
@@ -482,10 +517,12 @@ class SandboxRunExecutor:
         # — shared references a skill body points at, the manifest — so a skill that reads a
         # sibling path works in a client and fails here for a reason that is about Bellwether.
         plugin_dirs: list[str] = []
-        if plan.target.harness == "claude-code" and self.plugin_root is not None:
+        companions = tuple(plan.companions)
+        if plan.target.harness == "claude-code" and self.plugin is not None:
             staged_bundle = stage_plugin_bundle(
-                self.plugin_root,
+                self.plugin.root,
                 run_dir / "plugin",
+                name=self.plugin.name,
                 owner=prepared.isolation.owner,
             )
             ro_binds.append((staged_bundle.root, staged_bundle.install_path))
@@ -495,11 +532,14 @@ class SandboxRunExecutor:
             # `demo-bundle:demo-skill` — and which one activated would be undecidable, with the
             # bare copy lacking exactly the sibling-bundle content this staging exists to give.
             prepared = replace(prepared, install_payload=False)
-        if plan.target.harness == "claude-code" and plan.companions:
+            # Same reasoning, and it bites harder for a companion that is a sibling in this
+            # bundle — see `companions_to_stage`.
+            companions = companions_to_stage(companions, self.plugin.root)
+        if plan.target.harness == "claude-code" and companions:
             ro_binds += [
                 (staged.root, staged.install_path)
                 for staged in stage_companions(
-                    plan.companions,
+                    companions,
                     run_dir / "companions",
                     primary=self.package,
                     install_root=prepared.payload.install_path.parent,

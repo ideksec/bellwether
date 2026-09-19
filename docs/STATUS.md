@@ -636,6 +636,24 @@ can still name one bundle's skill exactly; the trace keeps what the harness actu
 pins the qualification against the real binary, so a future CLI that drops it fails there rather
 than leaving the matcher quietly over-matching.
 
+A **second review round** over the same branch found five more of the same shape — a path that
+renders a clean result without observing the thing it names — and each is fixed with a test
+(spec-notes §3.5/§9.2/§19.2/§24). The sharpest: the probe client was hard-coded to `python3`, and
+running the shipped `claude-code` sandbox base settled what it carries — `node` and `sh`, no
+`python3`, no `curl`, no `openssl`. The probe corrected to use the sandbox image could therefore
+only ever report *inconclusive* on the one image that matters, while its CI proof passed by
+substituting the sidecar. The client is now a `sh` dispatcher preferring Node, which is the point
+rather than a fallback: Node ignores the system trust store and reads `NODE_EXTRA_CA_CERTS`, the
+mechanism §9.2 calls not optional. It is run for real against an intercepting socket server
+offline, in both the trusted and the rejected case, and the container proof runs on the sandbox's
+own digest-pinned base as well as the sidecar. The rest: a §7.4 companion that is a sibling in the
+installed bundle is no longer staged a second time (two copies of the competitor, in exactly the
+scenarios companions exist to decide); the bundle's §3.5 exclusion and its leak assertion now fold
+case and Unicode form as the payload's always did; `plugin_digest` digests what staging copies
+rather than the whole checkout, so a plugin developed in place stops thrashing the run cache; and
+the bundle installs under `PluginBundle.name` rather than the host checkout's directory name, so
+the container path is the same on every machine (§24).
+
 ---
 
 ## Where the build is
@@ -675,7 +693,7 @@ than leaving the matcher quietly over-matching.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1282 tests: 1226 offline, 56 under the `docker` mark (47 run, 9 CI-only skips). All green.
+1298 tests: 1240 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 

@@ -14,14 +14,31 @@ from __future__ import annotations
 
 import fnmatch
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-__all__ = ["DEFAULT_PAYLOAD_ALLOWLIST", "EVALS_DIR", "PayloadAllowlist", "PayloadSplit"]
+__all__ = [
+    "DEFAULT_PAYLOAD_ALLOWLIST",
+    "EVALS_DIR",
+    "PayloadAllowlist",
+    "PayloadSplit",
+    "names_machinery_dir",
+]
 
 #: Everything under this directory is Bellwether machinery and MUST NOT be installed.
 #: Consolidating it into one directory is what makes the exclusion a single rule rather
 #: than a growing list of filenames (§5).
 EVALS_DIR = "evals/"
+
+
+def _fold(name: str) -> str:
+    """The one normalisation every ``evals/`` comparison uses.
+
+    Case- and form-insensitive, because ``EVALS/`` and a decomposed spelling name the same
+    directory on the filesystems people actually use, and a comparison that misses one lets
+    the machinery through on exactly the checkout that differs from the author's.
+    """
+    return unicodedata.normalize("NFC", name).casefold()
 
 
 def _is_machinery(path: str) -> bool:
@@ -33,9 +50,21 @@ def _is_machinery(path: str) -> bool:
     path is excluded anyway — so this only fixes the *label*: such a file is machinery,
     not an unmatched skill file a reviewer should chase.
     """
-    folded = unicodedata.normalize("NFC", path).casefold()
+    folded = _fold(path)
     prefix = EVALS_DIR.casefold()
     return folded == prefix.rstrip("/") or folded.startswith(prefix)
+
+
+def names_machinery_dir(parts: Iterable[str]) -> bool:
+    """True where any path component names the ``evals/`` machinery directory (§3.5, §5).
+
+    :func:`_is_machinery` answers the question for a path relative to a *skill* root, where
+    the machinery can only sit at the top. A plugin bundle holds many skills, so its own
+    machinery can be nested at any depth — and it must be recognised there by the same rule,
+    not by an exact-string test that a differently-cased checkout walks straight past.
+    """
+    wanted = EVALS_DIR.rstrip("/").casefold()
+    return any(_fold(part) == wanted for part in parts)
 
 
 #: Files a harness would load. Globs are matched against the POSIX path relative to the

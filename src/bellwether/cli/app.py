@@ -41,6 +41,7 @@ from bellwether.config import (
 from bellwether.determinism import canonical_json
 from bellwether.errors import BellwetherError, ConfigurationError
 from bellwether.sandbox import DockerBackend, overlay_available
+from bellwether.skill import PluginBundle
 from bellwether.verdict import validate_bci_weights
 
 __all__ = ["ExitCode", "app", "main"]
@@ -695,7 +696,7 @@ def run(
 
     worst = ExitCode.OK
     results: list[dict[str, Any]] = []
-    for skill_dir, bundle_notes, plugin_root in work:
+    for skill_dir, bundle_notes, plugin in work:
         try:
             package = load_skill(skill_dir)
             if bundle_notes:
@@ -743,7 +744,7 @@ def run(
                 platform_baseline=platform_baseline,
                 run_cache=run_cache,
                 # §19.2: the bundle's content reaches the container, so it keys the cache.
-                plugin_root=plugin_root,
+                plugin=plugin,
                 deterministic_sampling=deterministic_sampling,
                 max_tokens_per_run=max_tokens,
                 on_estimate=_estimate_gate(yes),
@@ -778,7 +779,7 @@ def run(
                     # §5/§6/§18: where the skill came from an Agent Plugin, the bundle is
                     # installed whole and the CLI loads it with --plugin-dir, so the evaluated
                     # arrangement is the deployed one.
-                    plugin_root=plugin_root,
+                    plugin=plugin,
                     # Wired only when dns.image is set; otherwise None and DNS stays not_evaluable
                     # (§10.6). When both are on, the resolver shares the proxy's internal bridge.
                     resolver=build_resolver_provider(loaded_config),
@@ -1094,7 +1095,9 @@ def _parse_looks(text: str | None) -> tuple[int, ...] | None:
     return tuple(looks)
 
 
-def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...], Path | None]]:
+def _expand_skill_args(
+    args: list[str],
+) -> list[tuple[Path, tuple[str, ...], PluginBundle | None]]:
     """Resolve each ``run`` argument to the skill directories it names.
 
     A plain skill directory passes through unchanged. A directory holding a
@@ -1105,13 +1108,15 @@ def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...], Pat
     expanded skill, so what was not evaluated travels with the skills that were. A plugin
     carrying no skills is a refusal, not an empty clean run.
 
-    The bundle root travels with each expanded skill (``None`` for a bare directory) so the
+    The bundle travels with each expanded skill (``None`` for a bare directory) so the
     executor can install the plugin *whole* — the layout a real client uses — rather than
-    lifting each skill out of it (§5/§6/§18).
+    lifting each skill out of it (§5/§6/§18). The whole bundle rather than its root path,
+    because the *name* it installs under has to be the bundle's own, not the host checkout
+    directory's: the same plugin must land at the same container path on every machine.
     """
     from bellwether.skill import SKILL_FILE, is_plugin_root, load_plugin
 
-    expanded: list[tuple[Path, tuple[str, ...], Path | None]] = []
+    expanded: list[tuple[Path, tuple[str, ...], PluginBundle | None]] = []
     for arg in args:
         directory = Path(arg)
         if not is_plugin_root(directory) or (directory / SKILL_FILE).is_file():
@@ -1131,7 +1136,7 @@ def _expand_skill_args(args: list[str]) -> list[tuple[Path, tuple[str, ...], Pat
                 "is unobserved and outside this verdict — the evaluation covers the "
                 "skill files alone"
             )
-        expanded.extend((skill_dir, tuple(notes), bundle.root) for skill_dir in bundle.skill_dirs)
+        expanded.extend((skill_dir, tuple(notes), bundle) for skill_dir in bundle.skill_dirs)
     return expanded
 
 

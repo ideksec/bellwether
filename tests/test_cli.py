@@ -452,9 +452,11 @@ def test_expand_skill_args_expands_a_plugin_to_its_skills(tmp_path: Path) -> Non
     expanded = _expand_skill_args([str(plugin)])
     assert [d.name for d, _, _ in expanded] == ["alpha", "zeta"]
     assert all(notes == () for _, notes, _ in expanded)
-    # The bundle root travels with every expanded skill, so the executor can install the
-    # plugin whole rather than lifting each skill out of it (§5/§6/§18).
-    assert {root for _, _, root in expanded} == {plugin}
+    # The bundle travels with every expanded skill, so the executor can install the plugin
+    # whole rather than lifting each skill out of it (§5/§6/§18) — and under the bundle's own
+    # name, so the container path does not follow the host checkout's directory name (§24).
+    assert {bundle.root for _, _, bundle in expanded if bundle is not None} == {plugin}
+    assert {bundle.name for _, _, bundle in expanded if bundle is not None} == {plugin.name}
 
 
 def test_expand_skill_args_reports_mcp_servers_as_unevaluated(tmp_path: Path) -> None:
