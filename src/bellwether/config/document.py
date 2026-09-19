@@ -23,6 +23,7 @@ __all__ = [
     "CONFIG_FILE",
     "PLATFORM_BASELINE_FILE",
     "POLICY_FILE",
+    "RUN_OUTPUT_DIR",
     "load_yaml_mapping",
     "validate_document",
 ]
