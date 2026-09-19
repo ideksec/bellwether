@@ -944,16 +944,3 @@ def test_a_blanket_glob_does_not_excuse_a_sensitive_directory() -> None:
     # No manifest at all declares nothing — the case the gate is really for, since with no
     # declared scope the scope gate is not composed either.
     assert undeclared_sensitive_hits(hits, None) == hits
-
-
-# ---------------------------------------------------------------------------
-# §3.5 / §10.2: writing to the harness's own state is a finding
-# ---------------------------------------------------------------------------
-
-
-def _trace_of(*actions: object) -> object:
-    """A minimal trace carrying just these actions, for evidence-index assertions."""
-    from bellwether.trace import Trace
-    from tests.factories import make_footer, make_header
-
-    return Trace(header=make_header(), actions=tuple(actions), footer=make_footer())  # type: ignore[arg-type]

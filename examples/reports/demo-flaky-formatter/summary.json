@@ -194,7 +194,7 @@
       {
         "name": "security_runtime.sensitive_directories",
         "observed": "unobserved",
-        "reason": "api-loop-scripted-frontier: Plane A's coverage cannot support an absence claim for every run in this set, so 'no sensitive directory was touched' is not an earned absence (§10.7, §10.8)",
+        "reason": "api-loop-scripted-frontier: 'no sensitive directory was touched' is not an earned absence here: scripted demo: no sandbox overlay (§10.7, §10.8)",
         "required": false,
         "status": "not_evaluable",
         "threshold": "warn"

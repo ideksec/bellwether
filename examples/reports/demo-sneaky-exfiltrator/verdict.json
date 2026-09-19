@@ -33,7 +33,7 @@
     },
     {
       "name": "security_runtime.sensitive_directories",
-      "reason": "api-loop-scripted-frontier: the skill read or wrote under a §13.5.4 sensitive directory that no manifest entry deliberately declares; any single appearance is a finding, and frequency is deliberately irrelevant here",
+      "reason": "api-loop-scripted-frontier: the skill read or wrote under a §13.5.4 sensitive directory that no manifest entry deliberately declares; any single appearance is a finding, and frequency is deliberately irrelevant here. A skill that means to touch these must name them in its manifest — '${HOME}/.aws/**' in credentials.expects or scope.filesystem.read — under the matching access; a blanket glob does not count, because a broad glob hiding exactly this access is why the rule exists",
       "required": false,
       "status": "warn"
     },

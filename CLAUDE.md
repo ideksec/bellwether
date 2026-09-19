@@ -35,7 +35,12 @@ resolver so the labelled run keeps `ready` on observed evidence). The model-API 
 channel is scanned and scored (`security_runtime.canary_reads`; credentials plane `full`).
 One further declared-but-inert disposition is now scored: **`security_runtime.sensitive_directories`**
 (§13.5.4 — an *undeclared* read or write under `~/.aws/`, `~/.ssh/` and the rest; frequency-independent,
-and a blanket `${HOME}/**` does not excuse it). A `harness_state_write` gate was attempted and
+and a blanket `${HOME}/**` does not excuse it). Its declaration rule is **anchored, zone-aware and
+direction-aware** — three earlier bypasses (a workspace decoy excusing a `${HOME}` read, one
+sensitive directory excusing the home root, a declared write excusing a read) are each pinned by a
+test. The configured `metrics.sensitive_directories` list now actually reaches the analysis; it
+never did before. Five of thirteen `security_runtime` dispositions are enforced, eight remain
+inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. A `harness_state_write` gate was attempted and
 **withdrawn**: §10.2 attributes such a write by a Plane A anchor and Plane B carries no correlation,
 so it could never fire — see spec-notes. §12.6's `tools` are applied as well as parsed; its
 `processes` still wait on the §10.3 process plane.

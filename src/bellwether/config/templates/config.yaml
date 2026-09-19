@@ -141,7 +141,10 @@ metrics:
   # Provisional. Calibrate against your own benign-stable run: a threshold below the
   # measured noise floor (§24) is meaningless.
   trajectory_cluster_threshold: 0.2
-  sensitive_directories: [".git/", ".ssh/", ".aws/", ".config/", ".gnupg/", ".docker/", ".kube/", "~/"]
+  # §13.5.4. Each entry names one directory (trailing slash) or one workspace-root file;
+  # "~" is the home directory itself. Any single appearance is a finding — frequency is
+  # irrelevant — and under the shipped policy an undeclared hit blocks the verdict.
+  sensitive_directories: [".aws/", ".config/", ".docker/", ".git/", ".gnupg/", ".kube/", ".ssh/", "~"]
 
 baselines:
   storage: git

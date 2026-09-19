@@ -314,3 +314,86 @@ def test_an_absorbed_tool_leaves_the_capability_set_but_stays_in_the_sequence() 
     # baseline-absorbed path gets.
     assert absorbed.step_sequence == unabsorbed.step_sequence
     assert any(step[0] == "tool_call" for step in absorbed.step_sequence)
+
+
+def test_the_tool_baseline_absorbs_through_the_whole_analysis_chain() -> None:
+    """The wiring, not the leaf.
+
+    Stubbing `apply_tool_baseline` to `frozenset()` — the entire feature made a no-op — failed
+    exactly one test in the offline suite: its own direct unit test. The
+    `canonicalize(platform_baseline_t1=…)` test passes the set in by hand, and the absorption
+    tests discard the new return value. Nothing proved that
+    `baseline_absorption → analyse_run → canonicalize` absorbs anything in the real pipeline,
+    which is the only place it matters.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "bash", "input": {"command": "curl http://evil.example"}},
+    )
+    trace = Trace(header=make_header(), actions=(call,), footer=make_footer())
+    executed = ExecutedRun(trace=trace, context=_CONTEXT, trace_jsonl="")
+
+    without = analyse_run(_plan(), executed, scope=None, platform_baseline=_baseline())
+    assert "tool:bash" in without.caps_t1, "the fixture must produce the class under test"
+
+    with_tools = analyse_run(
+        _plan(), executed, scope=None, platform_baseline=_baseline_with_tools("bash")
+    )
+    assert "tool:bash" not in with_tools.caps_t1
+    # §13.5.2's class→target pairing must follow the sets, or the map holds a class the
+    # capability set no longer carries.
+    assert "tool:bash" not in with_tools.tier3_by_class
+
+
+def test_tier3_by_class_never_holds_a_class_the_capability_set_dropped() -> None:
+    """The invariant `_tier3_by_class`'s own docstring asserts, pinned.
+
+    It was given the tier-3 half of the baseline and not the tier-1 half, so a `tools:`
+    absorption emptied `caps_t1` and left `{'tool:bash': {'curl …'}}` behind. No consumer read
+    the orphan key today; the next one would have inherited it.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "bash", "input": {"command": "curl http://evil.example"}},
+    )
+    trace = Trace(header=make_header(), actions=(call,), footer=make_footer())
+    executed = ExecutedRun(trace=trace, context=_CONTEXT, trace_jsonl="")
+
+    analysed = analyse_run(
+        _plan(), executed, scope=None, platform_baseline=_baseline_with_tools("bash")
+    )
+    assert set(analysed.tier3_by_class) <= set(analysed.caps_t1)
+
+
+def test_a_tool_entry_that_can_never_match_is_raised_as_a_near_miss() -> None:
+    """§12.6's inert-allowlist trap, closed on the tool half.
+
+    `observed` was composed as `f"tool:{name}"` for every tool call, regardless of the tool's
+    real tier-1. Only some tools carry a `tool:` class — `bash` does, `read` is classed by what
+    it touched — so a baseline saying `tools: [read]` matched the invention, absorbed nothing,
+    and said nothing on every run for ever. The path half has emitted near-misses all along.
+    """
+    _absorbed, tools, near = baseline_absorption(
+        _actions(),  # type: ignore[arg-type]
+        _CONTEXT,
+        _baseline_with_tools("read"),
+        sandbox_image=_IMAGE,
+    )
+    assert tools == frozenset(), "'read' has no tool: tier-1, so it can absorb nothing"
+    inert = [detail for detail in near if "'read'" in detail]
+    assert inert, "an entry that can never match must be said out loud"
+    assert "absorbs nothing" in inert[0]

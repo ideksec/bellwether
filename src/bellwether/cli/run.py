@@ -448,6 +448,7 @@ def run_evaluation(
         weights=weights,
         looks_for=lambda scenario_id: schedule[scenario_id][0],
         platform_baseline=applied_baseline,
+        sensitive_directories=tuple(config.metrics.sensitive_directories),
     )
     if caching is not None and caching.bypassed:
         # §19.2: disclosed, not silent — the operator turned the cache on and part of the

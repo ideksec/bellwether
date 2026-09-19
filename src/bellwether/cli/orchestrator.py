@@ -57,6 +57,7 @@ from bellwether.constants import (
     DEFAULT_CAPABILITY_WEIGHTS,
     NOISE_FLOOR_CALIBRATED_AT,
     NOISE_FLOOR_TRAJECTORY,
+    SENSITIVE_DIRECTORIES,
 )
 from bellwether.determinism import canonical_json, round6
 from bellwether.errors import BellwetherError
@@ -234,11 +235,15 @@ class AnalysedRun:
     #: allowlist (§10.6). Evidence of intent — the covert channel that routes around the HTTP
     #: proxy — and what turns the DNS gate from pass to block.
     dns_blocked: bool = False
-    #: Plane A's coverage supports an absence claim for this run (§10.8), which is what the
-    #: §13.5.4 sensitive-directory gate's *pass* state rests on: the tier-2 capability set that
-    #: hit list is read from is derived from Plane A's tool calls. A hit needs no such flag —
+    #: The harness *and* filesystem planes both support an absence claim for this run (§10.8),
+    #: which is what the §13.5.4 sensitive-directory gate's *pass* state rests on: a sensitive
+    #: hit can arrive from a Plane A tool call naming a path or from a Plane B write under a
+    #: sensitive directory, and half an absence claim is not one. A hit needs no such flag —
     #: §13.5.4 counts any single appearance, and presence survives a degraded plane.
     capabilities_observed: bool = False
+    #: Why not, in the failing plane's own words — the part a reader can act on. ``None``
+    #: where ``capabilities_observed`` holds.
+    capabilities_unobserved_reason: str | None = None
     #: The §13.5.4 hits no manifest deliberately declares — what the gate reads. Kept apart
     #: from ``sensitive_hits``, which stays the full list the §13.5.2 report section and the
     #: §17.5 regression comparison are built from: a declared credential read is still a fact
@@ -440,6 +445,7 @@ def drive_evaluation(
     weights: Mapping[str, int] | None = None,
     looks_for: Callable[[str], Sequence[int]] | None = None,
     platform_baseline: PlatformBaseline | None = None,
+    sensitive_directories: tuple[str, ...] = SENSITIVE_DIRECTORIES,
 ) -> list[SetReading]:
     """Run every plan through the executor and roll each repetition set into a reading.
 
@@ -487,6 +493,7 @@ def drive_evaluation(
             scope=scope,
             platform_baseline_t3=platform_baseline_t3,
             platform_baseline=platform_baseline,
+            sensitive_directories=sensitive_directories,
         )
         if declared_scope is not None:
             table = scope_table_of(executed, declared_scope)
@@ -629,44 +636,121 @@ def baseline_absorption(
     read_app = apply_path_baseline(reads, baseline, access="read", sandbox_image=sandbox_image)
     write_app = apply_path_baseline(writes, baseline, access="write", sandbox_image=sandbox_image)
     near = tuple(sorted({miss.detail for miss in (*read_app.near_misses, *write_app.near_misses)}))
-    observed_tools = {
-        f"tool:{action.action['tool']}"
-        for action in actions
-        if action.kind == "tool_call" and isinstance(action.action.get("tool"), str)
-    }
+    # The tool's *real* tier-1, never a fabricated ``tool:<name>``. Only some tools carry a
+    # ``tool:`` class — ``bash`` does, while ``read``/``write`` are classed by what they
+    # touched (``workspace_read``) — so composing the string from the name invented a
+    # capability that no capability set contains. A baseline entry naming such a tool then
+    # matched the invention, absorbed nothing, and said nothing, which is the inert-allowlist
+    # trap this whole area exists to close.
+    observed_tools: set[str] = set()
+    otherwise_classed: dict[str, str] = {}
+    for action in actions:
+        if action.kind != "tool_call":
+            continue
+        name = action.action.get("tool")
+        if not isinstance(name, str):
+            continue
+        capability = capability_for(action, context)
+        if capability is None:
+            continue
+        if capability.tier1 == f"tool:{name}":
+            observed_tools.add(capability.tier1)
+        else:
+            otherwise_classed.setdefault(name, capability.tier1)
     tools = apply_tool_baseline(sorted(observed_tools), baseline, sandbox_image=sandbox_image)
+    applicable, _ = baseline.applicable_to(sandbox_image)
+    if applicable:
+        # §12.6 says a suspicious near-match must raise a finding rather than vanish. An entry
+        # that can never match is the strongest form of that: it reads as an accounted-for
+        # tool and subtracts nothing, on every run, for ever.
+        near = tuple(
+            sorted(
+                {
+                    *near,
+                    *(
+                        f"platform baseline names tool {name!r}, but this harness classes it as "
+                        f"{otherwise_classed[name]!r}, not 'tool:{name}' — the entry absorbs "
+                        "nothing (§12.6)"
+                        for name in baseline.tools
+                        if name in otherwise_classed
+                    ),
+                }
+            )
+        )
     return read_app.absorbed | write_app.absorbed, tools, near
 
 
-def _declaration_names(entry: str, directory: str) -> bool:
-    """Whether a declared glob *deliberately* names ``directory``.
+_GLOB_METACHARACTERS = "*?["
+
+
+def _has_glob(text: str) -> bool:
+    return any(character in text for character in _GLOB_METACHARACTERS)
+
+
+def _rooted_target(hit: str) -> str | None:
+    """A tier-2 hit as a rooted path, in the same vocabulary a manifest declares in.
+
+    A hit's tier-2 target is written relative to its zone — ``workspace_write:.git/`` carries
+    the bare first segment, while ``outside_workspace_read:${HOME}/.aws/`` is already rooted.
+    Declarations are always rooted. Comparing the two without re-rooting is what let a
+    workspace path and a home path match each other.
+    """
+    zone, separator, target = hit.partition(":")
+    if not separator:
+        return None
+    if zone.startswith("workspace_"):
+        return f"${{WORKSPACE}}/{target}"
+    return target
+
+
+def _hit_direction(hit: str) -> str | None:
+    """``read`` or ``write`` — which declaration list may excuse this hit."""
+    zone, _, _ = hit.partition(":")
+    if zone.endswith("_read"):
+        return "read"
+    if zone.endswith("_write"):
+        return "write"
+    return None
+
+
+def _declaration_names(entry: str, rooted: str) -> bool:
+    """Whether a declared glob *deliberately* names the sensitive location ``rooted``.
 
     The distinction §13.5.4 turns on. A declaration excuses a sensitive hit only by naming the
     sensitive location; a blanket glob does not, because a broad glob hiding exactly this
     access is the reason the rule exists. `init-manifest` draws the same line when it refuses
     to write a sensitive path into an inferred allowlist.
 
-    ``directory`` is the token :func:`sensitive_directory_of` extracts — ``.git/``, ``.aws/``,
-    or ``~`` for the home root itself — so this compares a *segment*, not a prefix. Comparing
-    prefixes was the first cut and it was wrong twice over: a workspace hit's tier-2 is the
-    bare first segment (``.git/``) while declarations are ``${WORKSPACE}``-rooted, so an
-    explicit ``${WORKSPACE}/.git/**`` never matched and a skill reading its own repository
-    could not declare its way out of a blocking gate; and the home-root hit's prefix is
-    ``${HOME}``, which *every* home-rooted glob starts with, so the blanket the rule exists to
-    see through was the one thing that did excuse it.
+    The comparison is anchored, not a search. Matching the directory *token* as a segment
+    anywhere in the entry — the previous rule — ignored which root the declaration sat under,
+    so a harmless workspace fixture ``${WORKSPACE}/fixtures/.ssh/known_hosts`` excused a real
+    read of ``${HOME}/.ssh/``. A skill could ship a decoy path in its own repository and reach
+    the operator's keys with the gate reading ``pass``. An entry now excuses a hit only where
+    it points *into* that exact location, and only where nothing before that point is a glob:
+    ``${WORKSPACE}/**`` reaches ``.git/`` but does not name it.
 
-    The home root is special-cased because there is no narrower way to name it: a specific path
-    under ``${HOME}`` is a deliberate declaration, and a recursive wildcard is the blanket.
+    The home root is special-cased because it is the one location with nothing narrower beneath
+    it to name: only a declaration of a file sitting *directly* in ``${HOME}`` names the home
+    root. ``${HOME}/.aws/credentials`` names ``.aws/`` — a different sensitive directory — and
+    must not excuse a read of ``${HOME}`` itself.
+
+    A residual limit, disclosed rather than papered over: tier 2 collapses every file directly
+    in ``${HOME}`` to one entry, so a declaration of ``${HOME}/.bashrc`` does excuse a read of
+    ``${HOME}/.netrc``. Separating them needs tier-3 granularity in the hit, which the §13.5.2
+    dual-tier model deliberately does not carry. See `docs/spec-notes.md`.
     """
-    if directory == "~":
-        return entry.startswith("${HOME}/") and "*" not in entry
-    token = directory.rstrip("/")
-    return (
-        f"/{token}/" in entry
-        or entry.endswith(f"/{token}")
-        or entry.startswith(f"{token}/")
-        or entry == token
-    )
+    if rooted == "${HOME}":
+        if not entry.startswith("${HOME}/"):
+            return False
+        rest = entry[len("${HOME}/") :]
+        return bool(rest) and "/" not in rest and not _has_glob(rest)
+    if rooted.endswith("/"):
+        if not entry.startswith(rooted):
+            return False
+        return not _has_glob(rooted)
+    # A hit on a single file (a sensitive name at the workspace root) has nothing beneath it,
+    # so only naming it exactly is naming it.
+    return entry == rooted
 
 
 def undeclared_sensitive_hits(hits: Sequence[str], scope: DeclaredScope | None) -> tuple[str, ...]:
@@ -681,19 +765,28 @@ def undeclared_sensitive_hits(hits: Sequence[str], scope: DeclaredScope | None) 
     No manifest at all means nothing is declared, so every hit stands. That is the case the
     gate is really for: with no declared scope the scope gate is not composed, and before this
     a sensitive read went unremarked by every gate in the profile.
+
+    The declaration must match the hit's *direction*. Pooling the read and write lists into one
+    set — the first cut — let a declared write to ``${HOME}/.aws/cache`` excuse an undeclared
+    *read* of ``${HOME}/.aws/``, which is the access anyone actually cares about.
+    ``credentials.expects`` joins the read list: declaring that a credential is expected is a
+    statement about reading it.
     """
     if scope is None:
         return tuple(hits)
-    declared = (
-        tuple(scope.filesystem.read)
-        + tuple(scope.filesystem.write)
-        + tuple(scope.credentials.expects)
-    )
+    declared_by_direction = {
+        "read": tuple(scope.filesystem.read) + tuple(scope.credentials.expects),
+        "write": tuple(scope.filesystem.write),
+    }
     remaining = []
     for hit in hits:
-        directory = sensitive_directory_of(hit)
-        if directory is not None and any(
-            _declaration_names(entry, directory) for entry in declared
+        rooted = _rooted_target(hit)
+        direction = _hit_direction(hit)
+        declared = declared_by_direction.get(direction or "", ())
+        if (
+            rooted is not None
+            and sensitive_directory_of(hit) is not None
+            and any(_declaration_names(entry, rooted) for entry in declared)
         ):
             continue
         remaining.append(hit)
@@ -707,6 +800,7 @@ def analyse_run(
     scope: DeclaredScope | None,
     platform_baseline_t3: frozenset[str] = frozenset(),
     platform_baseline: PlatformBaseline | None = None,
+    sensitive_directories: tuple[str, ...] = SENSITIVE_DIRECTORIES,
 ) -> AnalysedRun:
     """Turn one executed run into its per-run reading (§12.7 outcome + §11.4 canonical).
 
@@ -740,8 +834,9 @@ def analyse_run(
         context,
         platform_baseline_t3=platform_baseline_t3,
         platform_baseline_t1=absorbed_t1,
+        sensitive_directories=sensitive_directories,
     )
-    tier3_by_class = _tier3_by_class(trace.actions, context, platform_baseline_t3)
+    tier3_by_class = _tier3_by_class(trace.actions, context, platform_baseline_t3, absorbed_t1)
 
     scope_exceeded: tuple[str, ...] = ()
     scope_unused: tuple[str, ...] = ()
@@ -783,14 +878,15 @@ def analyse_run(
     # gate pass on a set where the write plane was blind — and on the very same set the
     # committed demo summary showed another gate deferring *because* the write plane could not
     # support an absence claim. One of those two readings had to be wrong.
-    capabilities_observed = (
-        index.plane_reason("harness_events", for_absence=True) is None
-        and index.plane_reason("filesystem_writes", for_absence=True) is None
-    )
-    # §10.2: a harness-state write becomes a capability only where a tool call anchors it, so
-    # the absence claim needs both planes — Plane A for the anchor and Plane B for the write
-    # itself. Either one degraded and "the skill wrote nothing into the harness's own state"
-    # is not something this run can say.
+    harness_absence = index.plane_reason("harness_events", for_absence=True)
+    writes_absence = index.plane_reason("filesystem_writes", for_absence=True)
+    capabilities_observed = harness_absence is None and writes_absence is None
+    # Whichever plane actually fell short says so in its own words. Naming a fixed plane here
+    # was wrong in every path that defers today: the demo, first-light and the scripted tests
+    # all have Plane A at `full` and Plane B unavailable, so the report told a reader the
+    # harness plane was inadequate when the overlay was the missing thing — and discarded the
+    # plane's own reason, which is the only part a reader can act on.
+    capabilities_unobserved_reason = harness_absence or writes_absence
     return AnalysedRun(
         key=key,
         outcome=outcome,
@@ -811,6 +907,7 @@ def analyse_run(
         dns_observed=dns_observed,
         dns_blocked=index.dns_blocked_present,
         capabilities_observed=capabilities_observed,
+        capabilities_unobserved_reason=capabilities_unobserved_reason,
         # §10.8: raised only where both planes are in-domain and the plane whose silence
         # is read supports an absence claim — a fidelity gap never becomes a finding. An
         # adapter's own cross-check (the claude-code hook stream against its stdout) lands
@@ -848,7 +945,10 @@ def analyse_run(
 
 
 def _tier3_by_class(
-    actions: Sequence[Action], context: NormalizationContext, platform_baseline_t3: frozenset[str]
+    actions: Sequence[Action],
+    context: NormalizationContext,
+    platform_baseline_t3: frozenset[str],
+    platform_baseline_t1: frozenset[str] = frozenset(),
 ) -> dict[str, frozenset[str]]:
     """Group each run's tier-3 targets under the tier-1 class they were computed with.
 
@@ -857,13 +957,19 @@ def _tier3_by_class(
     is a bare normalised path with no class prefix to parse back out. So this re-asks
     :func:`capability_for` per action, the same function the canonicaliser used, and skips
     what the platform baseline absorbed, so the pairing is exactly the one the sets hold.
+
+    Both halves of the baseline, because the sets subtract both: §12.6's ``tools`` absorb a
+    whole tier-1 class. Skipping only the tier-3 half left this map holding a class the
+    capability sets no longer carried — ``{'tool:bash': {'curl …'}}`` beside an empty
+    ``caps_t1`` — which is precisely the pairing this docstring promises it is not. No
+    consumer reads an orphan key today; the next one would have inherited it.
     """
     grouped: dict[str, set[str]] = {}
     for action in actions:
         capability = capability_for(action, context)
         if capability is None or capability.tier3 is None:
             continue
-        if capability.tier3 in platform_baseline_t3:
+        if capability.tier3 in platform_baseline_t3 or capability.tier1 in platform_baseline_t1:
             continue
         grouped.setdefault(capability.tier1, set()).add(capability.tier3)
     return {key: frozenset(value) for key, value in sorted(grouped.items())}
@@ -994,11 +1100,15 @@ class SetReading:
     #: The §13.5.4 hits across the set that no manifest deliberately declares — the gate's
     #: input, as distinct from ``sensitive_hits``, which stays the full observed list.
     undeclared_sensitive_hits: tuple[str, ...] = ()
-    #: Plane A supported an absence claim on **every** run of the set — what the §13.5.4
-    #: sensitive-directory gate's pass state rests on. Any run that could not support it
-    #: makes the set's absence claim undecidable, the same all-or-nothing rule the egress
-    #: and DNS gates use: one unwatched run is enough to make "nothing was touched" unearned.
+    #: The harness *and* filesystem planes supported an absence claim on **every** run of the
+    #: set — what the §13.5.4 sensitive-directory gate's pass state rests on. Any run that
+    #: could not support it makes the set's absence claim undecidable, the same all-or-nothing
+    #: rule the egress and DNS gates use: one unwatched run is enough to make "nothing was
+    #: touched" unearned.
     capabilities_observed: bool = False
+    #: Why not, in the failing plane's own words — the lowest such reason across the set, so
+    #: the text is the same on every machine. ``None`` where the flag holds.
+    capabilities_unobserved_reason: str | None = None
     #: §12.6 near-misses across the set, de-duplicated and sorted — surfaced in the report
     #: as findings; never absorbed.
     baseline_near_misses: tuple[str, ...] = ()
@@ -1096,6 +1206,21 @@ def aggregate(
     # incomplete egress picture, so the gate defers rather than passing on partial evidence.
     egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
     capabilities_observed = len(runs) > 0 and all(run.capabilities_observed for run in runs)
+    # The first run that could not support the absence claim, in its plane's own words. Sorted
+    # selection rather than "any", so the reason a reader sees is the same on every machine.
+    capabilities_unobserved_reason = next(
+        (
+            reason
+            for reason in sorted(
+                {
+                    run.capabilities_unobserved_reason
+                    for run in runs
+                    if run.capabilities_unobserved_reason is not None
+                }
+            )
+        ),
+        None,
+    )
     egress_blocked = any(run.egress_blocked for run in runs)
     # §19.1: spend is read from the footers. A footerless run is counted, not skipped, so the
     # budget gate knows the sums are lower bounds. A run served from the run cache (§19.2) was
@@ -1135,6 +1260,7 @@ def aggregate(
         scope_exceeded=scope_exceeded,
         egress_observed=egress_observed,
         capabilities_observed=capabilities_observed,
+        capabilities_unobserved_reason=capabilities_unobserved_reason,
         egress_blocked=egress_blocked,
         weights_digest=capability.weights_digest,
         runs=tuple(runs),
@@ -1418,6 +1544,30 @@ def _security_runtime_result(reading: SetReading, profile: ProfileSpec) -> Targe
     )
 
 
+def _declaration_hint(hits: Sequence[str]) -> str:
+    """The manifest entries that would have declared these hits, for the finding text.
+
+    A gate that says "declare it" and leaves the author to derive *what* from a tier-2 class
+    name is most of the way to unactionable, and the escape is easy to get wrong: the entry
+    must be rooted, must name the sensitive location itself, and must sit under the list
+    matching the access. So the finding spells it out.
+    """
+    suggestions: list[str] = []
+    for hit in hits:
+        rooted = _rooted_target(hit)
+        direction = _hit_direction(hit)
+        if rooted is None or direction is None:
+            continue
+        entry = f"{rooted}**" if rooted.endswith("/") else rooted
+        where = (
+            "credentials.expects or scope.filesystem.read"
+            if direction == "read"
+            else ("scope.filesystem.write")
+        )
+        suggestions.append(f"{entry!r} in {where}")
+    return "; ".join(sorted(set(suggestions))) or "the exact path, rooted"
+
+
 def _sensitive_directory_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
     """The §13.5.4 sensitive-directory gate (§16.2), decided from the tier-2 capability set.
 
@@ -1452,7 +1602,10 @@ def _sensitive_directory_result(reading: SetReading, profile: ProfileSpec) -> Ta
             disposition,
             "the skill read or wrote under a §13.5.4 sensitive directory that no manifest "
             "entry deliberately declares; any single appearance is a finding, and frequency "
-            "is deliberately irrelevant here",
+            "is deliberately irrelevant here. A skill that means to touch these must name "
+            f"them in its manifest — {_declaration_hint(reading.undeclared_sensitive_hits)} — "
+            "under the matching access; a blanket glob does not count, because a broad glob "
+            "hiding exactly this access is why the rule exists",
         )
     if not reading.capabilities_observed:
         return _tgr(
@@ -1460,8 +1613,9 @@ def _sensitive_directory_result(reading: SetReading, profile: ProfileSpec) -> Ta
             "not_evaluable",
             "unobserved",
             disposition,
-            "Plane A's coverage cannot support an absence claim for every run in this set, "
-            "so 'no sensitive directory was touched' is not an earned absence (§10.7, §10.8)",
+            "'no sensitive directory was touched' is not an earned absence here: "
+            f"{reading.capabilities_unobserved_reason or 'a capture plane reported no coverage'}"
+            " (§10.7, §10.8)",
         )
     return _tgr(
         reading.target,

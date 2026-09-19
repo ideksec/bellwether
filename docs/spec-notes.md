@@ -3264,16 +3264,49 @@ blanket `${HOME}/**` does not, because the reason §13.5.4 exists is that a broa
 exactly this access; `init-manifest` already draws the same line when it refuses to write a
 sensitive path into an inferred allowlist.
 
-*Matching the declaration against the hit took two attempts.* The first compared the declared glob
-against the hit's tier-2 **prefix**, and that is wrong in both directions at once. A workspace
-hit's tier-2 is the bare first segment — `workspace_read:.git/` — while declarations are
-`${WORKSPACE}`-rooted, so an explicit `${WORKSPACE}/.git/**` never matched and a skill reading its
-own repository could not declare its way out of a blocking, required gate. Meanwhile the home-root
-hit's prefix is `${HOME}`, which *every* home-rooted glob starts with, so the blanket the rule
-exists to see through was the one declaration that did excuse it. The comparison is now against
-the sensitive *directory token* `sensitive_directory_of` already extracts, as a path segment, with
-the home root special-cased because there is no narrower way to name it: a specific path under
-`${HOME}` is deliberate, a recursive wildcard is the blanket. Every hit shape is a test case.
+*Matching the declaration against the hit took three attempts, and the first two were wrong.* The
+first compared the declared glob against the hit's tier-2 **prefix**, which fails in both
+directions at once. A workspace hit's tier-2 is the bare first segment — `workspace_read:.git/` —
+while declarations are `${WORKSPACE}`-rooted, so an explicit `${WORKSPACE}/.git/**` never matched
+and a skill reading its own repository could not declare its way out of a blocking, required gate.
+Meanwhile the home-root hit's prefix is `${HOME}`, which *every* home-rooted glob starts with, so
+the blanket the rule exists to see through was the one declaration that did excuse it.
+
+The second attempt matched the sensitive *directory token* as a path **segment anywhere** in the
+entry. That fixed both of the above and opened three bypasses, none of which the offline suite
+noticed:
+
+- **Cross-zone.** The rule had no notion of which root a declaration sat under, so a harmless
+  fixture path in the skill's own repository — `${WORKSPACE}/fixtures/.ssh/known_hosts` — excused a
+  real read of `${HOME}/.ssh/`. A skill could ship a decoy declaration and reach the operator's
+  keys with a blocking gate reporting `pass`. This is the worst defect this gate has had.
+- **Home root.** `${HOME}/.aws/credentials` — `legit-credential-reader`'s own manifest line, which
+  names `.aws/` — also excused an undeclared read of the home root itself, and therefore of
+  `~/.netrc`, `~/.bash_history` and every other file tier 2 collapses onto it.
+- **Direction.** The read and write declarations were pooled into one list, so a declared *write*
+  to `${HOME}/.aws/cache` excused an undeclared *read* of `${HOME}/.aws/` — the access anyone
+  actually cares about.
+
+The rule is now **anchored, zone-aware and direction-aware**: an entry excuses a hit only where it
+points into that exact rooted location, nothing before that point is a glob, and it sits under the
+declaration list matching the hit's direction (`credentials.expects` counts as read, since
+declaring that a credential is expected is a statement about reading it). The home root keeps its
+special case — only a file declared *directly* in `${HOME}` names it — and a hit on a single file
+must be named exactly, so `${WORKSPACE}/.gitignore` does not excuse `.git/`. Each bypass is a test
+that fails against the old rule.
+
+*A residual limit, disclosed rather than closed.* Tier 2 collapses every file directly in `${HOME}`
+onto one entry, so declaring `${HOME}/.bashrc` does still excuse a read of `${HOME}/.netrc`.
+Separating them needs tier-3 granularity in the hit, which the §13.5.2 dual-tier model
+deliberately does not carry. The alternative — refusing every home-root declaration — would take
+the legitimate case down with it.
+
+*The `.git/` edge is real and is the designed behaviour.* `git status` rewrites `.git/index`, so a
+skill that runs git in its workspace produces `workspace_write:.git/` on every run, and a blanket
+`${WORKSPACE}/**` does not excuse it. The escape is to name `${WORKSPACE}/.git/**`, and the
+finding text now spells out the entry and the list it belongs under, because a gate that says
+"declare it" and leaves the author to derive *what* from a tier-2 class name is most of the way to
+unactionable. CI had no case of this shape at all; it has one now.
 
 *The pass needs both planes.* A sensitive hit can arrive from a Plane A tool call naming a path or
 from a Plane B write under a sensitive directory, so an absence claim over it needs both — Plane A
@@ -3292,6 +3325,35 @@ undeclared in production. They are computed where the manifest table is applied,
 `sensitive_hits` stays the full observed list. A declared credential read is still a fact about the
 skill worth showing; it is simply not a gate finding, so the report section and the §17.5
 regression comparison are unchanged.
+
+### §13.5.4 — the configured list, which reached nothing
+
+`canonicalize` has taken a `sensitive_directories` parameter since the canonicaliser landed, and
+its docstring calls it "configurable, defaulted centrally". `config.yaml` has shipped a
+`metrics.sensitive_directories` list since the config document landed, and the template invites
+users to extend it. **No caller ever joined them.** Every run fell back to the `SENSITIVE_DIRECTORIES`
+constant, so a user who added `.npmrc/` got exactly nothing, and one who removed an entry to
+silence a false positive still got blocked.
+
+That was a reporting gap while the hits were only rendered in the §13.5.2 section. It stopped being
+one the moment this same change made the gate blocking and required — which is the pattern worth
+naming: *closing one inert control promoted a second, quieter one into the verdict path.*
+
+The two lists had also drifted where it mattered most. The config default spelled the home root
+`~/`; `sensitive_directory_of` yields `~`; membership is exact. Wiring the config in without
+reconciling them would have switched the home root off and reported nothing — a fix that makes the
+control weaker while looking like it makes it real. The default now derives from the constant so
+the two cannot drift again, and a config entry the matcher could never produce is **refused at
+config load** rather than read as protection. Refusing is the point: an entry that cannot match is
+not a weak rule, it is no rule, silently.
+
+Not every entry without a trailing slash is a mistake — a file at the workspace root canonicalises
+to a bare tier-2 token, so `.npmrc` is a meaningful entry and the validator does not demand one.
+
+`metrics.trajectory_cluster_threshold` is in the same position and is **not** fixed here: nothing
+reads it either, and `CanonBlock` is only ever constructed with its defaults. It is a metrics knob
+rather than a gate input, so it is disclosed here and left for its own brick rather than widening
+this change.
 
 ### §3.5/§10.2 — `harness_state_write`, attempted and withdrawn
 
@@ -3345,12 +3407,22 @@ does demonstrate it somewhere to say so.
 
 ### What this leaves
 
-Seven dispositions remain inert, and the reasons are not uniform. `process_exec_undeclared` and
-`credential_read_undeclared` wait on capture that does not exist yet (the §10.3 process plane, the
-read plane). `instrumentation_probe` waits on the §3.5 probe suite. `egress_volume_anomaly` needs a
-volume baseline to be anomalous against. `unexpected_provider_endpoint` has no producer at all —
-the finding kind is defined in §11.3 and in `RUNTIME_FINDING_KINDS`, and nothing in the pipeline
-emits it, which makes it the next one worth closing. `trace_inconsistency` and
-`possible_egress_induced_failure` are computed and deliberately advisory. `doctor` continues to
-name every one of them, and its list is now two shorter — a list that never shrinks would keep
-telling an operator a live gate does nothing.
+**Eight** dispositions remain inert — five enforced of thirteen — and the reasons are not
+uniform. `process_exec_undeclared` and `credential_read_undeclared` wait on capture that does not
+exist yet (the §10.3 process plane, the read plane). `instrumentation_probe` waits on the §3.5
+probe suite. `egress_volume_anomaly` needs a volume baseline to be anomalous against.
+`unexpected_provider_endpoint` has no producer at all — the finding kind is defined in §11.3 and in
+`RUNTIME_FINDING_KINDS`, and nothing in the pipeline emits it, which makes it the next one worth
+closing. `trace_inconsistency` and `possible_egress_induced_failure` are computed and deliberately
+advisory. And **`harness_state_write`**, whose gate was written and withdrawn in this same change
+for never being able to fire: it is still configured, still inert, and belongs on this list
+precisely because the withdrawal is what keeps it there.
+
+An earlier draft of this section said *seven* and listed seven, omitting `harness_state_write` —
+counting the withdrawn control as closed. In a section whose whole subject is that a declared
+control which does nothing must be named, undercounting the inert set is the one direction the
+error must not go. The count is now computed from `ENFORCED_SECURITY_RUNTIME_DISPOSITIONS` and the
+`SecurityRuntimeGate` model rather than written out by hand.
+
+`doctor` continues to name every one of them, and its list is now one shorter — a list that never
+shrinks would keep telling an operator a live gate does nothing.

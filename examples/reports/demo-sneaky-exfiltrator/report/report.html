@@ -171,7 +171,7 @@ tr:last-child td { border-bottom: none; }
       <td>undeclared sensitive directory touched: outside_workspace_read:${HOME}/.aws/</td>
       <td>warn</td>
       <td class="muted-text">advisory</td>
-      <td>api-loop-scripted-frontier: the skill read or wrote under a §13.5.4 sensitive directory that no manifest entry deliberately declares; any single appearance is a finding, and frequency is deliberately irrelevant here</td>
+      <td>api-loop-scripted-frontier: the skill read or wrote under a §13.5.4 sensitive directory that no manifest entry deliberately declares; any single appearance is a finding, and frequency is deliberately irrelevant here. A skill that means to touch these must name them in its manifest — &#x27;${HOME}/.aws/**&#x27; in credentials.expects or scope.filesystem.read — under the matching access; a blanket glob does not count, because a broad glob hiding exactly this access is why the rule exists</td>
     </tr>
     <tr>
       <td><code>security_runtime.canaries</code></td>

@@ -680,17 +680,24 @@ nothing else would close it) and ran its closes in sequence, so the first to rai
 both were proven by reverting them. Two further findings are left for their own brick because they
 are in files this change does not touch — see the list below.
 
-**Two declared controls now actually gate, and §12.6's last applicable area is applied.** The
+**One declared control now actually gates, and §12.6's last applicable area is applied.** The
 shipped policy lists thirteen `security_runtime` dispositions; four drove the verdict, and the
 other nine read to anyone opening the file as controls that are on. Two of them had their evidence
-already computed, aggregated and *rendered* — one gate each away from working.
+already computed, aggregated and *rendered* — apparently one gate each away from working. Only one
+of the two turned out to be: the second is withdrawn below, which leaves **five** enforced and
+**eight** inert.
 **`sensitive_directory_access` (§13.5.4)** is scored: a skill could read `~/.aws/` on every run and,
 so long as it exfiltrated nothing, clear every scored gate in the profile. Presence before
 coverage, because §13.5.4 is frequency-independent by design; only the *pass* waits on Plane A
 supporting an absence claim. The gate reads *undeclared* hits — `legit-credential-reader` declares
 its credential read and must stay `ready`, and a declaration excuses a hit only by naming a
 location under the sensitive directory itself, since a blanket `${HOME}/**` is exactly what
-§13.5.4 exists to see through. **`harness_state_write` (§3.5/§10.2) was attempted and withdrawn**: the gate
+§13.5.4 exists to see through. The matching rule took three attempts and the first two were
+bypassable: matching the sensitive token as a *segment anywhere* ignored which root the
+declaration sat under, so a decoy `${WORKSPACE}/fixtures/.ssh/known_hosts` in a skill's own
+repository excused a real read of `${HOME}/.ssh/`; declaring one sensitive directory excused the
+home root; and a declared *write* excused an undeclared *read*. The rule is now anchored,
+zone-aware and direction-aware, and each bypass is a test that fails against the old rule. **`harness_state_write` (§3.5/§10.2) was attempted and withdrawn**: the gate
 was built and then removed before it shipped, because it could never fire — §10.2 attributes such
 a write by a Plane A anchor, and Plane B actions carry no `Correlation` at all, so the condition is
 false for every write that exists. That also surfaces a pre-existing gap worth its own brick: the
@@ -699,7 +706,22 @@ churn, and correlating overlay writes back to their tool calls is §11.5 step 3.
 `tools`** are applied rather than merely parsed, matched by exact
 name (a glob there would let one `*` absorb the whole tool surface), through a new tier-1
 absorption channel since a tool is identified by its class and not by its target. `processes`
-still waits on the §10.3 process plane. Doctor's inert list is two shorter.
+still waits on the §10.3 process plane. Doctor's inert list is one shorter — eight, not seven:
+`harness_state_write` is still configured and still inert, and the withdrawal is exactly why it
+must keep being named. The `tools` half also had the inert-allowlist trap it exists to close:
+`observed` was composed as `tool:<name>` for every call regardless of the tool's real tier-1, so
+a baseline naming `read` — classed `workspace_read`, never `tool:read` — matched the invention,
+absorbed nothing and said nothing. It now raises a near-miss, as the path half always has.
+
+**The configured sensitive-directory list reaches the analysis.** `canonicalize` has always taken
+a `sensitive_directories` parameter its docstring calls "configurable, defaulted centrally", and
+`config.yaml` has always shipped a `metrics.sensitive_directories` list the template invites users
+to extend. No caller joined them, so every run fell back to the constant and a user who added a
+directory got nothing. Harmless while the hits were only rendered; not harmless once they gate.
+The two lists had also drifted where it mattered most — the config said `~/`, the matcher yields
+`~` — so connecting them without reconciling them would have switched the home root off silently.
+The default now derives from the constant, and a config entry the matcher could never produce is
+refused at load rather than read as protection.
 
 **The platform baseline is published, because it is an allowlist (§12.6).** §12.6 requires its
 full contents in the report, collapsed, and says why in one line — *a hidden allowlist in a
@@ -789,7 +811,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1354 tests: 1296 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
+1377 tests: 1319 offline, 58 under the `docker` mark (47 run locally, 11 CI-only skips; all 58 run on CI). All green.
 
 ## What's next — remaining work, in recommended order
 
