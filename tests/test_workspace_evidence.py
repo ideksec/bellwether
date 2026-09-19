@@ -139,7 +139,7 @@ def test_a_container_path_would_have_failed_a_file_that_exists(tmp_path: Path) -
 
 
 def _retain(merged: Path | None, run_dir: Path) -> Path | None:
-    return SandboxRunExecutor._retain_workspace(None, merged, run_dir)  # type: ignore[arg-type]
+    return SandboxRunExecutor._retain_workspace(merged, run_dir)
 
 
 def test_the_snapshot_copies_regular_files(tmp_path: Path) -> None:

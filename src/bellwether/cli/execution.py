@@ -1006,7 +1006,8 @@ class SandboxRunExecutor:
             )
         return binds
 
-    def _retain_workspace(self, merged: Path | None, run_dir: Path) -> Path | None:
+    @staticmethod
+    def _retain_workspace(merged: Path | None, run_dir: Path) -> Path | None:
         """Copy the final workspace out of the overlay, or return ``None`` with nothing retained.
 
         Content-inspecting assertions (``artifact_valid``, ``file_written`` with a

@@ -554,9 +554,8 @@ def drive_evaluation(
     # buys the next batch, anything else stops the set. Aggregation is pure, so re-running it per
     # look costs nothing and, more to the point, means the scheduler and the report cannot
     # disagree about where a set stopped — they are reading one function.
-    for set_key in (key for key in by_set):
-        scenario_id, slug = set_key
-        set_plans = by_set[set_key]
+    for set_key, set_plans in by_set.items():
+        scenario_id = set_key[0]
         set_looks = [look for look in looks_of(scenario_id) if look <= len(set_plans)]
         if not set_looks or set_looks[-1] != len(set_plans):
             set_looks = [*set_looks, len(set_plans)]
