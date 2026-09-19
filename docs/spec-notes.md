@@ -3189,14 +3189,22 @@ declared-vs-observed table does not show. Publishing the verdict without the ter
 subtraction asks a reviewer to trust the most valuable section in the tool on the strength of a
 version number.
 
-**Two things were computed and then dropped on the floor.** `analyse_run` produced
+**Two things reached `summary.json` and no further.** `analyse_run` produced
 `baseline_absorbed` — its own docstring calls it "the audit trail" — and `baseline_near_misses`,
-`aggregate` carried both onto the set reading, and nothing downstream ever read either. No
-summary, no verdict, no renderer. The near-misses are the sharper loss: §12.6 says a suspicious
-near-match (`~/.cache/../.aws/credentials`, a process whose argv0 matches a helper but whose
-parent does not) MUST raise a finding rather than be silently absorbed. The code correctly refused
-to absorb them and then discarded the finding, which lands in the same place as absorbing them
-quietly.
+`aggregate` carried both onto the set reading, and `_build_summary` put both into
+`security.runtime`. What read them after that was nothing: no verdict, and neither renderer. The
+near-misses are the sharper loss, because §12.6 says a suspicious near-match
+(`~/.cache/../.aws/credentials`, a process whose argv0 matches a helper but whose parent does
+not) MUST *raise a finding* rather than be silently absorbed — and a key in a JSON file no
+surface renders is not a raised finding.
+
+> **Correction.** The commit and PR that landed this section said the two were "dropped on the
+> floor" and reached "no summary, no verdict, no renderer". That overstated it: both had been in
+> `summary.security.runtime` since `21c6962`, well before. What was genuinely absent was the
+> §12.6 requirement itself — the baseline's *contents* in the report — and any rendered surface
+> for either list. The fix is unchanged and still warranted; the description of the defect was
+> wider than the defect. Recorded here rather than quietly amended, since a notes file that
+> silently improves its own history is worth less than one that does not.
 
 `Summary.platform_baseline` now carries the contents, what this evaluation absorbed, and the
 near-misses. The HTML report renders it collapsed; the PR comment carries it too, because an
@@ -3223,3 +3231,101 @@ caught it at the point the second copy was introduced.
 **What is still not done here.** `tools` and `processes` are published but not yet *applied*:
 `baseline_absorption` handles paths only. Tool attribution needs no new capture plane and is the
 next increment; process attribution waits on the §10.3 process plane, which is v0.3 work.
+
+## §13.5.4, §3.5/§10.2, §12.6 — Three declared controls that did nothing, and the false positive each would have had
+
+The shipped `policy.yaml` lists thirteen `security_runtime` dispositions. Four drove the verdict.
+The other nine read, to anyone opening the file, as controls that are on. `doctor` has named the
+inert ones since BW-49, which is honest, but naming a gap is not closing one. Two of those nine had
+their evidence already computed, aggregated onto the reading and rendered in the report — they were
+one gate each away from working. This closes both, and applies §12.6's last un-applied area.
+
+**Each one's real difficulty was its false positive, not its evidence.** That is worth stating
+plainly, because in all three cases the naive implementation is about ten lines and is wrong.
+
+### §13.5.4 — `sensitive_directory_access`
+
+The hits were computed, aggregated, and shown in the §13.5.2 dual-tier section; the policy has said
+`block` from the start; no gate read them. A skill could read `~/.aws/` on every run and, so long
+as it exfiltrated nothing, clear every scored gate in the profile.
+
+*Presence before coverage.* §13.5.4 is frequency-independent and says why — a once-in-twenty read of
+`~/.aws/` is more alarming than a consistent one, not less — so a recorded hit takes the policy
+disposition whatever the coverage. Only the *pass* waits on Plane A supporting an absence claim
+(§10.8). Inverting that, and deferring on a run that actually touched `~/.ssh/` because its
+coverage was imperfect, would be the worst of both readings.
+
+*The false positive.* `legit-credential-reader` exists in the corpus precisely to catch this: it
+declares `${HOME}/.aws/credentials` under `credentials.expects`, reads it, sends nothing outward,
+and must reach `ready`. A gate blocking on any sensitive hit fires on every correct run of it —
+the guaranteed false positive the spec says a flagship finding must not have. So the gate reads
+*undeclared* hits, and a declaration excuses a hit only by naming a location **under the sensitive
+directory itself**. A blanket `${HOME}/**` does not, because the reason §13.5.4 exists is that a
+broad glob hides exactly this access; `init-manifest` already draws the same line when it refuses
+to write a sensitive path into an inferred allowlist.
+
+*Where the exclusion is computed matters.* The live path calls `analyse_run` with `scope=None` and
+carries the manifest in `declared_scope`, folding it in afterwards. Deriving the exclusions from
+`scope` alone therefore passed the corpus — which threads the manifest — while marking every hit
+undeclared in production. They are computed where the manifest table is applied, in both paths.
+
+`sensitive_hits` stays the full observed list. A declared credential read is still a fact about the
+skill worth showing; it is simply not a gate finding, so the report section and the §17.5
+regression comparison are unchanged.
+
+### §3.5/§10.2 — `harness_state_write`
+
+A skill writing into the harness's own config directory is editing the instrument: settings a hook
+is read from, configuration that outlives the run, state a later repetition inherits. §3.5's
+concern is that a skill able to change the instrument can change what the instrument reports.
+
+*The false positive* here was already prevented, one layer down, which is the only reason the gate
+is composable. §10.2 admits a harness-state write into the capability set **only where a Plane A
+tool call anchors it**; a real `claude-code` run writes its config dir constantly, and that churn
+is the harness's. Reverting that rule makes unanchored churn read as the skill's, which is how the
+distinction was confirmed rather than assumed. `WriteEvidence` now carries the anchor so the gate
+can read it.
+
+The existing `no_harness_state_write` *assertion* keeps counting every write, anchored or not. That
+asymmetry is deliberate: an assertion is a claim a scenario author wrote on purpose ("this skill
+must not write there at all"), while the gate is default-on and must not fire on churn.
+
+*An honest detour.* The gate was first written against a tier-1 `harness_state_write` capability.
+There is no such class — the canonicalizer files such a write as `outside_workspace_write`, and
+`harness_state_write` is a *finding kind* from the zone rules. The test caught it before the wrong
+premise reached the gate's logic, which is the argument for writing the test against the real
+pipeline rather than the mental model of it.
+
+### §12.6 — the baseline's `tools`
+
+§12.6 defines three areas. `paths` has absorbed since the baseline landed. `processes` waits on the
+§10.3 process plane, because `helpers_of` is written in terms of tree attribution and there are no
+trees to attribute against. `tools` needed no new plane — a tool call is Plane A evidence every run
+already has — so it was un-applied for no reason but reach.
+
+Matched by **exact name, never as a glob**. A path baseline is written in globs because paths are
+hierarchical and unbounded; a tool name is a fixed identifier from the harness's vocabulary, and a
+glob there would let one `*` absorb the entire tool surface — the failure an allowlist exists to
+prevent.
+
+Absorption needed a tier-1 channel. The existing one keys on tier 3, which suits a path (absorbed
+by its normalised target) and not a tool, whose tier 3 is the invocation's argument: subtracting by
+that would absorb one call and leave the next. `canonicalize` takes `platform_baseline_t1`
+alongside `platform_baseline_t3`, and an absorbed tool leaves the capability sets while staying in
+the step sequence — the same §11.4 rule an absorbed path follows.
+
+It ships empty, deliberately: §12.6's own default is `tools: []`, because a tool call is agent
+behaviour and not infrastructure until a harness demonstrates otherwise. This gives a harness that
+does demonstrate it somewhere to say so.
+
+### What this leaves
+
+Seven dispositions remain inert, and the reasons are not uniform. `process_exec_undeclared` and
+`credential_read_undeclared` wait on capture that does not exist yet (the §10.3 process plane, the
+read plane). `instrumentation_probe` waits on the §3.5 probe suite. `egress_volume_anomaly` needs a
+volume baseline to be anomalous against. `unexpected_provider_endpoint` has no producer at all —
+the finding kind is defined in §11.3 and in `RUNTIME_FINDING_KINDS`, and nothing in the pipeline
+emits it, which makes it the next one worth closing. `trace_inconsistency` and
+`possible_egress_induced_failure` are computed and deliberately advisory. `doctor` continues to
+name every one of them, and its list is now two shorter — a list that never shrinks would keep
+telling an operator a live gate does nothing.
