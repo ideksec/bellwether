@@ -214,12 +214,43 @@ class BaselinesConfig(StrictModel):
     storage: Literal["git", "release-asset", "cache"] = "git"
 
 
+class RunLimitsConfig(StrictModel):
+    """What one run may spend before the adapter stops it (§9.2, §12.7).
+
+    These are *operator* bounds, not observations about the skill, and the outcome they
+    produce says so: hitting ``max_turns`` or ``max_tool_calls`` is timeout-shaped (§12.7
+    scores it as a failure, because an agent that cannot finish inside a generous bound has
+    told you something), while ``max_total_tokens`` is ``budget_exceeded`` and therefore
+    ``not_evaluable``. Tightening either of the first two turns an operator's choice into a
+    skill's failing score, so the limits in force are recorded on every run header rather
+    than left implicit — a reader of a limit-stopped trace can see which bound stopped it
+    and who chose that bound.
+
+    The wall clock is deliberately absent: §7.2 gives it to the scenario (``timeout_seconds``,
+    else the suite's ``defaults``), and a second wall clock here would silently override the
+    per-scenario one that the suite author chose.
+    """
+
+    #: 32 rather than a tighter bound: a real agentic session that reads a repository and
+    #: writes a report routinely spends a dozen turns, and a cap that bites reads as a skill
+    #: that could not finish.
+    max_turns: Annotated[int, Field(ge=1)] = 32
+    max_tool_calls: Annotated[int, Field(ge=1)] = 128
+    #: The one bound that is a cost control rather than a behavioural one; ``bellwether run
+    #: --max-tokens`` overrides it per invocation.
+    max_total_tokens: Annotated[int, Field(ge=1)] = 1_000_000
+
+
 class ExecutionConfig(StrictModel):
     concurrency: Annotated[int, Field(ge=1)] = 4
     #: Infrastructure causes only. A skill that OOMs is data, not a flake (§13.2).
     retry_on_infra_error: Annotated[int, Field(ge=0)] = 2
     cache: bool = True
     cache_ttl_days: Annotated[int, Field(ge=0)] = 14
+    #: Per-run bounds the adapter enforces. Configuration rather than policy on purpose:
+    #: §19.2 requires that a policy change re-derive verdicts from cached traces without
+    #: re-running anything, which would not hold if a profile could change what runs happen.
+    limits: RunLimitsConfig = Field(default_factory=RunLimitsConfig)
 
 
 class ReportingConfig(StrictModel):

@@ -2793,3 +2793,35 @@ the infrastructure code, so a script that saw only the status could not tell "th
 no, nothing ran" from "the environment is broken". `RunDeclinedError` now maps to exit **4**
 (§20), leaving 3 to mean what it says.
 
+## §9.2, §12.7, §19.2 — Per-run limits are configuration, not policy, and the bounds are recorded
+
+`RunLimits` shipped as generic defaults that every run received regardless of configuration.
+Three decisions in closing that.
+
+**Configuration, not policy.** The obvious home looked like the policy profile, beside the §16.2
+budget gate: a `high` profile permitting a longer run than `low` reads naturally. It is the wrong
+home. §19.2 requires that a policy change **re-derive verdicts from cached traces without
+re-running anything** — that is why `policy_digest` appears in neither cache key. A profile that
+could change `max_turns` would change *what runs happen*, and that invariant would quietly stop
+holding. The limits therefore live in `execution.limits`, beside the other execution knobs, and
+the policy keeps its job of judging what was observed. `--max-tokens` still overrides the token
+cap, because it is the documented per-invocation cost control and a config value beating a flag
+typed at the terminal would be surprising.
+
+**No wall clock here.** §7.2 gives the wall clock to the scenario (`timeout_seconds`, else the
+suite's `defaults`), and `run_limits_for` already applies it. A second wall clock in config would
+silently override the suite author's per-scenario choice, so `RunLimitsConfig` has no field for
+one and a test asserts its absence.
+
+**The bounds are recorded, because §12.7 scores two of them as failures.** Hitting `max_turns` or
+`max_tool_calls` produces a *timeout*, which the functional gate counts against the skill, while
+`max_total_tokens` produces `budget_exceeded` and is `not_evaluable`. A tight ceiling therefore
+converts an operator's choice into the skill's score, and a trace that only says "timeout" cannot
+be told apart from a skill that genuinely could not finish. `RunHeader.limits` (a `LimitsRef`)
+now carries the bounds each run ran under, `doctor` states them and their outcomes before a run
+is paid for, and the limits are part of the run cache's observability key — a run stopped at a
+ceiling is a different observation from one that ran to its own end, so raising a ceiling misses
+rather than replaying the truncated trace. The field is optional rather than defaulted, so a
+writer that recorded no bounds is distinguishable from one that recorded bounds of none; that
+also keeps the committed golden trace byte-identical.
+

@@ -635,3 +635,39 @@ def test_the_exit_codes_are_distinct_and_a_decline_is_not_an_infrastructure_fail
     assert [int(code) for code in codes] == [0, 2, 3, 4]
     assert len({int(code) for code in codes}) == len(codes)
     assert ExitCode.DECLINED != ExitCode.INFRASTRUCTURE
+
+
+def test_doctor_states_the_per_run_limits_before_anything_is_spent(tmp_path: Path) -> None:
+    """§9.2/§12.7: a turn or tool-call ceiling is scored as a failure, so a tight one turns the
+    operator's choice into the skill's score. Doctor says which bounds are in force before a
+    forty-minute run, rather than leaving a wave of "timeout" outcomes to be explained after."""
+    runner.invoke(app, ["init", str(tmp_path)])
+    config_path = tmp_path / ".bellwether" / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace("max_turns: 32", "max_turns: 3"),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(config_path),
+            "--policy",
+            str(tmp_path / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    payload = json.loads(result.output)
+    checks = {check["check"]: check for check in payload["checks"]}
+    assert "per-run limits (§9.2)" in checks
+    row = checks["per-run limits (§9.2)"]
+    # The configured value, not the default it replaced.
+    assert "max_turns=3" in row["detail"]
+    assert "max_tool_calls=128" in row["detail"]
+    # And what hitting each bound produces, since the two are scored differently (§12.7).
+    assert "timeout" in row["detail"] and "budget_exceeded" in row["detail"]
+    assert "--max-tokens" in row["detail"]
+    # Informational: a configured bound is not a problem with the environment.
+    assert row["status"] == "ok"
+    assert payload["blocking_problems"] == 0

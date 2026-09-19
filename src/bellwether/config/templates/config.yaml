@@ -151,6 +151,16 @@ execution:
   retry_on_infra_error: 2      # infrastructure causes only; an OOM is data (§13.2)
   cache: true
   cache_ttl_days: 14
+  # What one run may spend before the adapter stops it (§9.2, §12.7). Turn and tool-call
+  # limits are timeout-shaped — §12.7 scores them as failures — so a tight bound here turns
+  # your choice into the skill's score; the limits in force are recorded on every run header
+  # so a limit-stopped trace says which bound stopped it. The token cap is the cost control
+  # (`bellwether run --max-tokens` overrides it). The wall clock belongs to the scenario
+  # (§7.2 `timeout_seconds`), not here.
+  limits:
+    max_turns: 32
+    max_tool_calls: 128
+    max_total_tokens: 1000000
 
 reporting:
   html: true

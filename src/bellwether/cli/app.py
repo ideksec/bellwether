@@ -325,6 +325,28 @@ def doctor(
             }
         )
 
+    # §9.2/§12.7: the per-run bounds, stated before a forty-minute run rather than discovered
+    # as a wave of "timeout" outcomes afterwards. A turn or tool-call ceiling is scored as a
+    # failure, so a tight one turns the operator's choice into the skill's score — which is a
+    # thing to say out loud, not a footnote in the config file.
+    _limits = loaded_config.execution.limits
+    checks.append(
+        {
+            "check": "per-run limits (§9.2)",
+            "status": "ok",
+            "detail": (
+                f"execution.limits: max_turns={_limits.max_turns}, "
+                f"max_tool_calls={_limits.max_tool_calls}, "
+                f"max_total_tokens={_limits.max_total_tokens} "
+                "(--max-tokens overrides the last). A run stopped by the first two records "
+                "exit_reason 'timeout', which §12.7 scores as a failure; the token cap records "
+                "'budget_exceeded', which is not_evaluable. The wall clock is the scenario's "
+                "(§7.2 timeout_seconds, else the suite default), and every run's header carries "
+                "the bounds it ran under."
+            ),
+        }
+    )
+
     # §12.6: the platform baseline is applied only where it is keyed to the configured sandbox
     # image. Report which state it is in — absent, present-but-not-applicable (with the
     # document's own reason), or applied — so "no infrastructural access subtracted" is a
@@ -595,11 +617,12 @@ def run(
         build_resolver_provider,
         claude_code_providers,
         run_evaluation,
+        run_limits_from_config,
         sandbox_executor_factory,
     )
     from bellwether.cli.run_cache import RunCache, require_cache_root
     from bellwether.determinism import stable_hash
-    from bellwether.harness import RunLimits, SamplingSpec
+    from bellwether.harness import SamplingSpec
     from bellwether.skill import load_skill
 
     if not skills:
@@ -707,7 +730,10 @@ def run(
                     loaded_config.sandbox.image,
                     out / eval_id / "runs",
                     eval_id,
-                    limits=RunLimits(max_total_tokens=max_tokens),
+                    # §9.2/§12.7: execution.limits, with --max-tokens overriding the
+                    # token cap. Previously every run took the generic defaults whatever
+                    # the operator configured.
+                    limits=run_limits_from_config(loaded_config, max_total_tokens=max_tokens),
                     # Wired only when egress.image is set (a live config); otherwise None and the
                     # sandbox runs networkless, exactly as first-light (§10.5). A key is brokered
                     # into the sidecar only for the providers a claude-code target names — the

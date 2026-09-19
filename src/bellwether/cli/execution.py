@@ -72,6 +72,7 @@ from bellwether.skill import SkillPackage
 from bellwether.trace import (
     Action,
     IdentityBlock,
+    LimitsRef,
     NormalizationContext,
     PlantedCanary,
     RunFooter,
@@ -672,6 +673,12 @@ class SandboxRunExecutor:
                         if isinstance(adapter, ClaudeCodeAdapter)
                         else adapter.capabilities().as_record()
                     ),
+                ),
+                limits=LimitsRef(
+                    max_turns=limits.max_turns,
+                    max_tool_calls=limits.max_tool_calls,
+                    wall_seconds=limits.wall_seconds,
+                    max_total_tokens=limits.max_total_tokens,
                 ),
                 sandbox=SandboxRef(
                     image=self.backend.image,
