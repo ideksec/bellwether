@@ -18,7 +18,12 @@ The four cases the spec enumerates, each caught here:
    cross-harness divergence, so only a multi-provider matrix satisfies it;
 4. a blocking egress or DNS gate against a target whose composition cannot observe that
    channel — checked per channel, because the recording proxy (``egress.image``) and the
-   controlled resolver (``dns.image``) are wired independently.
+   controlled resolver (``dns.image``) are wired independently;
+5. a mandatory policy control this build cannot satisfy — ``static.require_scan`` with no
+   scanner shipped, ``scope.require_manifest`` against a package with no manifest,
+   ``human_review.required`` with no attestation, ``separate_reviewer_from_author`` with no
+   GitHub API call. Each of these was accepted by the schema and enforced nowhere until the
+   review that found them; refusing here is what keeps "required" from meaning "printed".
 
 Observability is a property of the *composition*, not the harness alone: an ``api-loop``
 adapter provides no capture point itself, but the executor standing a recording proxy
@@ -160,6 +165,8 @@ def check_preconditions(
     *,
     available_planes: frozenset[str] = frozenset(),
     running_version: str | None = None,
+    manifest_present: bool | None = None,
+    review_state: str | None = None,
 ) -> list[PreconditionFailure]:
     """Return every reason the matrix cannot satisfy the policy, or an empty list.
 
@@ -177,6 +184,14 @@ def check_preconditions(
             the composition layer (``cli/preflight.py``) so this function stays pure. When
             ``None`` the ``requires.min_bellwether_version`` clause is not evaluated — a
             caller that cannot name the running version cannot make the comparison.
+        manifest_present: Whether the package carries a ``declared_scope`` manifest, for the
+            ``scope.require_manifest`` clause. ``None`` (the caller did not say) does not
+            refuse: a check that guessed would refuse runs that are fine. The composition
+            gate defers on the same input, so an unreported fact is disclosed there.
+        review_state: ``SkillPackage.review_state()`` — ``absent`` / ``stale`` / ``current`` —
+            for the ``human_review.required`` clause. A ``stale`` attestation is *not* refused
+            here: staleness is a property of the bytes under evaluation and belongs in the
+            verdict, where the reader can see which digest was reviewed.
     """
     failures: list[PreconditionFailure] = []
     gates = profile.gates
@@ -267,6 +282,64 @@ def check_preconditions(
                 ),
             )
         )
+
+    # (6) Mandatory policy controls this build cannot satisfy. Each of these was accepted by
+    # the schema, printed in the resolved policy, and enforced nowhere — the silent-no-op shape
+    # §16.4 exists to catch, reached through the policy document instead of through the planes.
+    # Refusing here means the operator learns before the matrix is paid for; the matching gates
+    # in the composition are the last line of defence for a path that skips this check.
+    if gates.static.require_scan and "static_scan" not in available_planes:
+        failures.append(
+            PreconditionFailure(
+                gate="static.require_scan",
+                target="(runner)",
+                remedy=(
+                    "the policy requires a static scan but this build ships no static scanner "
+                    "(§15 is a later work package), so no scan evidence can exist and the static "
+                    "gate would be not_evaluable; set static.require_scan: false to state that a "
+                    "scan is not required, or run a build that ships the scanner"
+                ),
+            )
+        )
+    if gates.scope.require_manifest and manifest_present is False:
+        failures.append(
+            PreconditionFailure(
+                gate="scope.require_manifest",
+                target="(package)",
+                remedy=(
+                    "the policy requires a declared_scope manifest and this package has none; "
+                    "add bellwether.yaml (`bellwether init-manifest` drafts one from a probe "
+                    "run), or set scope.require_manifest: false"
+                ),
+            )
+        )
+    if gates.human_review.required:
+        if review_state in {None, "absent"}:
+            failures.append(
+                PreconditionFailure(
+                    gate="human_review.required",
+                    target="(package)",
+                    remedy=(
+                        "the policy requires a human review attestation and the manifest records "
+                        "no metadata.review.last_human_review (§6.3); record one against the "
+                        "current package_digest, or set human_review.required: false"
+                    ),
+                )
+            )
+        if gates.human_review.separate_reviewer_from_author:
+            failures.append(
+                PreconditionFailure(
+                    gate="human_review.separate_reviewer_from_author",
+                    target="(runner)",
+                    remedy=(
+                        "separation of duties is evaluated against the GitHub API (§6.3) — the "
+                        "reviewers list in a manifest is written by the author and cannot "
+                        "establish it — and this build makes no such call, so the constraint "
+                        "would be not_evaluable; set separate_reviewer_from_author: false, or "
+                        "enforce the separation in branch protection instead"
+                    ),
+                )
+            )
 
     # (2) Required capture planes the runner cannot provide, and the minimum Bellwether
     # version. Both live under `requires` (§16.4): the version bound catches a policy that

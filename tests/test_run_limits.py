@@ -130,3 +130,67 @@ def test_a_token_ceiling_is_budget_exceeded_not_a_failure() -> None:
         )
     )
     assert exit_reason_from_events(events) == "budget_exceeded"
+
+
+def test_the_cli_token_override_reaches_the_cache_key() -> None:
+    """R10: the key hashed ``config.execution.limits`` — the *configured* cap — while the run
+    enforced the cap ``--max-tokens`` had overridden it to. So an evaluation at a generous cap
+    executed the matrix, and a second at a tight one replayed every run from the cache and
+    reported them under a limit that had never been exercised: results presented under limits
+    that were not actually applied, which is the cache's one job not to do (§19.2)."""
+    config = _config(max_total_tokens=10_000)
+    configured = run_limits_from_config(config)
+    tightened = run_limits_from_config(config, max_total_tokens=1)
+
+    assert observability_key(config, run_limits=tightened) != observability_key(
+        config, run_limits=configured
+    )
+    # And the override is what the key follows, not the config it overrode: two configs whose
+    # effective cap is the same must agree, or the key would miss where it should hit.
+    assert observability_key(config, run_limits=tightened) == observability_key(
+        _config(max_total_tokens=99), run_limits=tightened
+    )
+
+
+def test_the_budget_is_reserved_before_the_request_not_counted_after_it() -> None:
+    """R8: the loop counted tokens once a completion had returned, so an exhausted budget could
+    only be *noticed*. Two observable consequences of reserving instead.
+
+    The loop tells the client how much output is left, so a turn cannot itself blow past the
+    cap; and once nothing is left it stops without issuing another request at all, rather than
+    buying one more completion to discover what it already knew.
+    """
+    from bellwether.harness.provider import ModelRequest
+
+    seen: list[int | None] = []
+
+    class _Recording:
+        def __init__(self, turns: list[ModelTurn]) -> None:
+            self._inner = ScriptedClient(turns)
+
+        def complete(self, request: ModelRequest) -> ModelTurn:
+            seen.append(request.max_output_tokens)
+            return self._inner.complete(request)
+
+    turns = [
+        ModelTurn(
+            stop_reason="tool_use",
+            usage=TurnUsage(input=40, output=10),
+            tool_calls=(ToolCallRequest(id=f"t{index}", name="read", input={"path": "x"}),),
+        )
+        for index in range(3)
+    ]
+    adapter = ApiLoopAdapter(
+        _Recording(turns),
+        SandboxToolset(_NoopExec()),
+        skills=(OfferedSkill(name="s", description="d", body="b"),),
+    )
+
+    events = list(adapter.run("go", model_id="m", limits=RunLimits(max_total_tokens=100)))
+
+    # First request: the whole budget is still there. Second: what the first turn left.
+    assert seen[0] == 100
+    assert seen[1] == 50
+    # The budget is spent after two turns, and the loop stops without a third request.
+    assert exit_reason_from_events(events) == "budget_exceeded"
+    assert len(seen) == 2

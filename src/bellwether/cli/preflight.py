@@ -107,6 +107,8 @@ def preflight_failures(
     running_version: str = __version__,
     multi_turn_scenario_ids: Sequence[str] = (),
     deterministic_sampling: bool = False,
+    manifest_present: bool | None = None,
+    review_state: str | None = None,
 ) -> list[PreconditionFailure]:
     """Every reason this profile cannot be satisfied by this composition, or an empty list.
 
@@ -116,6 +118,11 @@ def preflight_failures(
 
     ``running_version`` defaults to the installed Bellwether version and is a parameter only
     so a test can drive the ``min_bellwether_version`` clause against a chosen version.
+    ``manifest_present`` and ``review_state`` are facts about the *package*, which only the
+    caller holds; they feed the ``scope.require_manifest`` and ``human_review.required``
+    clauses. ``doctor`` evaluates a profile without a package in hand and leaves both unset,
+    which is why an unset value never refuses.
+
     ``multi_turn_scenario_ids`` names the scenarios whose prompt is a turn list (§7.3): a
     ``claude-code`` target cannot run one — the CLI takes a single prompt and session
     continuation across turns has not been observed in this build — so the combination is
@@ -164,6 +171,8 @@ def preflight_failures(
             declarations,
             available_planes=available_planes(config),
             running_version=running_version,
+            manifest_present=manifest_present,
+            review_state=review_state,
         )
     )
     return failures
@@ -177,6 +186,8 @@ def refuse_on_preflight_failures(
     profile_name: str,
     multi_turn_scenario_ids: Sequence[str] = (),
     deterministic_sampling: bool = False,
+    manifest_present: bool | None = None,
+    review_state: str | None = None,
 ) -> None:
     """Raise :class:`BellwetherError` in the §16.4 message shape if the matrix cannot start.
 
@@ -189,6 +200,8 @@ def refuse_on_preflight_failures(
         targets,
         multi_turn_scenario_ids=multi_turn_scenario_ids,
         deterministic_sampling=deterministic_sampling,
+        manifest_present=manifest_present,
+        review_state=review_state,
     )
     if failures:
         rendered = "\n".join(failure.message(profile_name) for failure in failures)

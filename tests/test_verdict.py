@@ -362,3 +362,97 @@ def test_bci_weight_warnings_name_the_problem() -> None:
         {"outcome": 0.3, "trigger": 0.2, "trajectory": 0.15, "capability": 0.3, "output": 0.05}
     )
     assert ok == []
+
+
+# ---------------------------------------------------------------------------
+# R5 — §16.4 refuses a mandatory control this build cannot satisfy
+# ---------------------------------------------------------------------------
+
+
+def test_require_scan_is_refused_before_the_matrix_is_paid_for() -> None:
+    """R5: ``static.require_scan`` was accepted and enforced nowhere. It is a real control now,
+    which means the honest place to say so is before the money is spent — the same treatment a
+    blocking egress gate with no proxy already gets."""
+    from bellwether.config.models.policy import Gates, StaticGate
+
+    profile = default_policy("medium")
+    strict = profile.model_copy(  # type: ignore[attr-defined]
+        update={
+            "gates": profile.gates.model_copy(  # type: ignore[attr-defined]
+                update={"static": StaticGate(require_scan=True)}
+            )
+        }
+    )
+    assert isinstance(strict.gates, Gates)
+
+    failures = check_preconditions(strict, [api_loop_target()], available_planes=ALL_PLANES)
+
+    assert [f.gate for f in failures if f.gate == "static.require_scan"] == ["static.require_scan"]
+    assert (
+        "no static scanner" in next(f for f in failures if f.gate == "static.require_scan").remedy
+    )
+
+
+def test_require_manifest_is_refused_for_a_package_with_no_manifest() -> None:
+    from bellwether.config.models.policy import ScopeGate
+
+    profile = default_policy("medium")
+    strict = profile.model_copy(  # type: ignore[attr-defined]
+        update={
+            "gates": profile.gates.model_copy(  # type: ignore[attr-defined]
+                update={"scope": ScopeGate(require_manifest=True)}
+            )
+        }
+    )
+
+    refused = check_preconditions(
+        strict, [api_loop_target()], available_planes=ALL_PLANES, manifest_present=False
+    )
+    assert any(f.gate == "scope.require_manifest" for f in refused)
+
+    allowed = check_preconditions(
+        strict, [api_loop_target()], available_planes=ALL_PLANES, manifest_present=True
+    )
+    assert not any(f.gate == "scope.require_manifest" for f in allowed)
+
+    # Unreported is not "absent": guessing here would refuse runs that are fine, and the
+    # composition gate defers on the same input, so nothing is waved through silently.
+    unknown = check_preconditions(strict, [api_loop_target()], available_planes=ALL_PLANES)
+    assert not any(f.gate == "scope.require_manifest" for f in unknown)
+
+
+def test_the_high_profile_refuses_its_own_human_review_requirements() -> None:
+    """The shipped ``high`` profile asks for a human review *and* for the reviewer to differ
+    from the author. This build can decide neither from a manifest — §6.3 says separation of
+    duties is a GitHub API question — so both refuse, which is what stops a ``high``-criticality
+    verdict from silently omitting the review the profile demands."""
+    profile = default_policy("high")
+
+    failures = check_preconditions(
+        profile,  # type: ignore[arg-type]
+        [api_loop_target()],
+        available_planes=ALL_PLANES,
+        review_state="absent",
+    )
+
+    gates = {f.gate for f in failures}
+    assert "human_review.required" in gates
+    assert "human_review.separate_reviewer_from_author" in gates
+
+
+def test_a_current_attestation_leaves_only_the_separation_clause() -> None:
+    """A staleness or age problem is *not* refused before the run: both are properties of the
+    bytes under evaluation and belong in the verdict, where the reader can see which digest was
+    reviewed. Only the structurally undecidable clause refuses."""
+    profile = default_policy("high")
+
+    failures = check_preconditions(
+        profile,  # type: ignore[arg-type]
+        [api_loop_target()],
+        available_planes=ALL_PLANES,
+        review_state="stale",
+    )
+
+    gates = {f.gate for f in failures}
+    assert "human_review.required" not in gates
+    assert "human_review.separate_reviewer_from_author" in gates

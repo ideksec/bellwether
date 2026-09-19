@@ -22,6 +22,8 @@ executor never imports a provider itself, so the ``harness → sandbox`` boundar
 from __future__ import annotations
 
 import datetime as dt
+import os
+import shutil
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -44,7 +46,7 @@ from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
 from bellwether.config.models.config import SandboxConfig, ZoneConfig
 from bellwether.config.models.scenarios import Scenario, ScenarioDefaults
-from bellwether.determinism import SeededRng, stable_hash
+from bellwether.determinism import SeededRng, sorted_walk, stable_hash
 from bellwether.errors import BellwetherError
 from bellwether.harness import (
     ApiLoopAdapter,
@@ -120,6 +122,17 @@ ClientFactory = Callable[["RunPlan"], tuple[ModelClient, str]]
 #: CPU/memory exhaustion vector the scan already guards, reached through the filesystem. A marker
 #: past this point in a single file is the documented limit, on the same footing as the scan's.
 _CANARY_FILE_SCAN_BYTES = 262_144
+
+#: Bounds on the retained final-workspace snapshot (§12.2). The copy runs on the host, outside
+#: the container's own resource limits, so a skill that fills its workspace must not be able to
+#: fill the evaluator's disk through the evidence path. Generous against a §9.1 fixture
+#: workspace and small against a runner's disk; crossing either retains nothing at all.
+_WORKSPACE_SNAPSHOT_MAX_FILES = 5_000
+_WORKSPACE_SNAPSHOT_MAX_BYTES = 128 * 1024 * 1024
+
+
+class _SnapshotBoundError(Exception):
+    """Internal: the final workspace exceeded a snapshot bound, so none of it is retained."""
 
 
 def offered_skill(package: SkillPackage) -> OfferedSkill:
@@ -647,7 +660,7 @@ class SandboxRunExecutor:
             raise
 
         try:
-            self.backend.mount(prepared)
+            overlay = self.backend.mount(prepared)
             self.backend.start_persistent(
                 prepared,
                 network=network,
@@ -701,6 +714,27 @@ class SandboxRunExecutor:
             else:
                 events = list(adapter.run(plan.scenario.prompt, model_id=model_id, limits=limits))
             observed_at = dt.datetime.now(dt.UTC)
+
+            # §10.0: quiesce before observing. Every plane below is read from outside the
+            # container, but a *detached* process inside it — a background write, a retry loop,
+            # anything the adapter's return did not wait for — could keep changing the overlay
+            # and keep talking to the proxy while those reads are in progress. The planes would
+            # then describe different moments and could disagree without either being wrong,
+            # which is the one thing §10.8's precedence check cannot tell from a real
+            # inconsistency. The container's removal used to happen in the `finally`, after all
+            # of this; it happens here, so the process tree is gone before anything is read.
+            # `docker rm -f` is idempotent, so the teardown below still calls it and still
+            # covers the paths that never reach this line.
+            self.backend.stop_persistent(prepared)
+            # And the snapshot, taken while the overlay is still mounted and nothing can write
+            # to it: one immutable copy of the final workspace, which is what content-inspecting
+            # assertions read. They used to be handed the *container's* path (`/work/<slug>`) and
+            # run it against the host filesystem, where it does not exist — so `artifact_valid`
+            # and content matching failed every live run, and would have read whatever a
+            # host path of that name happened to hold.
+            final_workspace = self._retain_workspace(
+                overlay.merged if overlay is not None else None, run_dir
+            )
 
             plane_a = harness_actions(events)
             zone_diffs = self.backend.zone_changes(prepared)
@@ -887,7 +921,9 @@ class SandboxRunExecutor:
             )
 
         context = NormalizationContext(workspace_root=str(prepared.identifiers.workspace_root))
-        return ExecutedRun(trace=trace, context=context, trace_jsonl=jsonl)
+        return ExecutedRun(
+            trace=trace, context=context, trace_jsonl=jsonl, workspace=final_workspace
+        )
 
     def _sandbox_rng(self, plan: RunPlan) -> SeededRng:
         """The per-run RNG stream — distinct per evaluation *and* per matrix coordinate (§3.5).
@@ -970,6 +1006,64 @@ class SandboxRunExecutor:
             )
         return binds
 
+    @staticmethod
+    def _retain_workspace(merged: Path | None, run_dir: Path) -> Path | None:
+        """Copy the final workspace out of the overlay, or return ``None`` with nothing retained.
+
+        Content-inspecting assertions (``artifact_valid``, ``file_written`` with a
+        ``content_match``) need real bytes. The bytes exist only while the overlay is mounted —
+        the merged view is assembled by the kernel, and the teardown below unmounts it — so if
+        they are to be readable during analysis they have to be copied now.
+
+        Three properties make this evidence rather than a convenience:
+
+        - **Immutable.** Taken after the container is removed, so nothing can still be writing.
+        - **Contained.** Only regular files are copied, and only by a path that stays under the
+          snapshot root; symlinks are recreated as links rather than followed, so a link the
+          skill planted at ``report.md -> /etc/shadow`` copies as a dangling link and an
+          assertion reading it reads nothing. Following it would have pulled a host file into
+          the snapshot and let an assertion "pass" on the evaluator's own filesystem.
+        - **Bounded.** A skill can write as much as its sandbox allows, and this runs on the
+          host outside those limits, so the copy stops at
+          :data:`_WORKSPACE_SNAPSHOT_MAX_FILES` / :data:`_WORKSPACE_SNAPSHOT_MAX_BYTES`.
+
+        Exceeding a bound retains **nothing** and returns ``None``: a partial workspace would
+        make a content assertion fail for a file that existed, which is worse than the
+        ``not_evaluable`` an absent workspace produces. Same for an unmounted overlay — the
+        ``--paranoid`` fallback and any backend without a host-side merged view land here, and
+        "no workspace was retained" is a coverage statement, never a clean read.
+        """
+        if merged is None or not merged.is_dir():
+            return None
+        destination = run_dir / "workspace-final"
+        budget = _WORKSPACE_SNAPSHOT_MAX_BYTES
+        copied = 0
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+            for relative in sorted_walk(merged):
+                origin = merged / relative
+                copied += 1
+                if copied > _WORKSPACE_SNAPSHOT_MAX_FILES:
+                    raise _SnapshotBoundError(f"more than {_WORKSPACE_SNAPSHOT_MAX_FILES} files")
+                target = destination / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if origin.is_symlink():
+                    # Recreated, never followed: the link's *target* is the skill's claim about
+                    # the host, and resolving it here is how a host file would be read.
+                    target.symlink_to(origin.readlink())
+                    continue
+                if not origin.is_file():
+                    continue  # directories are made above; FIFOs and devices are never opened
+                size = origin.stat().st_size
+                budget -= size
+                if budget < 0:
+                    raise _SnapshotBoundError(f"more than {_WORKSPACE_SNAPSHOT_MAX_BYTES} bytes")
+                shutil.copyfile(origin, target, follow_symlinks=False)
+        except (_SnapshotBoundError, OSError):
+            shutil.rmtree(destination, ignore_errors=True)
+            return None
+        return destination
+
     def _written_file_leaks(
         self,
         prepared: PreparedSandbox,
@@ -1004,7 +1098,14 @@ class SandboxRunExecutor:
             if upper is None or not isinstance(relative, str):
                 continue
             try:
-                with (upper / relative).open("rb") as handle:
+                # O_NOFOLLOW: the diff classified this path as a regular file, but the diff and
+                # this open are two separate observations of a tree the container could write
+                # to. A path swapped for a symlink between them would have this read follow it
+                # off the overlay and scan a host file — the check/open race the plane's own
+                # "only regular files" rule cannot close on its own. The flag makes the kernel
+                # refuse rather than follow (ELOOP, handled as any other read error below).
+                descriptor = os.open(upper / relative, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, "rb") as handle:
                     content = handle.read(_CANARY_FILE_SCAN_BYTES).decode("utf-8", "replace")
             except OSError:
                 continue  # a race or permission error: skip rather than fail the whole run

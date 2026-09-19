@@ -26,6 +26,18 @@
       "status": "block"
     },
     {
+      "name": "scope.manifest",
+      "reason": "(package): the package declares its scope, so the declared-vs-observed table is real",
+      "required": true,
+      "status": "pass"
+    },
+    {
+      "name": "human_review",
+      "reason": "(package): the policy requires a human review (human_review.required) and the manifest records no metadata.review.last_human_review (§6.3)",
+      "required": true,
+      "status": "block"
+    },
+    {
       "name": "security_runtime.egress",
       "reason": "api-loop-scripted-frontier: the recording proxy was not wired into this run, so egress is not observed and the gate cannot be decided (§10.7)",
       "required": false,

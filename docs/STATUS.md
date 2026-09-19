@@ -844,7 +844,82 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1425 tests: 1367 offline, 58 under the `docker` mark (47 run locally, 11 CI-only skips with stated reasons; all 58 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1524 tests: 1465 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+
+## The independent-review round (this session)
+
+An outside agent reviewed the repository at `592e309` — no access to `docs/spec-notes.md`, every
+finding reproduced by running code — and reported **twelve findings: one critical, six high, five
+medium**. All twelve were verified here and all twelve were real. Each is fixed with a regression
+test, and each fix is revert-proved individually; the offline suite grew 1,367 → 1,465 and the
+docker suite 58 → 59. The full write-up, including the one row that came back *unproved twice*
+before it was proved, is in `docs/spec-notes.md` → "an independent review, and what its twelve
+findings have in common".
+
+The critical one first, because it is the worst defect found in this project so far. The
+recording proxy handed `request.pretty_host` to its decision core — mitmproxy's own docstring for
+that property warns it "may not reflect the actual destination as the Host header could be
+spoofed". Inside this sandbox the `Host` header is written by the code under evaluation, so a
+request addressed to **any** host could claim to be the provider: the default-deny allowlist
+authorised it, the classification read `model_api`, and the credential broker swapped the scoped
+token for the **real provider key** on the way to the attacker's server. The recorded flow named
+the provider too, so the evidence agreed with the lie. The decision is taken on the connection
+destination now; a `Host` header or SNI that disagrees blocks in *either* direction, since only
+the agreement of two attacker-supplied identities is evidence; and a key is never written onto a
+plaintext request.
+
+The other eleven, in one line each: a scenario's `fixture:` name could select any host directory
+the evaluator could read; `tools.deny` and `filesystem.deny_read` were evaluated nowhere on the
+live path; a deletion was not a write-scope violation; `static.require_scan`,
+`scope.require_manifest`, the whole `human_review` gate and `scope.block_on: [not_evaluable]`
+reached no gate at all; a canary in a request *header* was redacted before it was scanned; every
+plane was read while the sandbox container was still running; the token cap was counted after the
+spend; two content digests gave one identity to inputs the container treats differently; the run
+cache ignored the `--max-tokens` override; content assertions read the *container's* workspace
+path on the host; and the sequential design computed where a set would have stopped after paying
+for every run to `n_max`.
+
+**Two of those changed shipped behaviour deliberately.** `static.require_scan` now defaults to
+`false` — the default was `true` in a build with no scanner, which is a document that is wrong,
+not an aspiration — and the committed `sneaky-exfiltrator` demo report now carries a blocking
+`human_review` row, because the `high` profile it runs under has always demanded a review and the
+tool had never once checked for one.
+
+**Eleven of the twelve are one defect in different clothes**, and it is this project's stated
+signature failure mode: a control path that renders a clean result without running the check.
+Every one was found at an *integration boundary* — a helper that expresses a rule correctly,
+handed to a caller that never asks it the question. `derive_assertions` compiles the deny lists
+correctly and the live path judges by a different function. `EvidenceIndex.workspace` documents
+`None` → `not_evaluable` correctly and two callers passed a container path. `decide_request` is a
+pure, well-tested security core that was handed the wrong input. A unit test of the helper cannot
+see any of this, and every one of them had a green one.
+
+So the round ends with **four preventions, each an allowlist**, because the §13.5.4 arc already
+established that a reject-list has an unenumerated spelling — and here the unenumerated spelling
+is "the next one someone adds":
+
+1. **The control registry** (`ENFORCING_GATE_CONTROLS` / `ADVISORY_GATE_CONTROLS`,
+   `tests/test_control_registry.py`). Every field on every gate model is classified as enforcing
+   the verdict or advisory-with-a-reason, and the build fails on a field in neither. No third
+   bucket: "accepted but does nothing" is the state this exists to make unrepresentable. It
+   generalises `ENFORCED_SECURITY_RUNTIME_DISPOSITIONS`, which solved this in one sub-model
+   (BW-49) and was never extended — all four inert controls were in sub-models it does not cover.
+2. **One containment corpus** (`tests/test_containment.py`). Every predicate deciding whether a
+   path stays inside a root runs against the same escape spellings *and* the same legitimate
+   names. Both predicates fixed this round post-date the arc that taught the lesson.
+3. **One identity corpus** (`tests/test_identity_discrimination.py`). The properties a content
+   identity must distinguish are listed once and applied to every identity. The symlink/marker
+   collision was closed in the payload digest months ago and left open in the fixture digest.
+4. **A fake that can express the attack.** `_FakeRequest` had one `pretty_host` field where the
+   real object has two, so the spoof was not *representable* — a stronger kind of untested than
+   "we forgot". The fake's completeness against the `Protocol` is now asserted.
+
+The spec gained the matching invariants: §10.0 quiesce-before-observing and the rules for
+host-side reads of container-written paths; §10.5's decision-host rule and the plaintext-key and
+header-scan requirements; §7.2's fixture containment; §12.2's retained-evidence rule for content
+assertions; §12.5's deny precedence and deletions-are-mutations; §13.1's "stop means the
+scheduler stops"; §16.1's every-accepted-control-enforces-or-refuses; §19.1's cap-is-a-ceiling
+-only-where-enforced; and §19.2's effective-run-specification and identity rules.
 
 ## What's next — remaining work, in recommended order
 

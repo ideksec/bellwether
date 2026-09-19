@@ -16,6 +16,7 @@ before it will send the real key (§3.3).
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -278,6 +279,10 @@ def run_evaluation(
         profile_name=resolved.profile_name,
         multi_turn_scenario_ids=[s.id for s in scenarios if isinstance(s.prompt, list)],
         deterministic_sampling=deterministic_sampling,
+        # §12.5/§6.3: package facts the policy may require. Passed here so an unsatisfiable
+        # requirement costs an error message rather than a matrix.
+        manifest_present=package.manifest is not None,
+        review_state=package.review_state(),
     )
 
     # §16.1: a capability class the manifest denies must not be weighted 0. Weight 0 erases it
@@ -332,6 +337,11 @@ def run_evaluation(
         n_max_for=lambda scenario: schedule[scenario.id][1],
         companions_for=companions_for,
     )
+
+    # §9.2/§12.7/§19.2: the limits the executor will actually enforce — the configured ones
+    # with `--max-tokens` applied. Resolved here, above both the cache key and the executor,
+    # because a key formed from the *configured* limits describes a run nobody is about to make.
+    configured_limits = run_limits_from_config(config, max_total_tokens=max_tokens_per_run)
 
     def pricing_for(target: TargetInfo) -> ModelPricing | None:
         return config.providers[target.provider].pricing_for(target.model_alias)
@@ -404,7 +414,7 @@ def run_evaluation(
         )
         # What this configuration can watch, and the limits it runs under: a trace captured
         # with no proxy is a different observation from one captured behind it (§19.2).
-        observability = observability_key(config)
+        observability = observability_key(config, run_limits=configured_limits)
 
         def inputs_for(plan: RunPlan) -> CacheKeyInputs | None:
             harness_version = harness_versions.get(plan.target.harness)
@@ -465,7 +475,6 @@ def run_evaluation(
     # §19.1: the executor's per-run wall-clock cap (the scenario's timeout, §7.2) is what
     # bounds a footerless run's duration for the budget gate; pricing resolves per target
     # alias so reported tokens become dollars only at a configured rate, never a guessed one.
-    configured_limits = run_limits_from_config(config, max_total_tokens=max_tokens_per_run)
     per_run_wall_cap_ms = max(
         int(run_limits_for(configured_limits, scenario, suite.defaults).wall_seconds * 1000)
         for scenario in scenarios
@@ -495,6 +504,14 @@ def run_evaluation(
         platform_baseline=platform_baseline,
         extra_notes=baseline_notes,
         deterministic_sampling=deterministic_sampling,
+        # §12.5/§6.3: the facts the `scope.require_manifest` and `human_review` gates are
+        # decided from. `created_at.date()` rather than the clock: a gate whose input is read
+        # from the wall clock inside the composition is one whose result cannot be reproduced
+        # from the artifacts of the run that produced it (the same reason `review_age_days`
+        # takes a date rather than defaulting to "now").
+        manifest_present=package.manifest is not None,
+        review_state=package.review_state(),
+        review_age_days=package.review_age_days(_evaluation_date(created_at)),
     )
 
 
@@ -602,6 +619,18 @@ def apply_matrix_options(
         checked_looks, checked_n = consistent_schedule(looks, n_max, subject="--looks/--n-max")
         return replace(resolved, looks=checked_looks, n_max=checked_n)
     return resolved
+
+
+def _evaluation_date(created_at: str) -> dt.date:
+    """The evaluation's own date, for the age half of the ``human_review`` gate (§6.3).
+
+    Read from the run's ``created_at`` rather than the clock: a gate whose input is taken from
+    wall time inside the composition produces a result nobody can reproduce from the artifacts
+    of the run that produced it (the same reason ``review_age_days`` takes a date instead of
+    defaulting to "now"). An unparseable stamp yields ``None`` upstream, which the gate reads as
+    "of unknown age" rather than as a fresh review.
+    """
+    return dt.datetime.fromisoformat(created_at).date()
 
 
 def run_limits_from_config(config: Config, *, max_total_tokens: int | None = None) -> RunLimits:

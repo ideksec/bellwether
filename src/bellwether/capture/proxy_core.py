@@ -10,6 +10,11 @@ diverge from what the tests check.
 The order of operations is itself a security property, so it is fixed here rather than left
 to the addon:
 
+0. **Check the asserted identity against the real destination** (§10.5.0). Every decision below
+   is taken on the host the proxy will actually dial, never on the ``Host`` header or the SNI,
+   which the evaluated container writes. Where one of those names a different host, the request
+   is blocked: authorising one identity and connecting to another is how an allowlist is talked
+   out of its own decision and how a brokered key reaches a host that merely claimed the name.
 1. **Classify and allowlist-check** (§10.5.0). A request to a denied host is blocked and
    recorded as ``egress_blocked`` — a blocked attempt is evidence, not an error, and is kept
    in full for security metrics.
@@ -17,8 +22,10 @@ to the addon:
    request or byte cap on the sandbox-scoped token, it is refused and the run records
    ``budget_exceeded`` — the bound on residual-channel exfiltration.
 3. **Inject the real credential** (§10.5.1) only for a permitted ``model_api`` request whose
-   provider the broker holds a key for. The container's scoped token becomes the real key on
-   the wire and nowhere else.
+   provider the broker holds a key for, and only over ``https``. The container's scoped token
+   becomes the real key on the wire and nowhere else. A plaintext request never receives it: a
+   key written onto an ``http://`` request is readable by anything on the path, and a provider
+   that is genuinely reachable over plaintext is not one this proxy should be feeding a key to.
 4. **Record the flow** either way, with the body reduced to a digest and the auth header
    redacted (§10.5) — so the record proves what happened without ever holding a credential.
 """
@@ -81,17 +88,26 @@ def decide_request(
     provider_of_host: Mapping[str, str],
     caps: CapLedger,
     canaries: Sequence[Canary] = (),
+    claimed_host: str = "",
+    sni: str = "",
 ) -> ProxyDecision:
     """Decide one request (§10.5). See the module docstring for the fixed order.
+
+    ``host`` is the destination the proxy will **actually connect to** — the request-line or
+    ``CONNECT`` authority — and every decision below is taken on it. ``claimed_host`` (the
+    client's ``Host``/``:authority`` header) and ``sni`` are *assertions*, checked against
+    ``host`` and never substituted for it: a request that addresses one host while naming
+    another is blocked at step (0).
 
     ``provider_of_host`` maps a model-API host to the provider name the broker keys on, so a
     permitted ``model_api`` request gets its scoped token swapped for that provider's real
     key. ``caps`` is mutated (a forwarded request is counted); a blocked one is not. ``canaries``
-    are the run's planted markers; ``make_flow`` scans the body for them and records any hit by
-    reference before the body is reduced to a digest (§10.5.2).
+    are the run's planted markers; ``make_flow`` scans the headers and body for them and records
+    any hit by reference before the values are reduced to a digest (§10.5.2).
     """
-    # (1) Classify, allowlist-check, redact, scan the body for canaries, reduce the body — make_flow
-    # does all of it and produces the record that is written regardless of the outcome.
+    # (0)+(1) Check the asserted identity against the real destination, classify, allowlist-check,
+    # redact, scan headers and body for canaries, reduce the body — make_flow does all of it and
+    # produces the record that is written regardless of the outcome.
     flow = make_flow(
         ts=ts,
         method=method,
@@ -105,6 +121,8 @@ def decide_request(
         request_headers=headers,
         request_body=body,
         canaries=canaries,
+        claimed_host=claimed_host,
+        sni=sni,
     )
     if flow.blocked:
         return ProxyDecision(action="block", flow=flow)
@@ -142,6 +160,7 @@ def decide_request(
     )
     if (
         flow.egress_class == "model_api"
+        and scheme.lower() == "https"
         and provider is not None
         and provider in broker.ready_providers()
     ):

@@ -116,6 +116,9 @@ from bellwether.verdict import (
 )
 
 __all__ = [
+    "ADVISORY_GATE_CONTROLS",
+    "ENFORCED_SECURITY_RUNTIME_DISPOSITIONS",
+    "ENFORCING_GATE_CONTROLS",
     "AnalysedRun",
     "EvalResult",
     "ExecutedRun",
@@ -185,6 +188,17 @@ class ExecutedRun:
     trace: Trace
     context: NormalizationContext
     trace_jsonl: str
+    #: The **host-side** directory holding this run's final workspace, where the executor
+    #: retained a snapshot of it. Content-inspecting assertions (``artifact_valid``,
+    #: ``file_written`` with a ``content_match``) read real bytes from here.
+    #:
+    #: ``None`` means no workspace was retained — a replay from the run cache, a backend with
+    #: no host-side merged view, a snapshot that crossed its bounds — and those assertions
+    #: report ``not_evaluable`` rather than reading something else. This field exists because
+    #: they used to be handed ``context.workspace_root``, which is the path *inside the
+    #: container*: on the host it does not exist, so every content assertion failed, and where a
+    #: host path of that name did exist they would have read it.
+    workspace: Path | None = None
 
 
 class RunExecutor(Protocol):
@@ -274,6 +288,11 @@ class AnalysedRun:
     #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
     #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
     scope_unused: tuple[str, ...] = ()
+    #: Declared capabilities no plane could decide for this run (§12.5 ``not_evaluable``).
+    #: ``scope.block_on`` lists it as one of its three outcomes, so it has to reach the gate as
+    #: a set; before it did, a profile that blocked on an undecidable declaration blocked on
+    #: nothing.
+    scope_not_evaluable: tuple[str, ...] = ()
     #: §19.2: the run was served from the run cache (``header.cached_from`` names the original).
     cached: bool = False
     #: §12.6 near-misses from the platform-baseline subtraction: a traversal that names a
@@ -430,9 +449,7 @@ def scope_unused_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str
 
 def scope_table_of(executed: ExecutedRun, declared: DeclaredScope) -> ScopeTable:
     """The full Declared-vs-Observed table for one run against a declared scope (§12.5)."""
-    index = EvidenceIndex.from_trace(
-        executed.trace, executed.context, workspace=Path(executed.context.workspace_root)
-    )
+    index = EvidenceIndex.from_trace(executed.trace, executed.context, workspace=executed.workspace)
     return evaluate_scope(declared, index)
 
 
@@ -472,6 +489,12 @@ def drive_evaluation(
     than the earliest pre-registered decision point (§13.1) has no boundary to stop at and would
     yield a figure the sequential design does not license — so it is refused rather than quietly
     reported, the same reflex as the rest of the pipeline.
+
+    Sets are executed **look by look** (§13.1): a set runs to its first pre-registered decision
+    point, the design is consulted, and the next batch is bought only on a ``continue``. Before
+    this, every set ran to ``n_max`` and the stopping decision was computed from the finished
+    matrix — the design named where a set *would have* stopped, having already paid for the runs
+    past that point.
     """
 
     # §7.2: a scenario may carry its own look schedule; each set is aggregated — and held to
@@ -483,11 +506,16 @@ def drive_evaluation(
 
     analysed_by_set: dict[tuple[str, str], list[AnalysedRun]] = {}
     order: list[tuple[str, str, TargetInfo]] = []
+    by_set: dict[tuple[str, str], list[RunPlan]] = {}
     for plan in plans:
         set_key = (plan.scenario.id, plan.target.slug)
-        if set_key not in analysed_by_set:
+        if set_key not in by_set:
+            by_set[set_key] = []
             analysed_by_set[set_key] = []
             order.append((plan.scenario.id, plan.target.slug, plan.target))
+        by_set[set_key].append(plan)
+
+    def execute_and_analyse(plan: RunPlan) -> AnalysedRun:
         executed = executor.execute(plan)
         run = analyse_run(
             plan,
@@ -503,6 +531,7 @@ def drive_evaluation(
                 run,
                 scope_exceeded=tuple(sorted(entry.subject for entry in table.exceeded())),
                 scope_unused=tuple(sorted(entry.subject for entry in table.unused())),
+                scope_not_evaluable=tuple(sorted(entry.subject for entry in table.not_evaluable())),
                 # Recomputed here, not left as `analyse_run` derived it: the live path passes
                 # `scope=None` and carries the manifest in `declared_scope`, so deriving the
                 # §13.5.4 exclusions from `scope` alone would mark *every* hit undeclared and
@@ -512,7 +541,43 @@ def drive_evaluation(
                     run.sensitive_hits, declared_scope
                 ),
             )
-        analysed_by_set[set_key].append(run)
+        return run
+
+    # §13.1: **execute by look**, not straight to ``n_max``. The plan matrix expands to the last
+    # look because that is the most a set can need; running all of it and computing the stopping
+    # decision afterwards made the sequential design a label on the report rather than a
+    # scheduling rule. A set whose interval resolves at the first look then still paid for every
+    # later run, while the pre-flight estimate printed "best 6, expected 12" next to a matrix
+    # that always cost 20 — the number an operator approves has to be one the run can produce.
+    #
+    # The decision is the same one ``aggregate`` records, taken on the runs so far: a ``continue``
+    # buys the next batch, anything else stops the set. Aggregation is pure, so re-running it per
+    # look costs nothing and, more to the point, means the scheduler and the report cannot
+    # disagree about where a set stopped — they are reading one function.
+    for set_key, set_plans in by_set.items():
+        scenario_id = set_key[0]
+        set_looks = [look for look in looks_of(scenario_id) if look <= len(set_plans)]
+        if not set_looks or set_looks[-1] != len(set_plans):
+            set_looks = [*set_looks, len(set_plans)]
+        target = next(t for sid, sl, t in order if (sid, sl) == set_key)
+        for look in set_looks:
+            while len(analysed_by_set[set_key]) < look:
+                analysed_by_set[set_key].append(
+                    execute_and_analyse(set_plans[len(analysed_by_set[set_key])])
+                )
+            if look >= len(set_plans):
+                break
+            reading = aggregate(
+                scenario_id,
+                target,
+                analysed_by_set[set_key],
+                profile=profile,
+                weights=weights,
+                looks=looks_of(scenario_id),
+            )
+            if reading.look_outcome != "continue":
+                break
+
     for scenario_id, slug, _target in order:
         set_looks = looks_of(scenario_id)
         first_look = set_looks[0] if set_looks else 1
@@ -964,7 +1029,10 @@ def analyse_run(
         )
         absorbed = absorbed | matched
     platform_baseline_t3 = absorbed
-    index = EvidenceIndex.from_trace(trace, context, workspace=Path(context.workspace_root))
+    # The host-side snapshot the executor retained, never `context.workspace_root` — that is
+    # the path inside the container, and reading it on the host is either a guaranteed miss or a
+    # read of an unrelated host directory that happens to share the name.
+    index = EvidenceIndex.from_trace(trace, context, workspace=executed.workspace)
 
     specs: list[AssertionSpec] = list(plan.scenario.assertions)
     if scope is not None:
@@ -983,10 +1051,12 @@ def analyse_run(
 
     scope_exceeded: tuple[str, ...] = ()
     scope_unused: tuple[str, ...] = ()
+    scope_not_evaluable: tuple[str, ...] = ()
     if scope is not None:
         table = evaluate_scope(scope, index)
         scope_exceeded = tuple(sorted(entry.subject for entry in table.exceeded()))
         scope_unused = tuple(sorted(entry.subject for entry in table.unused()))
+        scope_not_evaluable = tuple(sorted(entry.subject for entry in table.not_evaluable()))
 
     key = RunKey(plan.scenario.id, plan.target.slug, plan.repetition)
     canonical_json = canonical_json_of(
@@ -1070,6 +1140,7 @@ def analyse_run(
         canary_without_read=index.canary_without_read_present,
         exit_reason=trace.exit_reason,
         scope_unused=scope_unused,
+        scope_not_evaluable=scope_not_evaluable,
         baseline_near_misses=near_misses,
         baseline_absorbed=tuple(sorted(absorbed - frozenset(platform_baseline_t3 - absorbed))),
         cached=trace.header.cached_from is not None,
@@ -1216,6 +1287,10 @@ class SetReading:
     #: supported one. Reported in the Declared-vs-Observed table; blocks only where the
     #: profile's ``scope.block_on`` names ``unused``.
     scope_unused: tuple[str, ...] = ()
+    #: Declared capabilities no run in the set could decide (§12.5 ``not_evaluable``) — the
+    #: union over runs, since one undecidable run leaves the set's claim undecided. Blocks only
+    #: where the profile's ``scope.block_on`` names ``not_evaluable``.
+    scope_not_evaluable: tuple[str, ...] = ()
     #: The §13.5.2 peripheral set: every tier-1 class in fewer than 100% of runs, with
     #: its tier-3 expansion, so the report names the class *and* the exact thing.
     peripheral: tuple[PeripheralCapability, ...] = ()
@@ -1345,6 +1420,9 @@ def aggregate(
         if runs
         else ()
     )
+    # Union, not intersection: `unused` is a claim every run has to agree on before the set
+    # makes it, whereas one undecidable run is enough to leave the set's claim undecided.
+    scope_not_evaluable = tuple(sorted({cap for run in runs for cap in run.scope_not_evaluable}))
     # Observed only if *every* run's proxy ran: a set with one unobserved run has an
     # incomplete egress picture, so the gate defers rather than passing on partial evidence.
     egress_observed = len(runs) > 0 and all(run.egress_observed for run in runs)
@@ -1418,6 +1496,7 @@ def aggregate(
         canary_reads_observed=len(runs) > 0 and all(run.canary_reads_observed for run in runs),
         canary_without_read=any(run.canary_without_read for run in runs),
         scope_unused=scope_unused,
+        scope_not_evaluable=scope_not_evaluable,
         peripheral=capability.peripheral,
         rare_findings=capability.rare_findings,
         core_t1=capability.core,
@@ -1505,6 +1584,160 @@ def _tgr(
         threshold=str(threshold),
         reason=reason,
         n_and_look=n_and_look,
+    )
+
+
+#: What the §15 static scanner would contribute if it existed. It does not in this version
+#: (``bellwether.scan`` is a placeholder), so a profile that *requires* a scan is requiring
+#: evidence this build cannot produce.
+STATIC_SCAN_UNAVAILABLE = (
+    "the §15 static scanner is not built in this version, so no scan evidence exists for this "
+    "package; set gates.static.require_scan: false to state that a scan is not required, or run "
+    "a build that ships the scanner"
+)
+
+#: §6.3: the separation-of-duties constraint is evaluated against the GitHub API — the reviewer
+#: and the author are facts about the pull request, not about a file the author controls. This
+#: build makes no such call, so the constraint cannot be decided here.
+SEPARATE_REVIEWER_UNCHECKABLE = (
+    "human_review.separate_reviewer_from_author is evaluated against the GitHub API (§6.3) — the "
+    "reviewers list in a manifest is written by the author and cannot establish separation of "
+    "duties — and this build makes no such call, so the constraint is not decided"
+)
+
+
+def _static_result(profile: ProfileSpec) -> TargetGateResult:
+    """The §15 static gate, composed only where the policy requires a scan.
+
+    ``require_scan`` was accepted, printed in the resolved policy, and enforced nowhere: the
+    scanner is a later work package, and the only trace of the requirement was a ``doctor``
+    warning that never reached the verdict a reviewer reads. A control named *require* has to
+    either run or stop the result, so this is a required ``not_evaluable``: the policy asked for
+    evidence, the evidence does not exist, and an absent scan is never a clean scan (§10.0).
+
+    Where the profile does not require a scan, no gate is composed at all — the policy has said
+    it does not need one, and inventing an advisory unobserved row for evidence nobody asked for
+    would demote every clean run to ``conditional``.
+    """
+    return TargetGateResult(
+        target="(package)",
+        status="not_evaluable",
+        observed="no scan",
+        threshold=f"max severity {profile.gates.static.max_severity_allowed}",
+        reason=STATIC_SCAN_UNAVAILABLE,
+    )
+
+
+def _manifest_result(*, manifest_present: bool | None) -> TargetGateResult:
+    """``scope.require_manifest``, composed only where the policy sets it.
+
+    Another accepted-and-inert control: with no manifest the live path passes
+    ``declared_scope=None``, every scope row vanishes, and the scope gate reports "within scope"
+    — a skill with no declaration at all looked exactly like a skill that stayed inside one.
+
+    ``manifest_present is None`` means the composition did not report it, which is not the same
+    as "there was none" and is not treated as one: the gate defers rather than guessing, so a
+    caller that forgets to pass the fact fails loudly instead of quietly asserting a manifest.
+    """
+    if manifest_present is None:
+        return TargetGateResult(
+            target="(package)",
+            status="not_evaluable",
+            observed="not reported",
+            threshold="a declared_scope manifest",
+            reason=(
+                "the policy requires a manifest (scope.require_manifest) but this composition "
+                "did not report whether the package carries one, so the requirement is not "
+                "decided"
+            ),
+        )
+    if manifest_present:
+        return TargetGateResult(
+            target="(package)",
+            status="pass",
+            observed="manifest present",
+            threshold="a declared_scope manifest",
+            reason="the package declares its scope, so the declared-vs-observed table is real",
+        )
+    return TargetGateResult(
+        target="(package)",
+        status="block",
+        observed="no manifest",
+        threshold="a declared_scope manifest",
+        reason=(
+            "the policy requires a manifest (scope.require_manifest) and this package has none; "
+            "without one there is nothing to compare the observation against and the scope gate "
+            "describes an empty declaration, not a respected one (§12.5)"
+        ),
+    )
+
+
+def _human_review_result(
+    profile: ProfileSpec,
+    *,
+    review_state: str | None,
+    review_age_days: int | None,
+) -> TargetGateResult:
+    """``human_review``, composed only where the policy requires a review (§6.3).
+
+    Four outcomes, and three of them stop a ``ready``. A review bound to a different digest is
+    ``stale`` — editing a skill after review does not carry the approval forward, which is the
+    whole reason the attestation records a digest — and a review older than ``max_age_days`` has
+    expired on the policy's own terms. ``separate_reviewer_from_author`` is a fact about the pull
+    request, so where the policy asks for it the gate defers rather than reading it off a file
+    the author wrote.
+    """
+    gate = profile.gates.human_review
+    threshold = f"reviewed within {gate.max_age_days} day(s)"
+    if review_state is None or review_state == "absent":
+        return TargetGateResult(
+            target="(package)",
+            status="block",
+            observed="no attestation",
+            threshold=threshold,
+            reason=(
+                "the policy requires a human review (human_review.required) and the manifest "
+                "records no metadata.review.last_human_review (§6.3)"
+            ),
+        )
+    if review_state == "stale":
+        return TargetGateResult(
+            target="(package)",
+            status="block",
+            observed="stale attestation",
+            threshold=threshold,
+            reason=(
+                "the recorded review names a different package digest, so it was performed "
+                "against different bytes; editing a skill after review does not carry the "
+                "approval forward (§6.3)"
+            ),
+        )
+    if review_age_days is not None and review_age_days > gate.max_age_days:
+        return TargetGateResult(
+            target="(package)",
+            status="block",
+            observed=f"reviewed {review_age_days} day(s) ago",
+            threshold=threshold,
+            reason=(
+                f"the recorded review is {review_age_days} days old, past the policy's "
+                f"max_age_days of {gate.max_age_days} (§6.3)"
+            ),
+        )
+    if gate.separate_reviewer_from_author:
+        return TargetGateResult(
+            target="(package)",
+            status="not_evaluable",
+            observed="separation not checked",
+            threshold="a reviewer distinct from the author",
+            reason=SEPARATE_REVIEWER_UNCHECKABLE,
+        )
+    age = "of unknown age" if review_age_days is None else f"{review_age_days} day(s) old"
+    return TargetGateResult(
+        target="(package)",
+        status="pass",
+        observed=f"current attestation, {age}",
+        threshold=threshold,
+        reason="the recorded review names this package's digest and is within max_age_days",
     )
 
 
@@ -1608,6 +1841,19 @@ def _scope_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult
             "declared scope",
             f"declared capabilities never used: {', '.join(reading.scope_unused)}",
         )
+    # §12.5/§16.1: ``not_evaluable`` is the third outcome ``block_on`` can name, and it used to
+    # name nothing — a profile that said "block where the declaration could not be decided" got a
+    # passing scope gate with the undecided rows visible only as prose in the table. An
+    # undecidable declaration is the one this project is least entitled to wave through.
+    if reading.scope_not_evaluable and "not_evaluable" in block_on:
+        return _tgr(
+            reading.target,
+            "not_evaluable",
+            ", ".join(reading.scope_not_evaluable),
+            "declared scope",
+            "declared capabilities no plane could decide: "
+            f"{', '.join(reading.scope_not_evaluable)} (scope.block_on names not_evaluable)",
+        )
     status = "warn" if reading.scope_exceeded else "pass"
     observed = ", ".join(reading.scope_exceeded) if reading.scope_exceeded else "within scope"
     reason = "declared vs observed"
@@ -1638,6 +1884,70 @@ _PLANE_DEPENDENT_CHECKS: Mapping[str, str] = {
 #: one will not, on its own, make a verdict ``not_ready``. ``doctor`` reads this set to warn when
 #: a configured disposition is inert, so a control is never mistaken for an active one; a new
 #: gate wiring another disposition must add it here (see spec-notes, BW-49).
+#: **The control registry (§16.1).** Every field the policy schema accepts under ``gates``,
+#: classified by what this build does with it. A control the schema accepts and the composition
+#: ignores is the project's signature defect — a path that renders a clean result without running
+#: the check — and it has now been found four times in four different sub-models: the
+#: ``security_runtime`` dispositions (BW-49), ``static.require_scan``, ``scope.require_manifest``
+#: and the whole ``human_review`` gate. Enumerating them one at a time after the fact is what a
+#: blacklist does; this is the allowlist.
+#:
+#: ``tests/test_control_registry.py`` fails the build when a field on any gate model is absent
+#: from both sets, so a new control cannot be *merged* without someone saying which it is. That
+#: is the whole point: the cost of the mistake is a failing test at authoring time rather than a
+#: verdict that skipped a check.
+#:
+#: A control is ``ENFORCING`` when some composed gate or §16.4 precondition reads it and can
+#: change the verdict. It is ``ADVISORY`` when it only shapes a message, a threshold's display,
+#: or a figure — never when it is simply unimplemented. There is deliberately no third bucket for
+#: "accepted but does nothing": that state is what this registry exists to make unrepresentable.
+ENFORCING_GATE_CONTROLS: frozenset[str] = frozenset(
+    {
+        # evidence
+        "evidence.min_evaluable_fraction",
+        # static (§15) — required, and refused by the preflight where no scanner ships
+        "static.require_scan",
+        "static.max_severity_allowed",
+        # scope (§12.5)
+        "scope.require_manifest",
+        "scope.block_on",
+        # security_runtime (§16.2): which dispositions are scored is its own constant
+        # (ENFORCED_SECURITY_RUNTIME_DISPOSITIONS, below) because `doctor` reads that list to
+        # name the inert ones; the registry test consults it rather than restating it here.
+        # functional (§13.1)
+        "functional.min_pass_rate_lower_bound",
+        "functional.require_all_should_trigger",
+        "functional.max_false_trigger_rate",
+        # consistency (§13.4, §13.5)
+        "consistency.min_bci",
+        "consistency.min_modal_trajectory_share",
+        "consistency.max_mean_edit_distance",
+        "consistency.min_capability_jaccard_weighted",
+        "consistency.max_rare_capability_risk",
+        # regression (§17.5)
+        "regression.compare_to_baseline",
+        "regression.block_on_capability_expansion",
+        "regression.max_pass_rate_drop",
+        # budget (§19.1)
+        "budget.max_cost_usd",
+        "budget.max_wall_clock_minutes",
+        # human review (§6.3)
+        "human_review.required",
+        "human_review.max_age_days",
+        "human_review.separate_reviewer_from_author",
+    }
+)
+
+#: Controls that shape what is *reported* without deciding the verdict. Each entry names why,
+#: because "advisory" is the answer an inert control would also like to give.
+ADVISORY_GATE_CONTROLS: Mapping[str, str] = {
+    # §12.3: a judge score gates quality, and no judge subsystem exists in this build. The
+    # threshold is carried into the report so a reader knows what would have been applied.
+    "quality.min_judge_score": "no judge subsystem in this build (§12.3)",
+    "quality.require_positive_lift": "no A/B subsystem in this build (§12.3)",
+}
+
+
 ENFORCED_SECURITY_RUNTIME_DISPOSITIONS: frozenset[str] = frozenset(
     {
         "egress_outside_allowlist",
@@ -2366,6 +2676,14 @@ def orchestrate(
     platform_baseline: PlatformBaseline | None = None,
     extra_notes: Sequence[str] = (),
     deterministic_sampling: bool = False,
+    #: Whether the package carries a ``declared_scope`` manifest, for ``scope.require_manifest``.
+    #: ``None`` means the composition did not report it — deliberately distinct from ``False``,
+    #: so a caller that forgets defers the gate instead of asserting a manifest it never saw.
+    manifest_present: bool | None = None,
+    #: ``SkillPackage.review_state()`` and ``review_age_days()``, for the ``human_review`` gate
+    #: (§6.3). Both only read where the profile sets ``human_review.required``.
+    review_state: str | None = None,
+    review_age_days: int | None = None,
 ) -> EvalResult:
     """Compose the verdict from the set readings, render, and write the artifact tree.
 
@@ -2383,6 +2701,32 @@ def orchestrate(
         _gate("consistency", [_consistency_result(r, profile) for r in readings], required=True)
     )
     gates.append(_gate("scope", [_scope_result(r, profile) for r in readings], required=True))
+    # §15/§12.5/§6.3: three controls the policy schema accepts and the composition used to
+    # ignore. Each is composed *only* where its profile asks for it, and each is required when
+    # composed — a control named `require_*` either decides the verdict or stops it. Composing
+    # them unconditionally would instead demote every clean run on evidence nobody asked for.
+    if profile.gates.static.require_scan:
+        gates.append(_gate("static", [_static_result(profile)], required=True))
+    if profile.gates.scope.require_manifest:
+        gates.append(
+            _gate(
+                "scope.manifest",
+                [_manifest_result(manifest_present=manifest_present)],
+                required=True,
+            )
+        )
+    if profile.gates.human_review.required:
+        gates.append(
+            _gate(
+                "human_review",
+                [
+                    _human_review_result(
+                        profile, review_state=review_state, review_age_days=review_age_days
+                    )
+                ],
+                required=True,
+            )
+        )
     egress_required = profile.gates.security_runtime.egress_outside_allowlist == "block"
     gates.append(
         _gate(

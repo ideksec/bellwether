@@ -68,7 +68,7 @@ RECORDED_REVIEW_PLACEHOLDER = "<recorded-review-digest>"
 #: and ``b``. A forgeable ``package_digest`` is a forgeable review attestation (§6.3) and
 #: a forgeable cache key (§19.2), so this is an integrity property, not a formatting
 #: preference.
-DIGEST_FORMAT = "bellwether/skill-digest/3"
+DIGEST_FORMAT = "bellwether/skill-digest/4"
 
 
 @dataclass(frozen=True, order=True)
@@ -151,8 +151,9 @@ def merkle_digest(records: list[FileRecord]) -> str:
     """Digest a set of files, order-independently and unambiguously.
 
     The input is ``DIGEST_FORMAT``, then the file count, then for each file — sorted by
-    path — a per-record **type tag** (``file`` or ``symlink``), the byte length of the
-    path followed by the path, and the byte length of the digest followed by the digest.
+    path — a per-record **type tag** (``file`` or ``symlink``), the **executable bit**, the
+    byte length of the path followed by the path, and the byte length of the digest followed
+    by the digest.
 
     **Every field is length-prefixed**, so no arrangement of file names can be read as a
     different arrangement. Delimiting with a separator instead makes the encoding
@@ -165,6 +166,14 @@ def merkle_digest(records: list[FileRecord]) -> str:
     file hash the same package to the same value, and a forged ``package_digest`` is a
     forged review attestation (§6.3) and a poisoned cache key (§19.2).
 
+    The **executable bit** is here at ``/4`` for the same reason, one property along.
+    :class:`FileRecord` has always carried ``is_executable`` and staging has always
+    preserved it (§9.3 normalises the mode to 0644 or 0755), but the digest ignored it: a
+    script flipped from 0644 to 0755 — from inert text to something the agent can run —
+    kept its ``payload_digest``, so the change carried its review attestation forward and
+    replayed from the run cache under the old identity. Every field the container can act
+    on differently belongs in the identity that says two inputs are the same input.
+
     Sorting here as well as in the walk means the result does not depend on the caller
     having preserved the walk's order: a subset such as the payload file list is built by
     filtering, and a filter that reordered would otherwise change the digest without
@@ -176,6 +185,7 @@ def merkle_digest(records: list[FileRecord]) -> str:
     hasher.update(len(ordered).to_bytes(8, "big"))
     for record in ordered:
         _feed(hasher, b"symlink" if record.is_symlink else b"file")
+        _feed(hasher, b"1" if record.is_executable else b"0")
         _feed(hasher, record.path.encode("utf-8"))
         _feed(hasher, record.sha256.encode("utf-8"))
     return "sha256:" + hasher.hexdigest()

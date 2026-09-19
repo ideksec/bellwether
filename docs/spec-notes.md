@@ -3610,3 +3610,121 @@ error must not go. The count is now computed from `ENFORCED_SECURITY_RUNTIME_DIS
 
 `doctor` continues to name every one of them, and its list is now one shorter — a list that never
 shrinks would keep telling an operator a live gate does nothing.
+
+---
+
+## §7.2, §10.0, §10.5, §12.2, §12.5, §13.1, §16.1, §19.2 — an independent review, and what its twelve findings have in common
+
+An outside agent reviewed the repository at `592e309` with no access to this file, reproduced
+what it found by running code, and reported twelve findings: one critical, six high, five
+medium. Every one was verified here before anything was changed, and every one was real. The
+per-finding fixes are in the commits; this entry is about the part that matters more, which is
+that they are not twelve unrelated bugs.
+
+### The shape
+
+Eleven of the twelve are the same defect wearing different clothes: **a control that renders a
+clean result without running the check.** This project's own CLAUDE.md names that as its
+signature failure mode and its disciplines are written against it. It kept happening anyway, and
+the reason is worth stating plainly: every one of these was found at an *integration boundary*,
+where a helper that expresses a rule correctly is handed to a caller that never asks it the
+question.
+
+- `derive_assertions` compiles `tools.deny` and `filesystem.deny_read` correctly. The live `run`
+  path passes `scope=None` and judges by the Declared-vs-Observed table instead, and that table
+  was built from allow-lists only. Both prohibitions were evaluated nowhere. Tests of
+  `derive_assertions` passed throughout.
+- `EvidenceIndex.workspace` is documented as "the final workspace **on disk**, where the caller
+  still has it", and `None` correctly yields `not_evaluable`. Two callers passed
+  `context.workspace_root` — the path *inside the container* — so content assertions did host
+  reads against a path that does not exist on the host, and failed for artifacts the skill had
+  genuinely written.
+- `decide_request` is a pure, well-tested security core. The addon handed it
+  `request.pretty_host`, which mitmproxy documents as possibly-spoofed. The core decided
+  correctly on the wrong input.
+- The policy schema accepts `require_scan`, `require_manifest` and the whole `human_review`
+  block. The verdict composition read none of them.
+- The cache key is assembled from a careful list of run properties, and the CLI's
+  `--max-tokens` override is applied *after* it.
+
+A unit test of the helper cannot see any of these, and every one of them had a green one.
+
+### The four preventions, and why each is an allowlist
+
+Fixing twelve findings individually would leave the thirteenth. Each prevention below turns a
+class of mistake into something that fails at authoring time. All four are allowlists, for the
+reason the §13.5.4 arc already established and CLAUDE.md records: *reduce an input to what it
+certainly means, then compare; do not list the ways it can be wrong.* A reject-list has an
+unenumerated spelling, and here the unenumerated spelling is "the next one someone adds".
+
+**1. The control registry** (`ENFORCING_GATE_CONTROLS` / `ADVISORY_GATE_CONTROLS`,
+`tests/test_control_registry.py`). Every field on every gate model must be classified as
+enforcing the verdict or as advisory-with-a-stated-reason. The build fails on a field in
+neither. There is deliberately no bucket for "accepted but does nothing", because that state is
+what the registry exists to make unrepresentable. This generalises
+`ENFORCED_SECURITY_RUNTIME_DISPOSITIONS`, which had already been invented for exactly this
+problem in one sub-model (BW-49) and was not generalised — the four inert controls the review
+found were all in sub-models that constant does not cover.
+
+**2. One containment corpus** (`tests/test_containment.py`). Every predicate that decides
+whether a path stays inside a root is run against the same list of escape spellings and the same
+list of legitimate names. Two predicates needed fixing here — the fixture resolver and the
+assertion reader — and neither was part of the §13.5.4 arc that produced this lesson. The corpus
+is the mechanism that carries a lesson across code that did not exist when it was learned.
+
+**3. One identity corpus** (`tests/test_identity_discrimination.py`). The properties a content
+identity must distinguish are listed once and applied to every identity. The symlink/marker-file
+collision was found and closed in the skill payload digest months ago and left open in the
+fixture digest, where the review found it again. Fixing one instance and calling the class
+closed is how the second instance survives; the corpus makes "the class" a thing the test suite
+knows about.
+
+**4. A fake that can express the attack** (`test_the_fake_request_models_every_field_the_protocol_declares`).
+`_FakeRequest` had a single `pretty_host` field where `mitmproxy.http.Request` has two, so no
+test could describe a client that addresses one host and names another. The attack was not
+*representable*, which is a stronger kind of untested than "we forgot to write it" — no amount
+of adding test cases to that file would have found it. A `Protocol` gives no runtime
+enforcement, so the fake's completeness is now asserted directly: a field added to `RequestLike`
+must be modelled before any behaviour that reads it can be tested.
+
+### Three judgements worth recording
+
+**`require_scan` now defaults to `false`.** The shipped default was `true` in a build with no
+static scanner. Making the control real meant choosing between a tool that refuses every run out
+of the box and a document that states what the build can do; the document was wrong, so it
+changed. The §16.4 refusal and the required `not_evaluable` gate are what make the `true` case
+mean something, and `doctor`'s message now says the run is refused rather than that the scan
+"will not run".
+
+**The `high` profile's demo report now carries a blocking `human_review` row.** That profile has
+always demanded a human review. The tool had never once checked for one. The committed
+`sneaky-exfiltrator` report changing is the fix becoming visible in the artifact a reader looks
+at, which is the point.
+
+**Blocking on a disagreement, not resolving it.** The proxy refuses a request whose `Host`
+header or SNI names a different host from the destination, in *either* direction — including
+when the real destination is allowlisted and the claimed one is not. Resolving the disagreement
+either way would mean choosing which of two attacker-supplied identities to believe. Only their
+agreement is evidence.
+
+### What the review got right that is not a code change
+
+Two of its observations are about positioning rather than defects, and both stand. The dominant
+weakness it names — "integration, not style; helpers individually express rules that disappear
+at orchestration boundaries" — is precisely what the shape above describes, and the four
+preventions are aimed at it rather than at the twelve instances. And its closing note that the
+appropriate positioning remains an experimental evaluation framework with known enforcement gaps
+is consistent with what `README.md`, `THREAT_MODEL.md` and the inert-disposition list here have
+said all along; this round narrows the gaps by four controls and does not change the thesis.
+
+### Revert-proof, per change
+
+Every fix was proved by reverting it and watching a specific test fail, and the measurements are
+in the commit messages rather than summarised as a blanket assurance — the rule this project
+adopted after a previous round's "every fix revert-proved" turned out to be false for three of
+eleven. One row is worth surfacing here because it came back unproved twice before it was
+proved: the §10.0 quiesce. The first attempt checked for the container after `execute()`
+returned, where the teardown removes it anyway; the second grepped for the evaluation id when
+the container's name is randomised per run (§3.5), so it passed vacuously. It now records the
+real container name at the moment Plane B is read, and fails without the fix. A test that cannot
+fail is the same category of thing as a control that cannot fire, two directories over.
