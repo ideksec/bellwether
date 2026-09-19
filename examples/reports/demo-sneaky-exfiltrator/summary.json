@@ -180,6 +180,22 @@
         "threshold": "declared scope"
       },
       {
+        "name": "scope.manifest",
+        "observed": "manifest present",
+        "reason": "(package): the package declares its scope, so the declared-vs-observed table is real",
+        "required": true,
+        "status": "pass",
+        "threshold": "a declared_scope manifest"
+      },
+      {
+        "name": "human_review",
+        "observed": "no attestation",
+        "reason": "(package): the policy requires a human review (human_review.required) and the manifest records no metadata.review.last_human_review (§6.3)",
+        "required": true,
+        "status": "block",
+        "threshold": "reviewed within 180 day(s)"
+      },
+      {
         "name": "security_runtime.egress",
         "observed": "unobserved",
         "reason": "api-loop-scripted-frontier: the recording proxy was not wired into this run, so egress is not observed and the gate cannot be decided (§10.7)",

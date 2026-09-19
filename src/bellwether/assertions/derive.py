@@ -63,6 +63,12 @@ class ScopeTable:
     def unused(self) -> tuple[ScopeEntry, ...]:
         return tuple(entry for entry in self.entries if entry.status == "unused")
 
+    def not_evaluable(self) -> tuple[ScopeEntry, ...]:
+        """Rows no plane could decide. ``scope.block_on`` names ``not_evaluable`` as one of its
+        three outcomes (§12.5, §16.1), so the gate needs them as a set, not only as prose in a
+        row's reason — a policy that blocks on an undecidable declaration has to be able to."""
+        return tuple(entry for entry in self.entries if entry.status == "not_evaluable")
+
 
 def derive_assertions(scope: DeclaredScope) -> list[AssertionSpec]:
     """The catalogue-expressible half of §12.5, applied to every scenario."""

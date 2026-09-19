@@ -284,6 +284,9 @@ def _run_pipeline(  # type: ignore[no-untyped-def]
     canaries: str | None = None,
     dns: str | None = None,
     profile=None,
+    manifest_present: bool | None = None,
+    review_state: str | None = None,
+    review_age_days: int | None = None,
 ):
     profile = profile if profile is not None else _firstlight_profile()
     scenario = _scenario()
@@ -309,6 +312,9 @@ def _run_pipeline(  # type: ignore[no-untyped-def]
         created_at="2026-08-05T12:00:00Z",
         bellwether_version="0.1.0",
         out_dir=out_dir,
+        manifest_present=manifest_present,
+        review_state=review_state,
+        review_age_days=review_age_days,
     )
 
 
@@ -607,3 +613,186 @@ def test_orchestrate_publishes_the_platform_baseline_into_the_summary(
     ).read_text(encoding="utf-8")
     assert "Platform baseline" in written
     assert "/etc/{passwd,group}" in written
+
+
+# ---------------------------------------------------------------------------
+# R5 — a control the policy schema accepts must either gate or refuse
+# ---------------------------------------------------------------------------
+
+
+def _profile_with(**gate_overrides: object) -> object:
+    """The first-light profile with some gates replaced, for the mandatory-control cases."""
+    profile = _firstlight_profile()
+    gates = profile.gates.model_copy(update=gate_overrides)  # type: ignore[attr-defined]
+    return profile.model_copy(update={"gates": gates})  # type: ignore[attr-defined]
+
+
+def test_require_scan_stops_the_verdict_instead_of_being_printed(tmp_path: Path) -> None:
+    """R5: ``gates.static.require_scan`` was accepted, rendered into the resolved policy, and
+    enforced nowhere — this build has no static scanner, and the only trace of the requirement
+    was a ``doctor`` warning that never reached the verdict a reviewer reads. A control named
+    *require* has to either run or stop the result."""
+    from bellwether.config.models.policy import StaticGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(static=StaticGate(require_scan=True)),
+    )
+
+    static = next(gate for gate in result.verdict.gates if gate.name == "static")
+    assert static.required and static.status == "not_evaluable"
+    assert result.verdict.verdict == "not_ready"
+
+
+def test_a_profile_that_does_not_require_a_scan_composes_no_static_gate(tmp_path: Path) -> None:
+    """The other side: an absent scan is only a finding where the policy asked for one.
+    Composing an advisory unobserved row unconditionally would demote every clean run to
+    ``conditional`` on evidence nobody requested."""
+    result = _run_pipeline(tmp_path, tmp_path / "out")
+
+    assert not any(gate.name == "static" for gate in result.verdict.gates)
+
+
+def test_require_manifest_blocks_a_package_with_no_declared_scope(tmp_path: Path) -> None:
+    """R5: with no manifest the live path passes ``declared_scope=None``, every scope row
+    vanishes, and the scope gate reports "within scope" — a skill with no declaration at all
+    looked exactly like a skill that stayed inside one."""
+    from bellwether.config.models.policy import ScopeGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(scope=ScopeGate(require_manifest=True)),
+        manifest_present=False,
+    )
+
+    gate = next(gate for gate in result.verdict.gates if gate.name == "scope.manifest")
+    assert gate.required and gate.status == "block"
+    assert result.verdict.verdict == "not_ready"
+
+
+def test_require_manifest_defers_when_the_composition_did_not_report_one(tmp_path: Path) -> None:
+    """``None`` is not ``False``. A caller that forgets to supply the fact must defer, not
+    assert a manifest it never saw — the same reflex as an unwatched plane."""
+    from bellwether.config.models.policy import ScopeGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(scope=ScopeGate(require_manifest=True)),
+    )
+
+    gate = next(gate for gate in result.verdict.gates if gate.name == "scope.manifest")
+    assert gate.required and gate.status == "not_evaluable"
+
+
+def test_human_review_required_blocks_without_an_attestation(tmp_path: Path) -> None:
+    """R5: ``human_review.required`` reached no gate at all, so the ``high`` profile's
+    mandatory review was documentation. The shipped demo now shows it blocking."""
+    from bellwether.config.models.policy import HumanReviewGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(human_review=HumanReviewGate(required=True)),
+        review_state="absent",
+    )
+
+    gate = next(gate for gate in result.verdict.gates if gate.name == "human_review")
+    assert gate.required and gate.status == "block"
+
+
+def test_a_review_bound_to_other_bytes_is_stale_and_blocks(tmp_path: Path) -> None:
+    """§6.3: editing a skill after review does not carry the approval forward, which is the
+    whole reason the attestation records a digest."""
+    from bellwether.config.models.policy import HumanReviewGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(human_review=HumanReviewGate(required=True)),
+        review_state="stale",
+        review_age_days=1,
+    )
+
+    gate = next(gate for gate in result.verdict.gates if gate.name == "human_review")
+    assert gate.status == "block"
+    assert "different package digest" in gate.per_target[0].reason
+
+
+def test_a_review_older_than_max_age_days_blocks(tmp_path: Path) -> None:
+    from bellwether.config.models.policy import HumanReviewGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(human_review=HumanReviewGate(required=True, max_age_days=30)),
+        review_state="current",
+        review_age_days=31,
+    )
+
+    gate = next(gate for gate in result.verdict.gates if gate.name == "human_review")
+    assert gate.status == "block"
+    assert "past the policy's max_age_days" in gate.per_target[0].reason
+
+
+def test_separate_reviewer_defers_because_this_build_makes_no_github_call(tmp_path: Path) -> None:
+    """§6.3 says separation of duties is evaluated against the GitHub API, never against a file
+    the author wrote. This build makes no such call, so the constraint is undecided — and an
+    undecided required control is not a satisfied one."""
+    from bellwether.config.models.policy import HumanReviewGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(
+            human_review=HumanReviewGate(required=True, separate_reviewer_from_author=True)
+        ),
+        review_state="current",
+        review_age_days=1,
+    )
+
+    gate = next(gate for gate in result.verdict.gates if gate.name == "human_review")
+    assert gate.required and gate.status == "not_evaluable"
+    assert result.verdict.verdict == "not_ready"
+
+
+def test_scope_block_on_not_evaluable_actually_blocks(tmp_path: Path) -> None:
+    """R5: ``ScopeOutcome`` has three members and ``_scope_result`` read two. A profile saying
+    "block where the declaration could not be decided" got a passing scope gate, with the
+    undecided rows visible only as prose in the Declared-vs-Observed table."""
+    from bellwether.cli.orchestrator import SetReading, _scope_result
+    from bellwether.config.models.policy import ScopeGate
+
+    profile = _profile_with(scope=ScopeGate(block_on=["exceeded", "not_evaluable"]))
+    target = TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
+    reading = SetReading(
+        scenario_id="s",
+        target=target,
+        n_completed=6,
+        n_evaluable=6,
+        pass_rate=1.0,
+        lower_bound=0.6,
+        functional_threshold=0.5,
+        look=6,
+        look_outcome="pass",
+        bci=90.0,
+        consistently_failing=False,
+        jaccard_weighted=1.0,
+        jaccard_plain=1.0,
+        modal_trajectory_share=1.0,
+        mean_pairwise_distance=0.0,
+        trajectory_at_noise_floor=True,
+        rare_capability_risk="none",
+        rare_capability_blocking=False,
+        tier1_agreement=True,
+        scope_exceeded=(),
+        egress_observed=True,
+        egress_blocked=False,
+        weights_digest="sha256:" + "d" * 64,
+        runs=(),
+        scope_not_evaluable=("${WORKSPACE}/docs/**",),
+    )
+
+    assert _scope_result(reading, profile).status == "not_evaluable"  # type: ignore[arg-type]

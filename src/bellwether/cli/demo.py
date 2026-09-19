@@ -456,6 +456,9 @@ def run_demo_case(
         created_at=_CREATED_AT,
         bellwether_version=bellwether_version,
         out_dir=out_dir,
+        manifest_present=package.manifest is not None,
+        review_state=package.review_state(),
+        review_age_days=package.review_age_days(dt.datetime.fromisoformat(_CREATED_AT).date()),
     )
     return DemoOutput(case=case, result=result)
 

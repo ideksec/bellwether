@@ -158,6 +158,22 @@ tr:last-child td { border-bottom: none; }
       <td>api-loop-scripted-frontier: capabilities observed outside declared scope: ${HOME}/.aws/credentials</td>
     </tr>
     <tr>
+      <td><code>scope.manifest</code></td>
+      <td><span class="chip ok">✓ pass</span></td>
+      <td>manifest present</td>
+      <td>a declared_scope manifest</td>
+      <td class="muted-text">required</td>
+      <td>(package): the package declares its scope, so the declared-vs-observed table is real</td>
+    </tr>
+    <tr>
+      <td><code>human_review</code></td>
+      <td><span class="chip block">✗ block</span></td>
+      <td>no attestation</td>
+      <td>reviewed within 180 day(s)</td>
+      <td class="muted-text">required</td>
+      <td>(package): the policy requires a human review (human_review.required) and the manifest records no metadata.review.last_human_review (§6.3)</td>
+    </tr>
+    <tr>
       <td><code>security_runtime.egress</code></td>
       <td><span class="chip muted">· not_evaluable</span></td>
       <td>unobserved</td>
