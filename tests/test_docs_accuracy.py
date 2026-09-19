@@ -85,3 +85,43 @@ def test_readme_gate_list_matches_the_composed_verdict() -> None:
         "security_runtime.sensitive_directories",
     }
     assert documented == expected
+
+
+def _collected(marker: str | None) -> int:
+    """How many tests pytest really collects, optionally under a marker expression."""
+    import subprocess
+    import sys
+
+    argv = [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]
+    if marker is not None:
+        argv += ["-m", marker]
+    argv.append(str(_ROOT / "tests"))
+    completed = subprocess.run(argv, capture_output=True, text=True, cwd=_ROOT, check=False)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    total = 0
+    for line in completed.stdout.splitlines():
+        _, separator, count = line.rpartition(": ")
+        if separator and count.strip().isdigit():
+            total += int(count)
+    assert total, f"collection produced no counts:\n{completed.stdout}"
+    return total
+
+
+def test_status_states_the_real_test_counts() -> None:
+    """The STATUS test-count line, against a real collection.
+
+    This line drifted by four inside the very change that added this file — written before the
+    last four tests were added and never revisited. A prose number nobody checks is exactly
+    what the rest of this file is about, so it is checked.
+    """
+    status = (_ROOT / "docs" / "STATUS.md").read_text(encoding="utf-8")
+    match = re.search(
+        r"(\d+) tests: (\d+) offline, (\d+) under the `docker` mark",
+        status,
+    )
+    assert match is not None, "the test-count line in STATUS has moved or changed shape"
+    stated_total, stated_offline, stated_docker = (int(group) for group in match.groups())
+
+    docker = _collected("docker")
+    offline = _collected("not docker")
+    assert (stated_docker, stated_offline, stated_total) == (docker, offline, docker + offline)
