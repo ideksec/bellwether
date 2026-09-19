@@ -26,7 +26,7 @@ from bellwether.cli.baselines import BaselineRecord
 from bellwether.cli.orchestrator import TargetInfo
 from bellwether.config.models.provider import ModelPricing
 
-__all__ = ["RunEstimate", "estimate_run", "render_estimate"]
+__all__ = ["CAP_ENFORCEMENT_CAVEAT", "RunEstimate", "estimate_run", "render_estimate"]
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,22 @@ class RunEstimate:
     fixed_mode: bool
     #: What the estimate could not include, stated rather than omitted.
     caveats: tuple[str, ...]
+
+
+#: §12.7: what the token cap actually bounds, per harness, because the word "ceiling" was doing
+#: work the enforcement did not. api-loop reserves the remaining budget before each request and
+#: passes it as the provider's output ceiling, so the overshoot is bounded by the input side of
+#: the last request; claude-code runs a CLI with no flag for either the token or the tool-call
+#: cap, so both are read after the run and an overshoot there is observed, not prevented.
+#:
+#: A named constant rather than a literal in the caveat list: two adjacent string literals inside
+#: a list are one missing comma away from silently becoming one element, which is what CodeQL's
+#: implicit-concatenation rule is about.
+CAP_ENFORCEMENT_CAVEAT = (
+    "the token cap is enforced per request on api-loop (the remaining budget is sent as the "
+    "provider's output ceiling) and only observed after the run on claude-code, which exposes "
+    "no flag for it"
+)
 
 
 def _dearest_kind_cost(pricing: ModelPricing, tokens: int) -> float:
@@ -109,15 +125,7 @@ def estimate_run(
     caveats: list[str] = [
         "judge and A/B terms are 0: neither subsystem exists in this build",
         "E[N] is the schedule's midpoint look: this build keeps no stopping history",
-        # §12.7: what the token cap actually bounds, per harness, because the word "ceiling"
-        # was doing work the enforcement did not. api-loop reserves the remaining budget before
-        # each request and passes it as the provider's output ceiling, so the overshoot is
-        # bounded by the input side of the last request; claude-code runs a CLI with no flag
-        # for either the token or the tool-call cap, so both are read after the run and a
-        # overshoot there is observed, not prevented.
-        "the token cap is enforced per request on api-loop (the remaining budget is sent as "
-        "the provider's output ceiling) and only observed after the run on claude-code, which "
-        "exposes no flag for it",
+        CAP_ENFORCEMENT_CAVEAT,
     ]
     if cache_enabled:
         caveats.append(

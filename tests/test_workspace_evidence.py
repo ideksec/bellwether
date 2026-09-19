@@ -19,6 +19,8 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+import pytest
+
 from bellwether.assertions import EvidenceIndex, evaluate
 from bellwether.cli.execution import (
     _WORKSPACE_SNAPSHOT_MAX_BYTES,
@@ -179,22 +181,23 @@ def test_a_symlink_is_recreated_not_followed(tmp_path: Path) -> None:
     assert "does not exist in the final workspace" in result.reason
 
 
-def test_an_oversized_workspace_retains_nothing(tmp_path: Path) -> None:
+def test_an_oversized_workspace_retains_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Bounded, and all-or-nothing. The copy runs on the host, outside the container's own
     resource limits. A *partial* snapshot would be worse than none: a content assertion would
-    then fail for a file that existed, which reads as a defect in the skill."""
+    then fail for a file that existed, which reads as a defect in the skill.
+
+    The bound is lowered through ``monkeypatch`` by dotted path — no second import of the module
+    this file already imports names from, and the value is restored even if the assertion below
+    raises."""
     merged = tmp_path / "merged"
     merged.mkdir()
     (merged / "huge.bin").write_bytes(b"\0" * 1024)
+    assert _WORKSPACE_SNAPSHOT_MAX_BYTES > 16, "the real bound must exceed the one forced here"
+    monkeypatch.setattr("bellwether.cli.execution._WORKSPACE_SNAPSHOT_MAX_BYTES", 16, raising=True)
 
-    original = _WORKSPACE_SNAPSHOT_MAX_BYTES
-    try:
-        import bellwether.cli.execution as execution
-
-        execution._WORKSPACE_SNAPSHOT_MAX_BYTES = 16
-        retained = _retain(merged, tmp_path / "run")
-    finally:
-        execution._WORKSPACE_SNAPSHOT_MAX_BYTES = original
+    retained = _retain(merged, tmp_path / "run")
 
     assert retained is None
     assert not (tmp_path / "run" / "workspace-final").exists()
