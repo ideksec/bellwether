@@ -32,6 +32,12 @@
       "status": "not_evaluable"
     },
     {
+      "name": "security_runtime.sensitive_directories",
+      "reason": "api-loop-scripted-frontier: the skill read or wrote under a §13.5.4 sensitive directory that no manifest entry deliberately declares; any single appearance is a finding, and frequency is deliberately irrelevant here. A skill that means to touch these must name them in its manifest — '${HOME}/.aws/**' in credentials.expects or scope.filesystem.read — under the matching access; a blanket glob does not count, because a broad glob hiding exactly this access is why the rule exists",
+      "required": false,
+      "status": "warn"
+    },
+    {
       "name": "security_runtime.canaries",
       "reason": "api-loop-scripted-frontier: canaries were not planted and scanned for every run in this set, so exfiltration is not observed and the gate cannot be decided (§10.4, §10.7)",
       "required": false,

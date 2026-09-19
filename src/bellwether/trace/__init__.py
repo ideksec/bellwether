@@ -33,11 +33,13 @@ from bellwether.trace.build import (
     written_file_actions,
 )
 from bellwether.trace.canonical import (
+    FILESYSTEM_ZONES,
     CanonicalTrace,
     NormalizationContext,
     StepSignature,
     canonicalize,
     capability_for,
+    sensitive_directory_of,
 )
 from bellwether.trace.epochs import PLANE_PRIORITY, anchor_events
 from bellwether.trace.models import (
@@ -68,6 +70,7 @@ from bellwether.trace.writer import TraceWriter, serialize_record, write_trace
 
 __all__ = [
     "ARF_VERSION",
+    "FILESYSTEM_ZONES",
     "PLANE_PRIORITY",
     "Action",
     "Actor",
@@ -112,6 +115,7 @@ __all__ = [
     "parse_trace",
     "read_trace",
     "redact_trace_actions",
+    "sensitive_directory_of",
     "serialize_record",
     "token_totals_from_events",
     "tool_result_actions",

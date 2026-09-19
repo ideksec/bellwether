@@ -3189,14 +3189,22 @@ declared-vs-observed table does not show. Publishing the verdict without the ter
 subtraction asks a reviewer to trust the most valuable section in the tool on the strength of a
 version number.
 
-**Two things were computed and then dropped on the floor.** `analyse_run` produced
+**Two things reached `summary.json` and no further.** `analyse_run` produced
 `baseline_absorbed` — its own docstring calls it "the audit trail" — and `baseline_near_misses`,
-`aggregate` carried both onto the set reading, and nothing downstream ever read either. No
-summary, no verdict, no renderer. The near-misses are the sharper loss: §12.6 says a suspicious
-near-match (`~/.cache/../.aws/credentials`, a process whose argv0 matches a helper but whose
-parent does not) MUST raise a finding rather than be silently absorbed. The code correctly refused
-to absorb them and then discarded the finding, which lands in the same place as absorbing them
-quietly.
+`aggregate` carried both onto the set reading, and `_build_summary` put both into
+`security.runtime`. What read them after that was nothing: no verdict, and neither renderer. The
+near-misses are the sharper loss, because §12.6 says a suspicious near-match
+(`~/.cache/../.aws/credentials`, a process whose argv0 matches a helper but whose parent does
+not) MUST *raise a finding* rather than be silently absorbed — and a key in a JSON file no
+surface renders is not a raised finding.
+
+> **Correction.** The commit and PR that landed this section said the two were "dropped on the
+> floor" and reached "no summary, no verdict, no renderer". That overstated it: both had been in
+> `summary.security.runtime` since `21c6962`, well before. What was genuinely absent was the
+> §12.6 requirement itself — the baseline's *contents* in the report — and any rendered surface
+> for either list. The fix is unchanged and still warranted; the description of the defect was
+> wider than the defect. Recorded here rather than quietly amended, since a notes file that
+> silently improves its own history is worth less than one that does not.
 
 `Summary.platform_baseline` now carries the contents, what this evaluation absorbed, and the
 near-misses. The HTML report renders it collapsed; the PR comment carries it too, because an
@@ -3223,3 +3231,382 @@ caught it at the point the second copy was introduced.
 **What is still not done here.** `tools` and `processes` are published but not yet *applied*:
 `baseline_absorption` handles paths only. Tool attribution needs no new capture plane and is the
 next increment; process attribution waits on the §10.3 process plane, which is v0.3 work.
+
+## §13.5.4, §3.5/§10.2, §12.6 — Three declared controls that did nothing, and the false positive each would have had
+
+The shipped `policy.yaml` lists thirteen `security_runtime` dispositions. Four drove the verdict.
+The other nine read, to anyone opening the file, as controls that are on. `doctor` has named the
+inert ones since BW-49, which is honest, but naming a gap is not closing one. Two of those nine had
+their evidence already computed, aggregated onto the reading and rendered in the report — they were
+one gate each away from working. This closes both, and applies §12.6's last un-applied area.
+
+**Each one's real difficulty was its false positive, not its evidence.** That is worth stating
+plainly, because in all three cases the naive implementation is about ten lines and is wrong.
+
+### §13.5.4 — `sensitive_directory_access`
+
+The hits were computed, aggregated, and shown in the §13.5.2 dual-tier section; the policy has said
+`block` from the start; no gate read them. A skill could read `~/.aws/` on every run and, so long
+as it exfiltrated nothing, clear every scored gate in the profile.
+
+*Presence before coverage.* §13.5.4 is frequency-independent and says why — a once-in-twenty read of
+`~/.aws/` is more alarming than a consistent one, not less — so a recorded hit takes the policy
+disposition whatever the coverage. Only the *pass* waits on Plane A supporting an absence claim
+(§10.8). Inverting that, and deferring on a run that actually touched `~/.ssh/` because its
+coverage was imperfect, would be the worst of both readings.
+
+*The false positive.* `legit-credential-reader` exists in the corpus precisely to catch this: it
+declares `${HOME}/.aws/credentials` under `credentials.expects`, reads it, sends nothing outward,
+and must reach `ready`. A gate blocking on any sensitive hit fires on every correct run of it —
+the guaranteed false positive the spec says a flagship finding must not have. So the gate reads
+*undeclared* hits, and a declaration excuses a hit only by naming the sensitive location. A
+blanket `${HOME}/**` does not, because the reason §13.5.4 exists is that a broad glob hides
+exactly this access; `init-manifest` already draws the same line when it refuses to write a
+sensitive path into an inferred allowlist.
+
+*Matching the declaration against the hit took three attempts, and the first two were wrong.* The
+first compared the declared glob against the hit's tier-2 **prefix**, which fails in both
+directions at once. A workspace hit's tier-2 is the bare first segment — `workspace_read:.git/` —
+while declarations are `${WORKSPACE}`-rooted, so an explicit `${WORKSPACE}/.git/**` never matched
+and a skill reading its own repository could not declare its way out of a blocking, required gate.
+Meanwhile the home-root hit's prefix is `${HOME}`, which *every* home-rooted glob starts with, so
+the blanket the rule exists to see through was the one declaration that did excuse it.
+
+The second attempt matched the sensitive *directory token* as a path **segment anywhere** in the
+entry. That fixed both of the above and opened three bypasses, none of which the offline suite
+noticed:
+
+- **Cross-zone.** The rule had no notion of which root a declaration sat under, so a harmless
+  fixture path in the skill's own repository — `${WORKSPACE}/fixtures/.ssh/known_hosts` — excused a
+  real read of `${HOME}/.ssh/`. A skill could ship a decoy declaration and reach the operator's
+  keys with a blocking gate reporting `pass`. This is the worst defect this gate has had.
+- **Home root.** `${HOME}/.aws/credentials` — `legit-credential-reader`'s own manifest line, which
+  names `.aws/` — also excused an undeclared read of the home root itself, and therefore of
+  `~/.netrc`, `~/.bash_history` and every other file tier 2 collapses onto it.
+- **Direction.** The read and write declarations were pooled into one list, so a declared *write*
+  to `${HOME}/.aws/cache` excused an undeclared *read* of `${HOME}/.aws/` — the access anyone
+  actually cares about.
+
+The rule is now **anchored, zone-aware and direction-aware**: an entry excuses a hit only where it
+points into that exact rooted location, nothing before that point is a glob, and it sits under the
+declaration list matching the hit's direction (`credentials.expects` counts as read, since
+declaring that a credential is expected is a statement about reading it). The home root keeps its
+special case — only a file declared *directly* in `${HOME}` names it — and a hit on a single file
+must be named exactly, so `${WORKSPACE}/.gitignore` does not excuse `.git/`. Each bypass is a test
+that fails against the old rule.
+
+*A second review found the anchored rule had introduced a regression of the exact shape it was
+meant to prevent.* `_hit_direction` classified by the `_read`/`_write` suffix, so
+`workspace_delete` fell through to an empty declaration list: **no manifest entry of any kind
+could excuse a deletion under a sensitive directory**, in any section. `git status` creates and
+removes `.git/index.lock` on the same runs that rewrite `.git/index` — the case pinned two
+paragraphs above as designed behaviour — so a git-using skill sat at `not_ready` with no escape.
+The file had classed a deletion as a write since `_BASELINE_WRITE_CLASSES` was written; only this
+new function read the two tables differently. The classification is now shared and **total**: any
+zone not on the write list is answerable by a read declaration, so an unforeseen zone behaves like
+a slightly loose read rule rather than an inescapable block. For a gate whose disposition is
+`block`, that is the safer direction to be wrong in.
+
+*The gate's advice pointed at an entry the gate rejects.* For a home-root hit the finding
+suggested `${HOME}` — which `_declaration_names` refuses by design, since the home root is named
+only by a file sitting directly inside it. An author following the gate's own instruction verbatim
+stayed at `not_ready`; for a deletion the hint degraded to a placeholder. The function had no test
+of any kind. Every suggestion is now fed back through the matcher by a parametrized test, which is
+the only reason a user-facing string wrong in two of its four shapes would not ship again. This is
+reachable without adversarial intent: an `ls` of `~/.aws` classes as `outside_workspace_read:${HOME}`
+rather than `.aws/`, because a path with two parts maps to the root.
+
+*Two smaller matching defects.* `${HOME}/.` and `${HOME}/..` satisfied "a single slash-free
+segment" and so excused every file tier 2 collapses onto the home root — a declaration pointing at
+the *parent* of home reading to a reviewer as naming anything but home. And braces were not
+expanded, so `${HOME}/{.aws,.config}/**` was a supported declaration in the Declared-vs-Observed
+table (which compiles through `glob_to_regex`) and an *undeclared* sensitive access to this gate:
+one manifest line, two contradictory readings, and a `not_ready` telling the author to add a line
+they already had. Expansion now goes through the same helper, which already knows `${HOME}` is a
+placeholder and not a one-choice brace group.
+
+*The headline fix was untested at the seam that was broken.* Every test written with "the
+configured list reached nothing" passed `sensitive_directories=` straight into `analyse_run`, so
+only the innermost hop was covered. Deleting both wiring lines — `config → run_evaluation` and
+`run_evaluation → drive_evaluation`, putting the code back in exactly the state this note calls a
+defect — left the whole offline suite green. Both hops now have a test that fails without them.
+
+*A residual limit, disclosed rather than closed.* Tier 2 collapses every file directly in `${HOME}`
+onto one entry, so declaring `${HOME}/.bashrc` does still excuse a read of `${HOME}/.netrc`.
+Separating them needs tier-3 granularity in the hit, which the §13.5.2 dual-tier model
+deliberately does not carry. The alternative — refusing every home-root declaration — would take
+the legitimate case down with it.
+
+*The `.git/` edge is real and is the designed behaviour.* `git status` rewrites `.git/index`, so a
+skill that runs git in its workspace produces `workspace_write:.git/` on every run, and a blanket
+`${WORKSPACE}/**` does not excuse it. The escape is to name `${WORKSPACE}/.git/**`, and the
+finding text now spells out the entry and the list it belongs under, because a gate that says
+"declare it" and leaves the author to derive *what* from a tier-2 class name is most of the way to
+unactionable. CI had no case of this shape at all; it has one now.
+
+*The pass needs both planes.* A sensitive hit can arrive from a Plane A tool call naming a path or
+from a Plane B write under a sensitive directory, so an absence claim over it needs both — Plane A
+answers for reads and cannot answer for writes, and half an absence claim is not one. Checking
+only Plane A let the gate pass on a set where the write plane was blind. The consequence is that
+paths without an overlay defer, and under the shipped `block` disposition a *required*
+not_evaluable gate makes the verdict `not_ready` (§16.2) — so the demo, first-light and test
+profiles soften this disposition to `warn` exactly as they already soften egress, DNS and the
+canary gates, and for the same reason. A real run mounts the overlay and can pass it.
+
+*Where the exclusion is computed matters.* The live path calls `analyse_run` with `scope=None` and
+carries the manifest in `declared_scope`, folding it in afterwards. Deriving the exclusions from
+`scope` alone therefore passed the corpus — which threads the manifest — while marking every hit
+undeclared in production. They are computed where the manifest table is applied, in both paths.
+
+`sensitive_hits` stays the full observed list. A declared credential read is still a fact about the
+skill worth showing; it is simply not a gate finding, so the report section and the §17.5
+regression comparison are unchanged.
+
+### A correction: "every fix revert-proved" was not true
+
+The commit that fixed round 2's findings claimed *"Every fix revert-proved"*, and `docs/STATUS.md`
+and `docs/spec-notes.md` repeated it. A third review measured it: eleven fixes reverted
+individually against the whole offline suite, and **three left it fully green** —
+
+- the `.a*b` fix (the glob check that ran against the observation rather than the declaration):
+  no test anywhere exercised a glob character in an observed directory name;
+- the gate's pass-detail branch, added so it would stop denying a sensitive access that happened:
+  no demo or corpus skill reaches the all-declared pass, so nothing read the wording;
+- the config validator's whitespace branch, which was **unreachable dead code** — `StrictModel`
+  sets `str_strip_whitespace`, so pydantic strips every entry before the field validator runs.
+  The branch could never fire, the defect it claimed to fix was therefore still there, and its own
+  advice for a whitespace-only entry was to write it as `''`, which the validator rejects.
+
+Each now has a test that fails without it, and the whitespace branch is gone in favour of saying
+the thing once, in the message that can actually be reached.
+
+The general claim was made from memory of the fixes that *were* proved rather than from a
+measurement of all of them, which is the same failure this branch keeps finding in the code: a
+statement of assurance standing in for the observation. It is recorded here rather than quietly
+corrected, because a notes file that improves its own history is worth less than one that does not.
+
+### §13.5.4 — what round 2's fixes cost, and a third round
+
+Making `_hit_direction` *total* removed the undeclarable-hit class and opened a bypass one zone
+over. `sensitive_directory_of` reads a basename off any tier-2 target without asking which zone
+produced it — `process:curl` yields `curl`, `egress:evil.com` yields `evil.com` — so once every
+non-write zone answered to the *read* list, an operator adding a hostname to
+`metrics.sensitive_directories` let the skill's own `filesystem.read` entry excuse a network
+capability. Before the totality change the direction was `None` and nothing could excuse it. The
+hit list is now restricted to filesystem zones at its source, with the same test at the function
+the gate reads: §13.5.4 is about directories, and a hostname is not one.
+
+Brace expansion re-created the undeclarable class on a new axis. `_expand_braces` has no escape
+syntax, so a location whose name genuinely contains `{a,b}` was named by no entry at all — the
+same shape as the `.a*b` case, introduced in the commit that fixed it. The unexpanded entry is now
+tried alongside the expansions. Expansion is also capped and cached: it is 2ⁿ in the number of
+groups, the manifest is part of the package *under review*, and a 121-character entry with 22
+groups took 13 seconds before this rule re-expanded it once per (hit, entry) pair of every run.
+Counting the groups before recursing rather than trimming the result afterwards is what makes the
+cap actually cheap.
+
+Two more holes of the shape already closed elsewhere: a `..` segment anywhere in a declaration now
+disqualifies it, because `${HOME}/.ssh/../public/**` reads to a reviewer as naming
+`${HOME}/public` and bought a blanket pass on `~/.ssh/`; and the hint's own placeholder,
+`${HOME}/<name>`, was literally accepted by the rule when pasted verbatim — a placeholder that
+silently works is a trap set for exactly the author the hint is written for.
+
+A §24 violation: the spelling near-miss built its fold map from an unordered set, so where two
+observed tool names differed only by case the spelling the finding named depended on
+`PYTHONHASHSEED` — and that text reaches `summary.json` and the byte-compared HTML report.
+
+### The `..` fix opened a worse hole than it closed, and a second false assurance
+
+A fourth review round. Two things worth recording, and the second is about method.
+
+**The traversal fix was a security regression against its own parent.** `_traverses` ran on the
+*raw* declaration text, and `{..}` is not a `..` segment — so `${HOME}/..` was refused while
+`${HOME}/{..}` excused every file tier 2 collapses onto the home root, and
+`${HOME}/.ssh/{..}/public/**` restored the exact blanket pass on `~/.ssh/` that the literal check
+had just removed. The same commit *deleted* the `rest == ".."` guard from `_alternative_names`
+with the comment "`..` is caught by `_traverses`", which was false. Checking each expanded
+alternative independently is not enough either, because the raw entry is tried alongside them:
+`${HOME}/{..}` satisfies the home-root branch as a single glob-free segment. The rule is now that
+**any** alternative traversing disqualifies the whole entry, and the home-root guard is back as a
+second lock — removing a check on the strength of another check is how this got in.
+
+**The cap did not cap, and was on the wrong door.** Counting opening braces and comparing 2ⁿ bounds
+nothing unless every group is binary: six ten-way groups count as 64 and expand to a million in
+1.1 s, while eleven *nested* groups standing for twelve alternatives were refused — the same
+false positive `expand_braces` exists to remove, recreated. And the cap sat on `expand_braces`,
+the cheap literal-prefix helper, while `glob_to_regex` — which `assertions/derive.py` calls on
+`scope.filesystem.read`/`.write` straight from the manifest **under review** — still expanded
+uncapped and compiled the result into one pattern: 78 seconds and a 41 MB regex at 20 groups,
+over two minutes at 22, on the very entry the cap's own comment cited as its motivation. The limit
+is now enforced inside the recursion by raising rather than returning (returning the sub-pattern
+spliced half-expanded strings into the caller's list), and both doors use it.
+
+**"Every fix revert-proved" was false for the second commit running.** Round 3 corrected the claim
+and the correcting commit made it again — 4 of 11 that time, measured. Two of those *cannot* be
+proved, which is itself the useful fact: `declared = list(reading.sensitive_hits)` is byte-identical
+behaviour because the branch is only reached once the undeclared list is empty. A claim that cannot
+be true of every item should not be phrased as though it were.
+
+The rule this leaves: **do not write a blanket assurance about a set of changes. Publish the
+per-change measurement, including the rows that come back unproved and why.** The commit message
+and this file now carry a table rather than a sentence. Twice is a pattern, and the pattern is the
+same one the code keeps showing — a statement of assurance standing in for the observation.
+
+A §24 test can be vacuous in its *mechanism* while looking substantive: the determinism test called
+the function eight times in one process and asserted the results agreed, but set iteration order is
+fixed within a process for a fixed hash seed, so eight repetitions of the buggy code agree too. It
+now runs real subprocesses under differing `PYTHONHASHSEED`.
+
+### §13.5.4 — the matcher, rewritten to normalise rather than enumerate
+
+Four review rounds, and three of them found the same shape of defect: the round's headline
+finding was a regression introduced by the previous round's fix, all in the declaration matcher.
+`workspace_delete` undeclarable; a `filesystem.read` entry excusing `egress:evil.com`;
+`${HOME}/{..}` walking past a `..` check. That is not bad luck. It is what a **blacklist** does.
+
+The rule had grown to eight interacting clauses, and most were *reject this bad shape*: no glob
+before the anchor, no `.`, no `..`, no `{..}`, no `<`/`>`, no non-filesystem zone. Enumerating
+bad inputs cannot terminate — every clause has an unenumerated spelling, which is exactly the
+`..` → `{..}` sequence. More review rounds against that shape would keep producing findings
+without converging.
+
+So the matcher now **normalises and then compares**. An entry is reduced to the path it certainly
+reaches — expand braces, drop everything from the first segment carrying a wildcard (a
+declaration says nothing definite past its first `*`), then resolve `.` and `..` lexically — and
+that path is compared to the sensitive location segment-wise. The old clauses become consequences:
+`${HOME}/.` resolves to the home root and so is not a file *in* it; `${HOME}/{..}` expands, then
+resolves above its own root and names nothing; `${WORKSPACE}/**` reduces to `${WORKSPACE}`, which
+is not at-or-under `${WORKSPACE}/.git`.
+
+Two clauses are kept deliberately rather than derived. **Any alternative traversing disqualifies
+the whole entry**, because normalisation alone would let `${HOME}/.ssh/{..,qq}/public/**` buy
+`.ssh/` access on its innocent branch while smuggling a traversal on the other; a conservative
+rule is right for a gate whose disposition is `block`. And the `<`/`>` rejection stays, because
+the gate's own finding spells its placeholder `${HOME}/<name>` and that would otherwise resolve
+to a perfectly good single segment.
+
+**The rewrite was safe to make because four rounds of review had built the harness for it.** The
+48 tests in `test_sensitive_directory_gate.py` encode every bypass and every false positive found
+across those rounds, and they were held unchanged as the contract. One of them failed on the first
+attempt — cutting at the wildcard loses the fact that an entry *continues* past it, so
+`${HOME}/.aws/**` reduced to `${HOME}/.aws` and read as naming a file in the home root. That is
+the corpus doing its job, and it is the argument for rewriting now rather than later: the tests
+that make it checkable exist now.
+
+Two things the new rule fixes that **no review round found**. Three legitimate declarations
+written with a redundant `./` — `${WORKSPACE}/./.git/**` and friends — were *refused* by the old
+string comparison, blocking a skill that had declared exactly the right thing. And five traversal
+spellings nobody tried (`${HOME}/.ssh/{.}/{..}/x`, `${HOME}/{.ssh/..,y}/z`, …) are refused without
+any clause naming them. Both are now tests.
+
+### §12.6 — the tools near-miss, reached by a second route
+
+Flagging a baseline entry whose tool is classed differently closed the inert-allowlist trap by
+*class*. It did not close it by *name*: tool names are case-sensitive and the two harnesses spell
+them differently — `read` on api-loop, `Read` on claude-code — so a baseline written against one
+and applied to the other absorbs nothing and, because the check required an exact name hit,
+said nothing. A case-insensitive comparison now raises it. A name seen at least once under its own
+`tool:` class is never reported inert, because a `Read` call with no `file_path` falls through to
+`tool:Read` while another `Read` in the same run is classed `workspace_read`, and saying "absorbs
+nothing" about an entry that just absorbed something would be its own false report.
+
+### §13.5.4 — the configured list, which reached nothing
+
+`canonicalize` has taken a `sensitive_directories` parameter since the canonicaliser landed, and
+its docstring calls it "configurable, defaulted centrally". `config.yaml` has shipped a
+`metrics.sensitive_directories` list since the config document landed, and the template invites
+users to extend it. **No caller ever joined them.** Every run fell back to the `SENSITIVE_DIRECTORIES`
+constant, so a user who added `.npmrc/` got exactly nothing, and one who removed an entry to
+silence a false positive still got blocked.
+
+That was a reporting gap while the hits were only rendered in the §13.5.2 section. It stopped being
+one the moment this same change made the gate blocking and required — which is the pattern worth
+naming: *closing one inert control promoted a second, quieter one into the verdict path.*
+
+The two lists had also drifted where it mattered most. The config default spelled the home root
+`~/`; `sensitive_directory_of` yields `~`; membership is exact. Wiring the config in without
+reconciling them would have switched the home root off and reported nothing — a fix that makes the
+control weaker while looking like it makes it real. The default now derives from the constant so
+the two cannot drift again, and a config entry the matcher could never produce is **refused at
+config load** rather than read as protection. Refusing is the point: an entry that cannot match is
+not a weak rule, it is no rule, silently.
+
+Not every entry without a trailing slash is a mistake — a file at the workspace root canonicalises
+to a bare tier-2 token, so `.npmrc` is a meaningful entry and the validator does not demand one.
+
+`metrics.trajectory_cluster_threshold` is in the same position and is **not** fixed here: nothing
+reads it either, and `CanonBlock` is only ever constructed with its defaults. It is a metrics knob
+rather than a gate input, so it is disclosed here and left for its own brick rather than widening
+this change.
+
+### §3.5/§10.2 — `harness_state_write`, attempted and withdrawn
+
+A skill writing into the harness's own config directory is editing the instrument: settings a hook
+is read from, configuration that outlives the run, state a later repetition inherits. §3.5's
+concern is that a skill able to change the instrument can change what the instrument reports. The
+gate was built, and then removed before it shipped, because **it could never fire**.
+
+§10.2 admits a harness-state write into the capability set only where a Plane A tool call anchors
+it, and the gate read the same anchor off the write evidence — the right rule, since a real
+`claude-code` run writes its config dir constantly and that churn is the harness's. But Plane B
+actions are constructed with **no `Correlation` at all** (`trace/build.py`): `anchor_seq` is only
+ever set for Plane C canary findings. So `anchor_seq is not None` is false for every write that
+exists, and the gate returned `pass` on a skill that had just rewritten `settings.json`. A control
+that renders a clean result without observing anything — committed, by us, in the same change that
+set out to close two of those.
+
+The suite stayed green throughout, because the existing `no_harness_state_write` *assertion*
+matches on zone alone and was genuinely unaffected. Only a review that asked "can this gate ever
+return anything but pass?" caught it.
+
+It also surfaces a pre-existing fact worth recording on its own: **§10.2's attribution rule is
+written against a correlation Plane B never populates**, so *no* harness-state write becomes a
+capability today — the rule excludes everything rather than just the churn. Correlating overlay
+writes back to the tool calls that caused them is §11.5 step 3 and real work; the overlay diff is a
+post-run set with no per-write timing to correlate on. The gate is worth having once that exists.
+Until then it is disclosed here and in `docs/STATUS.md` rather than shipped as a pass that means
+nothing.
+
+### §12.6 — the baseline's `tools`
+
+§12.6 defines three areas. `paths` has absorbed since the baseline landed. `processes` waits on the
+§10.3 process plane, because `helpers_of` is written in terms of tree attribution and there are no
+trees to attribute against. `tools` needed no new plane — a tool call is Plane A evidence every run
+already has — so it was un-applied for no reason but reach.
+
+Matched by **exact name, never as a glob**. A path baseline is written in globs because paths are
+hierarchical and unbounded; a tool name is a fixed identifier from the harness's vocabulary, and a
+glob there would let one `*` absorb the entire tool surface — the failure an allowlist exists to
+prevent.
+
+Absorption needed a tier-1 channel. The existing one keys on tier 3, which suits a path (absorbed
+by its normalised target) and not a tool, whose tier 3 is the invocation's argument: subtracting by
+that would absorb one call and leave the next. `canonicalize` takes `platform_baseline_t1`
+alongside `platform_baseline_t3`, and an absorbed tool leaves the capability sets while staying in
+the step sequence — the same §11.4 rule an absorbed path follows.
+
+It ships empty, deliberately: §12.6's own default is `tools: []`, because a tool call is agent
+behaviour and not infrastructure until a harness demonstrates otherwise. This gives a harness that
+does demonstrate it somewhere to say so.
+
+### What this leaves
+
+**Eight** dispositions remain inert — five enforced of thirteen — and the reasons are not
+uniform. `process_exec_undeclared` and `credential_read_undeclared` wait on capture that does not
+exist yet (the §10.3 process plane, the read plane). `instrumentation_probe` waits on the §3.5
+probe suite. `egress_volume_anomaly` needs a volume baseline to be anomalous against.
+`unexpected_provider_endpoint` has no producer at all — the finding kind is defined in §11.3 and in
+`RUNTIME_FINDING_KINDS`, and nothing in the pipeline emits it, which makes it the next one worth
+closing. `trace_inconsistency` and `possible_egress_induced_failure` are computed and deliberately
+advisory. And **`harness_state_write`**, whose gate was written and withdrawn in this same change
+for never being able to fire: it is still configured, still inert, and belongs on this list
+precisely because the withdrawal is what keeps it there.
+
+An earlier draft of this section said *seven* and listed seven, omitting `harness_state_write` —
+counting the withdrawn control as closed. In a section whose whole subject is that a declared
+control which does nothing must be named, undercounting the inert set is the one direction the
+error must not go. The count is now computed from `ENFORCED_SECURITY_RUNTIME_DISPOSITIONS` and the
+`SecurityRuntimeGate` model rather than written out by hand.
+
+`doctor` continues to name every one of them, and its list is now one shorter — a list that never
+shrinks would keep telling an operator a live gate does nothing.

@@ -9,6 +9,7 @@ from pydantic import Field, field_validator, model_validator
 
 from bellwether.config.models.common import Document, StrictModel, YamlWord
 from bellwether.config.models.provider import ProviderConfig
+from bellwether.constants import SENSITIVE_DIRECTORIES
 
 __all__ = [
     "BciWeights",
@@ -196,18 +197,50 @@ class MetricsConfig(StrictModel):
     #: Provisional. Calibrate against benign-stable / benign-chaotic; a threshold below
     #: the measured noise floor (§24) is meaningless.
     trajectory_cluster_threshold: Annotated[float, Field(ge=0, le=1)] = 0.2
-    sensitive_directories: list[str] = Field(
-        default_factory=lambda: [
-            ".git/",
-            ".ssh/",
-            ".aws/",
-            ".config/",
-            ".gnupg/",
-            ".docker/",
-            ".kube/",
-            "~/",
-        ]
-    )
+    #: The §13.5.4 list, reaching the analysis through ``canonicalize``. Defaulted from
+    #: the constant rather than restated, because the two spellings drifted once already:
+    #: this list said ``~/`` while the matcher yields ``~``, so the home root would have
+    #: been switched off the moment the list was connected.
+    sensitive_directories: list[str] = Field(default_factory=lambda: list(SENSITIVE_DIRECTORIES))
+
+    @field_validator("sensitive_directories")
+    @classmethod
+    def _entries_can_match(cls, value: list[str]) -> list[str]:
+        """Refuse an entry no tier-2 capability could ever equal (§13.5.4).
+
+        Membership is exact against the token ``sensitive_directory_of`` extracts, so an
+        entry it cannot produce is not a weak rule — it is no rule, silently. A list that
+        reads as protection and is not is the defect this whole gate exists to close, so
+        it fails at config load instead of at nothing.
+        """
+        for entry in value:
+            if entry == "~":
+                continue
+            if not entry:
+                # `StrictModel` sets `str_strip_whitespace`, so pydantic has already stripped
+                # every entry before this runs: `" .aws/"` arrives as `".aws/"` and works, and a
+                # whitespace-only entry arrives empty and lands here. An earlier version of this
+                # validator carried a separate "leading or trailing whitespace" branch to make
+                # that message clearer — it was unreachable, could not be revert-proved, and its
+                # own advice for a whitespace-only entry was to "write it as ''", which this
+                # branch rejects. Saying it here, once, is the whole fix.
+                raise ValueError(
+                    "sensitive_directories carries an empty entry (or one that is only "
+                    "whitespace, which is stripped before validation); each entry names one "
+                    "directory (with a trailing slash) or one workspace-root file"
+                )
+            if entry.startswith("~") or entry in ("${HOME}", "$HOME"):
+                raise ValueError(
+                    f"sensitive_directories entry {entry!r} cannot match: the home root is "
+                    "spelled '~', with no trailing slash and no expansion, and a path "
+                    "beneath it is named by its own directory (e.g. '.aws/')"
+                )
+            if "/" in entry.rstrip("/"):
+                raise ValueError(
+                    f"sensitive_directories entry {entry!r} cannot match: an entry names a "
+                    "single directory or file, not a path — use '.aws/', not '~/.aws/'"
+                )
+        return value
 
 
 class BaselinesConfig(StrictModel):

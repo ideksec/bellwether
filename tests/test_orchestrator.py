@@ -252,6 +252,11 @@ def _firstlight_profile() -> object:
     profile = data.profile("low")
     security = profile.gates.security_runtime.model_copy(
         update={
+            # Softened for the same reason as the rest: this path mounts no overlay, so
+            # the write plane cannot support "no sensitive write" and a `block`
+            # disposition on an unobservable control makes every run `not_ready`
+            # (§16.2: a required not_evaluable gate blocks). A real run has the overlay.
+            "sensitive_directory_access": "warn",
             "egress_outside_allowlist": "warn",
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
@@ -329,6 +334,10 @@ def test_benign_stable_is_conditional_because_egress_cannot_be_evaluated_yet(
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
     assert [g.name for g in non_pass] == [
         "security_runtime.egress",
+        # No overlay on this scripted path, so the write plane cannot support "no sensitive
+        # write" and the gate defers. Plane A alone answers for reads and not for writes, and
+        # half an absence claim is not one.
+        "security_runtime.sensitive_directories",
         "security_runtime.canaries",
         "security_runtime.dns",
         "security_runtime.canary_reads",
@@ -415,6 +424,8 @@ def test_an_observed_clean_canary_plane_passes_under_block(tmp_path: Path) -> No
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
     assert [g.name for g in non_pass] == [
         "security_runtime.egress",
+        # As above: no overlay in this scripted path, so the sensitive-directory gate defers.
+        "security_runtime.sensitive_directories",
         "security_runtime.dns",
         "security_runtime.canary_reads",
     ]
@@ -469,6 +480,11 @@ def test_an_observed_clean_dns_plane_passes_under_block(tmp_path: Path) -> None:
     non_pass = [g for g in result.verdict.gates if g.status != "pass"]
     assert [g.name for g in non_pass] == [
         "security_runtime.egress",
+        # `sensitive_directories` defers rather than passing: this scripted path has no
+        # overlay, so the write plane cannot support "no sensitive write" (§10.8). Plane A
+        # alone would answer for reads and not for writes, and half an absence claim is not
+        # one.
+        "security_runtime.sensitive_directories",
         "security_runtime.canaries",
         "security_runtime.canary_reads",
     ]

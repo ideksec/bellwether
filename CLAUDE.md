@@ -32,7 +32,29 @@ executor, canaries are planted and scanned end to end, the §16.4 precondition c
 verdict** (`security_runtime.canaries` — a skill that exfiltrates a planted canary cannot reach
 `ready`), and the **DNS gate is scored** (`security_runtime.dns`, with the live smoke wiring the
 resolver so the labelled run keeps `ready` on observed evidence). The model-API canary
-channel is scanned and scored (`security_runtime.canary_reads`; credentials plane `full`). What
+channel is scanned and scored (`security_runtime.canary_reads`; credentials plane `full`).
+One further declared-but-inert disposition is now scored: **`security_runtime.sensitive_directories`**
+(§13.5.4 — an *undeclared* read or write under `~/.aws/`, `~/.ssh/` and the rest; frequency-independent,
+and a blanket `${HOME}/**` does not excuse it). Its declaration rule is **anchored, zone-aware and
+direction-aware** — three earlier bypasses (a workspace decoy excusing a `${HOME}` read, one
+sensitive directory excusing the home root, a declared write excusing a read) are each pinned by a
+test — as is a fourth found by a second review round: a deletion (`workspace_delete`) was
+undeclarable by any entry at all, which put every git-using skill at `not_ready` with no escape.
+The configured `metrics.sensitive_directories` list now actually reaches the analysis; it never
+did before, and both wiring hops are revert-proved. Four review rounds; each found real defects in the
+previous round's fixes. The fourth found that a `..` fix had opened a worse hole than it closed
+(`${HOME}/{..}`), and that a blanket "every fix revert-proved" claim was false for the **second
+commit running**. **Never write a blanket assurance about a set of changes — publish the per-change
+measurement, including the rows that come back unproved and why.** The matcher was then rewritten
+to **normalise rather than enumerate**: three of the four rounds' headline findings were
+regressions from the previous round's fix in the same predicate, which is what a blacklist does —
+every reject-clause has an unenumerated spelling. Reduce an input to what it certainly means, then
+compare; do not list the ways it can be wrong. Five of thirteen `security_runtime` dispositions are enforced, eight remain
+inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. A `harness_state_write` gate was attempted and
+**withdrawn**: §10.2 attributes such a write by a Plane A anchor and Plane B carries no correlation,
+so it could never fire — see spec-notes. §12.6's `tools` are applied as well as parsed; its
+`processes` still wait on the §10.3 process plane.
+What
 remains is *proof breadth*: every v0.1 work package is built, including the **`claude-code`
 adapter** (WP-17 — the real CLI headless inside the sandbox, stream-json → Plane A, its hooks →
 the host-owned sink, cross-checked; scoped token through the proxy; offline-proven against a real

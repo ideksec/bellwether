@@ -680,6 +680,82 @@ nothing else would close it) and ran its closes in sequence, so the first to rai
 both were proven by reverting them. Two further findings are left for their own brick because they
 are in files this change does not touch — see the list below.
 
+**One declared control now actually gates, and §12.6's last applicable area is applied.** The
+shipped policy lists thirteen `security_runtime` dispositions; four drove the verdict, and the
+other nine read to anyone opening the file as controls that are on. Two of them had their evidence
+already computed, aggregated and *rendered* — apparently one gate each away from working. Only one
+of the two turned out to be: the second is withdrawn below, which leaves **five** enforced and
+**eight** inert.
+**`sensitive_directory_access` (§13.5.4)** is scored: a skill could read `~/.aws/` on every run and,
+so long as it exfiltrated nothing, clear every scored gate in the profile. Presence before
+coverage, because §13.5.4 is frequency-independent by design; only the *pass* waits on Plane A
+supporting an absence claim. The gate reads *undeclared* hits — `legit-credential-reader` declares
+its credential read and must stay `ready`, and a declaration excuses a hit only by naming a
+location under the sensitive directory itself, since a blanket `${HOME}/**` is exactly what
+§13.5.4 exists to see through. The matching rule took three attempts and the first two were
+bypassable: matching the sensitive token as a *segment anywhere* ignored which root the
+declaration sat under, so a decoy `${WORKSPACE}/fixtures/.ssh/known_hosts` in a skill's own
+repository excused a real read of `${HOME}/.ssh/`; declaring one sensitive directory excused the
+home root; and a declared *write* excused an undeclared *read*. The rule is now anchored,
+zone-aware and direction-aware, and each bypass is a test that fails against the old rule.
+A **second** review then found the anchored rule had introduced the exact defect it was meant to
+prevent: `workspace_delete` fell through the direction split, so no manifest entry of any kind
+could excuse a deletion under a sensitive directory, and a skill running `git status` — which
+removes `.git/index.lock` — sat at `not_ready` with no escape. The classification is now shared
+with `_BASELINE_WRITE_CLASSES` and total. The same review found the gate's own advice named an
+entry the gate rejects (`${HOME}`, for a home-root hit), that `${HOME}/.` and `${HOME}/..` excused
+the home root, that brace-expanded declarations were honoured by the scope gate and refused here,
+and that the configured-list fix was untested at both of the hops that had actually been
+missing. A **third** round then measured the claim *"every fix revert-proved"* and found it false
+for three of eleven — including a config-validator branch that was unreachable dead code, so the
+defect it claimed to fix was still there. Each now has a test that fails without it; the
+correction is recorded in spec-notes rather than quietly applied. The same round found that making
+the direction split *total* had opened a bypass one zone over (a `filesystem.read` entry excusing
+`egress:evil.com`, since the token extractor does not ask which zone produced a hit), that brace
+expansion re-created the undeclarable-hit class for brace-named locations and was uncapped against
+an attacker-controlled manifest, that a `..` declaration bought a blanket pass on the directory it
+walked out of, and a §24 violation whose text reaches the byte-compared report. A **fourth** round
+found that the `..` fix had opened a worse hole than it closed — `_traverses` ran on the raw entry,
+so `${HOME}/{..}` walked past it and `${HOME}/.ssh/{..}/public/**` restored the blanket pass the
+literal check had just removed — that the brace cap bounded nothing but binary groups and sat on
+the wrong door (`glob_to_regex`, which reads the manifest under review, still took 78 seconds on a
+111-character entry), and that "every fix revert-proved" was false for the second commit running.
+The per-change measurement is now published as a table rather than asserted as a sentence.
+
+**The matcher was then rewritten to normalise rather than enumerate**, because three of the four
+rounds' headline findings were regressions from the previous round's fix, all in the same
+predicate — the signature of a blacklist, where every reject-clause has an unenumerated spelling
+(`..` refused, `{..}` through). An entry is now reduced to the path it certainly reaches — braces
+expanded, everything from the first wildcard dropped, `.` and `..` resolved — and compared
+segment-wise. The old clauses become consequences. The 48 tests encoding every bypass and false
+positive found across the four rounds were held unchanged as the contract, and one of them caught
+a defect in the first attempt. The new rule also fixes three false positives and five traversal
+spellings **no round found**. **`harness_state_write` (§3.5/§10.2) was attempted and withdrawn**: the gate
+was built and then removed before it shipped, because it could never fire — §10.2 attributes such
+a write by a Plane A anchor, and Plane B actions carry no `Correlation` at all, so the condition is
+false for every write that exists. That also surfaces a pre-existing gap worth its own brick: the
+§10.2 rule excludes *every* harness-state write from the capability set, not just the harness's own
+churn, and correlating overlay writes back to their tool calls is §11.5 step 3. And **§12.6's
+`tools`** are applied rather than merely parsed, matched by exact
+name (a glob there would let one `*` absorb the whole tool surface), through a new tier-1
+absorption channel since a tool is identified by its class and not by its target. `processes`
+still waits on the §10.3 process plane. Doctor's inert list is one shorter — eight, not seven:
+`harness_state_write` is still configured and still inert, and the withdrawal is exactly why it
+must keep being named. The `tools` half also had the inert-allowlist trap it exists to close:
+`observed` was composed as `tool:<name>` for every call regardless of the tool's real tier-1, so
+a baseline naming `read` — classed `workspace_read`, never `tool:read` — matched the invention,
+absorbed nothing and said nothing. It now raises a near-miss, as the path half always has.
+
+**The configured sensitive-directory list reaches the analysis.** `canonicalize` has always taken
+a `sensitive_directories` parameter its docstring calls "configurable, defaulted centrally", and
+`config.yaml` has always shipped a `metrics.sensitive_directories` list the template invites users
+to extend. No caller joined them, so every run fell back to the constant and a user who added a
+directory got nothing. Harmless while the hits were only rendered; not harmless once they gate.
+The two lists had also drifted where it mattered most — the config said `~/`, the matcher yields
+`~` — so connecting them without reconciling them would have switched the home root off silently.
+The default now derives from the constant, and a config entry the matcher could never produce is
+refused at load rather than read as protection.
+
 **The platform baseline is published, because it is an allowlist (§12.6).** §12.6 requires its
 full contents in the report, collapsed, and says why in one line — *a hidden allowlist in a
 security tool is a liability*. That was unimplemented: the report carried a version string and
@@ -768,7 +844,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1341 tests: 1283 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
+1425 tests: 1367 offline, 58 under the `docker` mark (47 run locally, 11 CI-only skips with stated reasons; all 58 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## What's next — remaining work, in recommended order
 

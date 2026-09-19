@@ -154,8 +154,7 @@ def test_doctor_refuses_a_disabled_enforced_setting(tmp_path: Path) -> None:
 
 
 def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: Path) -> None:
-    """§16.2 / BW-49: only the egress, canary-leak, DNS, and canary-reads dispositions drive the
-    scored verdict in this version. The scaffold policy sets `credential_read_undeclared` and more
+    """§16.2 / BW-49: only some dispositions drive the scored verdict in this version. The scaffold policy sets `credential_read_undeclared` and more
     — controls that read as active but do not gate. Doctor must surface exactly which are inert,
     the same way it surfaces require_scan, so a `block` there is never mistaken for enforcement (a
     silent no-op is how a control that does nothing looks like one that works)."""
@@ -177,8 +176,12 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert runtime["status"] == "warn"
     # The comma-separated list of inert dispositions sits between "not_ready: " and ". Treat".
     inert_list = runtime["detail"].split("not_ready: ", 1)[1].split(". ", 1)[0]
-    for inert in ("credential_read_undeclared", "sensitive_directory_access"):
+    for inert in ("credential_read_undeclared", "process_exec_undeclared"):
         assert inert in inert_list
+    # And one that has *left* the list: `sensitive_directory_access` is scored now, so doctor
+    # must stop calling it inert. A list that never shrinks is as misleading as one that never
+    # existed — it would keep telling an operator a live gate does nothing.
+    assert "sensitive_directory_access" not in inert_list
     # The dispositions that *do* gate are not listed as inert: egress since the proxy landed,
     # canary_leak since the Plane C scan became a scored gate (BW-49, first slice),
     # dns_outside_allowlist since Plane E became a scored gate, and canary_without_read since

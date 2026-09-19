@@ -120,7 +120,7 @@ New here? [pitch.md](pitch.md) is the short version of what this is and why.
 ### What the live verdict gates today
 
 Being explicit about this matters more than looking finished. On the live `run` path, the verdict is
-composed from nine gates (ten on a priced matrix, eleven with a stored baseline), and these are
+composed from ten gates (eleven on a priced matrix, twelve with a stored baseline), and these are
 the checks that can actually move a skill off `ready`:
 
 - **evidence** — enough of the repetitions produced evaluable traces;
@@ -138,6 +138,17 @@ the checks that can actually move a skill off `ready`:
   output, a DNS query name, tool arguments, an egress request, a written file) blocks under the
   default policy. Where canaries were not planted, the gate defers as `not_evaluable` — an
   unwatched channel is never called clean;
+- **security_runtime.sensitive_directories** — a read or write under a §13.5.4 sensitive
+  directory (`~/.aws/`, `~/.ssh/`, `~/.gnupg/`, `.git/`, …) that the manifest does not
+  *deliberately* declare. Frequency-independent by design: one appearance is a finding, because a
+  once-in-twenty credential read is more alarming than a consistent one, not less. A declaration
+  excuses it only by pointing *into* that exact rooted location, with no glob before that point and
+  under the list matching the access — a blanket `${HOME}/**` does not, since a broad glob hiding
+  exactly this access is why the rule exists, and a decoy `${WORKSPACE}/fixtures/.ssh/…` in the
+  skill's own repository does not excuse a read of the real `~/.ssh/`. Declaring it deliberately
+  (`credentials.expects` for a read, `scope.filesystem.write` for a write) is the supported way to
+  say a skill legitimately needs it, and the finding names the entry that would have done so. The
+  list itself is configurable through `metrics.sensitive_directories`;
 - **security_runtime.dns** — a lookup of a name outside the allowlist, from what the controlled
   resolver logged (Plane E). An HTTP proxy never sees UDP/53, so this is the gate on the covert
   channel that routes around the egress plane. Where the resolver was not wired, the gate defers

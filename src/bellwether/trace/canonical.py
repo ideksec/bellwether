@@ -35,11 +35,13 @@ from bellwether.trace.models import Action, CanonBlock, Capability
 from bellwether.trace.tool_vocabulary import filesystem_access, tool_target
 
 __all__ = [
+    "FILESYSTEM_ZONES",
     "CanonicalTrace",
     "NormalizationContext",
     "StepSignature",
     "canonicalize",
     "capability_for",
+    "sensitive_directory_of",
 ]
 
 #: One step of the trajectory: ``(kind, tool name, tier-1 capability)``. Tool name and
@@ -127,6 +129,7 @@ def canonicalize(
     context: NormalizationContext,
     *,
     platform_baseline_t3: frozenset[str] = frozenset(),
+    platform_baseline_t1: frozenset[str] = frozenset(),
     sensitive_directories: tuple[str, ...] = SENSITIVE_DIRECTORIES,
     canon: CanonBlock | None = None,
 ) -> CanonicalTrace:
@@ -135,6 +138,10 @@ def canonicalize(
     Args:
         actions: The run's action records, any order; epoch anchoring orders them.
         context: The run-local names to erase.
+        platform_baseline_t1: Tier-1 classes the platform baseline absorbs whole (§12.6's
+            ``tools``). Separate from ``platform_baseline_t3`` because a tool capability is
+            identified by its *class* — ``tool:bash`` — and carries the tool's target at tier
+            3, so subtracting it by target would absorb one invocation and leave the next.
         platform_baseline_t3: Normalized tier-3 entries the platform baseline absorbs,
             subtracted from the capability sets **before** they are produced (§11.4) —
             matched literally. The glob-aware matcher, near-miss flagging included, is
@@ -170,6 +177,11 @@ def canonicalize(
 
         if capability is None:
             continue
+        if capability.tier1 in platform_baseline_t1:
+            # §12.6 ``tools``: infrastructure the platform accounts for, out of the capability
+            # sets and still in the step sequence — the same treatment, and the same reason, as
+            # a baseline-absorbed path just below.
+            continue
         if capability.tier3 is not None and capability.tier3 in platform_baseline_t3:
             # Absorbed as infrastructure: out of the capability sets, still in the
             # sequence. §12.6: scope evaluation runs against observed − baseline.
@@ -184,7 +196,8 @@ def canonicalize(
         sorted(
             entry
             for entry in t2
-            if _directory_of(entry) is not None and _directory_of(entry) in sensitive_directories
+            if entry.partition(":")[0] in FILESYSTEM_ZONES
+            and sensitive_directory_of(entry) in sensitive_directories
         )
     )
 
@@ -430,7 +443,32 @@ def _top_level(normalized: str) -> str:
     return normalized
 
 
-def _directory_of(tier2: str) -> str | None:
+#: The tier-1 zones §13.5.4 is about. A sensitive *directory* is a filesystem idea, and
+#: ``sensitive_directory_of`` reads a basename off any tier-2 target without asking which zone
+#: produced it — so ``process:curl`` yields ``curl`` and ``egress:evil.com`` yields
+#: ``evil.com``. With the list configurable, an operator adding a hostname turned a network
+#: capability into a "sensitive directory" hit that a *filesystem* declaration could then
+#: excuse. Restricting the hit list at its source keeps §13.5.4 to the plane it describes.
+#: Exactly the classes :func:`_filesystem_capability` emits — no more. An earlier version also
+#: listed ``harness_state_write``, which is a *finding kind* and a policy disposition, never a
+#: tier-1 capability class (a harness-state write classifies as
+#: ``outside_workspace_write:${HOME}/.claude/``). Harmless, but it read as though harness state
+#: had a distinct class here that it does not, and a set used to decide what counts as a
+#: security finding should not carry a member that can never appear. A test asserts this set
+#: against what the canonicaliser really produces, so a new class cannot be added there and
+#: silently left out of the §13.5.4 hit list.
+FILESYSTEM_ZONES: frozenset[str] = frozenset(
+    {
+        "workspace_read",
+        "workspace_write",
+        "workspace_delete",
+        "outside_workspace_read",
+        "outside_workspace_write",
+    }
+)
+
+
+def sensitive_directory_of(tier2: str) -> str | None:
     """The bare directory name a tier-2 entry names, for the sensitive list.
 
     ``workspace_read:.git/`` → ``.git/``; ``outside_workspace_read:${HOME}/.aws/`` →

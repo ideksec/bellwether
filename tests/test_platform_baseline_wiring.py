@@ -9,6 +9,7 @@ trail, and never absorbs a traversal that names an entry but escapes it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from bellwether.cli.orchestrator import (
@@ -80,7 +81,7 @@ def test_observed_paths_keep_the_named_form_beside_the_resolved_one() -> None:
 
 
 def test_absorption_subtracts_entries_and_flags_the_traversal() -> None:
-    absorbed, near = baseline_absorption(
+    absorbed, _tools, near = baseline_absorption(
         _actions(),  # type: ignore[arg-type]
         _CONTEXT,
         _baseline(),
@@ -93,7 +94,7 @@ def test_absorption_subtracts_entries_and_flags_the_traversal() -> None:
 
 
 def test_a_baseline_for_another_image_absorbs_nothing() -> None:
-    absorbed, near = baseline_absorption(
+    absorbed, _tools, near = baseline_absorption(
         _actions(),  # type: ignore[arg-type]
         _CONTEXT,
         _baseline(image="other@sha256:" + "0" * 64),
@@ -224,3 +225,305 @@ def test_no_baseline_yields_no_block_at_all() -> None:
     from bellwether.cli.orchestrator import _platform_baseline_summary
 
     assert _platform_baseline_summary(None, [], applied_version="") is None
+
+
+# ---------------------------------------------------------------------------
+# §12.6 `tools`: the third area, and the last one no capture plane blocks
+# ---------------------------------------------------------------------------
+
+
+def _baseline_with_tools(*tools: str) -> PlatformBaseline:
+    return PlatformBaseline(
+        apiVersion="bellwether/v1",
+        kind="PlatformBaseline",
+        version="2026.08.1",
+        applies_to_image=_IMAGE,
+        tools=tools,
+    )
+
+
+def test_a_tool_the_platform_accounts_for_is_absorbed() -> None:
+    """§12.6 has three areas and `tools` was parsed and inert.
+
+    `paths` has absorbed since the baseline landed; `processes` waits on the §10.3 process
+    plane, because `helpers_of` is written in terms of tree attribution and there are no
+    trees to attribute against. `tools` needs no new plane — a tool call is Plane A evidence
+    every run already has — so it was the one area left unapplied for no reason but reach.
+    """
+    from bellwether.assertions import apply_tool_baseline
+
+    observed = ["tool:bash", "tool:read", "tool:fetch"]
+    absorbed = apply_tool_baseline(observed, _baseline_with_tools("bash"), sandbox_image=_IMAGE)
+    assert absorbed == frozenset({"tool:bash"})
+
+
+def test_tool_names_match_exactly_never_as_globs() -> None:
+    """A path baseline is written in globs because paths are hierarchical and unbounded. A
+    tool name is a fixed identifier from the harness's own vocabulary, and a glob there would
+    let a single `*` absorb the entire tool surface — the failure an allowlist exists to
+    prevent."""
+    from bellwether.assertions import apply_tool_baseline
+
+    observed = ["tool:bash", "tool:read"]
+    assert apply_tool_baseline(observed, _baseline_with_tools("*"), sandbox_image=_IMAGE) == (
+        frozenset()
+    )
+    assert apply_tool_baseline(observed, _baseline_with_tools("ba*"), sandbox_image=_IMAGE) == (
+        frozenset()
+    )
+
+
+def test_a_tool_baseline_for_another_image_absorbs_nothing() -> None:
+    """The same refusal the path half makes, and for the same reason: an unkeyed allowlist
+    absorbs findings it has no standing to absorb."""
+    from bellwether.assertions import apply_tool_baseline
+
+    absorbed = apply_tool_baseline(
+        ["tool:bash"], _baseline_with_tools("bash"), sandbox_image="other@sha256:" + "9" * 64
+    )
+    assert absorbed == frozenset()
+
+
+def test_an_absorbed_tool_leaves_the_capability_set_but_stays_in_the_sequence() -> None:
+    """§11.4's rule, applied to the new area: baseline subtraction removes *what* was touched
+    from the capability sets while the step sequence keeps every step, because how the skill
+    worked includes its infrastructure moves.
+
+    The first version of this test used the filesystem tools from `_actions()`, whose tier-1 is
+    `workspace_read:…` and never `tool:…` — so `caps_t1` was byte-identical with and without
+    the absorption and the test passed with the feature deleted. It needs a tool whose
+    capability really is a `tool:` class.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action, canonicalize
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "bash", "input": {"command": "ls"}},
+    )
+
+    unabsorbed = canonicalize([call], _CONTEXT)
+    assert "tool:bash" in unabsorbed.caps_t1, "the fixture must produce the class under test"
+
+    absorbed = canonicalize([call], _CONTEXT, platform_baseline_t1=frozenset({"tool:bash"}))
+    assert "tool:bash" not in absorbed.caps_t1
+    # Removed from *what* was touched, kept in *how* the run went — the same treatment a
+    # baseline-absorbed path gets.
+    assert absorbed.step_sequence == unabsorbed.step_sequence
+    assert any(step[0] == "tool_call" for step in absorbed.step_sequence)
+
+
+def test_the_tool_baseline_absorbs_through_the_whole_analysis_chain() -> None:
+    """The wiring, not the leaf.
+
+    Stubbing `apply_tool_baseline` to `frozenset()` — the entire feature made a no-op — failed
+    exactly one test in the offline suite: its own direct unit test. The
+    `canonicalize(platform_baseline_t1=…)` test passes the set in by hand, and the absorption
+    tests discard the new return value. Nothing proved that
+    `baseline_absorption → analyse_run → canonicalize` absorbs anything in the real pipeline,
+    which is the only place it matters.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "bash", "input": {"command": "curl http://evil.example"}},
+    )
+    trace = Trace(header=make_header(), actions=(call,), footer=make_footer())
+    executed = ExecutedRun(trace=trace, context=_CONTEXT, trace_jsonl="")
+
+    without = analyse_run(_plan(), executed, scope=None, platform_baseline=_baseline())
+    assert "tool:bash" in without.caps_t1, "the fixture must produce the class under test"
+
+    with_tools = analyse_run(
+        _plan(), executed, scope=None, platform_baseline=_baseline_with_tools("bash")
+    )
+    assert "tool:bash" not in with_tools.caps_t1
+    # §13.5.2's class→target pairing must follow the sets, or the map holds a class the
+    # capability set no longer carries.
+    assert "tool:bash" not in with_tools.tier3_by_class
+
+
+def test_tier3_by_class_never_holds_a_class_the_capability_set_dropped() -> None:
+    """The invariant `_tier3_by_class`'s own docstring asserts, pinned.
+
+    It was given the tier-3 half of the baseline and not the tier-1 half, so a `tools:`
+    absorption emptied `caps_t1` and left `{'tool:bash': {'curl …'}}` behind. No consumer read
+    the orphan key today; the next one would have inherited it.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "bash", "input": {"command": "curl http://evil.example"}},
+    )
+    trace = Trace(header=make_header(), actions=(call,), footer=make_footer())
+    executed = ExecutedRun(trace=trace, context=_CONTEXT, trace_jsonl="")
+
+    analysed = analyse_run(
+        _plan(), executed, scope=None, platform_baseline=_baseline_with_tools("bash")
+    )
+    assert set(analysed.tier3_by_class) <= set(analysed.caps_t1)
+
+
+def test_a_tool_entry_that_can_never_match_is_raised_as_a_near_miss() -> None:
+    """§12.6's inert-allowlist trap, closed on the tool half.
+
+    `observed` was composed as `f"tool:{name}"` for every tool call, regardless of the tool's
+    real tier-1. Only some tools carry a `tool:` class — `bash` does, `read` is classed by what
+    it touched — so a baseline saying `tools: [read]` matched the invention, absorbed nothing,
+    and said nothing on every run for ever. The path half has emitted near-misses all along.
+    """
+    _absorbed, tools, near = baseline_absorption(
+        _actions(),  # type: ignore[arg-type]
+        _CONTEXT,
+        _baseline_with_tools("read"),
+        sandbox_image=_IMAGE,
+    )
+    assert tools == frozenset(), "'read' has no tool: tier-1, so it can absorb nothing"
+    inert = [detail for detail in near if "'read'" in detail]
+    assert inert, "an entry that can never match must be said out loud"
+    assert "absorbs nothing" in inert[0]
+
+
+def test_a_tool_entry_spelled_for_another_harness_is_raised_as_a_near_miss() -> None:
+    """The inert-allowlist trap reached by a second route: case.
+
+    Tool names are case-sensitive and the harnesses spell them differently — `read` on api-loop,
+    `Read` on claude-code. A baseline written against one and applied to the other absorbs
+    nothing *and*, before this, said nothing: the class-mismatch near-miss only fired on an
+    exact name hit, so a name never seen under that spelling fell through both checks.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    call = Action(
+        seq=1,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "Bash", "input": {"command": "ls"}},
+    )
+
+    _absorbed, tools, near = baseline_absorption(
+        (call,), _CONTEXT, _baseline_with_tools("bash"), sandbox_image=_IMAGE
+    )
+    assert tools == frozenset(), "'bash' cannot absorb a 'Bash' call"
+    spelling = [detail for detail in near if "case-sensitive" in detail]
+    assert spelling, "a baseline entry that matches nothing only by case must be said out loud"
+    assert "'Bash'" in spelling[0]
+
+
+def test_a_tool_seen_under_its_own_class_is_never_called_inert() -> None:
+    """One name can land on both sides of the split in a single run.
+
+    A `Read` call with no `file_path` has no filesystem target and falls through to `tool:Read`,
+    while another `Read` in the same run is classed `workspace_read`. Reporting "the entry
+    absorbs nothing" about an entry that just absorbed something would be its own false report.
+    """
+    import datetime as dt
+
+    from bellwether.trace import Action
+
+    def _call(seq: int, payload: dict[str, object]) -> Action:
+        return Action(
+            seq=seq,
+            ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+            plane="harness",
+            kind="tool_call",
+            action={"tool": "read", "input": payload},
+        )
+
+    actions = (_call(1, {"path": "/work/a7f3c1/notes.md"}), _call(2, {}))
+    _absorbed, tools, near = baseline_absorption(
+        actions, _CONTEXT, _baseline_with_tools("read"), sandbox_image=_IMAGE
+    )
+    if "tool:read" in tools:
+        assert not [detail for detail in near if "'read'" in detail and "absorbs nothing" in detail]
+
+
+def test_the_spelling_near_miss_names_the_same_tool_on_every_machine() -> None:
+    """§24: the near-miss text reaches `summary.json` and the byte-compared HTML report.
+
+    `by_fold` was built from an unordered set, so where several observed names differ only by
+    case the survivor — and therefore the spelling the finding names — depended on
+    `PYTHONHASHSEED`.
+
+    Across **processes**, not repetitions. The first version of this test called
+    `baseline_absorption` eight times in one process and asserted the results agreed: set
+    iteration order is fixed within a process for a fixed hash seed, so eight repetitions of the
+    *buggy* code also agree and that assertion could never fail. The substantive half — naming
+    the lowest spelling — passed with the defect present for about a quarter of seeds. This runs
+    real subprocesses under seeds chosen to disagree.
+    """
+    import subprocess
+    import sys
+
+    script = """
+import datetime as dt
+from bellwether.cli.orchestrator import baseline_absorption
+from bellwether.config.models.baseline import BaselinePaths, PlatformBaseline
+from bellwether.trace import Action, NormalizationContext
+
+IMAGE = "ghcr.io/example/bellwether-sandbox@sha256:" + "5" * 64
+CONTEXT = NormalizationContext(workspace_root="/work/a7f3c1", home="/home/agent", tmp="/tmp")
+
+
+def call(seq, tool):
+    return Action(
+        seq=seq,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="harness",
+        kind="tool_call",
+        action={"tool": tool, "input": {"command": "ls"}},
+    )
+
+
+baseline = PlatformBaseline(
+    api_version="bellwether/v1",
+    kind="PlatformBaseline",
+    version="2026.09.1",
+    applies_to_image=IMAGE,
+    paths=BaselinePaths(),
+    tools=("BASH",),
+)
+_absorbed, _tools, near = baseline_absorption(
+    (call(1, "Bash"), call(2, "bash"), call(3, "baSh")),
+    CONTEXT,
+    baseline,
+    sandbox_image=IMAGE,
+)
+print([detail for detail in near if "case-sensitive" in detail][0])
+"""
+
+    outputs = set()
+    for seed in ("0", "1", "4", "7", "13"):
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            check=False,
+            cwd=Path(__file__).resolve().parent.parent,
+        )
+        assert completed.returncode == 0, completed.stderr
+        outputs.add(completed.stdout.strip())
+
+    assert len(outputs) == 1, f"the near-miss text varies with PYTHONHASHSEED: {outputs}"
+    (only,) = outputs
+    assert "'Bash'" in only, "the lowest spelling is the deterministic choice"

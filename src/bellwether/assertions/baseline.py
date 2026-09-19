@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Literal
 
 from bellwether.config.models.baseline import PlatformBaseline
@@ -36,7 +38,9 @@ __all__ = [
     "ObservedProcess",
     "ProcessAttribution",
     "apply_path_baseline",
+    "apply_tool_baseline",
     "attribute_process",
+    "expand_braces",
     "glob_to_regex",
 ]
 
@@ -92,6 +96,40 @@ class BaselineApplication:
     #: Resolved path → the entry that matched, for the report's audit trail.
     matched_rules: dict[str, str] = field(default_factory=dict)
     near_misses: tuple[NearMiss, ...] = ()
+
+
+def apply_tool_baseline(
+    observed: Sequence[str],
+    baseline: PlatformBaseline,
+    *,
+    sandbox_image: str,
+) -> frozenset[str]:
+    """The tier-1 ``tool:<name>`` capabilities the §12.6 baseline accounts for.
+
+    The third of §12.6's three areas, and the last one a capture plane does not block.
+    ``paths`` has absorbed since the baseline landed; ``processes`` waits on the §10.3
+    process plane (v0.3), because tree attribution is what its ``helpers_of`` rules are
+    written in terms of and there are no process trees to attribute against. ``tools``
+    needs neither: a tool call is Plane A evidence, which every run already has.
+
+    Matched by exact name, not by glob. A path baseline is written in globs because paths
+    are hierarchical and unbounded; a tool name is a fixed identifier from the harness's own
+    vocabulary, and a glob there would let ``*`` quietly absorb the whole tool surface —
+    exactly the failure the allowlist exists to prevent.
+
+    Ships empty, and that is the point: §12.6's own default says ``tools: []`` because a tool
+    call is agent behaviour, not infrastructure, until a harness demonstrates otherwise. This
+    gives a harness that *does* demonstrate it somewhere to say so, rather than leaving the
+    field parsed and inert.
+
+    Refuses — absorbing nothing — where the baseline is not keyed to this run's image, the
+    same rule and for the same reason as the path half.
+    """
+    applicable, _ = baseline.applicable_to(sandbox_image)
+    if not applicable or not baseline.tools:
+        return frozenset()
+    accounted = set(baseline.tools)
+    return frozenset(cap for cap in observed if cap.partition(":")[2] in accounted)
 
 
 def apply_path_baseline(
@@ -210,11 +248,52 @@ def glob_to_regex(pattern: str) -> re.Pattern[str]:
     """Compile one baseline glob: ``**`` crosses directories, ``*`` and ``?`` stay
     within a segment, ``{a,b}`` alternates, everything else — placeholders included —
     is literal."""
-    alternatives = _expand_braces(pattern)
-    return re.compile("|".join(f"(?:{_translate(alt)})" for alt in alternatives))
+    # Through the capped, cached path. The cap was first placed on `expand_braces` alone — the
+    # cheap literal-prefix helper — while this function, which `assertions/derive.py` calls on
+    # `scope.filesystem.read`/`.write` straight from the manifest *under review*, still expanded
+    # without one and then compiled the result into a single regex. Measured on the very entry
+    # the cap was written for, that was 78 seconds and a 41 MB pattern at 20 groups, and over
+    # two minutes at 22. The cap was on the wrong door.
+    return re.compile("|".join(f"(?:{_translate(alt)})" for alt in expand_braces(pattern)))
 
 
-def _expand_braces(pattern: str) -> list[str]:
+class _TooManyAlternativesError(Exception):
+    """One entry stands for more alternatives than the cap allows."""
+
+
+#: The most alternatives one entry may stand for. Expansion is the *product* of the groups'
+#: choice counts, and the manifest is part of the package *under review*. Past the cap the entry
+#: is matched literally: it stops being a convenience, never a crash.
+_MAX_BRACE_ALTERNATIVES = 1024
+
+
+@lru_cache(maxsize=512)
+def expand_braces(pattern: str) -> tuple[str, ...]:
+    """The public name for brace expansion, for callers matching declarations themselves.
+
+    Cached and capped. The §13.5.4 declaration rule re-expands the same entry for every
+    (hit, entry) pair of every run, so an uncached expansion multiplies a cost the manifest
+    author controls.
+
+    The §13.5.4 declaration rule anchors a literal prefix rather than compiling a regex, so it
+    needs the alternatives a braced entry stands for. Without this, one manifest line is
+    simultaneously a supported declaration in the Declared-vs-Observed table (which compiles
+    through :func:`glob_to_regex`, and so expands braces) and an *undeclared* sensitive access
+    to the gate — a false positive on a declaration the author correctly believes they wrote.
+    """
+    # The limit is enforced *during* the recursion, which is the only place it can be. Counting
+    # opening braces and comparing 2ⁿ — the first cut — assumed every group was binary: six
+    # ten-way groups count as 64 and expand to a million, so a 137-character entry sailed past
+    # a cap of 1024 by three orders of magnitude, while eleven *nested* groups standing for
+    # twelve alternatives were refused. The check inside the recursion bounds the accumulated
+    # list at every level, so the work is bounded too, not just the result.
+    try:
+        return tuple(_expand_braces(pattern, limit=_MAX_BRACE_ALTERNATIVES))
+    except _TooManyAlternativesError:
+        return (pattern,)
+
+
+def _expand_braces(pattern: str, *, limit: int | None = None) -> list[str]:
     """``/etc/{passwd,group}`` → ``["/etc/passwd", "/etc/group"]``, recursively.
 
     A ``{`` preceded by ``$`` is a placeholder, not alternation: expanding
@@ -239,7 +318,14 @@ def _expand_braces(pattern: str) -> list[str]:
                 head, body, tail = pattern[:start], pattern[start + 1 : index], pattern[index + 1 :]
                 expanded: list[str] = []
                 for choice in _split_alternatives(body):
-                    expanded.extend(_expand_braces(head + choice + tail))
+                    expanded.extend(_expand_braces(head + choice + tail, limit=limit))
+                    if limit is not None and len(expanded) > limit:
+                        # Raised, not returned: returning the *sub*-pattern here spliced a
+                        # half-expanded string into the caller's list, so the result was neither
+                        # the full expansion nor the literal entry. The caller catches this and
+                        # falls back to the whole pattern, which is the only honest answer once
+                        # the entry is too big to stand for its alternatives.
+                        raise _TooManyAlternativesError
                 return expanded
     return [pattern]  # unbalanced brace: treat literally rather than guessing
 
