@@ -715,3 +715,81 @@ def test_the_golden_trace_canonicalizes_to_a_stable_form() -> None:
     ]
     assert canonical.caps_t1 == ("tool:skill", "workspace_read", "workspace_write")
     assert canonical.sensitive_hits == ()
+
+
+# ---------------------------------------------------------------------------
+# The harness's egress is not the skill's capability (§13.5.1, §10.5.0)
+# ---------------------------------------------------------------------------
+
+
+def _egress(seq: int, host: str, egress_class: str) -> Action:
+    return Action(
+        seq=seq,
+        ts=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
+        plane="egress",
+        kind="egress_request",
+        action={
+            "method": "POST",
+            "scheme": "https",
+            "host": host,
+            "port": 443,
+            "path": "/v1/messages",
+            "egress_class": egress_class,
+            "headers": {},
+            "request_body_bytes": 10,
+        },
+    )
+
+
+def test_a_run_whose_only_egress_was_the_harnesss_carries_no_skill_egress_capability() -> None:
+    """The `claude-code` shape: the CLI's own model call and its telemetry leave through the
+    same proxy the skill's would. Before the split, a skill that made no request at all came
+    out of canonicalization holding two weight-10 capabilities."""
+    from bellwether.constants import DEFAULT_CAPABILITY_WEIGHTS
+    from bellwether.metrics.capability import capability_weight
+
+    canon = canonicalize(
+        [
+            _egress(0, "api.anthropic.com", "model_api"),
+            _egress(1, "statsig.anthropic.com", "harness_infrastructure"),
+        ],
+        NormalizationContext(workspace_root="/work"),
+    )
+
+    assert not any(cap.startswith("egress:") for cap in canon.caps_t1), canon.caps_t1
+    assert canon.caps_t1 == (
+        "egress_infrastructure:api.anthropic.com",
+        "egress_infrastructure:statsig.anthropic.com",
+    )
+    # And at the floor, so harness traffic cannot drive the BCI or trip
+    # `max_rare_capability_risk`, whose cutoff is a risk weight.
+    for cap in canon.caps_t1:
+        assert capability_weight(cap, DEFAULT_CAPABILITY_WEIGHTS) == 1
+
+
+def test_the_skills_own_egress_still_carries_the_weight_the_gate_relies_on() -> None:
+    """The converse, and the one that matters: a split that quietly reclassified the skill's
+    reach would disarm `max_rare_capability_risk` and the BCI together."""
+    from bellwether.constants import DEFAULT_CAPABILITY_WEIGHTS
+    from bellwether.metrics.capability import capability_weight
+
+    canon = canonicalize(
+        [_egress(0, "evil.example.com", "skill_attributed")],
+        NormalizationContext(workspace_root="/work"),
+    )
+
+    assert canon.caps_t1 == ("egress:evil.example.com",)
+    assert capability_weight(canon.caps_t1[0], DEFAULT_CAPABILITY_WEIGHTS) == 10
+
+
+def test_the_step_sequence_still_records_the_harnesss_egress() -> None:
+    """Reclassified, not dropped. *How* the run went includes the infrastructure moves — the
+    same reason §11.4 keeps baseline-absorbed paths in the sequence while removing them from
+    the capability sets."""
+    canon = canonicalize(
+        [_egress(0, "api.anthropic.com", "model_api")],
+        NormalizationContext(workspace_root="/work"),
+    )
+    assert canon.step_sequence == (
+        ("egress_request", None, "egress_infrastructure:api.anthropic.com"),
+    )

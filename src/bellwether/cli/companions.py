@@ -24,13 +24,30 @@ skill it loaded — is what shows they were discoverable, as ``skill_offered`` e
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from bellwether.config.models.scenarios import Scenario
 from bellwether.errors import BellwetherError, SkillError
 from bellwether.skill import SkillPackage, load_skill
 
 __all__ = ["companion_resolver", "resolve_companions"]
+
+
+def _is_bare_name(name: str) -> bool:
+    """Whether ``name`` is a single directory name rather than a path.
+
+    Checked before the name is joined onto anything, because the join is what makes a path
+    dangerous. ``\\`` is refused alongside ``/`` even on POSIX: the entry comes from a YAML
+    file that may have been written on Windows, and a name the loader silently keeps whole
+    here would be a path on the machine it came from.
+    """
+    return (
+        bool(name)
+        and name not in (".", "..")
+        and "/" not in name
+        and "\\" not in name
+        and not PurePosixPath(name).is_absolute()
+    )
 
 
 def resolve_companions(
@@ -45,6 +62,18 @@ def resolve_companions(
     packages: list[SkillPackage] = []
     where = f"scenario {scenario_id!r}" if scenario_id else "the scenario"
     for name in names:
+        # A companion is named by its **name**, and a name is one directory under `skills/`
+        # (§5). Joining the entry as a path let `../…` reach a skill outside the tree — a
+        # scenario file choosing what the container is offered — and let `./<name>` walk past
+        # the self-companion refusal below, putting the skill under test in front of the
+        # harness twice under two names, which is the one thing that refusal exists to stop.
+        if not _is_bare_name(name):
+            raise BellwetherError(
+                f"{where} lists {name!r} in also_load_skills, which is a path rather than a "
+                "skill name; a companion is named by its name and resolves to the sibling "
+                "directory skills/<name>/ (§5), so the entry must be a single directory name "
+                "with no separators and not '.' or '..'"
+            )
         if name == skill_dir.name:
             raise BellwetherError(
                 f"{where} lists the skill under test ({name!r}) in also_load_skills; a skill "

@@ -43,8 +43,14 @@ _READ_CLASSES = frozenset({"workspace_read", "outside_workspace_read"})
 _WRITE_CLASSES = frozenset(
     {"workspace_write", "outside_workspace_write", "workspace_delete", "harness_state_write"}
 )
-#: Classes that are findings or denials and must never be laundered into an allowlist.
+#: Classes that are findings, denials, or the harness's own traffic, and must never be
+#: laundered into an allowlist.
 _NEVER_DECLARED_PREFIXES = ("egress_blocked:", "dns:", "dns_query:")
+#: The harness's own egress (§10.5.0): the model API and the declared infrastructure
+#: endpoints. Declaring these as the *skill's* would be the worst kind of inference — it
+#: writes `api.anthropic.com` into the skill's `network.egress_allow`, so a later genuine
+#: exfiltration to the model API reads as declared-and-allowed.
+_HARNESS_EGRESS_PREFIX = "egress_infrastructure:"
 _NEVER_DECLARED = frozenset({"canary_read", "subagent_spawn"})
 
 
@@ -132,6 +138,15 @@ def infer_scope(summary: Summary) -> InferredScope:
                         "credentials.expects",
                     )
                 )
+        elif tier1.startswith(_HARNESS_EGRESS_PREFIX):
+            undeclared.append(
+                (
+                    tier1,
+                    f"{listed}: the harness's own egress (the model API or a declared "
+                    "infrastructure endpoint), not the skill's; declaring it would let a later "
+                    "request to that host read as permitted",
+                )
+            )
         elif tier1.startswith("egress:"):
             egress.add(tier1.removeprefix("egress:"))
         elif tier1.startswith("process:"):

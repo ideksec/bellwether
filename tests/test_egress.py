@@ -409,18 +409,80 @@ def test_permitted_and_blocked_flows_get_distinct_kinds() -> None:
     assert [a.seq for a in actions] == [0, 1]
 
 
-def test_a_permitted_flow_canonicalises_to_an_egress_capability() -> None:
+def test_a_permitted_skill_flow_canonicalises_to_an_egress_capability() -> None:
     """The regression the kind-name bug hid: a permitted egress flow must reach the
     capability sets as ``egress:<host>``. The prior test only checked the kind string, so a
     permitted flow that canonicalised to *nothing* passed it — the exact 'test asserts the
-    wrong thing' shape the project warns about."""
+    wrong thing' shape the project warns about.
+
+    The host is the *skill's*, which is the other half of the same lesson: the earlier version
+    of this test used ``api.anthropic.com``, so it asserted that a **model-API** flow becomes
+    the weight-10 ``egress:<host>`` class — which is what §13.5.1 excludes when it weights that
+    class "(non-model)".
+    """
     from bellwether.trace import NormalizationContext
     from bellwether.trace.canonical import capability_for
 
-    action = egress_actions([_flow("api.anthropic.com")])[0]
+    action = egress_actions([_flow("evil.example.com", extra=frozenset({"evil.example.com"}))])[0]
     capability = capability_for(action, NormalizationContext(workspace_root="/work/x"))
     assert capability is not None
-    assert capability.tier1 == "egress:api.anthropic.com"
+    assert capability.tier1 == "egress:evil.example.com"
+
+
+@pytest.mark.parametrize(
+    ("host", "expected_class"),
+    [
+        ("api.anthropic.com", "model_api"),
+        ("telemetry.example-harness.com", "harness_infrastructure"),
+    ],
+)
+def test_the_harnesss_own_egress_is_not_the_skills_capability(
+    host: str, expected_class: str
+) -> None:
+    """§13.5.1 weights ``egress:<host>`` at 10 and says "(non-model)" in the same breath.
+
+    Under ``claude-code`` the CLI's model calls originate inside the sandbox and leave through
+    the proxy, so before this split a skill that made no request at all carried two weight-10
+    capabilities — the model API and the harness's telemetry host. They reached the BCI,
+    `max_rare_capability_risk` (weight ≥ cutoff blocks, so a telemetry host in one run of six
+    blocked the verdict), the §17.5 baseline and `init-manifest`. They also made the two
+    harnesses incomparable: api-loop's model calls are host-side and never cross this proxy.
+    """
+    from bellwether.trace import NormalizationContext
+    from bellwether.trace.canonical import capability_for
+
+    flow = _flow(host)
+    assert flow.egress_class == expected_class
+    capability = capability_for(
+        egress_actions([flow])[0], NormalizationContext(workspace_root="/work/x")
+    )
+    assert capability is not None
+    assert capability.tier1 == f"egress_infrastructure:{host}"
+
+
+def test_an_unlabelled_flow_is_read_as_the_skills_not_the_harnesss() -> None:
+    """The safe direction for an observation we cannot attribute.
+
+    A record with no ``egress_class`` is one the capture layer did not label. Reading that as
+    infrastructure would drop it to the floor weight on the strength of a missing field — a
+    silent downgrade of the exact signal the class exists to carry — so it reads as the skill's.
+    """
+    import datetime as dt
+
+    from bellwether.trace import NormalizationContext
+    from bellwether.trace.canonical import capability_for
+    from bellwether.trace.models import Action
+
+    unlabelled = Action(
+        seq=0,
+        ts=dt.datetime(2026, 8, 6, tzinfo=dt.UTC),
+        plane="egress",
+        kind="egress_request",
+        action={"method": "POST", "scheme": "https", "host": "unknown.example", "port": 443},
+    )
+    capability = capability_for(unlabelled, NormalizationContext(workspace_root="/work/x"))
+    assert capability is not None
+    assert capability.tier1 == "egress:unknown.example"
 
 
 def test_the_record_carries_class_and_body_digest_but_not_the_body() -> None:

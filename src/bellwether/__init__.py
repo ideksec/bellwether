@@ -27,4 +27,4 @@ SUMMARY_SCHEMA_VERSION = "1.0"
 #: Canonicalization version recorded in every trace's ``canon`` block (§11.4, §11.6).
 #: Bump this whenever normalization, epoch anchoring, or the trajectory planes change;
 #: traces canonicalized under different versions are not comparable.
-CANON_VERSION = "1.0"
+CANON_VERSION = "1.1"

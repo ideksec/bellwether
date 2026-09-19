@@ -680,6 +680,25 @@ nothing else would close it) and ran its closes in sequence, so the first to rai
 both were proven by reverting them. Two further findings are left for their own brick because they
 are in files this change does not touch — see the list below.
 
+**The harness's egress is no longer the skill's capability, and a companion is a name again.**
+Two loose ends carried out of the previous brick; the second was much the larger. §13.5.1 weights
+`egress:<host>` at 10 and says "(non-model)" in the same breath, and the canonicalizer did not
+honour the parenthesis — every egress class collapsed to the same capability, though the assertions
+layer already filtered to `skill_attributed` everywhere. Under `claude-code`, where the CLI's model
+calls leave through the same proxy a skill's would, a skill that made **no request at all** came
+out holding two weight-10 capabilities: the model API and the harness's telemetry host. They fed
+the BCI, `max_rare_capability_risk` (whose cutoff is a risk weight, so a telemetry host in one run
+of six could block a verdict), the §17.5 baseline, and `init-manifest` — which wrote
+`api.anthropic.com` into the *skill's* `network.egress_allow`, so a later genuine exfiltration to
+the model API would read as declared-and-allowed. It also made the two harnesses incomparable,
+since api-loop runs the model host-side and never crosses this proxy. Non-skill egress is now
+`egress_infrastructure:<host>` at the floor weight, reclassified rather than dropped (it stays in
+the step sequence), with an unlabelled flow deliberately reading as the *skill's*. `CANON_VERSION`
+→ `1.1`; the committed demo artifacts and golden trace were regenerated, and every demo verdict is
+unchanged. Separately, `also_load_skills` entries are validated as a single path component before
+they are joined: `../…` reached outside the skills tree, and `./<name>` walked past the
+self-companion refusal to put the skill under test in front of the harness twice.
+
 A **fifth round** found nothing merge-blocking and four worth fixing, three of them in the previous
 two rounds' own code. The `--out` exclusion was keyed on the *default* directory, so `--out
 artifacts` on a self-checkout bundle still staged previous evaluations' verdicts: `staged_exclusion`
@@ -731,7 +750,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1314 tests: 1256 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
+1331 tests: 1273 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -871,14 +890,9 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    second harness and the loose ends below.
 
 Loose ends to fold in along the way: **process and tool attribution against the platform baseline**
-(the path half is wired; §10.3 process trees need the process plane); **`also_load_skills` accepts a
-path, not a name** (`cli/companions.py` joins the entry onto the skills directory with no
-single-component check, so `../…` escapes the tree and `./<name>` slips past the self-companion
-refusal — §5 says a companion is a sibling); and **`init-manifest` declares infrastructure egress**
-(`cli/infer_manifest.py` turns every `egress:<host>` capability into a `network.egress_allow` entry
-without filtering on egress class, so the model API and the harness's own hosts land in the skill's
-declaration; the class is on the action payload, the canonical capability drops it). *(WP-14's live doctor
-interception probe and plugin-layout staging have since landed — see the entries at the top.)*
+(the path half is wired; §10.3 process trees need the process plane). *(WP-14's live doctor
+interception probe, plugin-layout staging, the `also_load_skills` path-traversal fix and the
+harness-egress capability split have since landed — see the entries at the top.)*
 (`openai_compatible` provider support and the per-run §3.5 **sink path** have since landed — see the
 entries at the top.)
 

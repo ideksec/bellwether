@@ -3110,3 +3110,69 @@ raised on its own.
 re-spelled skipped any command that had drifted and asserted a count, so one command drifting away
 passed exactly as cleanly as none drifting. It names the seven commands exhaustively now, `demo`
 and its deliberate `examples/reports` included; changing the set has to be a deliberate edit.
+
+## §13.5.1, §10.5.0, §7.4 — The harness's egress is not the skill's, and a companion is a name
+
+Two loose ends carried out of the previous brick, and the second turned out to be the larger of
+the two by some distance.
+
+**A companion is named by its name (§5, §7.4).** `resolve_companions` joined each
+`also_load_skills` entry onto the skills directory as a *path*, so `../elsewhere/smuggled` reached
+a skill outside the tree — a scenario file choosing what the container is offered, from anywhere
+the process can read — and `./<name>` compared unequal to the directory name while resolving to it,
+walking straight past the self-companion refusal and putting the skill under test in front of the
+harness twice under two names. That is the one outcome the refusal exists to prevent, because
+"which activated" then has no answer. Entries are now validated as a single path component before
+the join, since the join is what makes a path dangerous; backslash is refused on POSIX too,
+because the entry comes from a YAML file that may have been written on Windows.
+
+**§13.5.1 weights `egress:<host>` at 10 and says "(non-model)" in the same breath.** The
+canonicalizer did not honour that parenthesis: every egress class collapsed to `egress:<host>`. The
+assertions layer already draws the line — `derive`, `engine` and the §10.8 precedence matrix all
+filter to `skill_attributed` — so this was the one place that did not.
+
+Under `claude-code` the cost is not theoretical. The CLI's model calls originate *inside* the
+sandbox and leave through the same recording proxy a skill's would, so a skill that made no request
+at all came out of canonicalization holding two weight-10 capabilities: the model API and the
+harness's telemetry host. Those reached
+
+- the **BCI**, as risk-weighted classes the skill never exercised;
+- **`max_rare_capability_risk`** (§13.5.2), whose cutoff *is* a risk weight — a telemetry host
+  appearing in one run of six is a rare weight-10 capability, so the harness's own traffic could
+  block a verdict;
+- the **§17.5 baseline**, where a harness endpoint change reads as capability expansion; and
+- **`init-manifest`**, which wrote `api.anthropic.com` into the skill's `network.egress_allow` —
+  the laundering that module exists to prevent, performed on the one host where a later genuine
+  exfiltration would then read as declared-and-allowed.
+
+It also made the two harnesses incomparable. `api-loop` runs the model host-side, so its model
+calls never cross the sandbox proxy at all; the same skill under the two harnesses produced two
+different capability profiles, which is exactly what the §13.5 tier model is supposed to hold
+still.
+
+Non-skill-attributed egress is therefore its own tier-1 class, `egress_infrastructure:<host>`, at
+the floor weight — written into `DEFAULT_CAPABILITY_WEIGHTS` explicitly rather than left to fall
+there by omission, so the choice is visible and overridable, the same treatment `egress_blocked`
+already gets. §11.3 does not enumerate a tier-1 class for this, the same gap the DNS branch fills
+for "`dns_query` outside allowlist"; this note is the record of filling it.
+
+Two details worth keeping. A record with **no** `egress_class` reads as the skill's, not the
+harness's: an unlabelled flow is an observation we could not attribute, and downgrading it to the
+floor on the strength of a missing field is a silent loss of the exact signal the class carries.
+And the infrastructure egress is **reclassified, not dropped** — it stays in the step sequence,
+because *how* a run went includes its infrastructure moves, which is the same reason §11.4 keeps
+baseline-absorbed paths in the sequence while removing them from the capability sets.
+
+`CANON_VERSION` goes to `1.1`: capability derivation changed, so traces canonicalized either side
+are not comparable, and the §17.5 comparability table refuses to compose a regression across the
+boundary rather than comparing two different things. The weights digest moves too, by the
+mechanism §13.5.1 already provides for exactly that. The committed demo artifacts and the golden
+trace were regenerated; the only differences are those two versions, and every demo verdict is
+unchanged.
+
+**A correction worth recording**, because it nearly became the brick. An initial reading of the
+weight table concluded that `egress_non_model`, `dns_outside_allowlist` and `process_exec` were
+dead keys taking the floor weight — the policy names finding kinds, the metric keys on base
+classes. They are not dead: `resolve_capability_weights` translates between the two, and the first
+test of this bypassed it and read the raw policy dict. The lesson is the project's own and was
+applied in the wrong direction: run the real path, not a shortcut through it.

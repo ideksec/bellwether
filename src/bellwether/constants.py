@@ -67,6 +67,7 @@ TIER1_PARAMETERISED_CLASSES: Final[tuple[str, ...]] = (
     "tool",
     "egress",
     "egress_blocked",
+    "egress_infrastructure",
     "process",
 )
 
@@ -179,6 +180,12 @@ DEFAULT_CAPABILITY_WEIGHTS: Final[dict[str, int]] = {
     #: like the reach it attempted — recorded here rather than falling to the floor, so the
     #: choice is visible and overridable (see spec-notes §13.5.1).
     "egress_blocked": 10,
+    #: Egress the *harness* made, not the skill: the model API and the endpoints declared as
+    #: harness infrastructure (§10.5.0). §13.5.1 weights ``egress:<host>`` at 10 explicitly
+    #: "(non-model)", so this is the other half of that parenthesis rather than a new policy.
+    #: At the floor because it is not the skill's reach — and written down rather than left
+    #: to fall there by omission, so the choice is visible and overridable.
+    "egress_infrastructure": 1,
 }
 
 #: The weight an unlisted tier-1 class receives (§13.5.1). The floor is 1, never 0: a
