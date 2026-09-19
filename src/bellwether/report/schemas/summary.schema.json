@@ -545,6 +545,87 @@
       "title": "NoiseFloor",
       "type": "object"
     },
+    "PlatformBaselineSummary": {
+      "additionalProperties": false,
+      "description": "The §12.6 platform baseline, rendered so the subtraction is auditable.\n\n§12.6 requires the baseline's full contents in the report, collapsed by default, and the\nreason is stated there in one line: *a hidden allowlist in a security tool is a liability*.\nScope evaluation runs against ``observed − platform_baseline``, so every entry here is a\nthing the skill did that the report will not show as having been done. Without the list,\nthe most valuable section in the tool is a subtraction nobody can check.\n\n``absorbed`` is what this evaluation actually took out — the audit trail, distinct from the\nallowlist itself, because an entry that never matched anything and an entry that swallowed\nforty reads are very different facts about the same line of YAML.\n\n``near_misses`` are §12.6's other half: activity that differs from a baseline entry only by\na suspicious margin — ``~/.cache/../.aws/credentials``, a process whose argv0 matches a\nhelper but whose parent does not. The spec says raise a finding rather than silently\nabsorbing it, and they are never absorbed; this is where they are said out loud.",
+      "properties": {
+        "absorbed": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Absorbed",
+          "type": "array"
+        },
+        "applied": {
+          "default": false,
+          "title": "Applied",
+          "type": "boolean"
+        },
+        "applies_to_image": {
+          "default": "",
+          "title": "Applies To Image",
+          "type": "string"
+        },
+        "near_misses": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Near Misses",
+          "type": "array"
+        },
+        "paths_read": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths Read",
+          "type": "array"
+        },
+        "paths_write": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths Write",
+          "type": "array"
+        },
+        "processes_always": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Processes Always",
+          "type": "array"
+        },
+        "processes_helpers_of": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Processes Helpers Of",
+          "type": "object"
+        },
+        "tools": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "version": {
+          "default": "",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "title": "PlatformBaselineSummary",
+      "type": "object"
+    },
     "PolicyRef": {
       "additionalProperties": false,
       "properties": {
@@ -764,6 +845,17 @@
       ],
       "default": null
     },
+    "platform_baseline": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlatformBaselineSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "platform_baseline_version": {
       "default": "",
       "title": "Platform Baseline Version",
@@ -784,7 +876,7 @@
       "default": null
     },
     "schema_version": {
-      "default": "1.3",
+      "default": "1.4",
       "title": "Schema Version",
       "type": "string"
     },
@@ -812,6 +904,6 @@
     "security",
     "limitations"
   ],
-  "title": "Bellwether summary.json (schema 1.3)",
+  "title": "Bellwether summary.json (schema 1.4)",
   "type": "object"
 }

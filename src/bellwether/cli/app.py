@@ -102,7 +102,11 @@ def _not_yet(command: str, work_package: str, what: str) -> None:
 @app.command()
 def version(json_output: JsonFlag = False) -> None:
     """Print the Bellwether version."""
-    from bellwether import ARF_VERSION, CANON_VERSION, SUMMARY_SCHEMA_VERSION
+    from bellwether import ARF_VERSION, CANON_VERSION
+
+    # From the module that stamps it, so `version` cannot report a schema the tool does
+    # not emit — it said 1.0 for as long as summaries had said 1.3.
+    from bellwether.report.summary import SCHEMA_VERSION as SUMMARY_SCHEMA_VERSION
 
     _emit(
         {

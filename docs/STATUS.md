@@ -680,6 +680,24 @@ nothing else would close it) and ran its closes in sequence, so the first to rai
 both were proven by reverting them. Two further findings are left for their own brick because they
 are in files this change does not touch — see the list below.
 
+**The platform baseline is published, because it is an allowlist (§12.6).** §12.6 requires its
+full contents in the report, collapsed, and says why in one line — *a hidden allowlist in a
+security tool is a liability*. That was unimplemented: the report carried a version string and
+nothing else, while scope evaluation ran against `observed − platform_baseline`, so every entry
+was something the skill did that declared-vs-observed does not show. Worse, two things were
+computed and then dropped on the floor — `baseline_absorbed` (whose own docstring calls it "the
+audit trail") and `baseline_near_misses`, which §12.6 says MUST raise a finding rather than be
+silently absorbed. The code refused to absorb them and then discarded the finding, which lands
+where absorbing them quietly does. `Summary.platform_baseline` now carries the contents, what was
+absorbed, and the near-misses; the HTML report renders it collapsed and the PR comment carries it
+too, with near-misses **outside** the collapsed block in both. `applied` is kept distinct from an
+empty `absorbed`, and no configured baseline yields no block, because absent is not empty.
+`SCHEMA_VERSION` → `1.4`. Found en route: `bellwether version` printed `summary.json schema 1.0`
+from a second constant while every summary it wrote stamped `1.3` — the duplicate is gone and a
+test asserts the two agree. Still not *applied*: `tools` and `processes` are published but
+`baseline_absorption` handles paths only (tool attribution next; process attribution waits on the
+v0.3 process plane).
+
 **The harness's egress is no longer the skill's capability, and a companion is a name again.**
 Two loose ends carried out of the previous brick; the second was much the larger. §13.5.1 weights
 `egress:<host>` at 10 and says "(non-model)" in the same breath, and the canonicalizer did not
@@ -750,7 +768,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1331 tests: 1273 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
+1341 tests: 1283 offline, 58 under the `docker` mark (49 run, 9 CI-only skips). All green.
 
 ## What's next — remaining work, in recommended order
 
@@ -889,8 +907,10 @@ made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.
    **every v0.1 work package is built**; what is left for the v0.1 line is the live proof of the
    second harness and the loose ends below.
 
-Loose ends to fold in along the way: **process and tool attribution against the platform baseline**
-(the path half is wired; §10.3 process trees need the process plane). *(WP-14's live doctor
+Loose ends to fold in along the way: **applying the platform baseline's `tools` and `processes`**
+(the path half absorbs; the whole baseline is now *published* in the report, but `tools` and
+`processes` are not yet matched against — tool attribution needs no new plane and is the next
+increment, §10.3 process trees wait on the v0.3 process plane). *(WP-14's live doctor
 interception probe, plugin-layout staging, the `also_load_skills` path-traversal fix and the
 harness-egress capability split have since landed — see the entries at the top.)*
 (`openai_compatible` provider support and the per-run §3.5 **sink path** have since landed — see the

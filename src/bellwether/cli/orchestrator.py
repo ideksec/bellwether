@@ -78,6 +78,7 @@ from bellwether.report import (
     GateSummary,
     MatrixSummary,
     NoiseFloor,
+    PlatformBaselineSummary,
     PolicyRef,
     RegressionSummary,
     ScopeRow,
@@ -1839,6 +1840,9 @@ def orchestrate(
     pricing_for: Callable[[TargetInfo], ModelPricing | None] | None = None,
     baseline: BaselineRecord | None = None,
     platform_baseline_version: str = "",
+    #: The §12.6 baseline itself, so the report can render what was subtracted. The version
+    #: string alone says a subtraction happened; it does not say what came out.
+    platform_baseline: PlatformBaseline | None = None,
     extra_notes: Sequence[str] = (),
     deterministic_sampling: bool = False,
 ) -> EvalResult:
@@ -1975,6 +1979,7 @@ def orchestrate(
         spend=spend,
         regression=regression,
         platform_baseline_version=platform_baseline_version,
+        platform_baseline=platform_baseline,
         deterministic_sampling=deterministic_sampling,
     )
 
@@ -2024,6 +2029,44 @@ def _primary(readings: Sequence[SetReading]) -> SetReading:
     return readings[0]
 
 
+def _platform_baseline_summary(
+    baseline: PlatformBaseline | None,
+    readings: Sequence[SetReading],
+    *,
+    applied_version: str,
+) -> PlatformBaselineSummary | None:
+    """The §12.6 baseline as the report renders it, or ``None`` where none was configured.
+
+    Three facts, and the spec asks for all three. The **contents**, because scope evaluation
+    runs against ``observed − platform_baseline`` and a reader cannot check a subtraction
+    whose terms are hidden — §12.6 puts it plainly: a hidden allowlist in a security tool is a
+    liability. What was **absorbed**, because an entry that matched nothing and an entry that
+    swallowed forty reads are different facts about the same line of YAML. And the
+    **near-misses**, which §12.6 requires be raised rather than silently absorbed, and which
+    until now were computed per run and then dropped on the floor.
+
+    ``applied`` is carried separately from an empty ``absorbed``: a baseline that did not apply
+    — not keyed to this run's image — absorbed nothing for a different reason than one that
+    applied and matched nothing, and the two must not read alike.
+    """
+    if baseline is None:
+        return None
+    return PlatformBaselineSummary(
+        version=baseline.version,
+        applies_to_image=baseline.applies_to_image or "",
+        applied=bool(applied_version),
+        paths_read=tuple(baseline.paths.read),
+        paths_write=tuple(baseline.paths.write),
+        processes_always=tuple(baseline.processes.always),
+        processes_helpers_of={
+            root: tuple(helpers) for root, helpers in sorted(baseline.processes.helpers_of.items())
+        },
+        tools=tuple(baseline.tools),
+        absorbed=tuple(sorted({entry for r in readings for entry in r.baseline_absorbed})),
+        near_misses=tuple(sorted({miss for r in readings for miss in r.baseline_near_misses})),
+    )
+
+
 def _build_summary(
     *,
     skill_name: str,
@@ -2043,6 +2086,7 @@ def _build_summary(
     spend: BudgetReading | None = None,
     regression: RegressionReading | None = None,
     platform_baseline_version: str = "",
+    platform_baseline: PlatformBaseline | None = None,
     deterministic_sampling: bool = False,
 ) -> Summary:
     primary = _primary(readings)
@@ -2141,6 +2185,9 @@ def _build_summary(
         # §17.5: the two key components a baseline is filed under, beside the target set.
         canon_version=CANON_VERSION,
         platform_baseline_version=platform_baseline_version,
+        platform_baseline=_platform_baseline_summary(
+            platform_baseline, readings, applied_version=platform_baseline_version
+        ),
         matrix=matrix,
         verdict=VerdictSummary(
             status=verdict.verdict, gates=_gate_summaries(gates), notes=verdict.notes

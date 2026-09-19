@@ -488,6 +488,10 @@ def run_evaluation(
         pricing_for=pricing_for,
         baseline=baseline,
         platform_baseline_version=applied_baseline.version if applied_baseline else "",
+        # The baseline itself, not just the version it was stamped with: §12.6 requires its
+        # contents in the report, and a configured-but-unapplied baseline still has to be
+        # rendered with the reason, or "not applied" reads as "nothing to absorb".
+        platform_baseline=platform_baseline,
         extra_notes=baseline_notes,
         deterministic_sampling=deterministic_sampling,
     )

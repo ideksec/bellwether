@@ -310,6 +310,57 @@ def _trace_inconsistency_section(summary: Summary) -> list[str]:
     ]
 
 
+def _platform_baseline_section(summary: Summary) -> list[str]:
+    """The §12.6 baseline in the PR comment: allowlist collapsed, near-misses not.
+
+    §12.6 requires the contents in the HTML report. They belong here too, because the PR
+    comment is where a reviewer actually looks — an allowlist auditable only inside an
+    uploaded artifact is close to not auditable. The near-misses sit *outside* the collapsible
+    on purpose: §12.6 asks that they be raised rather than silently absorbed, and a raised
+    finding folded behind a disclosure triangle is halfway back to silent.
+    """
+    baseline = summary.platform_baseline
+    if baseline is None:
+        return []
+
+    def _bullets(title: str, entries: tuple[str, ...]) -> str:
+        if not entries:
+            return f"{title}: none"
+        listed = "\n".join(f"- `{entry}`" for entry in entries)
+        return f"{title}:\n{listed}"
+
+    helpers = tuple(
+        f"{root}: {', '.join(helpers)}" for root, helpers in baseline.processes_helpers_of.items()
+    )
+    state = (
+        f"Applied, version `{baseline.version}`."
+        if baseline.applied
+        else f"Configured (version `{baseline.version}`) but **not applied** to this run."
+    )
+    body = "\n\n".join(
+        [
+            state,
+            "Scope evaluation runs against *observed − platform baseline*, so everything "
+            "below was subtracted before the declared-vs-observed table above was built.",
+            _bullets(f"Absorbed by this evaluation ({len(baseline.absorbed)})", baseline.absorbed),
+            _bullets("Paths read", baseline.paths_read),
+            _bullets("Paths written", baseline.paths_write),
+            _bullets("Processes permitted anywhere", baseline.processes_always),
+            _bullets("Process helpers", helpers),
+            _bullets("Tools", baseline.tools),
+        ]
+    )
+    sections = [_collapsible("Platform baseline (the allowlist, in full)", body)]
+    if baseline.near_misses:
+        listed = "\n".join(f"- `{miss}`" for miss in baseline.near_misses)
+        sections.append(
+            "### Platform baseline near-misses\n\n"
+            "Activity that resembles a baseline entry without matching it. Never absorbed "
+            f"(§12.6).\n\n{listed}"
+        )
+    return sections
+
+
 def render_pr_comment(summary: Summary, figures: Figures) -> str:
     """Render the full PR comment (§17.4, §18.2).
 
@@ -326,6 +377,7 @@ def render_pr_comment(summary: Summary, figures: Figures) -> str:
         + render_capability_heatmap(figures.heatmap, figures.run_labels),
         *_peripheral_section(summary),
         _declared_vs_observed(figures),
+        *_platform_baseline_section(summary),
         _collapsible("Trajectory clusters", render_trajectory_clusters(figures.clusters)),
         _collapsible("Sequential design", _sequential_design(summary)),
         _collapsible(
