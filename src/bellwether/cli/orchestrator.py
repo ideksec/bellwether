@@ -38,6 +38,7 @@ from bellwether.assertions import (
     RunOutcome,
     ScopeTable,
     apply_path_baseline,
+    apply_tool_baseline,
     derive_assertions,
     evaluate_all,
     evaluate_scope,
@@ -619,18 +620,29 @@ def baseline_absorption(
     baseline: PlatformBaseline,
     *,
     sandbox_image: str,
-) -> tuple[frozenset[str], tuple[str, ...]]:
-    """Apply the platform baseline's path entries to one run (§12.6).
+) -> tuple[frozenset[str], frozenset[str], tuple[str, ...]]:
+    """Apply the platform baseline's path and tool entries to one run (§12.6).
 
-    Returns the absorbed tier-3 set — the ``platform_baseline_t3`` canonicalisation
-    subtracts — and the near-miss details. Absorbs nothing where the baseline is not keyed
-    to this run's image; the caller has already surfaced that reason.
+    Returns the absorbed tier-3 set, the absorbed tier-1 set, and the near-miss details.
+    Two sets because §12.6's two applicable areas are identified differently: a path is
+    absorbed by its normalised target (tier 3), while a tool is absorbed by its class —
+    ``tool:bash`` — since its tier-3 is the invocation's argument and subtracting by that
+    would absorb one call and leave the next.
+
+    Absorbs nothing where the baseline is not keyed to this run's image; the caller has
+    already surfaced that reason.
     """
     reads, writes = observed_paths(actions, context)
     read_app = apply_path_baseline(reads, baseline, access="read", sandbox_image=sandbox_image)
     write_app = apply_path_baseline(writes, baseline, access="write", sandbox_image=sandbox_image)
     near = tuple(sorted({miss.detail for miss in (*read_app.near_misses, *write_app.near_misses)}))
-    return read_app.absorbed | write_app.absorbed, near
+    observed_tools = {
+        f"tool:{action.action['tool']}"
+        for action in actions
+        if action.kind == "tool_call" and isinstance(action.action.get("tool"), str)
+    }
+    tools = apply_tool_baseline(sorted(observed_tools), baseline, sandbox_image=sandbox_image)
+    return read_app.absorbed | write_app.absorbed, tools, near
 
 
 def undeclared_sensitive_hits(hits: Sequence[str], scope: DeclaredScope | None) -> tuple[str, ...]:
@@ -689,8 +701,9 @@ def analyse_run(
     context = executed.context
     absorbed: frozenset[str] = frozenset(platform_baseline_t3)
     near_misses: tuple[str, ...] = ()
+    absorbed_t1: frozenset[str] = frozenset()
     if platform_baseline is not None:
-        matched, near_misses = baseline_absorption(
+        matched, absorbed_t1, near_misses = baseline_absorption(
             trace.actions, context, platform_baseline, sandbox_image=trace.header.sandbox.image
         )
         absorbed = absorbed | matched
@@ -703,7 +716,12 @@ def analyse_run(
     results = evaluate_all(specs, index)
     outcome = run_outcome(results, exit_reason=trace.exit_reason, trace_complete=trace.is_complete)
 
-    canon = canonicalize(trace.actions, context, platform_baseline_t3=platform_baseline_t3)
+    canon = canonicalize(
+        trace.actions,
+        context,
+        platform_baseline_t3=platform_baseline_t3,
+        platform_baseline_t1=absorbed_t1,
+    )
     tier3_by_class = _tier3_by_class(trace.actions, context, platform_baseline_t3)
 
     scope_exceeded: tuple[str, ...] = ()

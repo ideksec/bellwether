@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -36,6 +37,7 @@ __all__ = [
     "ObservedProcess",
     "ProcessAttribution",
     "apply_path_baseline",
+    "apply_tool_baseline",
     "attribute_process",
     "glob_to_regex",
 ]
@@ -92,6 +94,40 @@ class BaselineApplication:
     #: Resolved path → the entry that matched, for the report's audit trail.
     matched_rules: dict[str, str] = field(default_factory=dict)
     near_misses: tuple[NearMiss, ...] = ()
+
+
+def apply_tool_baseline(
+    observed: Sequence[str],
+    baseline: PlatformBaseline,
+    *,
+    sandbox_image: str,
+) -> frozenset[str]:
+    """The tier-1 ``tool:<name>`` capabilities the §12.6 baseline accounts for.
+
+    The third of §12.6's three areas, and the last one a capture plane does not block.
+    ``paths`` has absorbed since the baseline landed; ``processes`` waits on the §10.3
+    process plane (v0.3), because tree attribution is what its ``helpers_of`` rules are
+    written in terms of and there are no process trees to attribute against. ``tools``
+    needs neither: a tool call is Plane A evidence, which every run already has.
+
+    Matched by exact name, not by glob. A path baseline is written in globs because paths
+    are hierarchical and unbounded; a tool name is a fixed identifier from the harness's own
+    vocabulary, and a glob there would let ``*`` quietly absorb the whole tool surface —
+    exactly the failure the allowlist exists to prevent.
+
+    Ships empty, and that is the point: §12.6's own default says ``tools: []`` because a tool
+    call is agent behaviour, not infrastructure, until a harness demonstrates otherwise. This
+    gives a harness that *does* demonstrate it somewhere to say so, rather than leaving the
+    field parsed and inert.
+
+    Refuses — absorbing nothing — where the baseline is not keyed to this run's image, the
+    same rule and for the same reason as the path half.
+    """
+    applicable, _ = baseline.applicable_to(sandbox_image)
+    if not applicable or not baseline.tools:
+        return frozenset()
+    accounted = set(baseline.tools)
+    return frozenset(cap for cap in observed if cap.partition(":")[2] in accounted)
 
 
 def apply_path_baseline(

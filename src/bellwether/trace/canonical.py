@@ -127,6 +127,7 @@ def canonicalize(
     context: NormalizationContext,
     *,
     platform_baseline_t3: frozenset[str] = frozenset(),
+    platform_baseline_t1: frozenset[str] = frozenset(),
     sensitive_directories: tuple[str, ...] = SENSITIVE_DIRECTORIES,
     canon: CanonBlock | None = None,
 ) -> CanonicalTrace:
@@ -135,6 +136,10 @@ def canonicalize(
     Args:
         actions: The run's action records, any order; epoch anchoring orders them.
         context: The run-local names to erase.
+        platform_baseline_t1: Tier-1 classes the platform baseline absorbs whole (§12.6's
+            ``tools``). Separate from ``platform_baseline_t3`` because a tool capability is
+            identified by its *class* — ``tool:bash`` — and carries the tool's target at tier
+            3, so subtracting it by target would absorb one invocation and leave the next.
         platform_baseline_t3: Normalized tier-3 entries the platform baseline absorbs,
             subtracted from the capability sets **before** they are produced (§11.4) —
             matched literally. The glob-aware matcher, near-miss flagging included, is
@@ -169,6 +174,11 @@ def canonicalize(
             steps.append((action.kind, tool if isinstance(tool, str) else None, _t1(capability)))
 
         if capability is None:
+            continue
+        if capability.tier1 in platform_baseline_t1:
+            # §12.6 ``tools``: infrastructure the platform accounts for, out of the capability
+            # sets and still in the step sequence — the same treatment, and the same reason, as
+            # a baseline-absorbed path just below.
             continue
         if capability.tier3 is not None and capability.tier3 in platform_baseline_t3:
             # Absorbed as infrastructure: out of the capability sets, still in the

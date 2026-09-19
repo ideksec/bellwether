@@ -23,6 +23,7 @@ from bellwether.assertions.baseline import (
     ObservedProcess,
     ProcessAttribution,
     apply_path_baseline,
+    apply_tool_baseline,
     attribute_process,
     glob_to_regex,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "TraceInconsistency",
     "WriteEvidence",
     "apply_path_baseline",
+    "apply_tool_baseline",
     "attribute_process",
     "derive_assertions",
     "evaluate",

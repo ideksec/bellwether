@@ -80,7 +80,7 @@ def test_observed_paths_keep_the_named_form_beside_the_resolved_one() -> None:
 
 
 def test_absorption_subtracts_entries_and_flags_the_traversal() -> None:
-    absorbed, near = baseline_absorption(
+    absorbed, _tools, near = baseline_absorption(
         _actions(),  # type: ignore[arg-type]
         _CONTEXT,
         _baseline(),
@@ -93,7 +93,7 @@ def test_absorption_subtracts_entries_and_flags_the_traversal() -> None:
 
 
 def test_a_baseline_for_another_image_absorbs_nothing() -> None:
-    absorbed, near = baseline_absorption(
+    absorbed, _tools, near = baseline_absorption(
         _actions(),  # type: ignore[arg-type]
         _CONTEXT,
         _baseline(image="other@sha256:" + "0" * 64),
@@ -224,3 +224,75 @@ def test_no_baseline_yields_no_block_at_all() -> None:
     from bellwether.cli.orchestrator import _platform_baseline_summary
 
     assert _platform_baseline_summary(None, [], applied_version="") is None
+
+
+# ---------------------------------------------------------------------------
+# §12.6 `tools`: the third area, and the last one no capture plane blocks
+# ---------------------------------------------------------------------------
+
+
+def _baseline_with_tools(*tools: str) -> PlatformBaseline:
+    return PlatformBaseline(
+        apiVersion="bellwether/v1",
+        kind="PlatformBaseline",
+        version="2026.08.1",
+        applies_to_image=_IMAGE,
+        tools=tools,
+    )
+
+
+def test_a_tool_the_platform_accounts_for_is_absorbed() -> None:
+    """§12.6 has three areas and `tools` was parsed and inert.
+
+    `paths` has absorbed since the baseline landed; `processes` waits on the §10.3 process
+    plane, because `helpers_of` is written in terms of tree attribution and there are no
+    trees to attribute against. `tools` needs no new plane — a tool call is Plane A evidence
+    every run already has — so it was the one area left unapplied for no reason but reach.
+    """
+    from bellwether.assertions import apply_tool_baseline
+
+    observed = ["tool:bash", "tool:read", "tool:fetch"]
+    absorbed = apply_tool_baseline(observed, _baseline_with_tools("bash"), sandbox_image=_IMAGE)
+    assert absorbed == frozenset({"tool:bash"})
+
+
+def test_tool_names_match_exactly_never_as_globs() -> None:
+    """A path baseline is written in globs because paths are hierarchical and unbounded. A
+    tool name is a fixed identifier from the harness's own vocabulary, and a glob there would
+    let a single `*` absorb the entire tool surface — the failure an allowlist exists to
+    prevent."""
+    from bellwether.assertions import apply_tool_baseline
+
+    observed = ["tool:bash", "tool:read"]
+    assert apply_tool_baseline(observed, _baseline_with_tools("*"), sandbox_image=_IMAGE) == (
+        frozenset()
+    )
+    assert apply_tool_baseline(observed, _baseline_with_tools("ba*"), sandbox_image=_IMAGE) == (
+        frozenset()
+    )
+
+
+def test_a_tool_baseline_for_another_image_absorbs_nothing() -> None:
+    """The same refusal the path half makes, and for the same reason: an unkeyed allowlist
+    absorbs findings it has no standing to absorb."""
+    from bellwether.assertions import apply_tool_baseline
+
+    absorbed = apply_tool_baseline(
+        ["tool:bash"], _baseline_with_tools("bash"), sandbox_image="other@sha256:" + "9" * 64
+    )
+    assert absorbed == frozenset()
+
+
+def test_an_absorbed_tool_leaves_the_capability_set_but_stays_in_the_sequence() -> None:
+    """§11.4's rule, applied to the new area: baseline subtraction removes *what* was touched
+    from the capability sets while the step sequence keeps every step, because how the skill
+    worked includes its infrastructure moves."""
+    from bellwether.trace import canonicalize
+
+    canon = canonicalize(
+        _actions(),
+        _CONTEXT,
+        platform_baseline_t1=frozenset({"tool:read"}),
+    )
+    assert not any(cap.startswith("tool:read") for cap in canon.caps_t1)
+    assert any(step[0] == "tool_call" for step in canon.step_sequence)
