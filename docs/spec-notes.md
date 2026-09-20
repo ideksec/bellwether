@@ -3774,3 +3774,47 @@ on both sides of the table (and no catalogue row, which is the finding's shape m
 Reverting the drain-every-spelling clause to a single `pop` fails the mixed-trace row alone.
 Replacing the matcher with one that folds everything fails the discrimination half on all four
 readers. Each was run and read.
+
+### §19.2, §24 — the run cache is a sibling of the evidence, and CI could not tell them apart
+
+Disclosed by the first labelled live run on PR #78, which failed on an invalid provider key before
+spending anything. The 401 is not the finding; what the log showed underneath it is.
+
+`bellwether run --out <out>` writes two directories directly under `<out>`: the evaluation tree
+`<out>/<eval_id>/`, and — when the run cache is enabled — `<out>/.cache/runs` beside it. Both live
+workflows located the first with `find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1`. That
+is selection by directory-walk order, which §24 rules out for results that must be reproducible,
+and here it is worse than non-deterministic: it can return the cache.
+
+On that run it did, and every step downstream addressed the wrong directory:
+
+- `cat "${eval_dir}/report/pr_comment.md"` printed `(no report was rendered)` — for a run that had
+  rendered one;
+- `bellwether pr-comment "${eval_dir}"` could not find the report and failed behind its `|| true`,
+  so **no verdict was posted to the pull request**;
+- `sudo rm -rf "${eval_dir}/runs"` deleted the *run cache* instead of the overlayfs scratch;
+- `upload-artifact` then hit EACCES on the mode-000 overlayfs workdir that `rm` exists to remove,
+  so **no evidence was uploaded**.
+
+A verdict nobody receives and evidence nobody can inspect, from a job whose own output reads
+clean. That is the same shape as every finding in the round above — a control path rendering a
+clean result without performing the check — and the `|| true` is what let it be silent. It is
+recorded here rather than only in the workflow because the reasoning generalises: **an output tree
+with more than one thing in it needs the consumer to say which one it means, by name.**
+
+The fix has three parts, and the third is the durable one. The selection is sorted and excludes
+the cache sibling. An ambiguous tree — zero candidates, or two — is an **error**, not a guess:
+every later step assumes exactly one, and a wrong guess publishes nothing while reporting success,
+so this is the §16.4 stance (refuse before proceeding on an unsatisfiable assumption) applied to
+the publish path. And the directory name is now `run_cache.CACHE_DIR_NAME` rather than a literal
+in the CLI and a second literal in two workflows, with `tests/test_ci_evidence_paths.py` asserting
+the workflows exclude *that* name — a test at the wiring, not at either helper.
+
+**Revert-proof, per clause.** Restoring `find | head -n1` fails all three assertions. Dropping only
+`! -name .cache` fails only the wiring assertion. Renaming `CACHE_DIR_NAME` in the CLI while
+leaving the workflows untouched fails that assertion on **both** workflows — the coupling doing its
+job, since that rename is precisely the change that would silently unpublish the evidence again.
+
+The 401 itself is not a code defect and has no fix here: the `ANTHROPIC_API_KEY` repository secret
+is present but rejected by the provider, so the live end-to-end confirmation waits on a human
+rotating it.

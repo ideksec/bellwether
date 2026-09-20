@@ -844,7 +844,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1571 tests: 1512 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1577 tests: 1518 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -942,6 +942,35 @@ construction. Per-change measurement, as the rule requires: reverting the fold f
 same-tool rows on both table sides; reverting the drain-every-spelling clause to a single `pop`
 fails the mixed-trace row alone; and making the matcher fold *everything* fails the discrimination
 half on every reader — so the corpus cannot be passed by a predicate that says yes to all input.
+
+### And what the live run itself disclosed, before it could even spend
+
+The labelled run on PR #78 failed in three seconds with **HTTP 401 from the provider — the
+`ANTHROPIC_API_KEY` repository secret is set but the key is rejected**. Nothing was spent; the
+live end-to-end confirmation is blocked on a human rotating that secret, which is the one thing in
+this arc an agent cannot do for itself.
+
+The job log disclosed a **second, unrelated defect that the 401 only happened to reveal**, and it
+is this project's signature failure mode sitting in this project's own CI. Both live workflows
+picked the evaluation tree with `find <out> -maxdepth 1 -type d | head -n1` — directory order,
+which §24 forbids for exactly this reason. `bellwether run` writes the run cache to
+`<out>/.cache/runs` (§19.2) as a *sibling* of `<out>/<eval_id>/`, so the expression can return
+`.cache`, and on this run it did. All four later steps then addressed the wrong directory: the
+report printed "(no report was rendered)" though one had been written, `bellwether pr-comment`
+failed silently behind its `|| true` so **no verdict reached the PR**, the `rm` cleared the run
+cache instead of the overlayfs scratch, and `upload-artifact` died with EACCES on the mode-000
+workdir that `rm` had been there to remove — so **no evidence uploaded either**. The step's own
+output looked clean throughout.
+
+Fixed by selecting deterministically (sorted, the cache sibling excluded) and **refusing rather
+than guessing** when the tree does not hold exactly one candidate — the stance §16.4 already takes
+before spending. The cache directory name is now a named constant (`CACHE_DIR_NAME`) rather than a
+literal in two places, and `tests/test_ci_evidence_paths.py` asserts at the *wiring*: the workflows
+must exclude the name the CLI actually creates, so renaming one side without the other fails the
+build instead of silently unpublishing the evidence again. Revert-proved per clause: dropping the
+whole selection fails all three assertions; dropping only the exclusion fails only the wiring one;
+and renaming the CLI's constant while leaving the workflows alone fails that same assertion on
+**both** workflows, which is the coupling working.
 
 The spec gained the matching invariants: §10.0 quiesce-before-observing and the rules for
 host-side reads of container-written paths; §10.5's decision-host rule and the plaintext-key and
