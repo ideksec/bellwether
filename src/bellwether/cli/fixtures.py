@@ -61,9 +61,19 @@ def resolve_fixture(
     if name == EMPTY_FIXTURE:
         return ResolvedFixture(name=name, path=_empty_workspace(skill_dir))
     if name is not None:
-        candidates = [local_root / name]
-        if shared_root is not None:
-            candidates.append(shared_root / name)
+        roots = [local_root] if shared_root is None else [local_root, shared_root]
+        escaped = [root for root in roots if _under(root, name) is None]
+        if escaped:
+            where = f"scenario {scenario_id!r}" if scenario_id else "the suite"
+            raise BellwetherError(
+                f"{where} names fixture {name!r}, which resolves outside the fixture roots it is "
+                f"looked up in ({', '.join(str(root) for root in roots)}). A fixture name selects a "
+                "directory *inside* a root; an absolute path, a parent traversal, or a symlink out "
+                "of the tree would let a scenario — which is evaluated content, not operator "
+                "configuration — name any directory the evaluator can read and have it copied into "
+                "the sandbox workspace (§7.2, §9.1)."
+            )
+        candidates = [root / name for root in roots]
         for candidate in candidates:
             if candidate.is_dir():
                 return ResolvedFixture(name=name, path=candidate)
@@ -94,6 +104,31 @@ def fixture_resolver(
         return resolve_fixture(skill_dir, name, shared_root=shared_root, scenario_id=scenario.id)
 
     return resolve
+
+
+def _under(root: Path, name: str) -> Path | None:
+    """``root/name`` when it stays inside ``root``, else ``None``.
+
+    Containment is decided by *normalising* — resolve both sides and ask whether one contains the
+    other — rather than by enumerating the spellings that escape. A reject-list has to name
+    absolute paths, ``..`` segments, ``.`` padding, doubled separators, a symlinked subdirectory,
+    and whatever the next one is; the normalised comparison answers all of them with one question.
+    (§13.5.4's matcher was rewritten for the same reason after four review rounds each regressed
+    the previous round's reject-clause.)
+
+    ``resolve()`` follows symlinks on both sides, so a root reached through a symlink still
+    compares equal to itself, and a fixture directory that is a symlink pointing out of the tree
+    is refused rather than followed. An unresolvable path is treated as an escape: this is a
+    security check, so what cannot be shown to be contained is not contained.
+    """
+    try:
+        base = root.resolve()
+        target = (root / name).resolve()
+    except OSError:
+        return None
+    if target != base and base not in target.parents:
+        return None
+    return root / name
 
 
 def _empty_workspace(skill_dir: Path) -> Path:

@@ -158,6 +158,22 @@ tr:last-child td { border-bottom: none; }
       <td>api-loop-scripted-frontier: capabilities observed outside declared scope: ${HOME}/.aws/credentials</td>
     </tr>
     <tr>
+      <td><code>scope.manifest</code></td>
+      <td><span class="chip ok">✓ pass</span></td>
+      <td>manifest present</td>
+      <td>a declared_scope manifest</td>
+      <td class="muted-text">required</td>
+      <td>(package): the package declares its scope, so the declared-vs-observed table is real</td>
+    </tr>
+    <tr>
+      <td><code>human_review</code></td>
+      <td><span class="chip block">✗ block</span></td>
+      <td>no attestation</td>
+      <td>reviewed within 180 day(s)</td>
+      <td class="muted-text">required</td>
+      <td>(package): the policy requires a human review (human_review.required) and the manifest records no metadata.review.last_human_review (§6.3)</td>
+    </tr>
+    <tr>
       <td><code>security_runtime.egress</code></td>
       <td><span class="chip muted">· not_evaluable</span></td>
       <td>unobserved</td>
@@ -273,7 +289,7 @@ tr:last-child td { border-bottom: none; }
 </section>
 <footer class="provenance muted-text">
   <div>eval <code>demo-sneaky-exfiltrator</code> &middot; generated 2026-01-01T12:00:00Z &middot; bellwether 0.1.0-demo &middot; summary schema 1.4</div>
-  <div>package <code>sha256:6df7961a8b5d4a03b4af489c19446a16c7fad40fe6a5088fd40bc1be99af3c3c</code></div>
+  <div>package <code>sha256:ac2645c2c3278546153378c29f5953c454c6618dbf5d151340f0a251391c8a89</code></div>
   <div>policy <code>sha256:6627199ccba4a4ac9ae79e4cb19fbf39e8f5b09f69565fb763c01031e7430d8d</code></div>
 </footer>
 </main>

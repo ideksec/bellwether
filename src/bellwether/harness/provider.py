@@ -138,6 +138,12 @@ class ModelRequest:
     tools: tuple[ToolSpec, ...] = ()
     #: Sampling to pin, when the operator asked for it; ``None`` leaves the provider's default.
     sampling: SamplingSpec | None = None
+    #: The most output this one request may produce, where the caller wants the provider to
+    #: enforce it (§12.7, §19.1). The loop sets it to what is *left* of the run's token budget,
+    #: which is what turns that budget from a figure checked after a completion returns into one
+    #: the provider is told about before it generates. A client lowers its own ceiling to this;
+    #: ``None`` leaves the client's configured ceiling alone.
+    max_output_tokens: int | None = None
 
 
 class ModelClient(Protocol):

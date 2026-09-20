@@ -207,3 +207,83 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
     assert result.artifacts.summary_json.exists()
     assert len(result.artifacts.traces) == 6
     assert result.summary.consistency.bci >= 90
+
+
+def test_the_sandbox_is_gone_and_its_workspace_retained_before_evidence_is_read(
+    backend: DockerBackend, skill_dir: Path, fixture_source: Path, tmp_path: Path
+) -> None:
+    """R7 + R11 on a real container.
+
+    The container used to be removed in the teardown, *after* every plane had been read: the
+    overlay diff, the proxy's flows and the host-side scan of written files all ran while
+    processes inside the sandbox could still be changing what they observed. A detached
+    process is enough — the adapter returning does not mean the process tree stopped — and two
+    planes read at different moments can disagree without either being wrong, which is the one
+    thing §10.8's precedence check cannot tell from a real inconsistency.
+
+    Both halves are asserted here because they are one ordering: the container is gone by the
+    time ``execute`` returns, and the final workspace was copied out while the overlay was
+    still mounted, so content assertions have real bytes to read.
+    """
+    import subprocess
+
+    def containers() -> str:
+        return subprocess.run(
+            [backend.binary, "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+
+    # The ordering is the property, so it is *observed at the moment the plane is read* rather
+    # than after `execute` returns — the teardown removes the container too, so a check at the
+    # end passes whether or not the quiesce happened, and cannot fail on the defect.
+    # The container's name is randomised per run (§3.5), so the test has to learn it from the
+    # sandbox rather than assume it — an earlier draft of this test grepped for the eval id and
+    # passed vacuously, which is the same class of mistake as the defect it is guarding.
+    names: list[str] = []
+    seen_at_collection: list[str] = []
+    real_start = backend.start_persistent
+    real_zone_changes = backend.zone_changes
+
+    def recording_start(prepared, **kwargs):  # type: ignore[no-untyped-def]
+        names.append(prepared.identifiers.container_name)
+        return real_start(prepared, **kwargs)
+
+    def recording_zone_changes(prepared):  # type: ignore[no-untyped-def]
+        seen_at_collection.append(containers())
+        return real_zone_changes(prepared)
+
+    backend.start_persistent = recording_start  # type: ignore[method-assign]
+    backend.zone_changes = recording_zone_changes  # type: ignore[method-assign]
+
+    package = load_skill(skill_dir)
+    target = TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
+    executor = SandboxRunExecutor(
+        backend=backend,
+        package=package,
+        fixture=fixture_source,
+        client_factory=_client_factory,
+        eval_id="quiesce",
+        run_root=tmp_path / "runs",
+    )
+    plan = RunPlan(scenario=_scenario(), target=target, repetition=1)
+
+    try:
+        executed = executor.execute(plan)
+    finally:
+        backend.start_persistent = real_start  # type: ignore[method-assign]
+        backend.zone_changes = real_zone_changes  # type: ignore[method-assign]
+
+    # Plane B was read with the container already gone — not merely stopped, removed — so no
+    # process inside it could still be changing the overlay the diff was reading.
+    assert names, "the sandbox container was never started, so this proves nothing"
+    assert seen_at_collection and names[0] not in seen_at_collection[0]
+    assert names[0] not in containers()
+
+    # And the workspace the skill left behind is on the host, under the run directory, with
+    # the file the run actually wrote in it.
+    assert executed.workspace is not None
+    assert executed.workspace.is_dir()
+    assert (executed.workspace / "report.md").is_file()
+    assert (tmp_path / "runs") in executed.workspace.parents

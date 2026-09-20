@@ -81,6 +81,18 @@ credential; the container holds only a sandbox-scoped bearer token that is worth
 outside the proxy. Otherwise a malicious skill's first move is to steal the key
 Bellwether handed it.
 
+The invariant has a second half that is easy to lose and was lost once: **the proxy must
+decide which provider's key to inject from where the connection is actually going**, never
+from the `Host`/`:authority` header or the TLS SNI, both of which the evaluated container
+writes. An independent review reproduced the consequence — a request to a non-allowlisted
+server carrying `Host: api.anthropic.com` was authorised as the provider, and the broker
+swapped the scoped token for the real key on its way out. Proxy libraries offer a
+convenience accessor for "the host" that prefers the header (mitmproxy's `pretty_host`,
+whose own docstring warns it "may not reflect the actual destination as the Host header
+could be spoofed"); it must not be used for a security decision. A request whose asserted
+identity disagrees with its destination is blocked in either direction, and the real key
+is never written onto a plaintext request. See §10.5 and `docs/spec-notes.md`.
+
 ### Critical invariant 2 — no observer inside the observed
 
 No component that produces evidence may execute inside the sandbox container. Revision 1

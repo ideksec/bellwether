@@ -359,3 +359,73 @@ def test_the_driver_forwards_the_configured_sensitive_directory_list(tmp_path: P
     assert reading.sensitive_hits == ("outside_workspace_read:/etc/",)
     # With no manifest nothing is declared, so the hit stands and the gate has something to read.
     assert reading.undeclared_sensitive_hits == ("outside_workspace_read:/etc/",)
+
+
+# ---------------------------------------------------------------------------
+# R12 — the sequential design schedules the matrix, it does not describe it afterwards
+# ---------------------------------------------------------------------------
+
+
+class _MixedExecutor(_ReplayExecutor):
+    """A replay executor whose runs alternate between activating the skill and not.
+
+    A 50% pass rate leaves the Wilson interval unresolved at every look, which is what makes a
+    set *need* its later batches — the case a scheduler that stops too eagerly would break.
+    """
+
+    def execute(self, plan: RunPlan) -> ExecutedRun:
+        self.transcript = None if len(self.plans) % 2 == 0 else _NO_SKILL_TRANSCRIPT
+        return super().execute(plan)
+
+
+#: Never calls the `skill` tool, so `skill_activated` fails and the run's outcome is a fail.
+_NO_SKILL_TRANSCRIPT = [ModelTurn(text="done", usage=TurnUsage(input=90, output=10))]
+
+
+def test_a_resolved_set_stops_at_its_first_look_instead_of_running_to_n_max(
+    tmp_path: Path,
+) -> None:
+    """R12: planning expanded to ``n_max``, execution ran every planned cell, and the stopping
+    decision was computed from the finished matrix — so the sequential design named where a set
+    *would have* stopped, having already paid for the runs past that point. The pre-flight
+    estimate printed "best 6" next to a matrix that always cost 20.
+    """
+    executor = _ReplayExecutor(tmp_path)
+    plans = plan_matrix(
+        [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=20
+    )
+    assert len(plans) == 20
+
+    (reading,) = drive_evaluation(plans, executor, profile=_firstlight_profile())
+
+    assert len(executor.plans) == 6
+    assert reading.look == 6
+    assert reading.look_outcome == "pass"
+
+
+def test_an_unresolved_set_buys_its_next_batch(tmp_path: Path) -> None:
+    """The other direction, which is the half that makes the first one safe: a design that
+    stopped every set at the first look would be cheaper and wrong. A set whose interval does
+    not resolve at 6 runs on to the next pre-registered look."""
+    executor = _MixedExecutor(tmp_path)
+    plans = plan_matrix(
+        [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=20
+    )
+
+    drive_evaluation(plans, executor, profile=_firstlight_profile())
+
+    assert len(executor.plans) > 6
+
+
+def test_the_schedule_never_runs_past_the_plans_it_was_given(tmp_path: Path) -> None:
+    """A set that never resolves runs to ``n_max`` and stops there — the design's own ceiling,
+    not one run more, and never an index past the planned cells."""
+    executor = _MixedExecutor(tmp_path)
+    plans = plan_matrix(
+        [_scenario("alpha")], [TargetInfo("api-loop", "p", "frontier")], repetitions=20
+    )
+
+    drive_evaluation(plans, executor, profile=_firstlight_profile())
+
+    assert len(executor.plans) <= 20
+    assert [plan.repetition for plan in executor.plans] == list(range(1, len(executor.plans) + 1))

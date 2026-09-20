@@ -63,6 +63,12 @@ class ScopeTable:
     def unused(self) -> tuple[ScopeEntry, ...]:
         return tuple(entry for entry in self.entries if entry.status == "unused")
 
+    def not_evaluable(self) -> tuple[ScopeEntry, ...]:
+        """Rows no plane could decide. ``scope.block_on`` names ``not_evaluable`` as one of its
+        three outcomes (§12.5, §16.1), so the gate needs them as a set, not only as prose in a
+        row's reason — a policy that blocks on an undecidable declaration has to be able to."""
+        return tuple(entry for entry in self.entries if entry.status == "not_evaluable")
+
 
 def derive_assertions(scope: DeclaredScope) -> list[AssertionSpec]:
     """The catalogue-expressible half of §12.5, applied to every scenario."""
@@ -113,13 +119,33 @@ def evaluate_scope(
 
 
 def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
-    if not scope.tools.allow:
+    if not scope.tools.allow and not scope.tools.deny:
         return []
     observed: dict[str, list[int]] = {}
     for call in index.tool_calls:
         observed.setdefault(call.name, []).append(call.seq)
 
     rows: list[ScopeEntry] = []
+    # §12.5: a `deny` entry is a prohibition, and it is evaluated whether or not the manifest also
+    # carries an `allow` list. It used to be evaluated *nowhere* on the live path: `derive_assertions`
+    # compiles it to a `tool_not_called` assertion, but `bellwether run` passes `scope=None` and
+    # drives the gate off this table alone, and this table was built entirely from allow-lists. A
+    # manifest whose only tools statement was `deny: [Bash]` therefore produced no rows at all, and
+    # the skill used Bash to a clean `scope` gate.
+    for denied in scope.tools.deny:
+        seqs = observed.pop(denied, [])
+        if seqs:
+            rows.append(
+                ScopeEntry(
+                    area="tools",
+                    subject=denied,
+                    status="exceeded",
+                    reason=f"called {len(seqs)} time(s) against an explicit manifest deny",
+                    evidence=tuple(seqs),
+                )
+            )
+    # A denied tool nothing called is not `unused`: an unexercised prohibition is the intended
+    # state, not over-declaration, so it produces no row rather than a finding.
     for declared in scope.tools.allow:
         seqs = observed.pop(declared, [])
         if seqs:
@@ -142,30 +168,56 @@ def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
                     "privilege a reviewer must reason about",
                 )
             )
-    for name, seqs in sorted(observed.items()):
-        rows.append(
-            ScopeEntry(
-                area="tools",
-                subject=name,
-                status="exceeded",
-                reason=f"called {len(seqs)} time(s) without a declaration",
-                evidence=tuple(seqs),
+    if scope.tools.allow:
+        # Only an allow-list makes "undeclared" meaningful. A manifest that states prohibitions
+        # and no allow-list has not claimed to enumerate what it uses, so every other tool it
+        # calls is unstated, not exceeded — and saying otherwise would turn a `deny`-only
+        # manifest into a guaranteed block on its first tool call.
+        for name, seqs in sorted(observed.items()):
+            rows.append(
+                ScopeEntry(
+                    area="tools",
+                    subject=name,
+                    status="exceeded",
+                    reason=f"called {len(seqs)} time(s) without a declaration",
+                    evidence=tuple(seqs),
+                )
             )
-        )
     return rows
 
 
 def _filesystem_read_rows(
     scope: DeclaredScope, index: EvidenceIndex, absorbed: frozenset[str]
 ) -> list[ScopeEntry]:
-    if not scope.filesystem.read:
+    if not scope.filesystem.read and not scope.filesystem.deny_read:
         return []
     declared = [(glob, glob_to_regex(glob)) for glob in scope.filesystem.read]
+    # §12.5: `deny_read` is checked **first and wins**. A deny is only ever written to carve an
+    # exception out of something broader — `read: ["/etc/**"]` with `deny_read: ["/etc/shadow"]`
+    # is the whole point of having both — so evaluating the allow first makes the deny
+    # unreachable in exactly the case it exists for. It used to be unreachable in *every* case
+    # on the live path, which passes `scope=None` and judges only by this table.
+    denied = [(glob, glob_to_regex(glob)) for glob in scope.filesystem.deny_read]
     observed = [(seq, path) for seq, path in index.reported_reads if path not in absorbed]
 
     rows: list[ScopeEntry] = []
     used: set[str] = set()
     for seq, path in observed:
+        prohibition = _first_match(path, denied)
+        if prohibition is not None:
+            rows.append(
+                ScopeEntry(
+                    area="filesystem.read",
+                    subject=path,
+                    status="exceeded",
+                    reason=f"read a path the manifest denies ({prohibition})",
+                    evidence=(seq,),
+                )
+            )
+            continue
+        if not declared:
+            # No allow-list: the manifest stated prohibitions only, and this read broke none.
+            continue
         rule = _first_match(path, declared)
         if rule is None:
             rows.append(
@@ -208,11 +260,15 @@ def _filesystem_write_rows(
     if not scope.filesystem.write:
         return []
     declared = [(glob, glob_to_regex(glob)) for glob in scope.filesystem.write]
+    # §12.5: a deletion is a mutation, and the write boundary is what bounds mutation. Filtering
+    # `deleted` out here meant deleting a protected file was not a write-scope violation at all —
+    # the most destructive thing a skill can do to a path was the one thing the boundary did not
+    # cover. A deletion inside a declared write glob is still supported, so this costs a skill
+    # nothing it had already declared.
     observed = [
         (write.seq, write.path)
         for write in index.writes
-        if not write.deleted
-        and write.zone != "scratch"
+        if write.zone != "scratch"
         # §10.2: the harness-state zone is the harness's own area — a real harness (the
         # claude-code CLI) churns its session transcript, config, and backups there on every
         # run. Those are not the skill's declared *workspace* scope; they are recorded and

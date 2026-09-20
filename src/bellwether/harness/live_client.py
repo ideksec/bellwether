@@ -57,6 +57,7 @@ __all__ = [
     "OpenAiCompatibleClient",
     "anthropic_request_body",
     "build_model_client",
+    "effective_max_tokens",
     "openai_messages",
     "openai_request_body",
     "parse_anthropic_response",
@@ -116,6 +117,18 @@ _STOP_REASONS: dict[str, str] = {
 }
 
 
+def effective_max_tokens(request: ModelRequest, configured: int) -> int:
+    """The output ceiling for one request: the client's, lowered by the caller's remaining budget.
+
+    A request never raises the client's configured ceiling — that is the operator's setting —
+    and never goes below 1, because a provider asked for zero output tokens errors rather than
+    returning an empty turn.
+    """
+    if request.max_output_tokens is None:
+        return configured
+    return max(1, min(configured, request.max_output_tokens))
+
+
 def anthropic_request_body(request: ModelRequest, *, max_tokens: int) -> dict[str, Any]:
     """The Messages API request body for one :class:`ModelRequest`.
 
@@ -125,7 +138,7 @@ def anthropic_request_body(request: ModelRequest, *, max_tokens: int) -> dict[st
     """
     body: dict[str, Any] = {
         "model": request.model_id,
-        "max_tokens": max_tokens,
+        "max_tokens": effective_max_tokens(request, max_tokens),
         "messages": [dict(message) for message in request.messages],
     }
     if request.system:
@@ -391,7 +404,7 @@ def openai_request_body(request: ModelRequest, *, max_tokens: int) -> dict[str, 
     """
     body: dict[str, Any] = {
         "model": request.model_id,
-        "max_completion_tokens": max_tokens,
+        "max_completion_tokens": effective_max_tokens(request, max_tokens),
         "messages": openai_messages(request),
     }
     if request.sampling is not None:

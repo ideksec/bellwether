@@ -625,3 +625,51 @@ def test_the_upper_directory_is_outside_the_workspace(
     )
     assert not prepared.upper_dir.is_relative_to(prepared.workspace.root)
     assert not prepared.upper_dir.is_relative_to(prepared.payload.root)
+
+
+# ---------------------------------------------------------------------------
+# R9 — the fixture digest must distinguish inputs the container treats differently
+# ---------------------------------------------------------------------------
+
+
+def test_a_fixture_symlink_does_not_collide_with_a_file_holding_its_marker(
+    tmp_path: Path,
+) -> None:
+    """R9: the same collision `skill/digests.py` closed at ``DIGEST_FORMAT/3``, still open in
+    the sibling digest. A symlink is hashed as ``symlink:<target>``, byte-identical to the
+    content of a regular file holding that text, so the two trees produced one digest — and this
+    digest is a run-cache key (§19.2) and the provenance record of what the sandbox started
+    from.
+
+    Worth stating plainly: the earlier fix was to one of the two places the pattern occurs, and
+    "we fixed that class of bug" is a different claim from "we fixed it everywhere".
+    """
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "run.sh").symlink_to("helper.sh")
+
+    filed = tmp_path / "filed"
+    filed.mkdir()
+    (filed / "run.sh").write_text("symlink:helper.sh", encoding="utf-8")
+
+    assert fixture_digest(linked) != fixture_digest(filed)
+
+
+def test_the_fixture_digest_follows_the_executable_bit(tmp_path: Path) -> None:
+    """``materialize_fixture`` preserves executability (§9.3 normalises to 0644 or 0755), so a
+    tree that stages differently must digest differently. It did not: flipping a script from
+    inert text to something the agent can run left the fixture identity unchanged, and a cached
+    run keyed on it replayed the other tree's trace."""
+    a = tmp_path / "a"
+    a.mkdir()
+    script_a = a / "build.sh"
+    script_a.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    script_a.chmod(0o644)
+
+    b = tmp_path / "b"
+    b.mkdir()
+    script_b = b / "build.sh"
+    script_b.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    script_b.chmod(0o755)
+
+    assert fixture_digest(a) != fixture_digest(b)

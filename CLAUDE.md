@@ -50,7 +50,13 @@ to **normalise rather than enumerate**: three of the four rounds' headline findi
 regressions from the previous round's fix in the same predicate, which is what a blacklist does —
 every reject-clause has an unenumerated spelling. Reduce an input to what it certainly means, then
 compare; do not list the ways it can be wrong. Five of thirteen `security_runtime` dispositions are enforced, eight remain
-inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. A `harness_state_write` gate was attempted and
+inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise.
+An **independent external review** then found twelve real defects (one critical: the proxy
+authorised a `Host` header the evaluated container writes, so a spoofed request could collect the
+real provider key). All twelve are fixed and revert-proved, and the round ended with four
+allowlist-shaped preventions — the control registry, the containment corpus, the identity corpus,
+and a completeness check on the proxy's test fake. Read the STATUS section and the spec-notes
+entry before touching the proxy, the scope table, the policy gates, or either content digest. A `harness_state_write` gate was attempted and
 **withdrawn**: §10.2 attributes such a write by a Plane A anchor and Plane B carries no correlation,
 so it could never fire — see spec-notes. §12.6's `tools` are applied as well as parsed; its
 `processes` still wait on the §10.3 process plane.
@@ -108,6 +114,23 @@ sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker
 - **Run it. A passing test is not evidence.** Almost every bug found in this project looked like it
   worked and had a green test asserting the wrong thing. Execute the real thing — a container, a
   reproduction script, a CI step — before believing it.
+- **Test the integration, not the helper.** Eleven of an independent review's twelve findings were
+  a correct, well-tested helper handed to a caller that never asked it the question: the deny
+  lists compile properly and the live path judges by a different function; `decide_request` is a
+  sound security core that was fed a spoofable host. A unit test of the helper cannot see any of
+  it. When you wire something, write the test at the wiring.
+- **A fake must be able to express the attack.** The critical finding survived because the proxy's
+  test fake had one host field where the real object has two, so no test *could* describe the
+  spoof. A `Protocol` enforces nothing at runtime; assert that fakes model every field, or the
+  next field you start reading is untested by construction.
+- **Fix the class, not the instance.** The symlink/marker digest collision was closed in the skill
+  payload digest and left open in the fixture digest, where the review found it again. Where two
+  places implement one rule, write one corpus and apply it to both
+  (`tests/test_containment.py`, `tests/test_identity_discrimination.py`).
+- **A control the schema accepts must enforce or refuse.** Four policy controls were accepted,
+  printed, and read by nothing. `tests/test_control_registry.py` fails the build on a gate field
+  classified in neither `ENFORCING_GATE_CONTROLS` nor `ADVISORY_GATE_CONTROLS`; there is no third
+  answer.
 - **Observation beats declaration.** A claim that cannot be evaluated is reported `not_evaluable`,
   never silently passed. A missing plane must read as "unavailable because X," never as a clean run.
 - **Determinism (§24).** Sorted sets, rounding at serialisation only, no reliance on `hash()`

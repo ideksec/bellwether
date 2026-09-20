@@ -687,6 +687,18 @@ scenarios:
 | `inject` | no | Adversarial content placement (§7.5, v0.3). |
 | `assert` | yes | List of assertions (§12). |
 
+**A scenario is evaluated content, not operator configuration.** It arrives in the same pull
+request as the skill under test, so every path-shaped field is attacker-controlled. `fixture`
+names a directory *inside* a fixture root; it MUST resolve there, and containment MUST be
+decided by resolving both sides and comparing, never by inspecting the spelling for absolute
+prefixes or `..` segments. An absolute name silently replaces the root under ordinary path
+joining, a symlinked fixture directory escapes with no suspicious characters at all, and a
+reject-list has an unenumerated spelling for each. A name that escapes refuses the run — it is
+never quietly replaced by a fallback tree, which would run the evaluation on a workspace nobody
+named and report a verdict about a scenario that never ran as designed. Operators who need a
+fixture from outside the tree supply it as a separately authorised input, not as a scenario
+field.
+
 ### 7.3 Multi-turn scenarios
 
 `prompt` MAY be a list of turns. Between turns, the harness's session is preserved. This
@@ -1095,6 +1107,23 @@ Consequences for each plane are given below. Where a plane cannot be run host-si
 runner, its coverage degrades and the dependent assertions return `not_evaluable` — which the
 verdict engine treats as a blocked gate (§16.2), not a pass.
 
+**Quiesce before observing.** Reading a plane from outside the container is necessary and not
+sufficient: the container's process tree MUST be stopped before any plane is read. The harness
+adapter returning does not mean the skill's processes have exited — a detached write, a retry
+loop, a background fetch all outlive it — and a plane read while they run describes a moment
+that has already passed. Two planes read at different moments can then disagree without either
+being wrong, which is indistinguishable from the real inconsistency §10.8 exists to detect.
+Evidence that must survive the teardown (the merged workspace view, which the kernel assembles
+and the unmount destroys) is snapshotted in the same window, after the stop.
+
+**Host-side reads of container-written paths are attacker-chosen paths.** A path the container
+wrote is named by the container. Every host-side read of one MUST refuse to follow a symlink
+(`O_NOFOLLOW` or an equivalent), MUST verify containment by resolving both sides rather than by
+inspecting the spelling, and MUST be bounded in size: the evaluator runs outside the container's
+own resource limits, so a file it opens is unbounded unless it says otherwise. Classifying a
+path as a regular file and opening it are two separate observations of a tree the container can
+write to, and the gap between them is exploitable.
+
 ### 10.1 Plane A — Harness events (semantic layer)
 
 Source: the agent harness's own structured output, plus its hook mechanism where available.
@@ -1294,6 +1323,19 @@ configurable), and TLS SNI. DNS is a separate plane (§10.6).
 Running them on a separate host breaks the epoch assignment of §11.5; refuse to start if
 configured that way.
 
+**The decision host is the connection host.** Classification (§10.5.0), the allowlist, and
+credential selection (§10.5.1) MUST be decided on the destination the proxy will actually
+connect to — the request-line authority, or the `CONNECT` authority for a tunnelled request —
+never on the `Host`/`:authority` header or the TLS SNI. Those are written by the code under
+evaluation. A proxy library's convenience accessor for "the host" may prefer the header
+(mitmproxy's `pretty_host` does, and documents that it "may not reflect the actual destination
+as the Host header could be spoofed"); such an accessor MUST NOT be used for a security
+decision. Where an asserted identity disagrees with the destination, the request is **blocked**
+and the discrepancy recorded: authorising one identity while connecting to another defeats the
+allowlist and hands a brokered credential to a host that merely claimed a name. Resolving the
+disagreement in either direction is not an option, because both identities are attacker-supplied
+— only their agreement is evidence.
+
 #### 10.5.0 Egress classification
 
 Every request is classified **before assertions see it**:
@@ -1330,6 +1372,11 @@ artifact. It MUST also enforce **per-run request and token caps** on the sandbox
 bounding volume exfiltration through the residual channel of §3.3. Caps are configured in
 `egress.per_run_caps` and a run that hits one records `exit_reason: budget_exceeded`.
 
+The real credential MUST NOT be written onto a plaintext request. A key on an `http://` hop is
+readable by anything on the path, and a provider genuinely reachable over plaintext is not one
+this proxy should be feeding a key to; the request forwards with the sandbox-scoped token
+instead.
+
 #### 10.5.2 The model API is the primary exfiltration channel
 
 The sandbox has exactly one authenticated, allowlisted, high-bandwidth channel to a remote
@@ -1342,6 +1389,12 @@ The proxy MUST therefore:
 - **Scan model API request bodies for canary markers**, under the same rules as any other egress
   body, including encoded and chunked forms. This is not optional and MUST NOT be disabled by a
   performance flag.
+- **Scan request headers, names and values, before redaction.** A header is as good an
+  exfiltration channel as a body and a smaller one to overlook: `X-Export: <marker>` to an
+  allowlisted host leaves no body at all. Redaction is what makes the record fit for an
+  artifact, so it MUST happen *after* the scan — scanning the redacted set reads `<redacted>`
+  and finds nothing. Only the by-reference hit survives (id, offset, length, encoding, and the
+  channel it sat in); the value never does.
 - **Enforce request shape.** Requests to the provider must match the expected endpoint path and
   carry a model ID from the configured set. An arbitrary POST to another endpoint on the
   provider's domain is a `high` finding of type `unexpected_provider_endpoint`.
@@ -1724,6 +1777,23 @@ value lives (§17.5).
 | `no_instrumentation_probe` | — | Fails if the skill inspected container metadata or Bellwether machinery (§3.5) |
 | `record_only` | list of assertion names | Evaluate and record, never fail |
 
+**Content-inspecting assertions read retained evidence, or nothing.** `artifact_valid` and
+`file_written`'s `content_match` need real bytes, and the final workspace is a merged overlay
+view that the teardown destroys — so an immutable snapshot MUST be retained (after the container
+is stopped, §10.0) and the assertions MUST read *that*. Two failure modes to reject explicitly:
+
+- Handing them a path from the run's own normalisation context. That is the path **inside the
+  container**; on the host it does not exist, so every such assertion fails for an artifact the
+  skill genuinely produced — and where a host directory of that name does exist, the assertion
+  reports on unrelated content.
+- Reporting `fail` when no workspace was retained (a cache replay, a backend with no host-side
+  merged view, a snapshot that crossed its bounds). Absent evidence is `not_evaluable`; calling
+  it a failure blames the skill for the evaluator's blindness, which inverts §10.0.
+
+The reads themselves follow §10.0's rule for container-written paths: contained, symlink-refusing
+and bounded, because the assertion's target path and the workspace's contents are both named by
+the skill under evaluation.
+
 ### 12.3 Judged assertions
 
 ```yaml
@@ -1789,6 +1859,23 @@ Scope violations are reported in a dedicated section: **Declared vs Observed**, 
 `supported` / `exceeded` / `unused` / `not_evaluable` per declared capability, at tier 3.
 `unused` matters too — a skill declaring `Bash` that never uses it is over-declared, and
 over-declaration is how `allowed-tools` becomes a privilege-escalation vector.
+
+Three rules the table MUST obey, each of which was once obeyed only by the assertion form and
+so was unenforced wherever the table was the sole judge (the live `run` path, §16.2):
+
+- **Deny beats allow, and deny is evaluated on its own.** A `deny` entry is checked first and
+  wins outright. It exists to carve an exception out of something broader —
+  `read: ["/etc/**"]` with `deny_read: ["/etc/shadow"]` is the shape it is written for — so
+  evaluating the allow first makes it unreachable in exactly the case it was written for. A
+  `deny` MUST also be evaluated where the manifest carries no matching `allow` list: a manifest
+  that states only prohibitions has still made a statement.
+- **A deletion is a mutation.** `filesystem.write` bounds what a skill may change, and removing
+  a file is the most complete change there is. Deletions are judged against the write globs like
+  any other mutation; a deletion inside a declared glob is `supported`, so declaring an area
+  still declares the right to clear it.
+- **Absence of a declaration is not a declaration of nothing.** Where policy requires a manifest
+  (`scope.require_manifest`, §16.1) and the package has none, the table is empty and MUST NOT be
+  read as "within scope". This is the §16.4 refusal, not a passing gate.
 
 ### 12.6 The platform baseline
 
@@ -1906,6 +1993,14 @@ resolves the gate:
 | Upper bound < threshold | **fail**, stop |
 | Neither | continue to the next look |
 | Neither at N = 20 | `insufficient_evidence` → `not_evaluable` → blocks (§16.2) |
+
+**"Stop" means the scheduler stops.** The decision table above is a scheduling rule, not a label
+applied afterwards. A set runs to its first look, the decision is taken, and the next batch is
+executed **only** on `continue`. Expanding the matrix to `n_max`, running every planned cell, and
+then computing where the set *would have* stopped produces the same verdict at the worst-case
+price every time — while the §19.1 estimate quotes a best case the scheduler can never deliver.
+The estimate and the scheduler MUST read the same decision, because a number the operator
+approves has to be one the run can produce.
 
 **Additional continuation rule.** A set MUST NOT stop early — even on a resolved interval — while
 the **tier-1 capability sets disagree across runs** (§13.5). Outcome stability and capability
@@ -2506,7 +2601,7 @@ profiles:
       human_review:
         required: true
         max_age_days: 180
-        separate_reviewer_from_author: true   # enforced via GitHub API, §6.3
+        separate_reviewer_from_author: true   # decided against the GitHub API, §6.3
     # 0.7 clears at 19/20 (LB 0.720) or 20/20. A high-criticality skill must be
     # essentially flawless across 20 runs. This is deliberate; say so in the docs.
 
@@ -2519,6 +2614,30 @@ selection:
 points (6 / 12 / 20) are principled but untested against a real skill library. Re-derive them after
 v0.2 from observed stopping distributions and publish the calibration. Until then the docs MUST
 describe them as defaults to be revised rather than as settled values.
+
+**Every accepted control enforces a gate, or the run refuses.** A field this schema accepts MUST
+be read by a composed gate or by the §16.4 precondition check. There is no third state: a
+control the schema accepts, the resolved policy prints, and the verdict ignores is a checkbox
+that changes nothing while reading as a control that was applied — the same silent-no-op shape
+§16.4 exists to catch, reached through the policy document rather than through the planes. It is
+the likeliest defect in this whole design, because adding a field is easy, wiring a gate is
+work, and nothing about the document looks wrong in between.
+
+Two consequences follow:
+
+- Where a control **cannot** be satisfied by the running build — evidence a later work package
+  produces, a check that needs an API this build does not call — a profile setting it MUST be
+  refused by §16.4 before the matrix is paid for, and MUST compose as a required
+  `not_evaluable` if composition is reached by another route. A warning in `doctor` is not
+  sufficient: it does not reach the verdict a reviewer reads.
+- A shipped default MUST state what the build can do. A default of `require_scan: true` in a
+  build with no scanner is not aspiration, it is a document that is wrong.
+
+The implementation keeps this mechanical rather than aspirational: every gate field is
+classified as enforcing or advisory in one registry, and the build fails when a field appears in
+neither (`ENFORCING_GATE_CONTROLS` / `ADVISORY_GATE_CONTROLS`, `tests/test_control_registry.py`).
+The classification is an allowlist because the alternative — noticing inert controls one at a
+time — has already missed four of them.
 
 ### 16.2 Verdict computation
 
@@ -2903,6 +3022,13 @@ Required:
 - **The N = 6 floor is a real cost change.** Relative to a 3-run first look, the minimum matrix
   doubles. The estimate MUST make this visible up front rather than letting it surface as a
   mid-matrix budget abort.
+- **A cap is a ceiling only where it is enforced before the spend.** A token budget checked
+  after a completion returns is a threshold: the tokens are bought, and the run can only notice
+  it overshot. Where the harness allows it, the remaining budget MUST be reserved before each
+  request and passed to the provider as that request's output ceiling, and a turn MUST NOT start
+  with the budget exhausted. Where a harness exposes no such control — a CLI run as a
+  subprocess — the cap is *observed* after the run, and the estimate MUST say which of the two
+  applies to each target rather than calling both a ceiling.
 - **Publish a real cost table** in the docs, generated from corpus runs, and regenerate it on
   each release. Appendix A MUST carry a defensible number.
 - **Hard budget.** `max_cost_usd` per evaluation, default **$25** for `standard`, enforced by
@@ -2942,6 +3068,19 @@ Additional rules:
 - Expire entries after `cache_ttl_days` so drift is still detected.
 - `payload_digest`, not `package_digest`, is the skill component of the key — editing scenarios
   should not invalidate runs of an unchanged skill.
+- **The key describes the run that will be made, not the configuration it was read from.** Every
+  behaviour-changing input MUST be hashed *after* defaults and command-line overrides are
+  resolved. Hashing the configured value while the run enforces an overridden one lets a second
+  evaluation replay the first under limits that were never exercised and report them as its own:
+  results presented under conditions that did not hold, which is the one thing a cache must not
+  do. The same rule puts the observability of the composition in the key — a trace captured with
+  no proxy is a different observation from one captured behind it.
+- **An identity that cannot distinguish two inputs must not be a key.** The digests the key is
+  built from carry entry kind, path, content and the execution-relevant metadata the stager
+  preserves. A digest that gives one value to a symlink and to a file holding its marker text,
+  or to the same bytes at 0644 and 0755, is saying two things the container treats differently
+  are the same thing — which here means replaying a trace of the other one, and elsewhere
+  (§6.3) carrying a review attestation across a change.
 
 ### 19.3 Other controls
 

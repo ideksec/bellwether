@@ -64,13 +64,22 @@ class RequestLike(Protocol):
     ``mitmproxy.http.Request`` satisfies this structurally, so the addon is tested with a plain
     fake and needs no mitmproxy import. ``headers`` is mutated in place for credential injection;
     the case-insensitive multidict mitmproxy provides behaves as a ``MutableMapping[str, str]``
-    for the single-valued auth headers the injection touches. ``pretty_host`` is mitmproxy's
-    resolved host (from the Host header or SNI), which is what must be classified and allowlisted.
+    for the single-valued auth headers the injection touches.
+
+    Two host fields, and the difference between them is the whole point. ``host`` is where
+    mitmproxy will actually connect — the request-line authority, or the ``CONNECT`` authority for
+    a tunnelled request — and it is what the allowlist and the credential broker are decided on.
+    ``host_header`` is what the *client* asserted, which for a container running evaluated code is
+    attacker-controlled; mitmproxy's own ``pretty_host`` prefers it and documents that it "may not
+    reflect the actual destination as the Host header could be spoofed", so this addon does not
+    read ``pretty_host`` at all. The asserted name is passed separately, checked against the real
+    one, and a disagreement is blocked.
     """
 
     method: str
     scheme: str
-    pretty_host: str
+    host: str
+    host_header: str | None
     port: int
     path: str
     headers: MutableMapping[str, str]
@@ -118,19 +127,23 @@ class ProxyAddon:
     canaries: tuple[Canary, ...] = ()
     _flows: list[EgressFlow] = field(default_factory=list, repr=False)
 
-    def on_request(self, request: RequestLike) -> BlockResponse | None:
+    def on_request(self, request: RequestLike, *, sni: str = "") -> BlockResponse | None:
         """Decide one request, record its flow, and either inject or block.
 
         Returns ``None`` when the request is forwarded — its headers have been mutated in place
         with the upstream set (the real key swapped in for a permitted model-API call) — or a
         :class:`BlockResponse` when it must be short-circuited. Either way the flow is recorded
         first, so a block is never a silent drop.
+
+        ``sni`` is the name the client offered in the TLS handshake, where the entry script could
+        read it off the client connection; it is a third asserted identity and is checked against
+        the real destination exactly as the ``Host`` header is.
         """
         decision = decide_request(
             ts=self.clock(),
             method=request.method,
             scheme=request.scheme,
-            host=request.pretty_host,
+            host=request.host,
             port=request.port,
             path=request.path,
             headers=dict(request.headers),
@@ -142,6 +155,8 @@ class ProxyAddon:
             provider_of_host=self.provider_of_host,
             caps=self.caps,
             canaries=self.canaries,
+            claimed_host=request.host_header or "",
+            sni=sni,
         )
         self._flows.append(decision.flow)
 
@@ -194,6 +209,7 @@ def _flow_to_dict(flow: EgressFlow) -> dict[str, Any]:
         "response_status": flow.response_status,
         "response_size": flow.response_size,
         "sni": flow.sni,
+        "claimed_host": flow.claimed_host,
         "block_reason": flow.block_reason,
         "canary_hits": [
             {
@@ -202,6 +218,7 @@ def _flow_to_dict(flow: EgressFlow) -> dict[str, Any]:
                 "offset": hit.offset,
                 "length": hit.length,
                 "via": hit.via,
+                "channel": hit.channel,
             }
             for hit in flow.canary_hits
         ],
@@ -225,6 +242,7 @@ def _flow_from_dict(payload: Mapping[str, Any]) -> EgressFlow:
         response_status=payload["response_status"],
         response_size=payload["response_size"],
         sni=payload["sni"],
+        claimed_host=payload.get("claimed_host", ""),
         canary_hits=tuple(
             EgressCanaryHit(
                 canary_id=hit["canary_id"],
@@ -232,6 +250,7 @@ def _flow_from_dict(payload: Mapping[str, Any]) -> EgressFlow:
                 offset=hit["offset"],
                 length=hit["length"],
                 via=hit["via"],
+                channel=hit.get("channel", "body"),
             )
             for hit in payload.get("canary_hits", ())
         ),

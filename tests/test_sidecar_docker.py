@@ -8,11 +8,20 @@ Two tests, in increasing depth:
 
 - **smoke**: the image builds and ``mitmdump`` loads our addon (the empty flow log appears). Proves
   Bellwether imports in the mitmproxy runtime and the inside-the-container half runs.
-- **interception**: a client container sends the *scoped* token through the proxy. A permitted
-  model-API call (a peer named as the provider) is forwarded with the **real key injected on the
-  wire**, a denied host is **blocked** with a 403 the client sees, and the flow log records both
-  while holding **neither the real key nor the scoped token**. This is the §3.3/§10.5 done-when:
-  the container never holds the real key, yet the provider receives it, and the artifact is clean.
+- **interception**: a client container sends the *scoped* token through the proxy on three legs.
+  A permitted model-API call **over https** (a peer named as the provider) is forwarded with the
+  **real key injected on the wire**; the same permitted host **over plaintext** is forwarded with
+  the scoped token left in place, because §10.5.1 does not write a real credential onto an
+  ``http://`` request; a denied host is **blocked** with a 403 the client sees. The flow log
+  records all three while holding **neither the real key nor the scoped token**. This is the
+  §3.3/§10.5 done-when: the container never holds the real key, yet the provider receives it, and
+  the artifact is clean.
+
+  The https leg is the one production uses, and until an independent review found the
+  `pretty_host` defect this test only ever exercised plaintext — so the sole container-level proof
+  of injection was taken against a scheme no real run makes, and the rule that a plaintext request
+  keeps its scoped token had no proof at all. The peer therefore serves both: TLS on 443 with a
+  self-signed certificate it generates at start-up, and plain HTTP on 80.
 
 The topology avoids needing real DNS or internet: the "provider" is a peer container, named as the
 provider endpoint, so docker's embedded DNS resolves it and classification is plain string matching.
@@ -135,8 +144,36 @@ def test_the_image_builds_and_mitmdump_loads_the_addon(sidecar_image: str, tmp_p
 # interception — inject on forward, block on deny, no credential in the artifact
 # ---------------------------------------------------------------------------
 
+# The peer echoes the request headers it received, over **both** schemes: 443 with TLS, 80
+# without. Two legs, because the two are now different security decisions — §10.5.1 injects the
+# real credential only over https, since a key written onto a plaintext request is readable by
+# anything on the path. The earlier version of this test served plaintext only, so the one
+# container-level proof of injection was taken against a scheme production never uses, and the
+# rule that a plaintext request keeps the scoped token had no proof at all.
+#
+# The TLS certificate is self-signed and generated at start-up (`cryptography` is already in the
+# image as a mitmproxy dependency). The proxy accepts it because this test passes
+# `ssl_insecure=true`, which is a test-only setting: a real run verifies its upstream.
 _PEER_SERVER = (
-    "import http.server\n"
+    "import http.server, ssl, tempfile, threading, datetime\n"
+    "from cryptography import x509\n"
+    "from cryptography.x509.oid import NameOID\n"
+    "from cryptography.hazmat.primitives import hashes, serialization\n"
+    "from cryptography.hazmat.primitives.asymmetric import rsa\n"
+    "key = rsa.generate_private_key(public_exponent=65537, key_size=2048)\n"
+    "name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'provider-peer')])\n"
+    "now = datetime.datetime.now(datetime.timezone.utc)\n"
+    "cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)\n"
+    "    .public_key(key.public_key()).serial_number(x509.random_serial_number())\n"
+    "    .not_valid_before(now - datetime.timedelta(days=1))\n"
+    "    .not_valid_after(now + datetime.timedelta(days=1))\n"
+    "    .add_extension(x509.SubjectAlternativeName([x509.DNSName('provider-peer')]), False)\n"
+    "    .sign(key, hashes.SHA256()))\n"
+    "pem = tempfile.NamedTemporaryFile(suffix='.pem', delete=False)\n"
+    "pem.write(cert.public_bytes(serialization.Encoding.PEM))\n"
+    "pem.write(key.private_bytes(serialization.Encoding.PEM,\n"
+    "    serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))\n"
+    "pem.close()\n"
     "class H(http.server.BaseHTTPRequestHandler):\n"
     "    def do_GET(self):\n"
     "        body = '\\n'.join(f'{k}: {v}' for k, v in self.headers.items()).encode()\n"
@@ -147,34 +184,51 @@ _PEER_SERVER = (
     "        self.wfile.write(body)\n"
     "    def log_message(self, *a):\n"
     "        pass\n"
+    "def serve_tls():\n"
+    "    srv = http.server.HTTPServer(('0.0.0.0', 443), H)\n"
+    "    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)\n"
+    "    ctx.load_cert_chain(pem.name)\n"
+    "    srv.socket = ctx.wrap_socket(srv.socket, server_side=True)\n"
+    "    srv.serve_forever()\n"
+    "threading.Thread(target=serve_tls, daemon=True).start()\n"
     "http.server.HTTPServer(('0.0.0.0', 80), H).serve_forever()\n"
 )
 
+# Three requests through the proxy, all carrying the *scoped* token:
+#   1. https://provider-peer/  — permitted, model_api, and the leg §10.5.1 injects on;
+#   2. http://provider-peer/   — permitted and forwarded, but plaintext, so the real key must
+#      stay behind and the scoped token must go out unchanged;
+#   3. http://evil.example.com/ — denied by the default-deny allowlist.
+# The client does not verify the proxy's leaf certificate: mitmproxy mints it from a CA generated
+# inside the sidecar, and distributing that CA is §9.2's job, tested elsewhere. What this test is
+# about is which credential reaches the peer.
 _CLIENT = (
-    "import urllib.request, urllib.error, os, time\n"
-    "op = urllib.request.build_opener(urllib.request.ProxyHandler({'http': os.environ['PROXY_URL']}))\n"
+    "import urllib.request, urllib.error, os, ssl, time\n"
+    "proxy = os.environ['PROXY_URL']\n"
+    "ctx = ssl._create_unverified_context()\n"
+    "op = urllib.request.build_opener(\n"
+    "    urllib.request.ProxyHandler({'http': proxy, 'https': proxy}),\n"
+    "    urllib.request.HTTPSHandler(context=ctx),\n"
+    ")\n"
     "token = os.environ['ANTHROPIC_API_KEY']\n"
-    "req = urllib.request.Request('http://provider-peer/', headers={'Authorization': 'Bearer ' + token})\n"
-    # Retry the permitted call: the peer's HTTP server may still be binding when the client starts.
-    "for attempt in range(15):\n"
-    "    try:\n"
-    "        r = op.open(req, timeout=25)\n"
-    "        print('PERMITTED_STATUS', r.status)\n"
-    "        print('ECHO_BEGIN'); print(r.read().decode()); print('ECHO_END')\n"
-    "        break\n"
-    "    except urllib.error.HTTPError as e:\n"
-    "        print('PERMITTED_STATUS', e.code); break\n"
-    "    except Exception as e:\n"
-    "        last = e; time.sleep(1)\n"
-    "else:\n"
-    "    print('PERMITTED_ERR', repr(last))\n"
-    "try:\n"
-    "    r = op.open('http://evil.example.com/', timeout=25)\n"
-    "    print('DENIED_STATUS', r.status)\n"
-    "except urllib.error.HTTPError as e:\n"
-    "    print('DENIED_STATUS', e.code)\n"
-    "except Exception as e:\n"
-    "    print('DENIED_ERR', repr(e))\n"
+    "def fetch(url, label):\n"
+    "    req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})\n"
+    # Retry: the peer's servers may still be binding when the client starts.
+    "    last = None\n"
+    "    for attempt in range(15):\n"
+    "        try:\n"
+    "            r = op.open(req, timeout=25)\n"
+    "            print(label + '_STATUS', r.status)\n"
+    "            print(label + '_BEGIN'); print(r.read().decode()); print(label + '_END')\n"
+    "            return\n"
+    "        except urllib.error.HTTPError as e:\n"
+    "            print(label + '_STATUS', e.code); return\n"
+    "        except Exception as e:\n"
+    "            last = e; time.sleep(1)\n"
+    "    print(label + '_ERR', repr(last))\n"
+    "fetch('https://provider-peer/', 'TLS')\n"
+    "fetch('http://provider-peer/', 'PLAIN')\n"
+    "fetch('http://evil.example.com/', 'DENIED')\n"
 )
 
 
@@ -212,6 +266,10 @@ def test_a_real_run_injects_on_forward_blocks_on_deny_and_leaks_nothing(
         provider_of_host={_PROVIDER_HOST: "anthropic"},
         shared_dir=tmp_path / "shared",
         ready_timeout=60.0,
+        # Test-only: the peer's certificate is self-signed, so the proxy's *upstream* leg would
+        # otherwise refuse it. A real run verifies its upstream, which is why this setting exists
+        # on the launcher rather than in the image.
+        extra_settings={"ssl_insecure": "true"},
     )
 
     # docker forwards the real key into the sidecar from the launcher's own env (`-e KEY`, no value).
@@ -278,14 +336,28 @@ def test_a_real_run_injects_on_forward_blocks_on_deny_and_leaks_nothing(
             f"client stdout:\n{out}\nclient stderr:\n{client.stderr}\n{_diagnostics(proxy_name)}"
         )
 
-        # The permitted call reached the peer, and the peer saw the REAL key — injection happened
-        # on the wire — while the scoped token did not survive (it was replaced).
-        assert "PERMITTED_STATUS 200" in out, context
-        echo = out.split("ECHO_BEGIN", 1)[-1].split("ECHO_END", 1)[0] if "ECHO_BEGIN" in out else ""
-        assert _REAL_KEY in echo, f"real key not injected upstream\n{context}"
-        assert scoped_token not in echo, f"scoped token leaked past the proxy\n{context}"
+        def echo_of(label: str) -> str:
+            if f"{label}_BEGIN" not in out:
+                return ""
+            return out.split(f"{label}_BEGIN", 1)[-1].split(f"{label}_END", 1)[0]
 
-        # The denied host was blocked with a real 403 the client saw.
+        # (1) The permitted **https** call reached the peer, and the peer saw the REAL key —
+        # injection happened on the wire — while the scoped token did not survive.
+        assert "TLS_STATUS 200" in out, context
+        tls_echo = echo_of("TLS")
+        assert _REAL_KEY in tls_echo, f"real key not injected upstream\n{context}"
+        assert scoped_token not in tls_echo, f"scoped token leaked past the proxy\n{context}"
+
+        # (2) The same permitted host over **plaintext** is forwarded — the allowlist decides the
+        # host, not the scheme — but keeps the scoped token. §10.5.1: a real credential written
+        # onto an http:// request is readable by anything on the path, and a provider genuinely
+        # reachable over plaintext is not one this proxy should be feeding a key to.
+        assert "PLAIN_STATUS 200" in out, context
+        plain_echo = echo_of("PLAIN")
+        assert _REAL_KEY not in plain_echo, f"real key injected onto a plaintext request\n{context}"
+        assert f"Bearer {scoped_token}" in plain_echo, context
+
+        # (3) The denied host was blocked with a real 403 the client saw.
         assert "DENIED_STATUS 403" in out, context
 
         # The flow log recorded both, and holds neither credential.

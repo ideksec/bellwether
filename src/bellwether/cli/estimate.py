@@ -10,7 +10,8 @@ actually run (a scenario may override the profile's, §7.2): best is every set s
 first look, worst is every set running to ``n_max``, and expected uses the schedule's midpoint
 look, which is what the spec prescribes for a skill with no stopping history (this build keeps
 no history store, so it is always the midpoint). The cost *ceiling* is the per-repetition
-token cap times the configured price — a bound, not a forecast; the expected cost uses the
+token cap times the configured price — a bound where the harness can enforce the cap, and a
+figure the run is measured against where it cannot (the caveats say which, per §12.7); the expected cost uses the
 skill's stored baseline's observed tokens per run where one exists, and is otherwise absent
 rather than guessed. The judge and A/B multipliers §19.1 lists are zero because neither
 subsystem exists in this build, and the estimate says so.
@@ -25,7 +26,7 @@ from bellwether.cli.baselines import BaselineRecord
 from bellwether.cli.orchestrator import TargetInfo
 from bellwether.config.models.provider import ModelPricing
 
-__all__ = ["RunEstimate", "estimate_run", "render_estimate"]
+__all__ = ["CAP_ENFORCEMENT_CAVEAT", "RunEstimate", "estimate_run", "render_estimate"]
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,22 @@ class RunEstimate:
     fixed_mode: bool
     #: What the estimate could not include, stated rather than omitted.
     caveats: tuple[str, ...]
+
+
+#: §12.7: what the token cap actually bounds, per harness, because the word "ceiling" was doing
+#: work the enforcement did not. api-loop reserves the remaining budget before each request and
+#: passes it as the provider's output ceiling, so the overshoot is bounded by the input side of
+#: the last request; claude-code runs a CLI with no flag for either the token or the tool-call
+#: cap, so both are read after the run and an overshoot there is observed, not prevented.
+#:
+#: A named constant rather than a literal in the caveat list: two adjacent string literals inside
+#: a list are one missing comma away from silently becoming one element, which is what CodeQL's
+#: implicit-concatenation rule is about.
+CAP_ENFORCEMENT_CAVEAT = (
+    "the token cap is enforced per request on api-loop (the remaining budget is sent as the "
+    "provider's output ceiling) and only observed after the run on claude-code, which exposes "
+    "no flag for it"
+)
 
 
 def _dearest_kind_cost(pricing: ModelPricing, tokens: int) -> float:
@@ -108,6 +125,7 @@ def estimate_run(
     caveats: list[str] = [
         "judge and A/B terms are 0: neither subsystem exists in this build",
         "E[N] is the schedule's midpoint look: this build keeps no stopping history",
+        CAP_ENFORCEMENT_CAVEAT,
     ]
     if cache_enabled:
         caveats.append(

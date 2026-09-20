@@ -27,7 +27,10 @@ defaults: &defaults
       min_evaluable_fraction: 0.8
     static:
       max_severity_allowed: medium
-      require_scan: true
+      # false because this build ships no static scanner (§15 is a later work package),
+      # not because a scan is optional. Setting it true refuses the run at the §16.4
+      # precondition check rather than producing a verdict that skipped it.
+      require_scan: false
     scope:
       require_manifest: false
       block_on: [exceeded]

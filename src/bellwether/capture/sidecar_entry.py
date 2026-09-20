@@ -37,6 +37,7 @@ __all__ = [
     "SidecarConfig",
     "block_response_args",
     "build_addon",
+    "client_sni",
     "load_addon_from_env",
 ]
 
@@ -148,6 +149,20 @@ def build_addon(
     )
 
 
+def client_sni(flow: Any) -> str:
+    """The server name the client offered in its TLS handshake, or ``""`` where there was none.
+
+    A third asserted identity beside the request-line authority and the ``Host`` header, read off
+    the client connection because that is the only place it exists. Defensive ``getattr``: the
+    attribute is absent on a plaintext connection and on the plain fakes the addon is unit-tested
+    with, and a proxy that crashed on a missing optional field would fail closed by dying rather
+    than by blocking — which loses the flow log the plane depends on.
+    """
+    connection = getattr(flow, "client_conn", None)
+    sni = getattr(connection, "sni", None)
+    return sni if isinstance(sni, str) else ""
+
+
 def block_response_args(block: BlockResponse) -> tuple[int, bytes, dict[str, str]]:
     """Reduce a :class:`BlockResponse` to the ``(status, body, headers)`` triple mitmproxy's
     ``http.Response.make`` takes. Pure, so the block path is tested without mitmproxy; the hook
@@ -176,7 +191,7 @@ class _RecordingAddon:
         self._flush()  # write an empty log immediately: "the proxy ran" is true from t=0
 
     def request(self, flow: Any) -> None:
-        block = self._addon.on_request(flow.request)
+        block = self._addon.on_request(flow.request, sni=client_sni(flow))
         if block is not None:
             # Lazy, and unresolved off the sidecar image: mitmproxy is a dependency of the proxy
             # container only, never of bellwether itself (§10.5 keeps their dep trees apart), so
