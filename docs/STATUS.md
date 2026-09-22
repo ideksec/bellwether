@@ -27,10 +27,13 @@ the host (root, on CI) read through skill-authored symlinks before staging refus
 and a linked `evals/fixtures` had a host directory copied into the workspace. One containment rule
 (`skill.contained_path`) now applies at every host read of skill content, and `run`'s duplicate
 fixture lookup calls the resolver. The review's `eval_id` path-escape was **not reachable** (the
-baseline lookup refuses a name with `/` first); `eval_id` uses the slug anyway. Remaining bricks,
-in order:
-4. the PR comment escapes no skill-controlled text (the review's `tools.deny` case and CI
-   `find | head -n1` findings were fixed independently on `main`, PR #78);
+baseline lookup refuses a name with `/` first); `eval_id` uses the slug anyway (PR #81).
+**Brick 4 — fixed:** the PR comment interpolated skill-controlled text verbatim — a forged
+`## 🟢 Bellwether verdict: ready` heading, live `@mentions`, forged gate rows; every dynamic value
+now goes through `report/mdsafe.py`, proven by a parsed-Markdown corpus
+(`tests/test_pr_comment_injection.py`). The comment upsert now edits only a *bot-authored* marked
+comment and reads every page, not the first 100. (The review's `tools.deny` case and CI
+`find | head -n1` findings were fixed independently on `main`, PR #78.) Remaining bricks, in order:
 5. `functional.max_false_trigger_rate` / should-trigger activation are registered as enforcing and
    read by nothing; capability weights round below 1 to 0 and the validator checks the wrong keys;
 6. canary scan: silent 256 KiB truncation, cross-request chunking, predictable seeding;
@@ -869,7 +872,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1646 tests: 1587 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1681 tests: 1622 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

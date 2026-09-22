@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Final, Literal
 
 from bellwether.determinism import format_float
+from bellwether.report.mdsafe import code, fence, one_line, text
 
 __all__ = [
     "STRIP_GLYPHS",
@@ -107,10 +108,13 @@ def render_strip_chart(rows: Sequence[StripRow]) -> str:
         return "_No repetition sets to display._"
 
     legend = " ".join(f"{STRIP_GLYPHS[state]} {state}" for state in _STRIP_ORDER)
-    width = max(len(row.label) for row in rows)
-    lines = [f"{row.label.ljust(width)}  {_strip_line(row)}" for row in rows]
+    labels = [one_line(row.label) for row in rows]
+    width = max(len(label) for label in labels)
+    lines = [
+        f"{label.ljust(width)}  {_strip_line(row)}" for label, row in zip(labels, rows, strict=True)
+    ]
     body = "\n".join(lines)
-    return f"Legend: {legend}   ( | marks a sequential look boundary )\n\n```\n{body}\n```"
+    return f"Legend: {legend}   ( | marks a sequential look boundary )\n\n{fence(body)}"
 
 
 @dataclass(frozen=True)
@@ -136,9 +140,9 @@ def render_trajectory_clusters(clusters: Sequence[TrajectoryCluster]) -> str:
     for cluster in ordered:
         steps = " → ".join(cluster.representative) if cluster.representative else "(empty)"
         lines.append(
-            f"- **{cluster.cluster_id}** — {cluster.run_count} run(s), "
+            f"- **{text(cluster.cluster_id)}** — {cluster.run_count} run(s), "
             f"mean intra-cluster distance {format_float(cluster.mean_intra_distance)}\n"
-            f"  `{steps}`"
+            f"  {code(steps)}"
         )
     return "\n".join(lines)
 
@@ -177,17 +181,17 @@ def render_capability_heatmap(rows: Sequence[CapabilityRow], run_labels: Sequenc
     for row in rows:
         grouped.setdefault(row.tier1_class, []).append(row)
 
-    label_width = max(len(f"{r.capability}") for r in rows) + 2
+    label_width = max(len(one_line(r.capability)) for r in rows) + 2
     header_cols = "".join(str((i + 1) % 10) for i in range(len(run_labels)))
     lines = [f"{'capability'.ljust(label_width)} {header_cols}"]
 
     for tier1 in sorted(grouped):
-        lines.append(f"{tier1}/")
+        lines.append(f"{one_line(tier1)}/")
         for row in sorted(grouped[tier1], key=lambda r: r.capability):
             grid = "".join(_FILLED if hit else _EMPTY for hit in row.exercised)
             mark = " !" if row.high_risk else ""
-            lines.append(f"  {row.capability.ljust(label_width - 2)} {grid}{mark}")
+            lines.append(f"  {one_line(row.capability).ljust(label_width - 2)} {grid}{mark}")
 
     body = "\n".join(lines)
     runs_note = f"{len(run_labels)} run(s); columns are runs left-to-right"
-    return f"```\n{body}\n```\n_{runs_note}. `!` marks a high-risk capability._"
+    return f"{fence(body)}\n_{runs_note}. `!` marks a high-risk capability._"

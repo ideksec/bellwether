@@ -3975,3 +3975,53 @@ resolved to the host directory; after, both are refused.
 **Not addressed here.** The skill root itself is followed if it is a symlink — it is the path the
 operator (or `changed-skills`) names, not content inside the package. A name containing `/` makes
 a skill unevaluable (exit 3 at the baseline lookup) rather than evaluated under its slug.
+
+
+## §17.4, §18.2 — skill-controlled text in the PR comment is text
+
+**Found by** the second independent review (2026-09). The PR comment is posted by the workflow's
+bot on the pull request whose skill it judges, and much of what it prints is the skill's choice:
+its declared name, the paths and argv it touched, the tool names it called, and every gate reason,
+finding and near-miss that quotes one of them. The Markdown renderer interpolated all of it
+verbatim (the HTML report escaped every value), so a skill that ran `bash -c "x\n## 🟢 Bellwether
+verdict: `ready` @team"` once produced a second, bot-authored verdict heading and a live mention
+inside a comment reporting `not_ready`; a `|` in a reason forged a gate-table cell.
+
+**The fix is one module, `report/mdsafe.py`.** `code()` renders a value *as data* — a code span
+whose fence is longer than any backtick run in the value, with line breaks shown as `⏎`; GitHub
+resolves no mention or reference inside code. `text()` renders a value inside prose or a table
+cell — one line, Markdown and HTML metacharacters backslash-escaped, `@` kept from mentioning with
+a word joiner. `fence()` makes a fenced block longer than any backtick run in its body. Every
+dynamic value in `markdown.py` and `figures.py` goes through one of them. `REPORT_LIMITATIONS` is
+a constant and stays verbatim.
+
+**What it costs, visibly.** The committed demo comments were regenerated with `bellwether demo`:
+the rendered text is the same, and one pre-existing display bug is fixed — `providers.<name>.pricing`
+used to lose `<name>` as an unknown HTML tag. Internally written notes that used backticks for
+emphasis now show the backticks literally, because notes can quote the skill.
+
+**The comment upsert trusted the marker.** `find_existing_comment` edited the first comment
+containing the public marker whoever wrote it — an outsider's seeded comment became the verdict's
+home (rewritable by its author), or the edit was refused and, with CI's `|| true`, nothing was
+posted. Only a `Bot`-typed author is now ours to edit; a person cannot author as a bot. And only
+the first 100 comments were read, so a long PR stacked a new report every run; pages are now
+followed (bounded at 30).
+
+**Prevention: a parsed corpus.** `tests/test_pr_comment_injection.py` plants each of eight
+payloads in every skill-controlled field at once, renders the comment, and parses it with
+markdown-it (CommonMark + tables): exactly one verdict heading, no mention outside code, no link,
+image or HTML but the renderer's own, and a gate table with exactly the one planted row. The test
+fake for the upsert now models authors and pagination, because the old one could express neither
+attack.
+
+**Revert-proof, per change.** Against the old renderer 13 of the 32 corpus checks fail (3 forged
+headings, 2 forged gate rows, 2 injected link/HTML, 6 live mentions); the other 19 are regression
+rows. Against the old upsert the three new tests fail (a person's marked comment edited; a person's
+marked comment not leading to a fresh report; a report on page 2 missed). A first version of the
+paginated fake misread `per_page=100` as page 100 and made an existing test fail on the *old* code
+for a reason that was the fake's; it parses the query string now.
+
+**Not addressed here.** A bare URL in escaped text still autolinks on GitHub; link *syntax* is
+escaped, so no label can disguise one. Another GitHub App installed on the repository also posts as
+a `Bot` and could seed the marker; the workflow's own token cannot be told apart from it without a
+`GET /user` the Actions token is refused.

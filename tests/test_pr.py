@@ -8,6 +8,7 @@ pinned here without a network or a real token, the same seam the live model clie
 from __future__ import annotations
 
 import json
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -24,6 +25,8 @@ from bellwether.errors import BellwetherError
 
 _CTX = PrContext(owner="octo", repo="skills", number=7)
 _TOKEN = "ghs-secret-do-not-leak"  # a fake token for the leak-guard test
+_BOT = {"login": "github-actions[bot]", "type": "Bot"}
+_PERSON = {"login": "someone", "type": "User"}
 
 
 class _FakeGitHub:
@@ -36,7 +39,12 @@ class _FakeGitHub:
     def __call__(self, method, url, headers, body):  # type: ignore[no-untyped-def]
         self.calls.append((method, url, dict(headers), body))
         if method == "GET":
-            return GitHubResponse(200, json.dumps(self.existing).encode("utf-8"))
+            # Paginated as the real API is: 100 per page, ``page`` 1-based. A fake that returned
+            # everything on every call could not express a prior report on page 2.
+            query = parse_qs(urlsplit(url).query)
+            page = int(query.get("page", ["1"])[0])
+            batch = self.existing[(page - 1) * 100 : page * 100]
+            return GitHubResponse(200, json.dumps(batch).encode("utf-8"))
         if method == "POST":
             return GitHubResponse(201, b'{"id": 999}')
         if method == "PATCH":
@@ -58,14 +66,17 @@ def test_marked_body_appends_the_marker_last() -> None:
 def test_find_existing_comment_matches_only_our_marker() -> None:
     comments = [
         {"id": 1, "body": "a human comment"},
-        {"id": 2, "body": f"a prior report\n{COMMENT_MARKER}"},
+        {"id": 2, "body": f"a prior report\n{COMMENT_MARKER}", "user": _BOT},
     ]
     assert find_existing_comment(comments, COMMENT_MARKER) == 2
     assert find_existing_comment([{"id": 1, "body": "no marker"}], COMMENT_MARKER) is None
 
 
 def test_find_existing_comment_ignores_malformed_entries() -> None:
-    comments = [{"id": "not-int", "body": COMMENT_MARKER}, {"body": COMMENT_MARKER}]
+    comments = [
+        {"id": "not-int", "body": COMMENT_MARKER, "user": _BOT},
+        {"body": COMMENT_MARKER, "user": _BOT},
+    ]
     assert find_existing_comment(comments, COMMENT_MARKER) is None
 
 
@@ -86,7 +97,7 @@ def test_first_run_creates_a_comment() -> None:
 
 
 def test_second_run_edits_the_same_comment() -> None:
-    gh = _FakeGitHub(existing=[{"id": 111, "body": f"old report\n{COMMENT_MARKER}"}])
+    gh = _FakeGitHub(existing=[{"id": 111, "body": f"old report\n{COMMENT_MARKER}", "user": _BOT}])
     action = upsert_pr_comment(gh, _CTX, "## fresh report", token=_TOKEN)
     assert action == "updated"
     assert [call[0] for call in gh.calls] == ["GET", "PATCH"]
@@ -147,3 +158,36 @@ def test_missing_repository_is_a_clear_refusal() -> None:
 def test_a_non_pr_ref_refuses_rather_than_guessing() -> None:
     with pytest.raises(BellwetherError, match="pull request number"):
         resolve_pr_context({"GITHUB_REPOSITORY": "octo/skills", "GITHUB_REF": "refs/heads/main"})
+
+
+# ---------------------------------------------------------------------------
+# Whose comment is ours
+# ---------------------------------------------------------------------------
+
+
+def test_a_marked_comment_a_person_posted_is_never_the_one_edited() -> None:
+    """The marker is public text. A comment an outsider seeded with it was the one the workflow
+    edited — a verdict its author could then rewrite, or a refused edit that posted nothing."""
+    gh = _FakeGitHub(
+        existing=[
+            {"id": 5, "body": f"totally the report\n{COMMENT_MARKER}", "user": _PERSON},
+            {"id": 6, "body": f"the real prior report\n{COMMENT_MARKER}", "user": _BOT},
+        ]
+    )
+    assert upsert_pr_comment(gh, _CTX, "## report", token=_TOKEN) == "updated"
+    assert gh.calls[-1][1].endswith("/issues/comments/6")
+
+
+def test_only_a_persons_marked_comment_means_a_fresh_report() -> None:
+    gh = _FakeGitHub(existing=[{"id": 5, "body": COMMENT_MARKER, "user": _PERSON}])
+    assert upsert_pr_comment(gh, _CTX, "## report", token=_TOKEN) == "created"
+    assert "PATCH" not in [call[0] for call in gh.calls]
+
+
+def test_a_prior_report_past_the_first_page_is_found() -> None:
+    """Only page one was read, so a PR past 100 comments stacked a new report every run."""
+    chatter = [{"id": n, "body": "lgtm", "user": _PERSON} for n in range(1, 151)]
+    report = {"id": 999, "body": f"old report\n{COMMENT_MARKER}", "user": _BOT}
+    gh = _FakeGitHub(existing=[*chatter, report])
+    assert upsert_pr_comment(gh, _CTX, "## report", token=_TOKEN) == "updated"
+    assert gh.calls[-1][1].endswith("/issues/comments/999")
