@@ -82,15 +82,24 @@ def marked_body(comment: str) -> str:
 
 
 def find_existing_comment(comments: list[Mapping[str, object]], marker: str) -> int | None:
-    """The id of the first comment carrying ``marker``, or None.
+    """The id of the first *bot-authored* comment carrying ``marker``, or None.
 
     Comments come back oldest-first; we take the first match so re-runs converge on one
     comment even in the unlikely case two ever existed.
+
+    The marker alone is not an identity: it is public text anyone can paste. Matched on the
+    marker only, a comment an outsider posted first was the one the workflow edited — the
+    verdict then lived in a comment its author could rewrite afterwards, or the edit was refused
+    (the token may not edit another user's comment) and, with CI's ``|| true``, nothing was
+    posted at all. A person cannot author as a bot account, so only a ``Bot`` comment is ours to
+    update; anything else is left alone and a fresh comment is created.
     """
     for comment in comments:
         body = comment.get("body")
         comment_id = comment.get("id")
-        if isinstance(body, str) and marker in body and isinstance(comment_id, int):
+        user = comment.get("user")
+        by_bot = isinstance(user, Mapping) and user.get("type") == "Bot"
+        if by_bot and isinstance(body, str) and marker in body and isinstance(comment_id, int):
             return comment_id
     return None
 
@@ -118,6 +127,31 @@ def _decode_comments(response: GitHubResponse) -> list[Mapping[str, object]]:
     return [item for item in payload if isinstance(item, Mapping)]
 
 
+#: Pages of 100 read before giving up the search for a prior report. A PR with more comments than
+#: this gets a fresh report comment rather than an unbounded walk.
+_MAX_COMMENT_PAGES = 30
+
+
+def _list_comments(
+    transport: GitHubTransport, root: str, context: PrContext, headers: Mapping[str, str]
+) -> list[Mapping[str, object]]:
+    """Every comment on the PR, oldest first, following pages until a short one.
+
+    Only the first page used to be read, so on a PR past 100 comments the prior report was
+    never found and every run stacked a new one.
+    """
+    comments: list[Mapping[str, object]] = []
+    for page in range(1, _MAX_COMMENT_PAGES + 1):
+        url = (
+            f"{root}/repos/{context.slug}/issues/{context.number}/comments?per_page=100&page={page}"
+        )
+        batch = _decode_comments(transport("GET", url, headers, None))
+        comments.extend(batch)
+        if len(batch) < 100:
+            break
+    return comments
+
+
 def upsert_pr_comment(
     transport: GitHubTransport,
     context: PrContext,
@@ -136,9 +170,8 @@ def upsert_pr_comment(
     headers = _auth_headers(token)
     body = marked_body(comment)
 
-    list_url = f"{root}/repos/{context.slug}/issues/{context.number}/comments?per_page=100"
     existing = find_existing_comment(
-        _decode_comments(transport("GET", list_url, headers, None)), COMMENT_MARKER
+        _list_comments(transport, root, context, headers), COMMENT_MARKER
     )
 
     payload = json.dumps({"body": body}).encode("utf-8")

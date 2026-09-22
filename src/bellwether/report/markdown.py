@@ -37,6 +37,7 @@ from bellwether.report.figures import (
     render_strip_chart,
     render_trajectory_clusters,
 )
+from bellwether.report.mdsafe import code, text
 from bellwether.report.summary import Summary
 
 __all__ = ["Figures", "ScopeRow", "render_pr_comment"]
@@ -131,7 +132,7 @@ def _trajectory_line(summary: Summary) -> str | None:
     consistency = summary.consistency
     floor = summary.noise_floor
     floor_note = (
-        f" (floor {format_float(floor.trajectory)}, calibrated {floor.calibrated_at})"
+        f" (floor {format_float(floor.trajectory)}, calibrated {text(floor.calibrated_at)})"
         if floor is not None
         else ""
     )
@@ -164,8 +165,10 @@ def _verdict_header(summary: Summary) -> str:
     lines = [
         f"## {glyph} Bellwether verdict: `{status}`",
         "",
-        f"_{gloss}._ · profile **{summary.policy.profile}** · "
-        f"skill **{summary.skill.name}** (`{summary.skill.criticality}` criticality)",
+        # The skill's name is its author's choice; everything after this point that quotes the
+        # skill goes through ``mdsafe`` — see that module for what verbatim interpolation did.
+        f"_{gloss}._ · profile **{text(summary.policy.profile)}** · "
+        f"skill **{text(summary.skill.name)}** ({code(summary.skill.criticality)} criticality)",
         "",
         _bci_line(summary),
         "",
@@ -188,7 +191,7 @@ def _verdict_header(summary: Summary) -> str:
     # missing baseline, a platform baseline not applied, pinned sampling). A control that did
     # not run has to be visible where the verdict is read, not only in summary.json.
     for note in summary.verdict.notes:
-        lines.append(f"> {note}")
+        lines.append(f"> {text(note)}")
     lines += ["", _gate_tally(summary)]
     return "\n".join(lines)
 
@@ -196,8 +199,9 @@ def _verdict_header(summary: Summary) -> str:
 def _gate_table(summary: Summary) -> str:
     header = "| Gate | Status | Observed | Threshold | Reason |\n|---|---|---|---|---|"
     rows = [
-        f"| {g.name} | {_GATE_GLYPH.get(g.status, '')} `{g.status}` | {g.observed or '—'} "
-        f"| {g.threshold or '—'} | {g.reason or '—'} |"
+        f"| {text(g.name)} | {_GATE_GLYPH.get(g.status, '')} {code(g.status)} "
+        f"| {text(g.observed) if g.observed else '—'} "
+        f"| {text(g.threshold) if g.threshold else '—'} | {text(g.reason) if g.reason else '—'} |"
         for g in summary.verdict.gates
     ]
     if not rows:
@@ -231,7 +235,8 @@ def _declared_vs_observed(figures: Figures) -> str:
         return "### Declared vs observed\n\n_No manifest scope to compare._"
     header = "| Capability | Declared | Observed | Disposition |\n|---|---|---|---|"
     rows = [
-        f"| `{r.capability}` | {_yesno(r.declared)} | {_yesno(r.observed)} | {r.disposition} |"
+        f"| {code(r.capability)} | {_yesno(r.declared)} | {_yesno(r.observed)} "
+        f"| {text(r.disposition)} |"
         for r in sorted(figures.declared_vs_observed, key=lambda r: r.capability)
     ]
     return "### Declared vs observed\n\n" + header + "\n" + "\n".join(rows)
@@ -264,17 +269,17 @@ def _peripheral_section(summary: Summary) -> list[str]:
         percent = f"{float(frequency) * 100:.0f}%" if isinstance(frequency, (int, float)) else "—"
         flag = " — **rare high-risk (§13.5.2)**" if tier1 in rare else ""
         lines.append(
-            f"- **Peripheral capability:** `{tier1}` — in {runs} of {of} runs ({percent}), "
-            f"risk weight {row.get('weight', '—')}{flag}"
+            f"- **Peripheral capability:** {code(tier1)} — in {text(runs)} of {text(of)} runs "
+            f"({percent}), risk weight {text(row.get('weight', '—'))}{flag}"
         )
         tier3 = row.get("tier3")
         expansions = [str(cap) for cap in tier3] if isinstance(tier3, list) else []
         for cap in expansions:
-            lines.append(f"  - `{cap}`")
+            lines.append(f"  - {code(cap)}")
         if not expansions:
             lines.append("  - _(no tier-3 expansion recorded)_")
     if sensitive:
-        joined = ", ".join(f"`{hit}`" for hit in sensitive)
+        joined = ", ".join(code(hit) for hit in sensitive)
         lines.append(
             f"- **Sensitive directory reached (§13.5.4):** {joined} — on at least one run; "
             "frequency is irrelevant to this finding"
@@ -302,7 +307,7 @@ def _trace_inconsistency_section(summary: Summary) -> list[str]:
     findings = [str(entry) for entry in raw] if isinstance(raw, list) else []
     if not findings:
         return []
-    lines = "\n".join(f"- {finding}" for finding in findings)
+    lines = "\n".join(f"- {text(finding)}" for finding in findings)
     return [
         "### Cross-plane disagreements (§10.8)\n\n"
         + lines
@@ -326,16 +331,16 @@ def _platform_baseline_section(summary: Summary) -> list[str]:
     def _bullets(title: str, entries: tuple[str, ...]) -> str:
         if not entries:
             return f"{title}: none"
-        listed = "\n".join(f"- `{entry}`" for entry in entries)
+        listed = "\n".join(f"- {code(entry)}" for entry in entries)
         return f"{title}:\n{listed}"
 
     helpers = tuple(
         f"{root}: {', '.join(helpers)}" for root, helpers in baseline.processes_helpers_of.items()
     )
     state = (
-        f"Applied, version `{baseline.version}`."
+        f"Applied, version {code(baseline.version)}."
         if baseline.applied
-        else f"Configured (version `{baseline.version}`) but **not applied** to this run."
+        else f"Configured (version {code(baseline.version)}) but **not applied** to this run."
     )
     body = "\n\n".join(
         [
@@ -352,7 +357,7 @@ def _platform_baseline_section(summary: Summary) -> list[str]:
     )
     sections = [_collapsible("Platform baseline (the allowlist, in full)", body)]
     if baseline.near_misses:
-        listed = "\n".join(f"- `{miss}`" for miss in baseline.near_misses)
+        listed = "\n".join(f"- {code(miss)}" for miss in baseline.near_misses)
         sections.append(
             "### Platform baseline near-misses\n\n"
             "Activity that resembles a baseline entry without matching it. Never absorbed "
