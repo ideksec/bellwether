@@ -3878,6 +3878,16 @@ the proof; the table above is, and it was run against both sources. `test_every_
 is an allowlist in the style of the control registry: a relaying hook named there without an
 implementation fails the build.
 
+**What the gate broke, and CI caught.** The §9.2 interception probe kept its probe host *off* the
+allowlist, relying on a denied request being recorded after the handshake, and counted any recorded
+probe host as confirmation. With the `CONNECT` gate the denied probe host is refused — and recorded —
+before any handshake, so on CI a client with no CA at all "confirmed" interception (the negative
+container test failed; reproduced locally: both with and without the CA the only records were
+refused `CONNECT`s). The probe now allowlists its own unresolvable `.invalid` host (its sidecar is
+its own; no run's policy widens) and counts only a flow recorded *inside* TLS (`scheme == "https"`).
+Reproduced after: with the CA, one `https` flow and confirmation; without it, a certificate
+rejection and no flow. Two new offline wiring tests fail on the old probe on behaviour.
+
 **Not addressed here.** WebSocket frames after a permitted upgrade are relayed without a canary scan
 (the upgrade request itself is decided); a `CONNECT` to a permitted host is decided on the host
 alone, not the port.
