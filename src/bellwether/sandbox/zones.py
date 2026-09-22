@@ -25,7 +25,15 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Literal
 
-__all__ = ["ZONE_RULES", "Zone", "ZoneMap", "ZoneRules", "ZonedPath", "normalize_container_path"]
+__all__ = [
+    "ZONE_RULES",
+    "Zone",
+    "ZoneMap",
+    "ZoneRules",
+    "ZonedPath",
+    "normalize_container_path",
+    "tidy_container_spelling",
+]
 
 #: ``outside`` is not a configured zone; it is everything the container can reach that is
 #: none of the three — ``/etc``, ``/home/agent`` outside harness state, a mounted cache.
@@ -74,6 +82,12 @@ def normalize_container_path(path: str | PurePosixPath) -> PurePosixPath:
     candidate = PurePosixPath(path)
     parts: list[str] = []
     for part in candidate.parts:
+        if part == "//":
+            # ``PurePosixPath`` keeps exactly two leading slashes as a root of its own, because
+            # POSIX leaves them implementation-defined. Linux resolves them as ``/``, so a
+            # skill reading ``//home/agent/.ssh/id_rsa`` reads ``/home/agent/.ssh/id_rsa`` —
+            # and a classifier that kept the ``//`` root never recognised it as ``${HOME}``.
+            part = "/"
         if part == ".":
             continue
         if part == "..":
@@ -83,6 +97,23 @@ def normalize_container_path(path: str | PurePosixPath) -> PurePosixPath:
             continue
         parts.append(part)
     return PurePosixPath(*parts) if parts else PurePosixPath("/")
+
+
+def tidy_container_spelling(path: str) -> str:
+    """Collapse what never changes which file a path names — repeated slashes and ``.``
+    segments — while keeping ``..``, which does.
+
+    For the *named* form of a path, where traversal is the evidence (§12.6: a path that walks
+    out of a baseline entry is a near-miss, and resolving it first would hide that). The
+    resolved form is :func:`normalize_container_path`'s job; this is the spelling the skill
+    chose, minus the parts of it that cannot matter. ``//home/agent/.cache/../.aws/x`` names
+    exactly what ``/home/agent/.cache/../.aws/x`` names, and must be recognised as ``${HOME}``
+    by the same prefix comparison.
+    """
+    absolute = path.startswith("/")
+    segments = [segment for segment in path.split("/") if segment not in ("", ".")]
+    tidied = "/".join(segments)
+    return f"/{tidied}" if absolute else (tidied or ".")
 
 
 @dataclass(frozen=True)
