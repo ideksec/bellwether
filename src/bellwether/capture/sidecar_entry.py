@@ -19,6 +19,7 @@ observed container could read holds a credential.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from collections.abc import Callable, Mapping
@@ -29,7 +30,12 @@ from typing import Any
 from bellwether.capture.canary import Canary
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import CapLedger, EgressAllowlist
-from bellwether.capture.proxy_addon import BlockResponse, ProxyAddon, write_flow_records
+from bellwether.capture.proxy_addon import (
+    BLOCK_STATUS_ERROR,
+    BlockResponse,
+    ProxyAddon,
+    write_flow_records,
+)
 from bellwether.determinism import canonical_json
 
 __all__ = [
@@ -165,8 +171,7 @@ def client_sni(flow: Any) -> str:
 
 def block_response_args(block: BlockResponse) -> tuple[int, bytes, dict[str, str]]:
     """Reduce a :class:`BlockResponse` to the ``(status, body, headers)`` triple mitmproxy's
-    ``http.Response.make`` takes. Pure, so the block path is tested without mitmproxy; the hook
-    below is the one line that feeds this to mitmproxy."""
+    ``http.Response.make`` takes. Pure, so the block path is tested without mitmproxy."""
     return block.status, block.reason.encode("utf-8"), {"content-type": "text/plain; charset=utf-8"}
 
 
@@ -179,33 +184,140 @@ def _wall_clock() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
 
 
-class _RecordingAddon:
-    """The mitmproxy addon object. Its ``request`` hook is the only mitmproxy-shaped surface: it
-    calls ``on_request`` (all logic, tested) and, on a block, assigns ``flow.response``. Flows are
-    flushed to the shared log after every request so a crash mid-run still leaves what was seen —
-    a partial log is evidence; a missing one reads as a clean run and must not happen silently."""
+def _mitmproxy_response(block: BlockResponse) -> Any:
+    """Render a block as a mitmproxy response. Lazy, and unresolved off the sidecar image:
+    mitmproxy is a dependency of the proxy container only, never of bellwether itself (§10.5
+    keeps their dep trees apart), so mypy cannot see it here; tests inject their own renderer."""
+    from mitmproxy import http  # type: ignore[import-not-found]
 
-    def __init__(self, addon: ProxyAddon, flow_log_path: str) -> None:
+    return http.Response.make(*block_response_args(block))
+
+
+class _RecordingAddon:
+    """The mitmproxy addon object — the only mitmproxy-shaped surface. Each hook calls into
+    :class:`ProxyAddon` (all logic, tested) and applies the result. Flows are flushed to the shared
+    log after every decision so a crash mid-run still leaves what was seen — a partial log is
+    evidence; a missing one reads as a clean run and must not happen silently.
+
+    **Every hook fails closed.** mitmproxy's ``safecall`` catches an addon's exception, logs it
+    and *carries on with the flow* — so an exception escaping a hook is an open, unrecorded proxy
+    for that request (a ``Content-Encoding: gzip`` header on a body that is not gzip made
+    ``request.content`` raise, and the request went out undecided). Each hook therefore turns any
+    failure into a recorded refusal, and if even rendering the refusal fails, kills the flow.
+
+    Three hooks, because HTTP requests are not the only thing a proxy relays:
+
+    * ``http_connect`` gates a ``CONNECT`` tunnel on the allowlist *before* mitmproxy dials it —
+      without it, mitmproxy answers ``200 Connection established`` to any host:port.
+    * ``request`` decides each HTTP request, inside a tunnel or not.
+    * ``tcp_start``/``tcp_message`` refuse a raw-TCP stream (bytes that are neither TLS nor HTTP,
+      which mitmproxy otherwise relays verbatim and no request hook ever sees). ``rawtcp=false``
+      on the command line stops mitmproxy choosing that layer at all; these are the backstop, and
+      ``tcp_message`` empties each payload because killing a TCP flow does not stop its relay.
+    """
+
+    def __init__(
+        self,
+        addon: ProxyAddon,
+        flow_log_path: str,
+        *,
+        render: Callable[[BlockResponse], Any] = _mitmproxy_response,
+    ) -> None:
         self._addon = addon
         self._path = Path(flow_log_path)
+        self._render = render
         self._flush()  # write an empty log immediately: "the proxy ran" is true from t=0
 
-    def request(self, flow: Any) -> None:
-        block = self._addon.on_request(flow.request, sni=client_sni(flow))
-        if block is not None:
-            # Lazy, and unresolved off the sidecar image: mitmproxy is a dependency of the proxy
-            # container only, never of bellwether itself (§10.5 keeps their dep trees apart), so
-            # mypy cannot see it here and the block path is proven by the CI docker test instead.
-            from mitmproxy import http  # type: ignore[import-not-found]
+    def http_connect(self, flow: Any) -> None:
+        try:
+            request = flow.request
+            block = self._addon.on_connect(
+                request.host, request.port, claimed_host=request.host_header or ""
+            )
+        except Exception as error:
+            block = self._error(flow, "http_connect", error)
+        self._settle(flow, block)
 
-            flow.response = http.Response.make(*block_response_args(block))
-        self._flush()
+    def request(self, flow: Any) -> None:
+        try:
+            block = self._addon.on_request(flow.request, sni=client_sni(flow))
+        except Exception as error:
+            block = self._error(flow, "request", error)
+        self._settle(flow, block)
+
+    def tcp_start(self, flow: Any) -> None:
+        try:
+            host, port = _server_address(flow)
+            self._addon.on_raw_tcp(host, port)
+        except Exception as error:
+            self._error(flow, "tcp_start", error)
+        self._kill(flow)
+        self._flush_or_ignore()
+
+    def tcp_message(self, flow: Any) -> None:
+        # Nothing of a raw stream is relayed: mitmproxy sends the message's content *after* this
+        # hook returns, so emptying it is what actually stops the bytes (a kill does not).
+        messages = getattr(flow, "messages", None) or ()
+        for message in messages[-1:]:
+            message.content = b""
+        self._kill(flow)
 
     def done(self) -> None:
         self._flush()
 
+    def _error(self, flow: Any, hook: str, error: BaseException) -> BlockResponse:
+        request = getattr(flow, "request", None)
+        host = getattr(request, "host", "")
+        port = getattr(request, "port", 0)
+        method = getattr(request, "method", "")
+        return self._addon.on_hook_error(
+            hook,
+            error,
+            host=host if isinstance(host, str) else "",
+            port=port if isinstance(port, int) else 0,
+            method=method if isinstance(method, str) else "",
+        )
+
+    def _settle(self, flow: Any, block: BlockResponse | None) -> None:
+        """Persist the decision, then apply it. The log is written *before* a request is let
+        through: a forwarded request the log cannot record is refused instead (§10.5.0)."""
+        try:
+            self._flush()
+        except Exception as error:
+            block = block or BlockResponse(
+                status=BLOCK_STATUS_ERROR,
+                reason=f"the flow log could not be written ({type(error).__name__})",
+            )
+        if block is None:
+            return
+        try:
+            flow.response = self._render(block)
+        except Exception:
+            self._kill(flow)
+
+    @staticmethod
+    def _kill(flow: Any) -> None:
+        # A flow that cannot be killed is already dead.
+        with contextlib.suppress(Exception):
+            if getattr(flow, "killable", True):
+                flow.kill()
+
+    def _flush_or_ignore(self) -> None:
+        # The stream is refused either way; a lost record cannot un-refuse it.
+        with contextlib.suppress(Exception):
+            self._flush()
+
     def _flush(self) -> None:
         write_flow_records(self._path, self._addon.flows())
+
+
+def _server_address(flow: Any) -> tuple[str, int]:
+    """The ``(host, port)`` a TCP flow was headed for, or ``("", 0)`` where mitmproxy has none."""
+    address = getattr(getattr(flow, "server_conn", None), "address", None)
+    if isinstance(address, tuple) and len(address) >= 2:
+        host, port = address[0], address[1]
+        return (host if isinstance(host, str) else "", port if isinstance(port, int) else 0)
+    return ("", 0)
 
 
 def load_addon_from_env(environ: Mapping[str, str] | None = None) -> _RecordingAddon:

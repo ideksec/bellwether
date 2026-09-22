@@ -27,9 +27,14 @@ probe assumed otherwise, and CI said so. The probe's own sidecar therefore runs 
 entirely. Runs are untouched: the setting is passed by this module alone, because a proxy that
 behaved differently would change what a trace means.
 
-With that, the probe host is an unresolvable name in a reserved TLD and the allowlist denies it:
-nothing leaves the machine, no peer server is stood up, and the client still gets a real answer
-over TLS it had to trust.
+With that, the probe host is an unresolvable name in a reserved TLD, and the probe's own proxy
+allowlists exactly that name and nothing else. It has to: the proxy gates a ``CONNECT`` on the
+allowlist *before* any handshake (§10.5.0), so a denied probe host would be refused — and recorded
+— without the client ever being asked to trust anything. For the same reason only a flow recorded
+*inside* TLS (scheme ``https``) counts as confirmation; a recorded ``CONNECT`` proves the client
+reached the proxy, not that it accepted the proxy's certificate. The forwarded request dies at
+name resolution, no peer server is stood up, and the client still gets a real answer over TLS it
+had to trust.
 """
 
 from __future__ import annotations
@@ -130,7 +135,7 @@ def probe_client_command(
 ) -> str:
     """A ``sh`` command that runs the probe with whatever interpreter the image has.
 
-    An HTTP error *is* a success for this purpose — a 403 from the default-deny allowlist means
+    An HTTP error *is* a success for this purpose — a 502 from the unresolvable probe host means
     the proxy received the request over TLS the client accepted — so the client prints and the
     recorded flow decides. Exit 127 with no interpreter at all, which the interpreter reads as
     *inconclusive*: an image that cannot make a request tells us nothing about its trust store,
@@ -245,10 +250,10 @@ def run_interception_probe(
     # then report "inconclusive" for a reason that is really about mitmproxy's defaults.
     provider = replace(
         provider,
-        # Default-deny, naming nothing: the probe must not widen the egress policy of the run
-        # it is only checking, and a denied request is recorded anyway — the block is a
-        # decision the addon makes *after* receiving it, which is all this establishes.
-        allowlist=probe_allowlist(),
+        # Default-deny except the unresolvable probe host: its CONNECT must be let through for the
+        # client to reach the handshake at all. This is the probe's own sidecar, so no run's
+        # egress policy is widened.
+        allowlist=probe_allowlist(probe_host),
         # No credential either. The probe sends no model traffic, so brokering a key into its
         # sidecar would put the real key on a container that has no use for it.
         broker=CredentialBroker.for_run({}, {}, rng=SeededRng(0, "interception-probe")),
@@ -273,7 +278,10 @@ def run_interception_probe(
                     container_name=container_name,
                 )
             )
-            recorded = [flow.host for flow in proxy.flows()]
+            # Only a request recorded *inside* TLS proves the client trusted the proxy's
+            # certificate. A refused or recorded CONNECT (scheme ``connect``) happens before any
+            # handshake, so counting it would confirm interception for a client with no CA.
+            recorded = [flow.host for flow in proxy.flows() if flow.scheme == "https"]
         finally:
             # Before the proxy: a client still attached to the sandbox bridge blocks its
             # removal, so a timed-out probe would leave the bridge behind as well.
@@ -291,12 +299,16 @@ def run_interception_probe(
         )
 
 
-def probe_allowlist() -> EgressAllowlist:
-    """The allowlist the probe's proxy runs with: default-deny, naming nothing.
+def probe_allowlist(probe_host: str = PROBE_HOST) -> EgressAllowlist:
+    """The allowlist the probe's proxy runs with: default-deny, naming only ``probe_host``.
 
-    The probe host is deliberately *not* allowed. A denied request is still recorded — the
-    block is a decision the proxy makes after receiving it — so interception is established either
-    way, and refusing to allowlist keeps the probe from widening the egress policy of a run it
-    is only meant to check.
+    The proxy refuses a ``CONNECT`` to a denied host before the client handshakes (§10.5.0), so a
+    probe host outside the allowlist would never reach the one step the probe exists to observe.
+    The name is in the reserved ``.invalid`` TLD, so letting it through reaches nothing; and the
+    allowlist belongs to the probe's own sidecar, never to a run's.
     """
-    return EgressAllowlist(provider_endpoints=frozenset(), infrastructure_endpoints=frozenset())
+    return EgressAllowlist(
+        provider_endpoints=frozenset(),
+        infrastructure_endpoints=frozenset(),
+        extra=frozenset({probe_host}),
+    )

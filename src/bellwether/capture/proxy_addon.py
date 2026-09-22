@@ -23,7 +23,7 @@ and feeds them to ``trace.egress_actions``. Canonical lines make the file byte-s
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, MutableMapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -35,6 +35,7 @@ from bellwether.capture.egress import (
     EgressCanaryHit,
     EgressClass,
     EgressFlow,
+    make_flow,
 )
 from bellwether.capture.proxy_core import decide_request
 from bellwether.determinism import canonical_json
@@ -56,6 +57,18 @@ BLOCK_STATUS_DENIED = 403
 #: because an exhausted budget and a forbidden host are different conditions and a skill
 #: reacting to them should be able to tell them apart.
 BLOCK_STATUS_BUDGET = 429
+#: And for a request the proxy could not decide — its own hook raised, or the body would not
+#: decode. 502 because the refusal is the proxy's, not the destination's; the point is that the
+#: request is *refused* rather than forwarded undecided (§10.5.0 fail-closed).
+BLOCK_STATUS_ERROR = 502
+
+#: Why a raw-TCP stream is refused whatever its destination. The proxy's decision, redaction and
+#: canary scan are all defined over HTTP requests; a tunnel carrying anything else would reach its
+#: host with none of them applied, which is an unobserved channel, not a permitted one.
+RAW_TCP_REFUSAL = (
+    "non-HTTP traffic through the proxy is refused: only HTTP(S) requests can be decided, "
+    "recorded and scanned (§10.5.0)"
+)
 
 
 class RequestLike(Protocol):
@@ -179,6 +192,76 @@ class ProxyAddon:
         for name, value in decision.upstream_headers.items():
             request.headers[name] = value
         return None
+
+    def on_connect(self, host: str, port: int, *, claimed_host: str = "") -> BlockResponse | None:
+        """Decide a ``CONNECT`` tunnel before mitmproxy dials its destination (§10.5.0).
+
+        The request hook only sees HTTP requests *inside* a tunnel; a tunnel whose contents are not
+        HTTP never reaches it. So the tunnel itself is gated on the same default-deny allowlist and
+        identity check, on the authority the proxy will actually dial. A refused tunnel is recorded
+        as a blocked flow; a permitted one records nothing here, because every request inside it is
+        decided and recorded on its own (recording the tunnel too would double-count egress).
+        """
+        flow = self._flow(
+            method="CONNECT",
+            scheme="connect",
+            host=host,
+            port=port,
+            path="",
+            claimed_host=claimed_host,
+        )
+        if not flow.blocked:
+            return None
+        self._flows.append(flow)
+        return BlockResponse(status=BLOCK_STATUS_DENIED, reason=flow.block_reason)
+
+    def on_raw_tcp(self, host: str, port: int) -> BlockResponse:
+        """Refuse a raw-TCP stream, whatever its destination, and record the attempt."""
+        return self._refuse(
+            self._flow(method="TCP", scheme="tcp", host=host, port=port, path=""),
+            RAW_TCP_REFUSAL,
+            BLOCK_STATUS_DENIED,
+        )
+
+    def on_hook_error(
+        self, hook: str, error: BaseException, *, host: str = "", port: int = 0, method: str = ""
+    ) -> BlockResponse:
+        """Record and refuse a request the proxy failed to decide (§10.5.0 fail-closed).
+
+        mitmproxy catches an addon's exception, logs it, and *forwards the flow anyway* — so an
+        unhandled error in a hook is an open, unrecorded proxy for that request. The hooks route
+        every failure here instead. Only the exception's type is recorded: its message can carry
+        request content (a body that failed to decode), which must not reach an artifact.
+        """
+        reason = (
+            f"the proxy's {hook} hook failed ({type(error).__name__}); the request was refused "
+            "rather than forwarded undecided (§10.5.0)"
+        )
+        return self._refuse(
+            self._flow(method=method or "UNKNOWN", scheme="unknown", host=host, port=port, path=""),
+            reason,
+            BLOCK_STATUS_ERROR,
+        )
+
+    def _flow(
+        self, *, method: str, scheme: str, host: str, port: int, path: str, claimed_host: str = ""
+    ) -> EgressFlow:
+        return make_flow(
+            ts=self.clock(),
+            method=method,
+            scheme=scheme,
+            host=host,
+            port=port,
+            path=path,
+            provider_endpoints=self.provider_endpoints,
+            infrastructure_endpoints=self.infrastructure_endpoints,
+            allowlist=self.allowlist,
+            claimed_host=claimed_host,
+        )
+
+    def _refuse(self, flow: EgressFlow, reason: str, status: int) -> BlockResponse:
+        self._flows.append(replace(flow, blocked=True, block_reason=reason))
+        return BlockResponse(status=status, reason=reason)
 
     def flows(self) -> list[EgressFlow]:
         """The flows recorded so far, in request order — what the host reads for the trace."""

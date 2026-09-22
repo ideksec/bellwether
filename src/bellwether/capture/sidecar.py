@@ -43,6 +43,10 @@ __all__ = ["MitmproxySidecar", "SidecarHandle"]
 #: written by the host and by the sidecar respectively — the shared volume of §10.5.
 SIDECAR_SHARED_MOUNT = PurePosixPath("/bw")
 
+#: mitmdump options the sidecar sets for enforcement, which ``extra_settings`` may not override:
+#: loosening one would let the proxy relay traffic it neither decides nor records.
+_PINNED_SETTINGS = frozenset({"rawtcp", "block_global", "confdir"})
+
 #: The mitmdump entry the image runs (placed there by ``sidecar/proxy/Dockerfile``). A fixed path
 #: rather than the installed package location, so the argv does not depend on a site-packages layout.
 SIDECAR_ENTRY_PATH = "/opt/bw/proxy_entry.py"
@@ -157,7 +161,19 @@ class MitmproxySidecar(RecordingProxy):
             # is actually intercepted rather than silently failing to a zero-egress trace (§9.2).
             "--set",
             f"confdir={SIDECAR_SHARED_MOUNT / _CONFDIR_NAME}",
+            # Never relay a stream mitmproxy cannot parse as HTTP or TLS. With the default
+            # (``rawtcp=true``) a CONNECT tunnel carrying anything else is passed through verbatim
+            # and no request hook ever sees it — an unobserved channel to any host:port (§10.5.0).
+            # The addon's tcp hooks are the backstop; this stops mitmproxy choosing that layer.
+            "--set",
+            "rawtcp=false",
         ]
+        pinned = sorted(set(self.extra_settings) & _PINNED_SETTINGS)
+        if pinned:
+            raise ValueError(
+                f"extra_settings may not override {pinned}: they are what keeps the proxy from "
+                "relaying traffic it cannot decide or record (§10.5.0)"
+            )
         for name in sorted(self.extra_settings):
             argv += ["--set", f"{name}={self.extra_settings[name]}"]
         return argv

@@ -263,3 +263,203 @@ def test_the_entry_writes_an_empty_log_immediately_then_records_a_flow(tmp_path:
     # The persisted log never carries a credential.
     assert not host.leaks_a_real_key(flow_log.read_text(encoding="utf-8"))
     assert token not in flow_log.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Every relaying hook fails closed (§10.5.0)
+#
+# mitmproxy catches an addon's exception and *carries on with the flow*, and it relays traffic the
+# ``request`` hook never sees: a CONNECT tunnel is answered before any request inside it, and a
+# tunnel carrying bytes that are neither TLS nor HTTP is relayed as raw TCP. Both were reproduced
+# against the pinned mitmproxy 12.2.3 — a canary-bearing payload reached a host outside the
+# allowlist with nothing in the flow log. The fakes below can express each of those, which the
+# single-request fake above could not.
+# ---------------------------------------------------------------------------
+
+
+class _UndecodableRequest(_FakeRequest):
+    """A request whose body mitmproxy cannot decode — ``Content-Encoding: gzip`` on bytes that
+    are not gzip makes the real ``Request.content`` raise ``ValueError``."""
+
+    @property  # type: ignore[override]
+    def content(self) -> bytes:
+        raise ValueError("Invalid Content-Encoding: gzip, <body bytes that must not be recorded>")
+
+    @content.setter
+    def content(self, value: bytes | None) -> None:
+        pass
+
+
+@dataclass
+class _Message:
+    content: bytes
+
+
+@dataclass
+class _ServerConn:
+    address: tuple[str, int] | None
+
+
+@dataclass
+class _HookFlow:
+    """The subset of a mitmproxy ``HTTPFlow``/``TCPFlow`` the hooks touch: the request (HTTP),
+    the server address and messages (TCP), and the response/kill a refusal is applied through."""
+
+    request: _FakeRequest | None = None
+    server_conn: _ServerConn | None = None
+    messages: list[_Message] = field(default_factory=list)
+    response: object | None = None
+    killed: bool = False
+    killable: bool = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def _recording(tmp_path: Path, **render: object) -> tuple[object, Path]:
+    from bellwether.capture.sidecar_entry import _RecordingAddon
+
+    host = _host_broker()
+    flow_log = tmp_path / "flows.jsonl"
+    addon = build_addon(_config(host, str(flow_log)), _HOST_ENVIRON, clock=lambda: _TS)
+    renderer = render.get("render", lambda block: ("rendered", block.status, block.reason))
+    return _RecordingAddon(addon, str(flow_log), render=renderer), flow_log  # type: ignore[arg-type]
+
+
+def test_a_request_hook_that_raises_refuses_and_records_instead_of_forwarding(
+    tmp_path: Path,
+) -> None:
+    recording, flow_log = _recording(tmp_path)
+    flow = _HookFlow(request=_UndecodableRequest(host="evil.example", path="/exfil"))
+
+    recording.request(flow)  # type: ignore[attr-defined]
+
+    assert flow.response is not None and flow.response[1] == 502  # type: ignore[index]
+    [record] = read_flow_records(flow_log)
+    assert record.blocked
+    assert record.host == "evil.example"
+    assert "request hook failed (ValueError)" in record.block_reason
+    # The exception's message can carry request content; only its type reaches the record.
+    assert "must not be recorded" not in flow_log.read_text(encoding="utf-8")
+
+
+def test_a_connect_to_a_host_outside_the_allowlist_is_refused_before_it_is_dialled(
+    tmp_path: Path,
+) -> None:
+    recording, flow_log = _recording(tmp_path)
+    flow = _HookFlow(request=_FakeRequest(method="CONNECT", host="evil.example", port=9555))
+
+    recording.http_connect(flow)  # type: ignore[attr-defined]
+
+    assert flow.response is not None and flow.response[1] == 403  # type: ignore[index]
+    [record] = read_flow_records(flow_log)
+    assert (record.method, record.host, record.port, record.blocked) == (
+        "CONNECT",
+        "evil.example",
+        9555,
+        True,
+    )
+
+
+def test_a_connect_to_an_allowlisted_host_opens_and_records_nothing_itself(
+    tmp_path: Path,
+) -> None:
+    """The requests inside a permitted tunnel are each decided and recorded; recording the tunnel
+    as well would count the same egress twice."""
+    recording, flow_log = _recording(tmp_path)
+    flow = _HookFlow(request=_FakeRequest(method="CONNECT", host="api.anthropic.com"))
+
+    recording.http_connect(flow)  # type: ignore[attr-defined]
+
+    assert flow.response is None
+    assert read_flow_records(flow_log) == []
+
+
+def test_a_connect_that_names_one_host_and_dials_another_is_refused(tmp_path: Path) -> None:
+    recording, flow_log = _recording(tmp_path)
+    flow = _HookFlow(
+        request=_FakeRequest(method="CONNECT", host="evil.example", host_header="api.anthropic.com")
+    )
+
+    recording.http_connect(flow)  # type: ignore[attr-defined]
+
+    assert flow.response is not None
+    [record] = read_flow_records(flow_log)
+    assert record.blocked and record.claimed_host == "api.anthropic.com"
+
+
+def test_a_connect_hook_that_raises_refuses_the_tunnel(tmp_path: Path) -> None:
+    recording, flow_log = _recording(tmp_path)
+    flow = _HookFlow(request=None)  # no request to read: the hook itself fails
+
+    recording.http_connect(flow)  # type: ignore[attr-defined]
+
+    assert flow.response is not None and flow.response[1] == 502  # type: ignore[index]
+    assert read_flow_records(flow_log)[0].blocked
+
+
+def test_raw_tcp_is_refused_even_to_an_allowlisted_host_and_no_byte_is_relayed(
+    tmp_path: Path,
+) -> None:
+    """A raw stream carries nothing the proxy can decide, redact or scan, so its destination does
+    not matter. mitmproxy relays a message's content *after* ``tcp_message`` returns and a kill
+    does not stop a TCP relay, so the payload itself is emptied."""
+    recording, flow_log = _recording(tmp_path)
+    flow = _HookFlow(server_conn=_ServerConn(("api.anthropic.com", 443)))
+
+    recording.tcp_start(flow)  # type: ignore[attr-defined]
+    flow.messages.append(_Message(b"\x00\x01exfil"))
+    recording.tcp_message(flow)  # type: ignore[attr-defined]
+
+    assert flow.killed
+    assert flow.messages[-1].content == b""
+    [record] = read_flow_records(flow_log)
+    assert (record.method, record.scheme, record.host, record.blocked) == (
+        "TCP",
+        "tcp",
+        "api.anthropic.com",
+        True,
+    )
+
+
+def test_a_forwarded_request_the_log_cannot_record_is_refused(tmp_path: Path) -> None:
+    """The decision is persisted *before* the request is let through: a request that would go out
+    with no record is refused, the same rule the resolver applies to a query it cannot log."""
+    recording, flow_log = _recording(tmp_path)
+    flow_log.unlink()
+    flow_log.mkdir()  # the log path is now unwritable as a file
+    token = _host_broker().sandbox_token("anthropic")
+    flow = _HookFlow(request=_FakeRequest(headers={"Authorization": f"Bearer {token}"}))
+
+    recording.request(flow)  # type: ignore[attr-defined]
+
+    assert flow.response is not None and flow.response[1] == 502  # type: ignore[index]
+
+
+def test_a_refusal_that_cannot_be_rendered_kills_the_flow(tmp_path: Path) -> None:
+    def broken(_block: BlockResponse) -> object:
+        raise RuntimeError("mitmproxy unavailable")
+
+    recording, _ = _recording(tmp_path, render=broken)
+    flow = _HookFlow(request=_FakeRequest(host="evil.example"))
+
+    recording.request(flow)  # type: ignore[attr-defined]
+
+    assert flow.response is None and flow.killed
+
+
+#: Every mitmproxy event hook through which a regular-mode proxy relays client traffic to a
+#: destination. Each must be implemented, or traffic reaching that hook is relayed undecided. A
+#: hook added here without an implementation fails the test below; so does removing one.
+_RELAYING_HOOKS = ("http_connect", "request", "tcp_start", "tcp_message")
+
+
+def test_every_relaying_mitmproxy_hook_is_implemented() -> None:
+    from bellwether.capture.sidecar_entry import _RecordingAddon
+
+    missing = [
+        hook for hook in _RELAYING_HOOKS if not callable(getattr(_RecordingAddon, hook, None))
+    ]
+    assert not missing, (
+        f"_RecordingAddon does not gate {missing}; that traffic is relayed undecided"
+    )

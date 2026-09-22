@@ -410,3 +410,89 @@ def test_the_probe_removes_its_client_container_even_when_the_run_times_out(monk
         probe_module.run_interception_probe(_Provider(), client_image="img", runner=_TimesOut())
 
     assert order == ["remove", "proxy-close"]
+
+
+# ---------------------------------------------------------------------------
+# What counts as confirmation, read at the wiring (§9.2, §10.5.0)
+#
+# The proxy now gates a CONNECT on the allowlist *before* any TLS handshake, and records a refused
+# one. The probe used to count any recorded probe host as confirmation and to keep its host off the
+# allowlist, so on CI a client with no CA at all "confirmed" interception off the CONNECT record.
+# ---------------------------------------------------------------------------
+
+
+def _probe_with_flows(monkeypatch, flows: list[object]) -> tuple[object, dict[str, object]]:  # type: ignore[no-untyped-def]
+    probe_module = importlib.import_module("bellwether.cli.interception_probe")
+    captured: dict[str, object] = {}
+
+    class _Runs(probe_module.ProbeRunner):
+        def run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(argv, 1, "", "")
+
+        def remove(self, container_name: str) -> None:
+            pass
+
+    class _Proxy:
+        ca_host_path = Path("/tmp/ca.pem")
+
+        def sandbox_network(self) -> str:
+            return "bw-internal"
+
+        def sandbox_env(self) -> dict[str, str]:
+            return {}
+
+        def flows(self) -> list[object]:
+            return flows
+
+        def close(self) -> None:
+            pass
+
+    class _Provider:
+        extra_settings: ClassVar[dict[str, str]] = {}
+
+        def open(self, _run_id: str, *, shared_dir: Path) -> _Proxy:
+            return _Proxy()
+
+    def _capture(provider, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return provider
+
+    monkeypatch.setattr(probe_module, "replace", _capture)
+    probe = probe_module.run_interception_probe(_Provider(), client_image="img", runner=_Runs())
+    return probe, captured
+
+
+def _flow(method: str, scheme: str, *, blocked: bool) -> object:
+    from bellwether.capture.egress import EgressFlow
+
+    return EgressFlow(
+        ts="t",
+        method=method,
+        scheme=scheme,
+        host=PROBE_HOST,
+        port=443,
+        path="/bellwether-probe" if scheme == "https" else "",
+        egress_class="skill_attributed",
+        blocked=blocked,
+    )
+
+
+def test_a_recorded_connect_alone_does_not_confirm_interception(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A CONNECT is recorded before any handshake, so it says nothing about the CA."""
+    probe, _ = _probe_with_flows(monkeypatch, [_flow("CONNECT", "connect", blocked=True)])
+    assert not probe.confirmed  # type: ignore[attr-defined]
+
+
+def test_a_request_recorded_inside_tls_confirms_interception(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    probe, _ = _probe_with_flows(monkeypatch, [_flow("GET", "https", blocked=False)])
+    assert probe.confirmed  # type: ignore[attr-defined]
+
+
+def test_the_probes_proxy_lets_the_probe_host_tunnel_and_nothing_else(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Its CONNECT must be let through for the client to reach the handshake at all; the name is
+    unresolvable, and no other host is widened."""
+    _, captured = _probe_with_flows(monkeypatch, [])
+    allowlist = captured["allowlist"]
+    assert allowlist.permits(PROBE_HOST)  # type: ignore[attr-defined]
+    assert not allowlist.permits("example.com")  # type: ignore[attr-defined]
+    assert PROBE_HOST.endswith(".invalid")
