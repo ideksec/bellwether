@@ -3728,3 +3728,66 @@ returned, where the teardown removes it anyway; the second grepped for the evalu
 the container's name is randomised per run (§3.5), so it passed vacuously. It now records the
 real container name at the moment Plane B is read, and fails without the fix. A test that cannot
 fail is the same category of thing as a control that cannot fire, two directories over.
+
+
+## §10.5.0 — the proxy decides every stream it relays, not every request it parses
+
+**Found by** the second independent review (2026-09), reproduced against the pinned mitmproxy
+12.2.3 with the real `sidecar/proxy/proxy_entry.py` loaded. The addon implemented one mitmproxy
+hook, `request`, and the allowlist, the identity check, the caps and the canary scan all lived
+behind it. Two paths reached a destination without passing through it:
+
+- **A `CONNECT` tunnel carrying raw TCP.** mitmproxy answers a `CONNECT` to any host:port with
+  `200 Connection established` (and, under the default `connection_strategy=eager`, dials it)
+  before any request inside the tunnel exists. If the client then sends bytes that are neither
+  TLS nor HTTP, the default `rawtcp=true` relays them verbatim. No `request` hook runs, so nothing
+  is blocked, recorded or scanned: a canary reached a server outside the allowlist and the flow
+  log stayed empty.
+- **An exception in the hook.** mitmproxy's `safecall` logs an addon's exception and continues
+  the flow. `request.content` raises on a body that does not decode under its `Content-Encoding`,
+  so a `Content-Encoding: gzip` header on a plain body sent the request to a denied host,
+  undecided and unrecorded.
+
+**What changed.** The addon now implements every hook through which a regular-mode proxy relays
+client traffic, and each one fails closed:
+
+- `http_connect` gates the tunnel on the same allowlist and identity check, before mitmproxy dials
+  it (it runs ahead of the eager connect). A refused tunnel is a recorded `CONNECT` flow; a permitted
+  one records nothing itself, because each request inside it is decided and recorded on its own.
+- `request` routes any exception to a recorded refusal (502). Only the exception's *type* is
+  recorded — the message of a decode error can carry the body.
+- `tcp_start`/`tcp_message` refuse a raw stream whatever its destination and record it as a blocked
+  `TCP` flow. `tcp_message` empties the payload, because mitmproxy sends a message's content after
+  the hook returns and killing a TCP flow does not stop its relay.
+- The decision is flushed to the flow log *before* a request is let through; a request the log
+  cannot record is refused, the rule the resolver already applied to a query it cannot log.
+- If rendering a refusal fails, the flow is killed.
+
+**`rawtcp=false` as well as the hooks.** The sidecar now runs with `--set rawtcp=false`, so
+mitmproxy never chooses the raw-TCP layer; the tcp hooks are the backstop. `extra_settings` may not
+override `rawtcp`, `block_global` or `confdir` — the one caller (the interception probe) sets only
+`connection_strategy`. **The cost, stated:** under `rawtcp=false` a raw stream inside a *permitted*
+tunnel fails as an unparseable HTTP request inside mitmproxy, which no hook sees — so it is refused
+but **not recorded**. Measured end to end: with the hooks alone the attempt is refused *and* recorded
+as a blocked `TCP` flow; with `rawtcp=false` it is refused and absent. Both bytes-relayed counts are 0.
+A tunnel to a host *outside* the allowlist is refused and recorded either way, at `http_connect`.
+
+**Measured, per case** (real mitmdump 12.2.3, real `proxy_entry.py`, a local upstream; upstream-
+received counts the canary):
+
+| Case | Before | After (hooks) | After (hooks + `rawtcp=false`) |
+|---|---|---|---|
+| raw TCP via CONNECT to a denied host | relayed, 0 flows | 403, recorded | 403, recorded |
+| undecodable gzip body to a denied host | 200 upstream, 0 flows | 502, recorded | 502, recorded |
+| raw TCP via CONNECT to an allowlisted host | relayed | dropped, recorded | dropped, not recorded |
+| plain GET to an allowlisted host | forwarded | forwarded | forwarded |
+
+**Revert-proof.** All 13 new unit tests fail against the previous source, but most fail on the
+`render` seam the old addon lacks rather than on the behaviour, so the unit tests alone are **not**
+the proof; the table above is, and it was run against both sources. `test_every_relaying_mitmproxy_hook_is_implemented`
+is an allowlist in the style of the control registry: a relaying hook named there without an
+implementation fails the build.
+
+**Not addressed here.** WebSocket frames after a permitted upgrade are relayed without a canary scan
+(the upgrade request itself is decided); a `CONNECT` to a permitted host is decided on the host
+alone, not the port.

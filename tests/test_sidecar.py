@@ -286,3 +286,35 @@ def test_stop_without_start_is_a_noop(tmp_path: Path) -> None:
     sidecar = _sidecar(tmp_path, runner)
     sidecar.stop()  # must not raise
     assert runner.calls == []
+
+
+def test_the_sidecar_never_relays_raw_tcp() -> None:
+    """mitmproxy's default ``rawtcp=true`` passes a tunnel of non-HTTP bytes straight through, and
+    no request hook sees it — an unobserved channel to any host:port (§10.5.0)."""
+    from pathlib import PurePosixPath
+
+    sidecar = MitmproxySidecar(
+        image="img@sha256:x",
+        network="bw-net-run",
+        broker=_broker(),
+        provider_of_host={},
+        shared_dir=Path("/shared"),
+    )
+    argv = sidecar.sidecar_argv("bw-proxy-r1", PurePosixPath("/bw/config.json"))
+    assert "rawtcp=false" in argv
+
+
+@pytest.mark.parametrize("setting", ["rawtcp", "block_global", "confdir"])
+def test_extra_settings_may_not_loosen_an_enforcement_setting(setting: str) -> None:
+    from pathlib import PurePosixPath
+
+    sidecar = MitmproxySidecar(
+        image="img@sha256:x",
+        network="bw-net-run",
+        broker=_broker(),
+        provider_of_host={},
+        shared_dir=Path("/shared"),
+        extra_settings={setting: "true"},
+    )
+    with pytest.raises(ValueError, match=setting):
+        sidecar.sidecar_argv("bw-proxy-r1", PurePosixPath("/bw/config.json"))
