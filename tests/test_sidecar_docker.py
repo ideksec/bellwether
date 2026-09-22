@@ -386,7 +386,7 @@ def test_a_real_run_injects_on_forward_blocks_on_deny_and_leaks_nothing(
         # (4) A CONNECT to a denied host is refused before it is dialled, and recorded. Without
         # the http_connect gate mitmproxy answers 200 and relays whatever the tunnel carries.
         assert "TUNNEL_STATUS 403" in out, context
-        assert any(f.method == "CONNECT" and "evil.example.com" in f.host for f in blocked), context
+        assert any(f.method == "CONNECT" and f.host == "evil.example.com" for f in blocked), context
         # (5) A request the hook cannot decode is refused and recorded, never forwarded undecided.
         assert "UNDECODABLE_STATUS 502" in out, context
         assert any("request hook failed" in f.block_reason for f in blocked), context
