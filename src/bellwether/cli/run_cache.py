@@ -47,6 +47,7 @@ from bellwether.harness import RunLimits, SamplingSpec
 from bellwether.trace import NormalizationContext, read_trace, write_trace
 
 __all__ = [
+    "CACHE_DIR_NAME",
     "CACHE_FORMAT",
     "CacheKeyInputs",
     "CachingExecutor",
@@ -60,6 +61,14 @@ __all__ = [
 
 #: Bumped on any change to what an entry holds or how the key is formed.
 CACHE_FORMAT = "4"
+
+#: The run cache lives at ``<out>/<CACHE_DIR_NAME>/runs`` — a *sibling* of the evaluation
+#: tree, not part of it. It is named here rather than spelled inline because CI has to
+#: separate the two: the evidence upload and the report both address the single evaluation
+#: directory under ``--out``, and a selection that cannot tell it from this one silently
+#: publishes neither (see .github/workflows/bellwether.yml and
+#: tests/test_ci_evidence_paths.py).
+CACHE_DIR_NAME = ".cache"
 
 #: Exit reasons never cached. Infrastructure failures (§13.2) are retried on the next run. The
 #: rest are *operator-limit* outcomes (§12.7): each is decided by a bound — the token cap, the

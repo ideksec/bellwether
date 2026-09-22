@@ -1746,6 +1746,16 @@ value lives (§17.5).
   all deterministic assertions and fail quality, or vice versa; conflating them hides which.
 - An assertion whose supporting plane is degraded returns `not_evaluable` with the coverage
   reason string attached (§10.7), never `pass`.
+- **A tool name is compared folding case, by one predicate, everywhere.** A tool name is an
+  identifier the harness chooses how to spell: the api-loop harness reports `read`/`write`/`bash`,
+  the Claude Code CLI reports `Read`/`Write`/`Bash`, and both normalise to the same capability
+  (§11.2). No harness offers two tools distinguished only by case, so folding cannot conflate
+  distinct tools; it is what makes one manifest and one scenario file portable across harnesses,
+  which a skill evaluated under both requires. The comparison MUST be implemented **once** and used
+  by every reader of a tool name — the §12.2 catalogue and the §12.5 table alike. Two readers of one
+  rule is how the §12.5 table came to fold nothing while the catalogue beside it folded correctly,
+  leaving `tools.deny` inert on one harness and a declared-and-used tool reported `exceeded` on the
+  other.
 
 ### 12.2 Deterministic assertion catalogue (v0.1)
 
@@ -1860,7 +1870,7 @@ Scope violations are reported in a dedicated section: **Declared vs Observed**, 
 `unused` matters too — a skill declaring `Bash` that never uses it is over-declared, and
 over-declaration is how `allowed-tools` becomes a privilege-escalation vector.
 
-Three rules the table MUST obey, each of which was once obeyed only by the assertion form and
+Four rules the table MUST obey, each of which was once obeyed only by the assertion form and
 so was unenforced wherever the table was the sole judge (the live `run` path, §16.2):
 
 - **Deny beats allow, and deny is evaluated on its own.** A `deny` entry is checked first and
@@ -1876,6 +1886,12 @@ so was unenforced wherever the table was the sole judge (the live `run` path, §
 - **Absence of a declaration is not a declaration of nothing.** Where policy requires a manifest
   (`scope.require_manifest`, §16.1) and the package has none, the table is empty and MUST NOT be
   read as "within scope". This is the §16.4 refusal, not a passing gate.
+- **A declared tool name matches every spelling of that tool.** Names are compared by the single
+  case-folding predicate of §12.1, and a declaration absorbs *every* observed spelling that matches
+  it, not the first: a trace can carry two spellings at once, and leaving the second behind would
+  report it `exceeded` against the very entry that declared it. The deny side needs this to fire at
+  all on a harness that capitalises; the allow side needs it not to block a manifest for using
+  precisely what it declared.
 
 ### 12.6 The platform baseline
 

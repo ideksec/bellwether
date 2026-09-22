@@ -648,7 +648,7 @@ def run(
         run_limits_from_config,
         sandbox_executor_factory,
     )
-    from bellwether.cli.run_cache import RunCache, require_cache_root
+    from bellwether.cli.run_cache import CACHE_DIR_NAME, RunCache, require_cache_root
     from bellwether.determinism import stable_hash
     from bellwether.harness import SamplingSpec
     from bellwether.skill import load_skill
@@ -694,7 +694,7 @@ def run(
     if loaded_config.execution.cache and not no_cache:
         try:
             run_cache = RunCache(
-                root=require_cache_root(out / ".cache" / "runs"),
+                root=require_cache_root(out / CACHE_DIR_NAME / "runs"),
                 ttl_days=loaded_config.execution.cache_ttl_days,
             )
         except (BellwetherError, OSError) as error:
