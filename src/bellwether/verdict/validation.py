@@ -25,6 +25,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from bellwether.errors import ConfigurationError, UserFacingProblem
+from bellwether.metrics import capability_weight, resolve_capability_weights
 
 __all__ = ["WeightWarning", "validate_bci_weights", "validate_capability_weights"]
 
@@ -47,23 +48,23 @@ def validate_capability_weights(
     this exists to prevent, and it is an error, not a warning: it silently defeats the
     gate the deny list is meant to inform.
     """
-    denied = set(deny_classes)
-    offenders = sorted(
-        cls
-        for cls, weight in weights.items()
-        if weight == 0 and (cls in denied or f"tool:{cls}" in denied)
-    )
-    if offenders:
+    # Judged on the *resolved* table — the weights the metric will actually look up — not on
+    # the policy's spelling of them. A denied ``tool:bash`` takes the weight of its base class
+    # ``tool``, which the policy sets as ``tool_call``; checking the raw keys asked about
+    # ``bash`` and let ``tool_call: 0`` through.
+    resolved = resolve_capability_weights(weights)
+    erased = sorted({cls for cls in deny_classes if capability_weight(cls, resolved) == 0})
+    if erased:
         raise ConfigurationError(
             source,
             [
                 UserFacingProblem(
-                    f"metrics.capability_risk_weights.{cls}",
-                    "is 0 for a class the manifest denies; weight 0 erases a denied "
-                    "capability from the risk-weighted Jaccard, defeating the gate the "
+                    f"metrics.capability_risk_weights ({cls})",
+                    "resolves to weight 0 for a class the manifest denies; weight 0 erases a "
+                    "denied capability from the risk-weighted Jaccard, defeating the gate the "
                     "deny list informs",
                 )
-                for cls in offenders
+                for cls in erased
             ],
         )
 

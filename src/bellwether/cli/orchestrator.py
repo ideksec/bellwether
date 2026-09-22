@@ -55,7 +55,6 @@ from bellwether.config.models.policy import ProfileSpec
 from bellwether.config.models.provider import ModelPricing
 from bellwether.config.models.scenarios import AssertionSpec, Scenario, ScenarioDefaults
 from bellwether.constants import (
-    DEFAULT_CAPABILITY_WEIGHTS,
     NOISE_FLOOR_CALIBRATED_AT,
     NOISE_FLOOR_TRAJECTORY,
     SENSITIVE_DIRECTORIES,
@@ -68,6 +67,7 @@ from bellwether.metrics import (
     TrajectoryCluster,
     compute_bci,
     decide_at_look,
+    resolve_capability_weights,
     summarise_capability,
     summarise_outcomes,
     summarise_trajectory,
@@ -1537,34 +1537,6 @@ def _look_reached(n_evaluable: int, looks: Sequence[int]) -> int:
 def _rare_threshold_for(severity: str) -> int:
     """The risk-weight cutoff the configured ``max_rare_capability_risk`` severity selects."""
     return _RARE_SEVERITY_WEIGHT.get(severity, 5)
-
-
-#: Policy ``capability_risk_weights`` keys (§16.1 finding-kind names) → the base tier-1
-#: class the metric (:func:`capability_weight`) actually looks a weight up under. Without
-#: this translation a policy override silently misses — ``egress_non_model: 20`` would never
-#: reach an ``egress:<host>`` capability, which keys on ``egress``.
-_POLICY_WEIGHT_KEY_TO_BASE_CLASS: Mapping[str, str] = {
-    "egress_non_model": "egress",
-    "dns_outside_allowlist": "dns_query",
-    "process_exec": "process",
-    "tool_call": "tool",
-}
-
-
-def resolve_capability_weights(policy_weights: Mapping[str, float]) -> dict[str, int]:
-    """Translate policy ``capability_risk_weights`` into the base-class weights the metric uses.
-
-    The policy names finding kinds (``egress_non_model``); the metric keys on base classes
-    (``egress``). This maps the former onto the latter, overlaid on the default table so a
-    class the policy does not mention (``egress_blocked``, ``workspace_delete``) keeps its
-    §13.5.1 default rather than silently dropping to the floor. For the shipped default
-    policy this reproduces the default table exactly, so it is a no-op until a weight is
-    actually overridden.
-    """
-    resolved = dict(DEFAULT_CAPABILITY_WEIGHTS)
-    for key, weight in policy_weights.items():
-        resolved[_POLICY_WEIGHT_KEY_TO_BASE_CLASS.get(key, key)] = round(weight)
-    return resolved
 
 
 # ---------------------------------------------------------------------------

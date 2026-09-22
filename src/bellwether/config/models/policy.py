@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from bellwether.config.models.common import Criticality, Document, Severity, StrictModel, Target
-from bellwether.constants import CAPTURE_PLANES, POCOCK_BOUNDARY_Z
+from bellwether.constants import CAPABILITY_WEIGHT_KEYS, CAPTURE_PLANES, POCOCK_BOUNDARY_Z
 
 __all__ = [
     "Disposition",
@@ -209,6 +209,34 @@ class PolicyMetrics(StrictModel):
         }
     )
     rare_capability_report_floor: Annotated[int, Field(ge=1)] = 2
+
+    @model_validator(mode="after")
+    def _weights_reach_a_capability(self) -> PolicyMetrics:
+        """Refuse a weight that would not do what it says (§13.5.1).
+
+        A key outside :data:`CAPABILITY_WEIGHT_KEYS` reaches no capability — a typo
+        (``canary_reads``), or a parameterised class (``egress:evil.com``) the base-class lookup
+        never consults — and was accepted and ignored. A fractional weight was rounded to the
+        integer the metric keys on, so ``0.4`` and ``0.5`` became ``0`` and erased the class from
+        the risk-weighted Jaccard and the rare-capability gate while reading as a small weight.
+        """
+        unknown = sorted(set(self.capability_risk_weights) - CAPABILITY_WEIGHT_KEYS)
+        if unknown:
+            raise ValueError(
+                f"capability_risk_weights: unknown key(s) {', '.join(unknown)} reach no "
+                f"capability; weightable keys are {', '.join(sorted(CAPABILITY_WEIGHT_KEYS))} "
+                "(a parameterised class such as egress:<host> takes its base class's weight)"
+            )
+        fractional = sorted(
+            key for key, weight in self.capability_risk_weights.items() if weight != int(weight)
+        )
+        if fractional:
+            raise ValueError(
+                f"capability_risk_weights: {', '.join(fractional)} must be whole numbers; the "
+                "metric weights in integers, and a fraction would be rounded — 0.5 to 0, which "
+                "erases the class rather than down-weighting it"
+            )
+        return self
 
 
 class Requires(StrictModel):

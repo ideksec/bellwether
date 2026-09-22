@@ -535,7 +535,12 @@ def test_run_refuses_a_manifest_denied_tool_weighted_zero(tmp_path: Path) -> Non
     base = _policy()
     low = base.profile("low")
     metrics = low.metrics.model_copy(
-        update={"capability_risk_weights": {**low.metrics.capability_risk_weights, "curl": 0.0}}
+        # ``tool_call`` — the key a denied ``tool:curl`` actually takes its weight from. This test
+        # used to set ``curl: 0``, a key the metric never reads: it asserted a refusal of a weight
+        # with no effect, while ``tool_call: 0``, which did erase the denied tool, passed.
+        update={
+            "capability_risk_weights": {**low.metrics.capability_risk_weights, "tool_call": 0.0}
+        }
     )
     profile = low.model_copy(update={"metrics": metrics})
     policy = base.model_copy(update={"profiles": {**base.profiles, "low": profile}})
