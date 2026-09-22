@@ -3891,3 +3891,45 @@ rejection and no flow. Two new offline wiring tests fail on the old probe on beh
 **Not addressed here.** WebSocket frames after a permitted upgrade are relayed without a canary scan
 (the upgrade request itself is decided); a `CONNECT` to a permitted host is decided on the host
 alone, not the port.
+
+
+## §11.4, §12.6, §13.5.4 — one path, every spelling: `//` was a way past the gate
+
+**Found by** the second independent review (2026-09). `PurePosixPath("//home/agent/.ssh/id_rsa")`
+keeps `//` as a root of its own — POSIX leaves exactly two leading slashes implementation-defined
+— while Linux opens the same file as `/home/agent/.ssh/id_rsa`. The lexical normaliser
+`normalize_container_path` collapsed `.` and `..` but kept that root, so the path was never
+recognised as `${HOME}`: the sensitive-directory gate passed with no manifest at all, and
+`deny_read: ${HOME}/.ssh/**` did not match. Only a root-agnostic glob (`**/.ssh/**`) caught it.
+
+**Fixed at the normaliser, not at the gate.** Every tool-call path already went through
+`normalize_container_path` (zone classification, `reported_reads`, the baseline's collapse), so
+resolving `//` as `/` there closes the class at once. That is the rule the earlier matcher rounds
+arrived at — reduce an input to what it certainly means, then compare.
+
+**The named form had a wider hole.** §12.6 judges a path twice: resolved, for absorption, and as
+the skill *spelled* it, because a path that walks out of a baseline entry (`~/.cache/../.aws/x`)
+is a near-miss and must never be absorbed. The named form cannot be resolved without destroying
+that evidence, so it was prefix-compared raw — and not only `//home/agent/.cache/../.aws/x` but
+`/home//agent/...` and `/home/./agent/...` were never recognised as `${HOME}`, so the near-miss
+went unreported (none of them was absorbed; the traversal rule held). The named form is now
+*tidied* — repeated slashes and `.` segments dropped, `..` kept — by `tidy_container_spelling`.
+Not applied inside `NormalizationContext.normalize_path` itself, because that function also sees
+URLs, where `//` means something.
+
+**The prevention is a corpus.** `tests/test_path_spellings.py` holds equivalent spellings of one
+file and applies them at the decisions that read a path: the sensitive hits `analyse_run` hands the
+gate, the `reported_reads` a `deny_read` assertion is judged on, baseline absorption, and baseline
+near-miss detection. Every spelling must agree with the plain one; a new spelling is one line.
+
+**Revert-proof, per change.** Against the old source: the three `//`-anchored spellings fail both
+the sensitive-hit and the `deny_read` rows (the other ten spellings already agreed — they are
+regression rows, not proof); all three traversal spellings fail the near-miss row; `//` fails the
+absorption row. The six `tidy_container_spelling` rows fail on the old source only because the
+function does not exist there — they are not evidence of the fix.
+
+**Not addressed here.** A path is resolved lexically; a symlink *inside* the container
+(`/work/link -> /home/agent/.ssh`) still classifies by its spelling, which only the read-capture
+plane could see through. And `~` is not expanded: the api-loop tools pass paths to `cat -- "$1"`,
+which does not expand it, so `~/x` there really is a workspace path; whether a harness's own tools
+expand it is a per-harness question this change does not answer.

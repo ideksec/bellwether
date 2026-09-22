@@ -96,6 +96,7 @@ from bellwether.report import (
     render_pr_comment,
     render_summary_json,
 )
+from bellwether.sandbox import tidy_container_spelling
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
     FILESYSTEM_ZONES,
@@ -657,7 +658,10 @@ def _raw_path(action: Action, context: NormalizationContext) -> str | None:
     absolute = (
         spelled if spelled.startswith("/") else f"{context.workspace_root.rstrip('/')}/{spelled}"
     )
-    return context.normalize_path(absolute)
+    # Tidied, not resolved: ``//home/agent/.cache/../.aws/x`` must reach the prefix comparison
+    # as ``/home/agent/...`` so it is recognised as ``${HOME}``, while its ``..`` — the evidence
+    # the near-miss rule reads — survives.
+    return context.normalize_path(tidy_container_spelling(absolute))
 
 
 def observed_paths(

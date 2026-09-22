@@ -69,6 +69,7 @@ from bellwether.sandbox.zones import (
     ZoneMap,
     ZoneRules,
     normalize_container_path,
+    tidy_container_spelling,
 )
 
 __all__ = [
@@ -110,4 +111,5 @@ __all__ = [
     "stage_payload",
     "stage_plugin_bundle",
     "staged_exclusion",
+    "tidy_container_spelling",
 ]
