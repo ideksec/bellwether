@@ -33,7 +33,14 @@ from bellwether.skill.frontmatter import (
     parse_skill_markdown,
 )
 from bellwether.skill.inventory import Executable, detect_interpreter, estimate_tokens
-from bellwether.skill.package import SKILL_FILE, ReviewState, SkillPackage, load_skill
+from bellwether.skill.package import (
+    SKILL_FILE,
+    ReviewState,
+    SkillPackage,
+    contained_path,
+    load_skill,
+    slugify_name,
+)
 from bellwether.skill.payload import (
     DEFAULT_PAYLOAD_ALLOWLIST,
     EVALS_DIR,
@@ -68,6 +75,7 @@ __all__ = [
     "PluginBundle",
     "ReviewState",
     "SkillPackage",
+    "contained_path",
     "description_digest",
     "detect_interpreter",
     "estimate_tokens",
@@ -81,4 +89,5 @@ __all__ = [
     "parse_skill_markdown",
     "plugin_skill_dirs",
     "read_file_records",
+    "slugify_name",
 ]

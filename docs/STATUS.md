@@ -21,9 +21,14 @@ refusal, and the sidecar runs with `rawtcp=false`, which `extra_settings` may no
 **Brick 2 — fixed:** a `//`-prefixed path escaped `${HOME}` recognition (the sensitive-directory
 gate passed and `deny_read` did not match); the lexical normaliser now resolves `//` as Linux does,
 the §12.6 named form is tidied without losing its `..`, and `tests/test_path_spellings.py` holds
-one corpus of equivalent spellings applied at every path decision. Remaining bricks, in order:
-3. host-side symlink following — `SKILL.md`, plugin skill dirs, `evals/fixtures` — and the raw
-   frontmatter `name` building the output path (`eval_id`);
+one corpus of equivalent spellings applied at every path decision (PR #80). **Brick 3 — fixed:**
+the host (root, on CI) read through skill-authored symlinks before staging refused them —
+`SKILL.md -> /proc/self/environ` put the process environment into the skill body sent to the model,
+and a linked `evals/fixtures` had a host directory copied into the workspace. One containment rule
+(`skill.contained_path`) now applies at every host read of skill content, and `run`'s duplicate
+fixture lookup calls the resolver. The review's `eval_id` path-escape was **not reachable** (the
+baseline lookup refuses a name with `/` first); `eval_id` uses the slug anyway. Remaining bricks,
+in order:
 4. the PR comment escapes no skill-controlled text (the review's `tools.deny` case and CI
    `find | head -n1` findings were fixed independently on `main`, PR #78);
 5. `functional.max_false_trigger_rate` / should-trigger activation are registered as enforcing and
@@ -864,7 +869,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1633 tests: 1574 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1646 tests: 1587 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

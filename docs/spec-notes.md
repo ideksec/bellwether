@@ -3933,3 +3933,45 @@ function does not exist there — they are not evidence of the fix.
 plane could see through. And `~` is not expanded: the api-loop tools pass paths to `cat -- "$1"`,
 which does not expand it, so `~/x` there really is a workspace path; whether a harness's own tools
 expand it is a per-harness question this change does not answer.
+
+
+## §6.1, §7.2, §9.1 — the host does not read what the skill cannot
+
+**Found by** the second independent review (2026-09). A skill package is evaluated content; in CI
+its author is whoever opened the pull request, and the host loads it as root. Staging refused a
+symlink out of the package tree, but the *loader* read through one first. Reproduced:
+
+- `SKILL.md -> /proc/self/environ` put the process environment — which holds the real API key
+  under the workflows' `sudo --preserve-env` — into the skill body the api-loop `skill` tool hands
+  the model, and into the trace's result preview.
+- `evals/fixtures -> <host dir>` resolved to the host directory, which `materialize_fixture` then
+  copies into the sandbox workspace. The fixture-name check resolved the root *and* the name, so a
+  linked root passed every name; the flat-layout fallback and the no-name path had no check at all.
+
+**One rule, at every read.** `skill.contained_path(root, relative)` resolves both sides and asks
+whether one contains the other — a symlinked file, a symlinked parent (`evals -> /root`), `..`
+and an absolute path are one question. It gates `SKILL.md`, the manifest (both reads), the
+scenarios file (whose prompts are *sent*, not only read), payload-doc token estimates, `plugin.json`,
+plugin `skills/<x>` directories (skipped and named as a problem), the fixtures root and the empty
+workspace. A link that stays inside the package is the skill's own content and is followed.
+
+**The same rule was written twice.** `run` carried its own copy of the no-name fixture lookup;
+the copy had no containment check. It now calls `resolve_fixture` rather than restating it.
+
+**The `eval_id` finding was not reachable.** The review reported that a declared `name` of
+`../../x` moves the artifact tree out of `--out`. Driving the real `run` command: the baseline
+lookup (`baseline_path`) refuses any name containing `/` and runs *before* the path is built, so
+such a skill stops at exit 3. A name without `/` stays inside `--out`. `eval_id` now uses the slug
+anyway — hardening against a reordering, tested at the command, and stated as such.
+
+**Revert-proof, per change.** Against the old source, twelve of the thirteen new tests fail, on
+behaviour (no refusal, a linked plugin skill loaded, the fixture resolving to the host directory,
+the raw name in `eval_id`); the in-package-link test passes both ways and is the over-blocking
+guard. The two headline attacks were also run as scripts against both sources: before, the body
+contained the key (with the key in the *launch* environment — `/proc/self/environ` does not show
+variables set after exec, which the first attempt at this reproduction got wrong) and the fixture
+resolved to the host directory; after, both are refused.
+
+**Not addressed here.** The skill root itself is followed if it is a symlink — it is the path the
+operator (or `changed-skills`) names, not content inside the package. A name containing `/` makes
+a skill unevaluable (exit 3 at the baseline lookup) rather than evaluated under its slug.

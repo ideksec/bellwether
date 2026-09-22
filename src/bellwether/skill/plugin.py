@@ -29,7 +29,7 @@ from bellwether.errors import SkillError
 # Same-package private reuse: the manifest is attacker-authored in external mode, so it
 # gets the same bounded-read treatment as SKILL.md (a loader OOM aborts the evaluation
 # before any sandbox exists).
-from bellwether.skill.package import SKILL_FILE, _read_text_bounded
+from bellwether.skill.package import SKILL_FILE, _read_text_bounded, contained_path
 
 __all__ = [
     "PLUGIN_MANIFEST",
@@ -99,7 +99,11 @@ def plugin_skill_dirs(root: Path) -> tuple[Path, ...]:
             (
                 child
                 for child in skills_root.iterdir()
-                if child.is_dir() and (child / SKILL_FILE).is_file()
+                if child.is_dir()
+                and (child / SKILL_FILE).is_file()
+                # A skill directory that is a link out of the bundle is not the bundle's
+                # content; following it would load (and run) whatever the link names.
+                and contained_path(root, child.relative_to(root)) is not None
             ),
             key=lambda child: child.name,
         )
@@ -138,6 +142,18 @@ def load_plugin(root: Path) -> PluginBundle:
             "from this plugin"
         )
 
+    if skills_root.is_dir():
+        escaped = sorted(
+            child.name
+            for child in skills_root.iterdir()
+            if contained_path(root, child.relative_to(root)) is None
+        )
+        if escaped:
+            problems.append(
+                f"'{PLUGIN_SKILLS_DIR}' entries that link outside the plugin were not loaded: "
+                + ", ".join(escaped)
+            )
+
     return PluginBundle(
         root=root,
         name=name,
@@ -150,7 +166,9 @@ def load_plugin(root: Path) -> PluginBundle:
 def _read_manifest(manifest_file: Path, problems: list[str]) -> dict[str, object]:
     """Parse ``plugin.json`` leniently: a defect is a problem, not an escape hatch."""
     try:
-        loaded = json.loads(_read_text_bounded(manifest_file, label=PLUGIN_MANIFEST))
+        loaded = json.loads(
+            _read_text_bounded(manifest_file, label=PLUGIN_MANIFEST, root=manifest_file.parent)
+        )
     except SkillError:
         # The bounded-read refusal (a multi-gigabyte manifest) is the loader protecting
         # itself, and stands.

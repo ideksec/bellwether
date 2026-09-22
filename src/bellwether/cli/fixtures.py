@@ -25,6 +25,7 @@ from pathlib import Path
 
 from bellwether.config.models.scenarios import Scenario, ScenarioSuite
 from bellwether.errors import BellwetherError
+from bellwether.skill import contained_path
 
 __all__ = ["EMPTY_FIXTURE", "ResolvedFixture", "fixture_resolver", "resolve_fixture"]
 
@@ -57,7 +58,7 @@ def resolve_fixture(
     subdirectory → the flat tree (the legacy shape every shipped skill uses); no name at all →
     the flat tree if present, else a bare workspace. A name that matches none of these refuses.
     """
-    local_root = skill_dir / "evals" / "fixtures"
+    local_root = _within_skill(skill_dir, "evals/fixtures")
     if name == EMPTY_FIXTURE:
         return ResolvedFixture(name=name, path=_empty_workspace(skill_dir))
     if name is not None:
@@ -106,6 +107,26 @@ def fixture_resolver(
     return resolve
 
 
+def _within_skill(skill_dir: Path, relative: str) -> Path:
+    """``skill_dir / relative``, refused if it resolves outside the skill directory.
+
+    ``_under`` asks whether a fixture *name* stays inside its root, and it resolves both sides
+    — so when the root itself is a symlink (``evals/fixtures -> /root``) the two resolve
+    together and every name passes, and the flat-layout fallback returns the root with no
+    check at all. The root is anchored to the skill directory first, so what ``_under`` then
+    compares against is a directory the skill actually owns.
+    """
+    path = contained_path(skill_dir, relative)
+    if path is None:
+        raise BellwetherError(
+            f"{relative} in {skill_dir} resolves outside the skill directory (a symlink out of "
+            "the tree). Fixtures are copied into the sandbox workspace by the host, so following "
+            "it would hand the evaluated skill a copy of whatever directory the link names "
+            "(§7.2, §9.1)."
+        )
+    return path
+
+
 def _under(root: Path, name: str) -> Path | None:
     """``root/name`` when it stays inside ``root``, else ``None``.
 
@@ -133,6 +154,6 @@ def _under(root: Path, name: str) -> Path | None:
 
 def _empty_workspace(skill_dir: Path) -> Path:
     """A bare workspace directory, created on demand under the skill's evals tree."""
-    empty = skill_dir / "evals" / ".empty-workspace"
+    empty = _within_skill(skill_dir, "evals/.empty-workspace")
     empty.mkdir(parents=True, exist_ok=True)
     return empty
