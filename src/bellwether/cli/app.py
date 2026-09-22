@@ -42,7 +42,7 @@ from bellwether.config import (
 from bellwether.determinism import canonical_json
 from bellwether.errors import BellwetherError, ConfigurationError
 from bellwether.sandbox import DockerBackend, overlay_available
-from bellwether.skill import PluginBundle
+from bellwether.skill import PluginBundle, slugify_name
 from bellwether.verdict import validate_bci_weights
 
 __all__ = ["ExitCode", "app", "main"]
@@ -714,7 +714,11 @@ def run(
                 package = replace(package, problems=package.problems + bundle_notes)
                 for note in bundle_notes:
                     typer.echo(f"bellwether run [{skill_dir}]: {note}", err=True)
-            eval_id = f"{package.name}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}"
+            # The slug, never the declared name: the name is the skill author's, and ``eval_id``
+            # becomes a directory under ``--out`` that root writes to on CI. ``name: ../../x``
+            # (or an absolute path, which a join discards the prefix for) moved the whole
+            # artifact tree out of ``--out``. ``load_skill`` already says when they differ.
+            eval_id = f"{slugify_name(package.name)}-{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}"
             fixture = _run_fixture(skill_dir)
             # §7.2: each scenario's `fixture:` (or the suite default) resolves to its own
             # directory — the skill's evals/fixtures/<name>/, the repository's shared
@@ -1153,18 +1157,17 @@ def _expand_skill_args(
 
 
 def _run_fixture(skill_dir: Path) -> Path:
-    """The workspace fixture materialised into the sandbox for this skill's runs.
+    """The default workspace fixture for this skill's runs: its ``evals/fixtures/`` when it
+    exists, else an empty workspace.
 
-    First cut: the skill's ``evals/fixtures/`` directory when it exists, else an empty workspace.
-    Per-scenario fixtures (``scenario.fixture``) are a refinement — the executor takes one fixture
-    per run today, so a skill whose scenarios need different starting trees is not yet expressible.
+    The same lookup :func:`resolve_fixture` performs with no name, called rather than restated:
+    this used to be a second copy of that rule, and when the resolver learned to refuse a
+    fixtures directory that is a symlink out of the skill, the copy did not — a skill shipping
+    ``evals/fixtures -> /root`` still had the host copy ``/root`` into its workspace.
     """
-    fixtures = skill_dir / "evals" / "fixtures"
-    if fixtures.is_dir():
-        return fixtures
-    empty = skill_dir / "evals" / ".empty-workspace"
-    empty.mkdir(parents=True, exist_ok=True)
-    return empty
+    from bellwether.cli.fixtures import resolve_fixture
+
+    return resolve_fixture(skill_dir, None).path
 
 
 @app.command()

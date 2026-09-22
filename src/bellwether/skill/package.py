@@ -33,7 +33,14 @@ from bellwether.skill.frontmatter import ParsedSkillMarkdown, parse_skill_markdo
 from bellwether.skill.inventory import Executable, build_inventory, estimate_tokens
 from bellwether.skill.payload import PayloadAllowlist, PayloadSplit
 
-__all__ = ["SKILL_FILE", "ReviewState", "SkillPackage", "load_skill", "slugify_name"]
+__all__ = [
+    "SKILL_FILE",
+    "ReviewState",
+    "SkillPackage",
+    "contained_path",
+    "load_skill",
+    "slugify_name",
+]
 
 #: Characters allowed in the identifier used to build paths. Everything else is replaced.
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -70,8 +77,45 @@ def slugify_name(name: str) -> str:
 _MAX_TEXT_BYTES = 8 << 20  # 8 MiB
 
 
-def _read_text_bounded(path: Path, *, label: str) -> str:
-    """Read a text file whole, refusing one large enough to threaten the loader's memory."""
+def contained_path(root: Path, relative: str | Path) -> Path | None:
+    """``root / relative`` when it resolves inside ``root``, else ``None``.
+
+    A skill is evaluated content, and in CI its author is whoever opened the pull request. The
+    host reads it as whatever user runs Bellwether — under ``sudo`` on CI — so a symlink in the
+    package (``SKILL.md -> /proc/self/environ``, ``evals -> /root``) is a request for the host to
+    read, parse, send to a model or copy into a sandbox a file the skill could never reach
+    itself. Staging already refused such a link; the loader read through it first.
+
+    Containment is decided by *resolving* both sides and asking whether one contains the other,
+    so a symlinked file, a symlinked parent directory, ``..`` and an absolute path are one
+    question, not four clauses. A link that stays inside the package is fine — it is the skill's
+    own content. What cannot be resolved is treated as escaping: this is a security check.
+    """
+    try:
+        base = root.resolve()
+        target = (root / relative).resolve()
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop on older Pythons
+        return None
+    if target != base and base not in target.parents:
+        return None
+    return root / relative
+
+
+def _refuse_escape(root: Path, relative: str | Path, *, label: str) -> Path:
+    path = contained_path(root, relative)
+    if path is None:
+        raise SkillError(
+            f"{label} resolves outside the skill directory {root} (a symlink out of the tree); "
+            "the loader does not follow it, because it would read a host file into the "
+            "evaluation that the skill itself could never reach"
+        )
+    return path
+
+
+def _read_text_bounded(path: Path, *, label: str, root: Path) -> str:
+    """Read a text file whole, refusing one that escapes ``root`` or is large enough to
+    threaten the loader's memory."""
+    path = _refuse_escape(root, path.relative_to(root), label=label)
     size = path.stat().st_size
     if size > _MAX_TEXT_BYTES:
         raise SkillError(
@@ -214,7 +258,7 @@ def load_skill(
         )
 
     records = read_file_records(root)
-    parsed = parse_skill_markdown(_read_text_bounded(skill_file, label=SKILL_FILE))
+    parsed = parse_skill_markdown(_read_text_bounded(skill_file, label=SKILL_FILE, root=root))
 
     split = (allowlist or PayloadAllowlist()).split([record.path for record in records])
     included = set(split.included)
@@ -282,7 +326,7 @@ def _attestation_digest(root: Path, records: list[FileRecord], recorded: str | N
         if record.path != MANIFEST_PATH:
             rewritten.append(record)
             continue
-        text = _read_text_bounded(root / record.path, label=record.path)
+        text = _read_text_bounded(root / record.path, label=record.path, root=root)
         blanked = text.replace(recorded, RECORDED_REVIEW_PLACEHOLDER)
         rewritten.append(replace(record, sha256=stable_hash(blanked), size_bytes=len(blanked)))
     return merkle_digest(rewritten)
@@ -300,7 +344,9 @@ def _token_estimates(
     for path in split.included:
         if path == SKILL_FILE or not path.endswith((".md", ".txt")):
             continue
-        full = root / path
+        full = contained_path(root, path)
+        if full is None:
+            continue  # a link out of the package: not the skill's content, never read
         try:
             if full.stat().st_size > _MAX_TEXT_BYTES:
                 # A token estimate is best-effort; skip an oversized file rather than read it
@@ -314,9 +360,14 @@ def _token_estimates(
 
 def _load_manifest(root: Path) -> SkillManifest | None:
     path = root / MANIFEST_PATH
-    return load_manifest(path) if path.is_file() else None
+    if not path.is_file():
+        return None
+    return load_manifest(_refuse_escape(root, MANIFEST_PATH, label=MANIFEST_PATH))
 
 
 def _load_scenarios(root: Path) -> ScenarioSuite | None:
     path = root / SCENARIOS_PATH
-    return load_scenarios(path) if path.is_file() else None
+    if not path.is_file():
+        return None
+    # The scenarios' prompts are sent to the model, so a linked-in file is not only read.
+    return load_scenarios(_refuse_escape(root, SCENARIOS_PATH, label=SCENARIOS_PATH))
