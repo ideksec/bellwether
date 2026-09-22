@@ -25,7 +25,36 @@ from bellwether.trace import (
     filesystem_access,
 )
 
-__all__ = ["EgressEvidence", "EvidenceIndex", "ToolCallEvidence", "WriteEvidence"]
+__all__ = [
+    "EgressEvidence",
+    "EvidenceIndex",
+    "ToolCallEvidence",
+    "WriteEvidence",
+    "tool_name_matches",
+]
+
+
+def tool_name_matches(observed: str, wanted: str) -> bool:
+    """Compare two tool names for identity, folding case (§12.1).
+
+    A tool name is an identifier a harness chooses how to spell: the `api-loop` harness reports
+    `read`/`write`/`bash`, the Claude Code CLI reports `Read`/`Write`/`Bash` — the *same* tools,
+    and the normalizer already maps both spellings onto one capability (`workspace_read`, ...). No
+    harness offers two tools distinguished only by case, so folding case cannot conflate distinct
+    tools; it only makes a manifest or scenario portable across harnesses that capitalise
+    differently, which is exactly what a skill evaluated under both (e.g. `claude-code-live-smoke`,
+    run by the api-loop *and* claude-code live workflows) needs. A genuinely different tool still
+    will not match.
+
+    It lives here, beside :class:`ToolCallEvidence`, because *both* readers of a tool name must ask
+    the same question of it: the §12.2 assertion catalogue in ``engine`` and the §12.5 Declared vs
+    Observed table in ``derive``. They did not, and the split was not visible from either side: a
+    scenario saying ``tool_not_called: Bash`` caught the CLI's ``Bash`` while the manifest beside it
+    saying ``tools.deny: [bash]`` did not, so the declaration a reviewer reads as the stronger
+    statement was the inert one. Where two places implement one rule, write the rule once
+    (``tests/test_tool_name_identity.py`` drives one corpus through every reader).
+    """
+    return observed.casefold() == wanted.casefold()
 
 
 @dataclass(frozen=True)

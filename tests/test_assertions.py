@@ -833,6 +833,56 @@ def test_a_deny_only_manifest_does_not_make_every_other_tool_exceeded() -> None:
     assert table.exceeded() == ()
 
 
+def test_a_deny_catches_the_other_harness_spelling_of_the_same_tool() -> None:
+    """One rule, one implementation. Tool names deliberately fold case (§12.1) because the
+    api-loop harness reports ``bash`` and the Claude Code CLI reports ``Bash``, and the §12.2
+    catalogue has folded them since it was written — but the §12.5 table closing R3 matched with
+    an exact dict lookup, so ``tools.deny: [bash]`` was inert on the claude-code harness. That is
+    the R3 defect again in the same predicate: the manifest a reviewer reads as the *stronger*
+    statement was the one that did not fire, and only on the harness nobody ran it under."""
+    scope = make_scope(
+        tools={"allow": [], "deny": ["bash"]},
+        filesystem={"read": [], "write": [], "deny_read": []},
+    )
+    table = evaluate_scope(scope, index_of(make_trace([tool_call(5, "Bash", command="ls")])))
+
+    (exceeded,) = table.exceeded()
+    assert (exceeded.area, exceeded.subject) == ("tools", "bash")
+    assert exceeded.evidence == (5,)
+
+
+def test_an_allowed_tool_is_supported_under_the_other_harness_spelling() -> None:
+    """The mirror, and the reason the fix cannot be deny-only: ``allow: [Read]`` — the spelling
+    ``examples/skills/security-review`` declares — met api-loop's ``read``, found no exact key,
+    and produced *two* wrong rows at once: the declaration ``unused`` and the call ``exceeded``.
+    A portable manifest would have been blocked for using precisely what it declared."""
+    scope = make_scope(
+        tools={"allow": ["Read"], "deny": []},
+        filesystem={"read": [], "write": [], "deny_read": []},
+    )
+    table = evaluate_scope(scope, index_of(make_trace([tool_call(3, "read", path="/work/a.md")])))
+
+    assert table.exceeded() == ()
+    (row,) = [entry for entry in table.entries if entry.area == "tools"]
+    assert (row.subject, row.status, row.evidence) == ("Read", "supported", (3,))
+
+
+def test_one_declaration_absorbs_every_spelling_in_a_mixed_trace() -> None:
+    """Draining *every* matching key, not popping one. A trace can carry two spellings of a tool
+    (two harness adapters in one session); popping a single key would leave the second to fall
+    through to the undeclared sweep and read ``exceeded`` against the entry that declared it."""
+    scope = make_scope(
+        tools={"allow": ["bash"], "deny": []},
+        filesystem={"read": [], "write": [], "deny_read": []},
+    )
+    trace = make_trace([tool_call(2, "bash", command="ls"), tool_call(7, "Bash", command="pwd")])
+    table = evaluate_scope(scope, index_of(trace))
+
+    assert table.exceeded() == ()
+    (row,) = [entry for entry in table.entries if entry.area == "tools"]
+    assert (row.status, row.evidence) == ("supported", (2, 7))
+
+
 def test_deny_read_wins_over_a_broader_declared_read_glob() -> None:
     """R3, the filesystem half. ``read: [${WORKSPACE}/src/**]`` with
     ``deny_read: [${WORKSPACE}/src/auth.py]`` is the shape a deny exists for — carving an

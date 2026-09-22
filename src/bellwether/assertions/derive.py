@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from bellwether.assertions.baseline import BaselineApplication, glob_to_regex
-from bellwether.assertions.evidence import EvidenceIndex
+from bellwether.assertions.evidence import EvidenceIndex, tool_name_matches
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.scenarios import AssertionSpec
 
@@ -118,6 +118,22 @@ def evaluate_scope(
 # ---------------------------------------------------------------------------
 
 
+def _take_calls(observed: dict[str, list[int]], wanted: str) -> tuple[int, ...]:
+    """Remove and return every observed call of ``wanted``, folding case (§12.1).
+
+    A declaration names one tool; a harness may spell it `bash` or `Bash`, and more than one
+    spelling can appear in a single trace (a skill that shells out through two harness adapters).
+    So this drains *every* matching key rather than popping one, and the caller sees the union —
+    otherwise a second spelling would survive into the undeclared sweep and read as `exceeded`
+    against the very entry that declared it.
+    """
+    matched = [name for name in observed if tool_name_matches(name, wanted)]
+    seqs: list[int] = []
+    for name in matched:
+        seqs.extend(observed.pop(name))
+    return tuple(sorted(seqs))
+
+
 def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
     if not scope.tools.allow and not scope.tools.deny:
         return []
@@ -133,7 +149,7 @@ def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
     # manifest whose only tools statement was `deny: [Bash]` therefore produced no rows at all, and
     # the skill used Bash to a clean `scope` gate.
     for denied in scope.tools.deny:
-        seqs = observed.pop(denied, [])
+        seqs = _take_calls(observed, denied)
         if seqs:
             rows.append(
                 ScopeEntry(
@@ -141,13 +157,13 @@ def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
                     subject=denied,
                     status="exceeded",
                     reason=f"called {len(seqs)} time(s) against an explicit manifest deny",
-                    evidence=tuple(seqs),
+                    evidence=seqs,
                 )
             )
     # A denied tool nothing called is not `unused`: an unexercised prohibition is the intended
     # state, not over-declaration, so it produces no row rather than a finding.
     for declared in scope.tools.allow:
-        seqs = observed.pop(declared, [])
+        seqs = _take_calls(observed, declared)
         if seqs:
             rows.append(
                 ScopeEntry(
@@ -155,7 +171,7 @@ def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
                     subject=declared,
                     status="supported",
                     reason=f"declared and used ({len(seqs)} call(s))",
-                    evidence=tuple(seqs),
+                    evidence=seqs,
                 )
             )
         else:
@@ -173,14 +189,14 @@ def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
         # and no allow-list has not claimed to enumerate what it uses, so every other tool it
         # calls is unstated, not exceeded — and saying otherwise would turn a `deny`-only
         # manifest into a guaranteed block on its first tool call.
-        for name, seqs in sorted(observed.items()):
+        for name, undeclared in sorted(observed.items()):
             rows.append(
                 ScopeEntry(
                     area="tools",
                     subject=name,
                     status="exceeded",
-                    reason=f"called {len(seqs)} time(s) without a declaration",
-                    evidence=tuple(seqs),
+                    reason=f"called {len(undeclared)} time(s) without a declaration",
+                    evidence=tuple(undeclared),
                 )
             )
     return rows

@@ -6,6 +6,17 @@ kind: SkillManifest
 # tight so the live smoke also proves the scope gate reads clean on the claude-code harness:
 # read exactly README.md, write exactly notes.md, no fetch, no bash, no network of the skill's
 # own (the model call is harness infrastructure, classified separately from skill egress).
+#
+# The tool names here are lower-case because the api-loop harness spells them that way; the
+# Claude Code CLI spells the same tools `Read`/`Write`/`Bash`. One manifest serves both, because
+# §12.1 compares tool names folding case — and, as of the commit this comment arrives in, the
+# §12.5 table that `bellwether run` actually judges by asks the *same* predicate the §12.2
+# assertions do. It did not before: this `deny: [bash]` was live on the api-loop harness and
+# inert on the claude-code one, which is precisely the harness it was written to cover.
+#
+# `fetch` is likewise the api-loop spelling. The CLI's web tool is `WebFetch` — a different
+# name, not a different case, so it is deliberately *not* matched here; this skill makes no
+# network calls of its own and §10.5 watches that plane directly.
 
 metadata:
   owner: bellwether-project

@@ -142,7 +142,25 @@ jobs:
               verdict_status=$?
             fi
             sudo chown -R "$(id -u):$(id -g)" "${out}" || true
-            eval_dir=$(find "${out}" -maxdepth 1 -mindepth 1 -type d | head -n1)
+            # The evaluation tree is the single <out>/<eval_id>/ directory. <out>/.cache is the
+            # run cache (§19.2), a *sibling* the same command creates — so the old
+            # `find | head -n1` picked whichever the kernel listed first, and on PR #78 it
+            # picked .cache: the report read "(no report was rendered)" though one existed,
+            # `pr-comment` failed silently behind its `|| true` so no verdict reached the PR,
+            # the rm below cleared the run cache instead of the overlay scratch, and
+            # upload-artifact then died on the mode-000 overlayfs workdir it had left behind.
+            # A verdict that never posts and evidence that never uploads, with the step's own
+            # output looking clean — this tool's signature failure mode, in this tool's CI.
+            # Select deterministically (§24: sorted walks, never directory order) and refuse
+            # rather than guess if there is not exactly one candidate.
+            mapfile -t eval_dirs < <(find "${out}" -maxdepth 1 -mindepth 1 -type d \
+              ! -name .cache | sort)
+            if [ "${#eval_dirs[@]}" -ne 1 ]; then
+              echo "::error::expected exactly one evaluation directory under ${out}," \
+                   "found ${#eval_dirs[@]}: ${eval_dirs[*]:-(none)}"
+              exit 3
+            fi
+            eval_dir="${eval_dirs[0]}"
             # Drop the per-run sandbox scratch under runs/ before upload-artifact walks the tree:
             # it holds the kernel's overlayfs workdir (`work/work`, left mode 000, unreadable even
             # after chown), which the artifact's exclude walk hits EACCES on despite excluding
