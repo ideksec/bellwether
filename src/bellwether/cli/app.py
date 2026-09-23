@@ -920,6 +920,14 @@ def changed_skills_command(
     root: Annotated[
         Path, typer.Option("--root", help="Repository root the SKILL.md presence is checked in.")
     ] = Path(),
+    null: Annotated[
+        bool,
+        typer.Option(
+            "-z",
+            "--null",
+            help="Read stdin as NUL-separated paths (pair with `git diff --name-only -z`).",
+        ),
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
     """Print the skill directories a set of changed files touches (§18).
@@ -929,14 +937,45 @@ def changed_skills_command(
     a changed file is attributed to its nearest such ancestor). A plugin-level change inside
     an Agent Plugin bundle (a directory with a ``plugin.json``) is attributed to every skill
     the plugin carries. Empty output means the change touched no skill, so nothing needs
-    evaluating. Always exits 0: "no skills changed" is a normal result, not an error.
+    evaluating, and exits 0: "no skills changed" is a normal result, not an error. A path it cannot
+    attribute (git C-quoted it — pass `-z`) or a skill name the one-per-line output cannot carry
+    is a refusal (exit 3), never a quiet omission.
     """
     import sys
 
     from bellwether.cli.changed import changed_skills
 
-    candidates = paths or [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    if paths:
+        candidates = list(paths)
+    elif null:
+        # NUL-separated: git's `-z` output, every path byte-for-byte — no quoting, no escaping.
+        candidates = [path for path in sys.stdin.read().split("\0") if path]
+    else:
+        candidates = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+        # Without `-z`, git C-quotes a path containing a non-ASCII byte, a quote or a control
+        # character (`"caf\303\251/SKILL.md"`). Such a line names no file on disk, so it was
+        # attributed to no skill and dropped — "no skills changed" for a PR that added one, the
+        # false green this command exists to prevent. Refused, not guessed at.
+        quoted = [path for path in candidates if path.startswith('"') and path.endswith('"')]
+        if quoted:
+            typer.echo(
+                "bellwether changed-skills: "
+                f"{len(quoted)} path(s) arrived C-quoted by git ({quoted[0]}, …) and cannot be "
+                "attributed; pipe `git diff --name-only -z` into `changed-skills -z`",
+                err=True,
+            )
+            raise typer.Exit(ExitCode.INFRASTRUCTURE)
     skills = [str(skill) for skill in changed_skills(candidates, root=root)]
+    # One skill per output line is the contract the CI workflow reads (and writes into
+    # $GITHUB_OUTPUT); a directory name holding a line break would forge a second entry there.
+    broken = [skill for skill in skills if any(ch in skill for ch in "\n\r\0")]
+    if broken:
+        typer.echo(
+            f"bellwether changed-skills: skill directory {broken[0]!r} contains a line break, "
+            "which the one-per-line output cannot carry; rename it to evaluate it",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
     _emit({"changed_skills": skills}, as_json=json_output, lines=skills)
 
 

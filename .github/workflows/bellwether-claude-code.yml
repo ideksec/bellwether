@@ -25,10 +25,6 @@ permissions:
   contents: read
   pull-requests: write   # so the report comment can be posted
 
-concurrency:
-  group: bellwether-claude-code-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   BELLWETHER_CONFIG: examples/live/config-claude-code.yaml
   BELLWETHER_POLICY: examples/live/policy-claude-code.yaml
@@ -41,11 +37,23 @@ env:
 
 jobs:
   evaluate:
+    # A `labeled` event runs this only when the label added is `bellwether-run`. Without the filter,
+    # adding *any* label to a labelled PR started a fresh paid evaluation and — through the
+    # concurrency group — cancelled the one in flight.
+    if: github.event.action != 'labeled' || github.event.label.name == 'bellwether-run'
+    # Job-level, not workflow-level: a run whose job the filter above skips never joins the group,
+    # so it cannot cancel an evaluation already in progress.
+    concurrency:
+      group: bellwether-claude-code-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0   # the base commit must be present to diff against
+          # The job later runs evaluated skill content on this runner; nothing after checkout
+          # needs git credentials (pr-comment reads GITHUB_TOKEN from the environment).
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
@@ -64,13 +72,19 @@ jobs:
           # result. `changed-skills` exits 0 with empty output when the diff genuinely touches no
           # skill, so a legitimate quiet PR still passes.
           set -euo pipefail
-          git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
-            | uv run bellwether changed-skills > changed-skills.txt
+          # `-z` on both ends: without it git C-quotes a path with a non-ASCII byte
+          # ("caf\303\251/SKILL.md"), and a skill under such a directory was silently never
+          # evaluated. `changed-skills` refuses a quoted line rather than drop it.
+          git diff --name-only -z "${{ github.event.pull_request.base.sha }}" HEAD \
+            | uv run bellwether changed-skills -z > changed-skills.txt
           echo "Changed skills:"; cat changed-skills.txt
+          # A random delimiter: a fixed `EOF` ends the value early if a skill directory is named
+          # `EOF`, and whatever follows is read as further outputs.
+          delimiter="bw_$(openssl rand -hex 16)"
           {
-            echo "skills<<EOF"
+            echo "skills<<${delimiter}"
             cat changed-skills.txt
-            echo "EOF"
+            echo "${delimiter}"
           } >> "$GITHUB_OUTPUT"
 
       - name: No skills changed

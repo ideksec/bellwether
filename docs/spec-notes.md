@@ -4155,3 +4155,32 @@ bellwether-skills` restores it.
 **Not addressed here.** The wheel carries only the Python package: the demo skills, the sidecar and
 sandbox Dockerfiles and the example workflows live in the repository, and the quickstart says to run
 from a checkout (7c). Publishing images, or package data for `demo`, is a later decision.
+
+
+## §18 — the CI workflows cannot hide a skill, forge an output, or spend on the wrong label
+
+**Found by** the second independent review (2026-09); each reproduced before the fix.
+
+- **A non-ASCII skill directory was never evaluated.** `git diff --name-only` C-quotes a path with a
+  byte outside ASCII (`"caf\303\251/SKILL.md"`); `changed-skills` attributed the quoted line to
+  nothing, printed only the other skills, and exited 0 — "no skills changed" for a PR that added one.
+  The workflows now pipe `git diff --name-only -z` into `changed-skills -z` (NUL-separated, every path
+  byte-for-byte). Without `-z`, a C-quoted line is refused (exit 3) rather than dropped, and a skill
+  directory whose name holds a line break is refused because the one-per-line output cannot carry it.
+- **`$GITHUB_OUTPUT` used the fixed delimiter `EOF`.** A skill directory named `EOF` ended the value
+  early. The delimiter is now `bw_` plus 128 random bits.
+- **Any label re-ran the paid evaluation.** The `labeled` trigger had no filter, and the workflow-level
+  concurrency group with `cancel-in-progress` meant the new run also cancelled the one in flight. The
+  job now runs a `labeled` event only when the label is `bellwether-run`, and the concurrency group
+  moved onto the job — a run whose job is skipped never joins it, so it cannot cancel anything.
+- **Checkout left the job token in `.git/config`** on a runner that then runs evaluated content. Every
+  checkout in every workflow now sets `persist-credentials: false`; nothing after checkout needs git
+  credentials (`pr-comment` reads `GITHUB_TOKEN` from the environment).
+
+**Measured.** The workflow's own `detect` step, extracted and run against a repository holding `café/`,
+`EOF/` and `plain/`: before, `café` was missing and the job reported success; after, all three arrive
+in `$GITHUB_OUTPUT` and parse back intact.
+
+**Revert-proof.** All eight tests in `tests/test_workflow_hardening.py` fail against the old source.
+The first (`-z` finds the non-ASCII skill) fails there partly because `-z` did not exist; the
+C-quoted-refusal test and the extracted-step run above are the behavioural proof for that change.
