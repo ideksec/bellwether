@@ -279,9 +279,10 @@ def test_a_windowed_finding_is_identical_across_hashseeds() -> None:
 
 def test_the_scan_is_bounded_to_max_scan_chars() -> None:
     """BW-39: windowed matching is ~O(len(text)) per canary, so an unbounded corpus is a
-    CPU-exhaustion vector. The scan truncates to :data:`MAX_SCAN_CHARS`: a marker within the
-    bound is still found, one only past it is truncated away, and a multi-megabyte body stays
-    fast rather than scaling with its size."""
+    CPU-exhaustion vector. The decode-and-window pass is bounded to :data:`MAX_SCAN_CHARS`; past
+    it, only the linear whole-value pass runs — so a marker past the bound is still found (it used
+    to be truncated away, which made 256 KiB of padding a way out), and a multi-megabyte body
+    stays fast."""
     canaries = mint_canaries(7)
     marker = canaries[0].marker
     # "the quick brown fox " is 20 chars; overshoot the bound so the tail is genuinely dropped.
@@ -292,9 +293,22 @@ def test_the_scan_is_bounded_to_max_scan_chars() -> None:
     within = scan_for_canaries(marker + filler, canaries, destination="other_host")
     assert any(f.canary_id == canaries[0].id for f in within)
 
-    # Only past the bound: truncated away, so not found — the guard is real, not cosmetic.
+    # Only past the bound: still found, by the linear whole-value pass, at its real offset.
     beyond = scan_for_canaries(filler + marker, canaries, destination="other_host")
-    assert not any(f.canary_id == canaries[0].id for f in beyond)
+    assert [(f.canary_id, f.offset) for f in beyond] == [(canaries[0].id, len(filler))]
+
+    # And an encoded whole value past the bound too — the pass covers the standard encodings.
+    encoded = scan_for_canaries(filler + marker.encode().hex(), canaries, destination="other_host")
+    assert [(f.canary_id, f.via) for f in encoded] == [(canaries[0].id, "hex")]
+
+    # What the linear pass does *not* do: decode a marker embedded in a larger encoded payload.
+    # That needs the bounded decode pass, so past the bound it remains a documented limit.
+    import base64
+
+    # A 4-byte prefix: not a multiple of 3, so the marker's own base64 does not line up inside
+    # the wrapper's (a 6-byte prefix would, by alignment luck, and be found).
+    wrapped = base64.b64encode(f"tok={marker}".encode()).decode()
+    assert not scan_for_canaries(filler + wrapped, canaries, destination="other_host")
 
     # A multi-megabyte body stays fast; the ~seconds-per-megabyte cost is bounded.
     huge = marker + "x clean text " * 400_000

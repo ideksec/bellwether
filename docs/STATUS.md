@@ -41,9 +41,12 @@ reaches no capability is refused, and all-zero weights fall back to plain Jaccar
 by zero (PR #83). **Brick 5b — fixed:** the two §7.1 trigger controls decide the verdict —
 `require_all_should_trigger` gives a `should_trigger` scenario that asserts nothing about activation
 an implicit `skill_activated: true`, and `max_false_trigger_rate` is a new `functional.false_trigger`
-gate over `should_not_trigger` sets (uncomposed, with a verdict note, where a suite has none).
-Remaining bricks, in order:
-6. canary scan: silent 256 KiB truncation, cross-request chunking, predictable seeding;
+gate over `should_not_trigger` sets (uncomposed, with a verdict note, where a suite has none)
+(PR #85). **Brick 6 — fixed:** the canary scan no longer ends at 256 KiB — past the decode-and-window
+bound a linear pass still finds the marker and its whole-value encodings, and written files are read
+to 16 MiB; the canary seed mixes fresh entropy, so markers are no longer derivable from the skill name
+and the clock. Still open: a marker split across requests, DNS labels or files in chunks under 12
+characters, and a marker wrapped in a larger encoded payload past the bound. Remaining bricks, in order:
 7. packaging and docs for a public release (PyPI name, wheel contents, quickstart, overclaiming).
 
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
@@ -879,7 +882,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1701 tests: 1642 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1702 tests: 1643 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

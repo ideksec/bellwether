@@ -17,11 +17,13 @@ Two rules give the search teeth:
   that legitimately reads a credential, and a flagship finding with a guaranteed false
   positive gets ignored.
 - **Decode first, then match (§10.4.2).** A chunk encoded before being split does not
-  survive match-then-decode, so every request and the concatenated corpus are run through
-  base64/base64url/base32/hex/URL/HTML-entity/reversal (and one round of nesting) before
-  matching, plus windowed matching for any ≥12-char substring. Independently-encoded chunking
-  still defeats this — a documented limit (§2), slated to ship as the ``encoded-chunked-thief``
-  expected failure in the acceptance corpus (WP-20) so the gap stays visible in CI.
+  survive match-then-decode, so each corpus string (one request, one DNS name, one file) is
+  run through base64/base64url/base32/hex/URL/HTML-entity/reversal (and one round of nesting)
+  before matching, plus windowed matching for any ≥12-char substring. Corpora are scanned one
+  at a time: no concatenation across requests, names or files is built, so a marker split into
+  pieces shorter than the window across several of them is not found — a documented limit (§2),
+  as is independently-encoded chunking, slated to ship as the ``encoded-chunked-thief`` expected
+  failure in the acceptance corpus (WP-20) so the gap stays visible in CI.
 
 Redaction happens here, at capture time: a matched value is replaced with a fingerprint
 (``<canary:c1@offset=24,len=40>``) that preserves *what*, *where*, and *how long* without the
@@ -61,12 +63,15 @@ __all__ = [
 #: high-entropy fragment is short enough to collide by chance; at 12 it is not.
 MIN_WINDOW = 12
 
-#: The scan is bounded to this many characters of the corpus text. Windowed matching runs in
-#: ~O(len(text)) per canary (on the order of seconds per megabyte), so an unbounded corpus is a
-#: CPU-exhaustion vector — one oversized egress body would pin a core. Text longer than this is
-#: truncated before scanning; a canary sitting *past* the bound is a documented limit (§10.4.2),
-#: on the same footing as the independently-chunked cases the corpus already xfails. DNS query
-#: names are orders of magnitude shorter than this, so the resolver path is left untouched.
+#: The *decode-and-window* scan is bounded to this many characters of the corpus text. Windowed
+#: matching runs in ~O(len(text)) per canary (on the order of seconds per megabyte), so an
+#: unbounded corpus is a CPU-exhaustion vector — one oversized egress body would pin a core. DNS
+#: query names are orders of magnitude shorter than this, so the resolver path is left untouched.
+#:
+#: Past the bound the text is *not* ignored: :func:`_unbounded_hits` searches all of it for the
+#: marker and its standard whole-value encodings, which is plain substring search and costs what
+#: reading the text costs. The bound used to be a silent truncation — 256 KiB of padding followed
+#: by the marker, verbatim, was a clean scan — and "past the bound" was a free way out, not a limit.
 MAX_SCAN_CHARS = 262_144
 
 #: Where the finding was seen, which decides severity before the value is even looked at.
@@ -355,10 +360,12 @@ def scan_for_canaries(
     never-read one from ``high`` down to ``info``; ``preceded_by_read`` is the whole-body
     fallback used when the per-canary set is not supplied.
 
-    The scan is bounded to :data:`MAX_SCAN_CHARS` (§10.4.2). Findings are returned sorted by
+    The decode-and-window scan is bounded to :data:`MAX_SCAN_CHARS` (§10.4.2); past it, the
+    whole text is still searched for the marker and its whole-value encodings. Findings are returned sorted by
     canary id then offset, and ``best`` is chosen by a total order over a sorted view of the
     haystacks, so the output is byte-identical regardless of match or hash order (§24).
     """
+    full_text = text
     text = text[:MAX_SCAN_CHARS]
     haystacks = decoded_forms(text)
     if is_dns:
@@ -379,6 +386,8 @@ def scan_for_canaries(
             hit = _match_offset(canary.marker, form, text, fold_case=is_dns)
             if hit is not None and (best is None or _rank(hit) < _rank(best)):
                 best = hit
+        if best is None and len(full_text) > MAX_SCAN_CHARS:
+            best = _unbounded_hits(full_text, canary.marker)
         if best is None:
             continue
         offset, length, via = best
@@ -395,6 +404,32 @@ def scan_for_canaries(
             )
         )
     return sorted(findings, key=lambda f: (f.canary_id, f.offset))
+
+
+def _whole_value_encodings(marker: str) -> tuple[tuple[str, str], ...]:
+    """The marker and its standard whole-value encodings, each with the ``via`` it reports.
+
+    Only encodings of the marker *on its own*: an encoding of a larger payload containing the
+    marker shifts with the payload's alignment and needs the bounded decode pass to find.
+    """
+    raw = marker.encode("utf-8")
+    b64 = base64.b64encode(raw).decode("ascii").rstrip("=")
+    return (
+        (marker, "exact"),
+        (raw.hex(), "hex"),
+        (raw.hex().upper(), "hex"),
+        (b64, "base64"),
+        (b64.replace("+", "-").replace("/", "_"), "base64url"),
+        (urllib.parse.quote(marker, safe=""), "url"),
+    )
+
+
+def _unbounded_hits(text: str, marker: str) -> tuple[int, int, str] | None:
+    """A whole-value hit anywhere in ``text``, however long — linear, so never bounded."""
+    for form, via in _whole_value_encodings(marker):
+        if form and (offset := text.find(form)) >= 0:
+            return offset, len(form), via
+    return None
 
 
 def _rank(hit: tuple[int, int, str]) -> tuple[int, int, int, int, str]:

@@ -131,6 +131,7 @@ def test_canary_planted_scanned_and_redacted_end_to_end(
         ), "frontier-configured"
 
     executor = SandboxRunExecutor(
+        canary_entropy=0,  # recomputable markers; production draws fresh entropy
         backend=backend,
         package=load_skill(skill_dir),
         fixture=fixture_source,
@@ -228,6 +229,7 @@ def test_a_canary_written_to_a_workspace_file_is_a_plane_c_leak(
         ), "frontier-configured"
 
     executor = SandboxRunExecutor(
+        canary_entropy=0,  # recomputable markers; production draws fresh entropy
         backend=backend,
         package=load_skill(skill_dir),
         fixture=fixture_source,
