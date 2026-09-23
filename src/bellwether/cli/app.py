@@ -154,10 +154,24 @@ def init(
     )
 
 
+def _policy_beside(config: Path, policy: Path | None) -> Path:
+    """The policy to load: the one named, else ``policy.yaml`` beside the config.
+
+    ``init`` writes the two side by side, and the README's quickstart points ``--config`` at a
+    repository elsewhere. The default used to be ``.bellwether/policy.yaml`` relative to the
+    *working directory*, so that quickstart failed with "file not found" unless run from inside
+    the skills repository — the first command a newcomer types.
+    """
+    return policy if policy is not None else config.parent / POLICY_FILE.name
+
+
 @app.command()
 def doctor(
     config: Annotated[Path, typer.Option("--config", help="Path to config.yaml.")] = CONFIG_FILE,
-    policy: Annotated[Path, typer.Option("--policy", help="Path to policy.yaml.")] = POLICY_FILE,
+    policy: Annotated[
+        Path | None,
+        typer.Option("--policy", help="Path to policy.yaml (default: beside --config)."),
+    ] = None,
     probe_interception: Annotated[
         bool,
         typer.Option(
@@ -193,7 +207,7 @@ def doctor(
     checks.append({"check": "config.yaml parses", "status": "ok", "detail": str(config)})
 
     try:
-        loaded_policy = load_policy(policy)
+        loaded_policy = load_policy(_policy_beside(config, policy))
     except ConfigurationError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
@@ -531,8 +545,9 @@ def run(
     ] = None,
     config: Annotated[Path, typer.Option("--config", help="Path to config.yaml.")] = CONFIG_FILE,
     policy_path: Annotated[
-        Path, typer.Option("--policy", help="Path to policy.yaml.")
-    ] = POLICY_FILE,
+        Path | None,
+        typer.Option("--policy", help="Path to policy.yaml (default: beside --config)."),
+    ] = None,
     profile: Annotated[
         str | None, typer.Option("--profile", help="Override the policy profile.")
     ] = None,
@@ -666,7 +681,7 @@ def run(
 
     try:
         loaded_config = load_config(config)
-        loaded_policy = load_policy(policy_path)
+        loaded_policy = load_policy(_policy_beside(config, policy_path))
         # §12.6: the platform baseline lives beside the config; absent, nothing is subtracted
         # and the run says so. Present but keyed to another image, likewise — run_evaluation
         # applies it only where `applies_to_image` matches the configured sandbox image.

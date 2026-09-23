@@ -31,8 +31,8 @@ unusual. Treat all of the following as security bugs, not merely defects:
 
 Findings that a detector has a *documented* gap — for example independently-encoded
 chunked exfiltration — are not vulnerabilities; they are named limitations in
-[THREAT_MODEL.md](THREAT_MODEL.md) and the README, and one of them ships as a
-deliberately-failing test so it stays visible. A report showing the gap is *wider* than
+[THREAT_MODEL.md](THREAT_MODEL.md) and the README (one is slated to ship as a
+deliberately-failing acceptance test, so it stays visible in CI). A report showing the gap is *wider* than
 documented is very welcome.
 
 ## Our own supply chain
@@ -43,11 +43,16 @@ and where it is enforced:
 - **GitHub Actions** are pinned to full commit SHAs, never tags. A tag is mutable, and a
   compromised action tag is the classic CI supply-chain attack. `tools/pin_lint.py` fails
   the build on any unpinned `uses:`.
-- **Container images** — in CI, in the test defaults, and (enforced by config validation)
-  for the production sandbox image — are pinned by `@sha256:` digest.
+- **Container images** in CI, in the test defaults and in every Dockerfile `FROM` are pinned
+  by `@sha256:` digest (`tools/pin_lint.py` enforces it). For the *configured* sandbox image the
+  pin is advisory: `bellwether doctor` warns on a mutable tag but does not refuse it, and the
+  `examples/live` configs use locally built tags.
 - **Python dependencies** are hash-pinned in `uv.lock`; `uv sync --frozen` verifies every
   recorded hash on install, so a tampered wheel on the index fails the build rather than
-  entering it. `uv` and the Python version are pinned in CI too.
+  entering it. `uv` and the Python version are pinned in CI too. The proxy and resolver
+  sidecar images pin their direct dependencies by version but install without
+  `--require-hashes`, and the claude-code sandbox installs the CLI with `npm install` at a
+  pinned version without a lockfile — both are open items.
 - **`.github/dependabot.yml`** keeps these pins current, because a pin that never updates
   is its own risk; each bump is a reviewed PR that CI re-verifies.
 

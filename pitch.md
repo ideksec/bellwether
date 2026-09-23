@@ -35,9 +35,10 @@ The gap runs in two directions:
 **Behaviour is the artifact under test, not text.**
 
 Bellwether runs the skill. Many times, across several models, inside an instrumented
-sandbox. It records everything the agent actually did — every tool call, file read, file
-write, process execution, network request, DNS query, credential access — as a
-deterministic, machine-readable **trace**.
+sandbox. It records what the agent was observed to do — its tool calls, the files it wrote,
+its network requests and DNS lookups, and where planted canary credentials went — as a
+deterministic, machine-readable **trace**. (Kernel-level capture of file reads and process
+execution is planned, not built: today those are seen only where the harness reports them.)
 
 Traces can be asserted against. Traces can be diffed against last week's. Traces can be
 aggregated across repetitions into a measurement of how much the skill's behaviour
@@ -99,9 +100,10 @@ because a denylist fails open the moment someone adds a file. Canary credentials
 generated per evaluation from a recorded seed, with no fixed prefix. Workspace paths,
 hostnames and container names are randomised, without a project name anywhere in them.
 
-Perfect concealment isn't achievable, and Bellwether doesn't claim it. A skill that
-inspects `/proc/1/cgroup` or greps for a marker format is *recorded doing so*, as a
-high-severity finding.
+Perfect concealment isn't achievable, and Bellwether doesn't claim it. A skill that probes
+for the sandbox — reading `/proc/1/cgroup`, grepping for a marker format — is visible where
+that probe goes through a tool call the harness reports; the dedicated instrumentation-probe
+finding is specified but not yet scored.
 
 ### Variance is measured, so it has to be measurable
 

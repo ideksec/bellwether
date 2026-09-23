@@ -9,7 +9,7 @@ kind: Policy
 #   2. The egress and DNS gates are demoted to `warn`. The recording proxy *is* wired into this
 #      executor (`egress.image` in config.yaml turns it on), so egress is observed — but the run
 #      only reaches the proxy when the workflow has built the sidecar image, and the controlled
-#      DNS resolver is not turned on in this config at all. Demoting both to `warn` keeps a
+#      DNS resolver (`dns.image`) likewise only once its image is built. Demoting both to `warn` keeps a
 #      benign skill from being held `not_ready` for a plane a given invocation may not have
 #      exercised, while the finding is still recorded. Advisory-not_evaluable, never a silent
 #      pass — the same stance the demo takes.
