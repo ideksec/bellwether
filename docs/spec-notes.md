@@ -4184,3 +4184,35 @@ in `$GITHUB_OUTPUT` and parse back intact.
 **Revert-proof.** All eight tests in `tests/test_workflow_hardening.py` fail against the old source.
 The first (`-z` finds the non-ASCII skill) fails there partly because `-z` did not exist; the
 C-quoted-refusal test and the extracted-step run above are the behavioural proof for that change.
+
+## §21, §25 — the quickstart runs as written, and the prose claims only what is built
+
+**Found by** the second independent review (2026-09).
+
+- **`--policy` resolved against the working directory.** `doctor` and `run` defaulted `--policy` to
+  `.bellwether/policy.yaml` relative to the *cwd*, while the README quickstart points `--config` at a
+  skills repository elsewhere — so the first command a newcomer types exited 3 with "file not found".
+  `init` writes the two files side by side, so the default is now the `policy.yaml` beside
+  `--config`. With the default `--config` that is the same path as before, and both live workflows
+  pass `--policy` explicitly, so nothing already working changes. An explicit `--policy` still wins.
+- **Overclaiming prose.** The README and `pitch.md` said Bellwether records "everything the agent
+  did — every … file read, … process execution, … credential access". File-read and process
+  capture are not built (`doctor` lists both as pending); they are seen only where the harness
+  reports a tool call. Both now list the planes actually observed. "Hardened sandbox" now names the
+  restrictions and links THREAT_MODEL.md; "the shipped GitHub Action" is "example workflows"; the
+  instrumentation-probe finding is described as specified, not scored.
+- **SECURITY.md** said the configured sandbox image pin was "enforced by config validation"; it is
+  advisory (`doctor` warns on a mutable tag). It also said a known gap "ships as a deliberately-failing
+  test"; that test is slated, not shipped. The sidecar `pip install` without `--require-hashes` and
+  the claude-code image's `npm install` without a lockfile are now named as open supply-chain items.
+- **Live-config notes** said the controlled DNS resolver was not enabled in `examples/live`; it is
+  wired through `dns.image`.
+- The quickstart now says to run from a checkout (the demo skills, Dockerfiles and workflows are not
+  in the wheel), gives the published name `bellwether-skills`, and — because a fresh `init` selects
+  the `high` profile, whose §16.4 preconditions this build cannot meet — says to start with
+  `--profile low`.
+
+**Revert-proof.** `test_the_quickstart_doctor_reads_the_policy_beside_the_config` fails against the
+old `cli/app.py` (exit 3, `INFRASTRUCTURE`); `test_an_explicit_policy_still_wins` passes on both, as
+a guard against the new default overriding an explicit path. The prose changes are checked by hand
+against `doctor`'s own output on a fresh `init`.

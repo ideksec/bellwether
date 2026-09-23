@@ -4,8 +4,9 @@ A CI/CD harness for AI agent skills — run them, watch what they actually do, a
 whether to ship them.
 
 Bellwether executes a candidate skill many times, across multiple models, inside an
-instrumented sandbox; captures a deterministic record of everything the agent actually
-*did*; measures how much that behaviour varies between runs; and renders a release
+instrumented sandbox; records what the agent was *observed* to do — its tool calls, the
+files it wrote, its network requests and DNS lookups, and where planted canary credentials
+ended up; measures how much that behaviour varies between runs; and renders a release
 verdict against a policy the repository owner controls. The matrix is designed for
 multiple providers; the current live client supports Anthropic, so a multi-model
 evaluation today means several Anthropic models.
@@ -35,7 +36,9 @@ reasoning behind the divergences.
 ## Status
 
 **Pre-v0.1. Under construction — but the loop closes end to end.** On a real pull request, a
-changed skill is detected, run six times in a hardened sandbox behind a recording proxy that
+changed skill is detected, run six times in a locked-down container (no capabilities, a
+read-only root, no route out but the proxy — not a boundary for hostile malware; see
+[THREAT_MODEL.md](THREAT_MODEL.md)) behind a recording proxy that
 observes its egress, scored across the gates, and posted back as a verdict — and a benign skill
 has reached **`ready`** this way, on CI, against a live model, with every run's evidence uploaded
 as a downloadable artifact. That is the whole thesis walking on its own legs.
@@ -48,8 +51,10 @@ provider but never the container), a default-deny egress allowlist, and a dual-h
 an internal bridge that is the sandbox's only route out — so egress is *observed*, not assumed.
 **Canaries are planted and scanned in live runs, and a leak gates the verdict.** The controlled
 DNS resolver runs as a second sidecar with its queries recorded as Plane E. The **live model
-client** (Anthropic), the `bellwether run` CLI, and the shipped GitHub Action round out the
-pipeline.
+client** (Anthropic), the `bellwether run` CLI, and the example GitHub Actions workflows round
+out the pipeline. Two planes are **not built yet**: file *reads* and process execution are
+visible only where the harness reports them as tool calls, not captured from the kernel —
+`bellwether doctor` names them.
 
 **Both v0.1 harnesses ship**: the `api-loop` reference and the real **Claude Code CLI** running
 headless inside the sandbox, its structured output cross-checked against its own hooks writing
@@ -244,11 +249,17 @@ systems.
 
 ## Quickstart
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.12+, [uv](https://docs.astral.sh/uv/), and — for real runs — Linux with Docker
+(the host-side overlay mount needs root). Bellwether is run from a **checkout of this
+repository**: the demo skills, the sidecar and sandbox Dockerfiles and the example workflows live
+here, not in the Python package. (The distribution will be published as `bellwether-skills`; the
+command and the import name are `bellwether`.)
 
 ```bash
+git clone https://github.com/ideksec/bellwether && cd bellwether
 uv sync --group dev
 uv run bellwether --help
+uv run bellwether demo      # offline: no Docker, no API key — writes examples/reports/
 ```
 
 Scaffold Bellwether into a repository that contains skills:
@@ -263,6 +274,11 @@ uv run bellwether doctor --config /path/to/skills-repo/.bellwether/config.yaml
 identifiers.** Model names change, and a stale hard-coded one is the most likely source
 of a confusing first-run failure, so aliases (`frontier`, `mid`, `small`) resolve through
 your own config and Bellwether refuses to run against an unfilled placeholder.
+
+`--policy` defaults to the `policy.yaml` beside `--config`. A fresh `init` selects the `high`
+profile, which this build cannot yet satisfy (it requires capture planes that are not built, and
+`doctor` says which); pass `--profile low` for a first run, and read `doctor`'s precondition
+lines before choosing a stricter one.
 
 `bellwether doctor` matters more than it sounds. The failure modes of this tool are mostly
 environmental, and several of them fail *silently in the direction that looks clean* — a
@@ -335,7 +351,7 @@ alone and an unmentioned component would read as one that ran clean.
 | **Proxy in the live run** — dual-homed sidecar per repetition, CA mounted so TLS is intercepted, egress recorded as Plane D of the trace (`egress.image` turns it on) | done |
 | **Live model client** — Anthropic Messages API behind the `ModelClient` seam | done |
 | **`bellwether run` from the CLI** — resolve → live client → matrix → verdict → artifact tree | done |
-| **CI integration** — `bellwether changed-skills`, `bellwether pr-comment`, the shipped GitHub Action (only changed skills, paid run label-gated), per-run evidence uploaded as an artifact | done |
+| **CI integration** — `bellwether changed-skills`, `bellwether pr-comment`, the example GitHub Actions workflows (only changed skills, paid run label-gated), per-run evidence uploaded as an artifact | done |
 | **Live verdict on CI** — a benign skill reaching `ready` against a real model, egress observed | proven |
 | **Canaries** — mint, decode-then-match, destination classification, redaction; planted in live runs (env var + file slots) and scanned across output, DNS names, tool args, egress URLs *and* bodies, written files, **and every composed model request** (§10.4.1 read-state grading); a leak gates the verdict (`security_runtime.canaries`), an unread canary in model context gates it too (`security_runtime.canary_reads`); credentials plane `full` | done (WP-16 capture story; corpus skills land with WP-20) |
 | CA trust chain — §9.2 mechanism table, install env/commands, confirm predicate | done (WP-14 core); live doctor probe pending |

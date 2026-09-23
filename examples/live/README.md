@@ -8,10 +8,9 @@ a real model end to end, without spending much.
   sandbox image.
 - **`policy.yaml`** — one `api-loop`/`anthropic`/`haiku` target at a single look of 6 (~$0.20–0.40
   of Haiku per skill), with the egress/DNS gates demoted to advisory. The recording proxy *is*
-  wired into the executor (`egress.image` above turns it on), but it only intercepts once the
-  workflow has built the sidecar image, and the controlled DNS resolver is not enabled in this
-  config — so both gates warn rather than block on a plane a given invocation may not have
-  exercised (§25).
+  wired into the executor (`egress.image` above turns it on) and so is the controlled DNS
+  resolver (`dns.image`), but each only runs once the workflow has built its sidecar image — so
+  both gates warn rather than block on a plane a given invocation may not have exercised (§25).
 - **`config-claude-code.yaml`** / **`policy-claude-code.yaml`** — the same cheap smoke, but for the
   **`claude-code`** harness: the real Claude Code CLI runs headless *inside* the sandbox, so the
   sandbox image carries the CLI and the recording proxy is mandatory (the CLI's model calls leave
