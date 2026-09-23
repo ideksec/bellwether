@@ -46,8 +46,13 @@ gate over `should_not_trigger` sets (uncomposed, with a verdict note, where a su
 bound a linear pass still finds the marker and its whole-value encodings, and written files are read
 to 16 MiB; the canary seed mixes fresh entropy, so markers are no longer derivable from the skill name
 and the clock. Still open: a marker split across requests, DNS labels or files in chunks under 12
-characters, and a marker wrapped in a larger encoded payload past the bound. Remaining bricks, in order:
-7. packaging and docs for a public release (PyPI name, wheel contents, quickstart, overclaiming).
+characters, and a marker wrapped in a larger encoded payload past the bound (PR #86).
+**Brick 7a — done:** the distribution is `bellwether-skills` (`bellwether` on PyPI is an unrelated
+project; the import and the command stay `bellwether`), the Bitwarden-clashing `bw` alias is gone,
+the copyright line lives in `NOTICE` (ideksec), and the license uses the PEP 639 expression — all
+decided with the maintainer and pinned by `tests/test_packaging.py`. Remaining, in order:
+7b. CI workflow hardening (non-ASCII skill paths, `$GITHUB_OUTPUT` delimiter, label filter, token on disk);
+7c. docs accuracy (quickstart `doctor`, overclaiming, SECURITY.md, stale live-config notes).
 
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
@@ -882,7 +887,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1702 tests: 1643 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1705 tests: 1646 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
