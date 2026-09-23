@@ -5,6 +5,10 @@ kind: ScenarioSuite
 # system is an anecdote (§13.2); the report is about the distribution. The live claude-code
 # policy runs it at a single look of 6 (the cheap smoke); the wider looks below are what an
 # offline or fuller run would use.
+#
+# Editing a file in this directory is what makes a labelled PR re-run the live smoke under both
+# harnesses. It was re-run after the second independent review's remediation (PRs #79-#90), which
+# changed the proxy's relaying hooks, the canary scan and the workflows the live path depends on.
 
 defaults:
   fixture: readme-repo
