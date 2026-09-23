@@ -409,7 +409,12 @@ def _reading_for_case(
         # The scenario assertions decide the outcome (scope=None), so an unobservable egress
         # derivation never turns a completing run not_evaluable. The Declared-vs-Observed
         # check runs separately below and contributes only its `exceeded` capabilities.
-        run = analyse_run(plan, executed, scope=None)
+        run = analyse_run(
+            plan,
+            executed,
+            scope=None,
+            require_activation=profile.gates.functional.require_all_should_trigger,
+        )
         if declared is not None:
             # Evaluated off the run outcome, so a scope violation blocks the scope gate
             # without the scope's egress/write derivations — which this offline path cannot
