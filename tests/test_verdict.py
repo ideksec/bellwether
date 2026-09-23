@@ -344,8 +344,10 @@ def test_a_denied_class_cannot_be_weighted_zero() -> None:
 
 
 def test_a_denied_tool_cannot_be_weighted_zero() -> None:
+    # ``tool_call`` is the key a denied ``tool:curl`` takes its weight from (§13.5.1); ``curl``
+    # is not a weight key at all, and the policy schema refuses it before this check runs.
     with pytest.raises(ConfigurationError):
-        validate_capability_weights({"curl": 0}, deny_classes={"tool:curl"})
+        validate_capability_weights({"tool_call": 0}, deny_classes={"tool:curl"})
 
 
 def test_non_denied_zero_weights_are_allowed() -> None:

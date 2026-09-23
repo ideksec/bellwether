@@ -28,7 +28,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
 
-from bellwether.constants import DEFAULT_CAPABILITY_WEIGHT, DEFAULT_CAPABILITY_WEIGHTS
+from bellwether.constants import (
+    DEFAULT_CAPABILITY_WEIGHT,
+    DEFAULT_CAPABILITY_WEIGHTS,
+    POLICY_WEIGHT_KEY_TO_BASE_CLASS,
+)
 from bellwether.determinism import canonical_json, round6, sorted_unique, stable_hash
 
 __all__ = [
@@ -37,10 +41,31 @@ __all__ = [
     "RareCapabilityFinding",
     "capability_weight",
     "jaccard_pair",
+    "resolve_capability_weights",
     "summarise_capability",
     "weighted_jaccard_pair",
     "weights_digest",
 ]
+
+
+def resolve_capability_weights(policy_weights: Mapping[str, float]) -> dict[str, int]:
+    """Translate policy ``capability_risk_weights`` into the base-class weights the metric uses.
+
+    The policy names finding kinds (``egress_non_model``); the metric keys on base classes
+    (``egress``). This maps the former onto the latter, overlaid on the default table so a
+    class the policy does not mention (``egress_blocked``, ``workspace_delete``) keeps its
+    §13.5.1 default rather than silently dropping to the floor. For the shipped default
+    policy this reproduces the default table exactly, so it is a no-op until a weight is
+    actually overridden.
+
+    Weights are whole numbers by the time they reach here — the policy schema refuses a
+    fractional one — so ``int`` is a conversion, never a rounding. It used to be ``round``,
+    which turned ``0.4`` and (banker's rounding) ``0.5`` into ``0`` and erased the class.
+    """
+    resolved = dict(DEFAULT_CAPABILITY_WEIGHTS)
+    for key, weight in policy_weights.items():
+        resolved[POLICY_WEIGHT_KEY_TO_BASE_CLASS.get(key, key)] = int(weight)
+    return resolved
 
 
 def capability_weight(tier1: str, weights: Mapping[str, int]) -> int:
@@ -80,6 +105,10 @@ def weighted_jaccard_pair(
         return 1.0
     inter_w = sum(capability_weight(c, weights) for c in (a & b))
     union_w = sum(capability_weight(c, weights) for c in union)
+    if union_w == 0:
+        # Every class in the union is weighted 0, so the weighting says nothing. Fall back to
+        # the unweighted figure — stricter, never kinder — rather than divide by zero.
+        return jaccard_pair(a, b)
     return inter_w / union_w
 
 

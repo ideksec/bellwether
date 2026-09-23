@@ -4025,3 +4025,35 @@ for a reason that was the fake's; it parses the query string now.
 escaped, so no label can disguise one. Another GitHub App installed on the repository also posts as
 a `Bot` and could seed the marker; the workflow's own token cannot be told apart from it without a
 `GET /user` the Actions token is refused.
+
+
+## §13.5.1, §16.1 — a capability weight does what it says, or the policy is refused
+
+**Found by** the second independent review (2026-09); all four reproduced before the fix.
+
+- **The zero-weight check asked about the wrong key.** §16.1 refuses weight 0 on a class the
+  manifest denies. The check compared the policy's *spelling* (`bash`) with the denied class, while a
+  denied `tool:bash` takes the weight of its base class `tool`, which the policy sets as `tool_call`.
+  So `tool_call: 0` — or `0.4` — erased every denied tool and passed; `bash: 0`, which erases
+  nothing, was the one refused. The check now resolves the policy weights first
+  (`metrics.resolve_capability_weights`, moved beside the metric so the verdict layer can call it)
+  and asks what weight each denied class will actually be looked up under.
+- **Fractional weights were rounded.** The metric keys on integers and the resolver called `round`,
+  so `0.4` and — banker's rounding — `0.5` became `0`. A canary read plus an egress in one run of six
+  produced no rare-capability finding and a weighted Jaccard of 1.0. The policy schema now refuses a
+  fractional weight; the resolver's `int` is a conversion, never a rounding.
+- **A key that reaches no capability was accepted.** A typo (`canary_reads`) or a parameterised class
+  (`egress:evil.com`, which the base-class lookup never consults) was stored and ignored. The schema
+  now refuses any key outside `constants.CAPABILITY_WEIGHT_KEYS` — the finding-kind names the
+  translation table maps plus the base classes the metric reads. The table moved to `constants` so
+  the config layer can check against it.
+- **All-zero weights divided by zero.** `weighted_jaccard_pair` now falls back to the unweighted
+  figure when every class in the union weighs 0 — stricter, never kinder.
+
+**Two existing tests asserted the old, wrong model.** `test_a_denied_tool_cannot_be_weighted_zero`
+and `test_run_refuses_a_manifest_denied_tool_weighted_zero` set `curl: 0` — a key the metric never
+reads — and asserted a refusal of a weight with no effect. They now set `tool_call: 0`, and both fail
+against the old validator, on behaviour; they are the revert-proof for the wiring on the `run` path.
+The new `tests/test_capability_weight_controls.py` fails on the old source only at import (the
+resolver moved), so it is not the proof; the reviewer's reproduction script, run before and after,
+is: accepted/erased/crash/ignored before, refused/finding/fallback/refused after.

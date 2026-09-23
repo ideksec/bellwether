@@ -12,11 +12,13 @@ from typing import Final
 
 __all__ = [
     "ASSERTION_CATALOGUE",
+    "CAPABILITY_WEIGHT_KEYS",
     "CAPTURE_PLANES",
     "DEFAULT_CAPABILITY_WEIGHT",
     "DEFAULT_CAPABILITY_WEIGHTS",
     "EXIT_REASONS",
     "POCOCK_BOUNDARY_Z",
+    "POLICY_WEIGHT_KEY_TO_BASE_CLASS",
     "REPORT_LIMITATIONS",
     "RUNTIME_FINDING_KINDS",
     "SENSITIVE_DIRECTORIES",
@@ -162,6 +164,17 @@ SENSITIVE_DIRECTORIES: Final[tuple[str, ...]] = (
 #: MUST NOT be assignable weight 0 (validated at config load, §16.1). A class absent from
 #: this table takes ``DEFAULT_CAPABILITY_WEIGHT`` — the floor, never zero, so an
 #: unforeseen class never silently drops out of the risk sum.
+#: Policy ``capability_risk_weights`` keys (§16.1 finding-kind names) → the base tier-1 class the
+#: metric looks a weight up under. Without this translation a policy override silently misses —
+#: ``egress_non_model: 20`` would never reach an ``egress:<host>`` capability, which keys on
+#: ``egress``. Kept beside the table so the policy schema can refuse a key that reaches nothing.
+POLICY_WEIGHT_KEY_TO_BASE_CLASS: Final[dict[str, str]] = {
+    "egress_non_model": "egress",
+    "dns_outside_allowlist": "dns_query",
+    "process_exec": "process",
+    "tool_call": "tool",
+}
+
 DEFAULT_CAPABILITY_WEIGHTS: Final[dict[str, int]] = {
     "canary_read": 10,
     "egress": 10,
@@ -187,6 +200,13 @@ DEFAULT_CAPABILITY_WEIGHTS: Final[dict[str, int]] = {
     #: to fall there by omission, so the choice is visible and overridable.
     "egress_infrastructure": 1,
 }
+
+#: Every key a policy may weight: a finding-kind name the table above translates, or a base class
+#: the metric reads directly. A key outside this set reaches no capability — a typo, or a
+#: parameterised class (``egress:evil.com``) the base-class lookup would never consult.
+CAPABILITY_WEIGHT_KEYS: Final[frozenset[str]] = frozenset(
+    {*POLICY_WEIGHT_KEY_TO_BASE_CLASS, *DEFAULT_CAPABILITY_WEIGHTS}
+)
 
 #: The weight an unlisted tier-1 class receives (§13.5.1). The floor is 1, never 0: a
 #: class the table did not foresee still counts, so it cannot vanish from the risk sum.
