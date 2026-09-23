@@ -4057,3 +4057,38 @@ against the old validator, on behaviour; they are the revert-proof for the wirin
 The new `tests/test_capability_weight_controls.py` fails on the old source only at import (the
 resolver moved), so it is not the proof; the reviewer's reproduction script, run before and after,
 is: accepted/erased/crash/ignored before, refused/finding/fallback/refused after.
+
+
+## §7.1, §16.2 — the trigger controls decide the verdict
+
+**Found by** the second independent review (2026-09). `functional.require_all_should_trigger` and
+`functional.max_false_trigger_rate` were in `ENFORCING_GATE_CONTROLS` and read by nothing but the
+§16.4 precondition. The control registry checks that every gate field is *classified*, not that the
+classification is true — so a skill that never loaded, on a `should_trigger` scenario asserting only
+its output, reached `ready` whenever the base model did the task anyway; and a skill that fired on
+every prompt it should have ignored was never counted. Enforcing both was decided with the
+maintainer over the alternative of reclassifying them advisory.
+
+**`require_all_should_trigger`.** `analyse_run` gives a `should_trigger` scenario that carries no
+`skill_activated` assertion an implicit `skill_activated: true`, so a run where the skill did not
+activate is a functional failure through the existing Wilson gate — no new gate, no new statistics.
+An explicit `skill_activated` assertion in the scenario is left exactly as written. `drive_evaluation`
+and the demo path pass the profile's value; the default on a bare `analyse_run` call is off.
+
+**`max_false_trigger_rate`.** Every run now records `activation` (`activated` / `not_activated` /
+`unobserved`, as `skill_activated` reads it) and its scenario's `expectation`. A new required gate,
+`functional.false_trigger`, takes each `should_not_trigger` set: the share of activation-observed runs
+in which the skill activated, blocked above the configured rate, `not_evaluable` where no run could
+observe activation. A point rate, per (scenario, target) set, worst set wins — the same shape as the
+other per-set gates; an interval would be stricter and is left for the spec to decide.
+
+**A judgement to revisit: the suite with no negative scenario.** Six of the seven example skills have
+no `should_not_trigger` scenario. An always-composed gate would read `not_evaluable` on an empty set
+and, being required, block every one of them. The gate is instead left uncomposed and the verdict
+carries a note naming the unmeasured rate — the precedent the regression gate (no baseline) and the
+cost gate (no pricing) already set. The committed demo reports change by exactly that note; no
+verdict moved.
+
+**Revert-proof.** Against the old source five of the seven new tests fail, on behaviour (the
+never-loaded skill passes `functional`; `functional.false_trigger` does not exist; no note); the
+control-off and skill-loads rows pass both ways and are the guards against over-reach.

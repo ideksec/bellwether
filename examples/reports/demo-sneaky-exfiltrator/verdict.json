@@ -75,6 +75,7 @@
     }
   ],
   "notes": [
+    "functional.false_trigger not composed: no should_not_trigger scenario ran in this evaluation, so max_false_trigger_rate 0.2 is not measured; add one to test over-triggering (§7.1)",
     "budget.cost not composed: no pricing configured for scripted/frontier (providers.<name>.pricing), so max_cost_usd 100.00 is not enforced on this evaluation; reported token usage is in summary.cost",
     "regression not composed: no baseline is stored for skill 'sneaky-exfiltrator' (set one with `bellwether baseline set` from a reviewed evaluation, §17.5)"
   ],

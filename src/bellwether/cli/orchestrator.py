@@ -40,6 +40,7 @@ from bellwether.assertions import (
     apply_path_baseline,
     apply_tool_baseline,
     derive_assertions,
+    evaluate,
     evaluate_all,
     evaluate_scope,
     expand_braces,
@@ -261,6 +262,12 @@ class AnalysedRun:
     #: Why not, in the failing plane's own words — the part a reader can act on. ``None``
     #: where ``capabilities_observed`` holds.
     capabilities_unobserved_reason: str | None = None
+    #: The scenario's §7.1 ``expectation`` — what the false-trigger gate selects on.
+    expectation: str = ""
+    #: Whether the skill activated on this run, as ``skill_activated`` reads it off Plane A:
+    #: ``activated``, ``not_activated``, or ``unobserved`` where the harness emits no activation
+    #: event. What ``functional.max_false_trigger_rate`` counts on ``should_not_trigger`` sets.
+    activation: str = "unobserved"
     #: The §13.5.4 hits no manifest deliberately declares — what the gate reads. Kept apart
     #: from ``sensitive_hits``, which stays the full list the §13.5.2 report section and the
     #: §17.5 regression comparison are built from: a declared credential read is still a fact
@@ -525,6 +532,7 @@ def drive_evaluation(
             platform_baseline_t3=platform_baseline_t3,
             platform_baseline=platform_baseline,
             sensitive_directories=sensitive_directories,
+            require_activation=profile.gates.functional.require_all_should_trigger,
         )
         if declared_scope is not None:
             table = scope_table_of(executed, declared_scope)
@@ -1013,8 +1021,14 @@ def analyse_run(
     platform_baseline_t3: frozenset[str] = frozenset(),
     platform_baseline: PlatformBaseline | None = None,
     sensitive_directories: tuple[str, ...] = SENSITIVE_DIRECTORIES,
+    require_activation: bool = False,
 ) -> AnalysedRun:
     """Turn one executed run into its per-run reading (§12.7 outcome + §11.4 canonical).
+
+    ``require_activation`` is ``functional.require_all_should_trigger``: a ``should_trigger``
+    scenario that asserts nothing about activation gets an implicit ``skill_activated: true``, so a
+    run where the skill never loaded — and the base model did the task anyway — is a functional
+    failure rather than a pass. The control was registered as enforcing and read by nothing.
 
     ``platform_baseline`` (§12.6), when given and keyed to this run's image, subtracts the
     infrastructural paths it names from the capability sets *before* they are produced —
@@ -1039,9 +1053,19 @@ def analyse_run(
     index = EvidenceIndex.from_trace(trace, context, workspace=executed.workspace)
 
     specs: list[AssertionSpec] = list(plan.scenario.assertions)
+    activated_spec = AssertionSpec.model_validate({"skill_activated": True})
+    if (
+        require_activation
+        and plan.scenario.expectation == "should_trigger"
+        and not any(spec.name == "skill_activated" for spec in specs)
+    ):
+        specs = [activated_spec, *specs]
     if scope is not None:
         specs = specs + derive_assertions(scope)
     results = evaluate_all(specs, index)
+    activation = {"pass": "activated", "fail": "not_activated"}.get(
+        evaluate(activated_spec, index).status, "unobserved"
+    )
     outcome = run_outcome(results, exit_reason=trace.exit_reason, trace_complete=trace.is_complete)
 
     canon = canonicalize(
@@ -1107,6 +1131,8 @@ def analyse_run(
     return AnalysedRun(
         key=key,
         outcome=outcome,
+        expectation=plan.scenario.expectation,
+        activation=activation,
         caps_t1=frozenset(canon.caps_t1),
         caps_t2=frozenset(canon.caps_t2),
         caps_t3=frozenset(canon.caps_t3),
@@ -1728,6 +1754,39 @@ def _functional_result(reading: SetReading, profile: ProfileSpec) -> TargetGateR
         threshold,
         reason,
         n_and_look=(reading.n_evaluable, reading.look),
+    )
+
+
+def _false_trigger_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
+    """``functional.max_false_trigger_rate`` on one ``should_not_trigger`` set (§7.1, §16.2).
+
+    The share of runs where the skill activated although the scenario says it should not — the
+    over-triggering a skill's description can cause. Counted over the runs whose activation was
+    observed; where none was (a harness with no activation event), the gate cannot be decided and
+    says so rather than passing on no evidence.
+    """
+    threshold = profile.gates.functional.max_false_trigger_rate
+    observed = [run.activation for run in reading.runs if run.activation != "unobserved"]
+    if not observed:
+        return _tgr(
+            reading.target,
+            "not_evaluable",
+            "unobserved",
+            threshold,
+            f"{reading.scenario_id}: no run observed whether the skill activated, so the "
+            "false-trigger rate cannot be measured (§7.1)",
+        )
+    fired = observed.count("activated")
+    rate = round6(fired / len(observed))
+    status = "block" if rate > threshold else "pass"
+    return _tgr(
+        reading.target,
+        status,
+        rate,
+        threshold,
+        f"{reading.scenario_id}: the skill activated on {fired} of {len(observed)} "
+        f"should_not_trigger runs (rate {rate}, max {threshold})",
+        n_and_look=(len(observed), reading.look),
     )
 
 
@@ -2673,6 +2732,26 @@ def orchestrate(
     gates.append(
         _gate("functional", [_functional_result(r, profile) for r in readings], required=True)
     )
+    # §7.1: the over-triggering control, over the sets that exist to measure it. A suite with no
+    # `should_not_trigger` scenario has nothing to count; the gate is then left uncomposed and the
+    # verdict says so, rather than an empty gate reading `not_evaluable` and blocking every skill
+    # whose author wrote only positive scenarios.
+    negative = [r for r in readings if r.runs and r.runs[0].expectation == "should_not_trigger"]
+    false_trigger_note: str | None = None
+    if negative:
+        gates.append(
+            _gate(
+                "functional.false_trigger",
+                [_false_trigger_result(r, profile) for r in negative],
+                required=True,
+            )
+        )
+    else:
+        false_trigger_note = (
+            "functional.false_trigger not composed: no should_not_trigger scenario ran in this "
+            f"evaluation, so max_false_trigger_rate {profile.gates.functional.max_false_trigger_rate} "
+            "is not measured; add one to test over-triggering (§7.1)"
+        )
     gates.append(
         _gate("consistency", [_consistency_result(r, profile) for r in readings], required=True)
     )
@@ -2757,6 +2836,8 @@ def orchestrate(
         )
     )
     notes: list[str] = list(extra_notes)
+    if false_trigger_note is not None:
+        notes.append(false_trigger_note)
     runs_cached = sum(r.n_cached for r in readings)
     if runs_cached:
         # §19.2: a replayed run is an earlier observation, not this evaluation's spend.

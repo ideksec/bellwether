@@ -6,6 +6,7 @@ _failed one or more blocking gates._ · profile **medium** · skill **flaky-form
 
 **Functional:** pass-rate lower bound 0.128638 vs threshold 0.6 → `block` (n=20).
 **Trajectory dispersion:** 0.102024 (floor 0.0, calibrated 2026-08-25).
+> functional.false\_trigger not composed: no should\_not\_trigger scenario ran in this evaluation, so max\_false\_trigger\_rate 0.2 is not measured; add one to test over-triggering (§7.1)
 > budget.cost not composed: no pricing configured for scripted/frontier (providers.\<name\>.pricing), so max\_cost\_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost
 > regression not composed: no baseline is stored for skill 'flaky-formatter' (set one with \`bellwether baseline set\` from a reviewed evaluation, §17.5)
 
