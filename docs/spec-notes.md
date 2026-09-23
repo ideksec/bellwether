@@ -4128,3 +4128,30 @@ fixed behaviour and fail against the old source, on behaviour, as does the new
 pieces shorter than `MIN_WINDOW` — needs a per-destination concatenated corpus the scan does not build;
 the scan's own docstring claimed one, and that claim is still false. The scan runs synchronously in the
 proxy hook, so a crafted body stalls other flows for its (bounded) duration.
+
+
+## Release packaging — the name, the command, the notice
+
+Decided with the maintainer ahead of a public release (second independent review, 2026-09):
+
+- **The distribution is `bellwether-skills`.** `bellwether` on PyPI belongs to an unrelated LLM
+  benchmark. The import package and the console command are unchanged; only `pip install` differs.
+- **The `bw` alias is gone.** It is the Bitwarden CLI's command; anyone who wants the short name
+  can alias it in their shell.
+- **The copyright line is in `NOTICE`, not `LICENSE`.** The review flagged `LICENSE`'s
+  `Copyright [yyyy] [name of copyright owner]` as an unfilled placeholder; it is not one — it sits in
+  the Apache 2.0 appendix ("How to apply the Apache License"), which is meant to be reproduced
+  verbatim. Apache's convention is a `NOTICE` file carrying the actual line, `Copyright 2026 ideksec`,
+  shipped beside the license (PEP 639 `license-files`).
+- **History is left as it is.** The `Claude-Session:` trailers on earlier commits are private session
+  links, not secrets, and rewriting a shared `main` costs more than it saves; new commits follow
+  CLAUDE.md and carry none.
+
+**A local-environment trap, noted for contributors.** Switching a working tree across the rename
+leaves the old and new distributions sharing the `bellwether` script file, and uninstalling one
+removed it for both — `uv run bellwether` then failed to spawn. `uv sync --reinstall-package
+bellwether-skills` restores it.
+
+**Not addressed here.** The wheel carries only the Python package: the demo skills, the sidecar and
+sandbox Dockerfiles and the example workflows live in the repository, and the quickstart says to run
+from a checkout (7c). Publishing images, or package data for `demo`, is a later decision.
