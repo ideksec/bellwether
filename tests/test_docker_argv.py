@@ -369,13 +369,29 @@ def test_the_env_canary_is_delivered_into_the_container(tmp_path: Path) -> None:
 
 
 def test_the_canary_seed_is_per_evaluation_stable_across_repetitions(tmp_path: Path) -> None:
-    """§9.3: markers are minted once per *evaluation*, identical across its repetitions (so the run
-    cache keyed on ``fixture_digest`` still hits), and different between evaluations."""
-    a1 = _executor(tmp_path, eval_id="eval-A", plant_canaries=True)._canaries()
-    a2 = _executor(tmp_path, eval_id="eval-A", plant_canaries=True)._canaries()
+    """§9.3: markers are minted once per *evaluation* — one executor serves every repetition of
+    it, so they are identical across repetitions (the run cache keyed on ``fixture_digest`` still
+    hits) — and different between evaluations."""
+    executor = _executor(tmp_path, eval_id="eval-A", plant_canaries=True)
     b = _executor(tmp_path, eval_id="eval-B", plant_canaries=True)._canaries()
-    assert [c.marker for c in a1] == [c.marker for c in a2]  # stable within one evaluation
-    assert [c.marker for c in a1] != [c.marker for c in b]  # differs between evaluations
+    assert [c.marker for c in executor._canaries()] == [c.marker for c in executor._canaries()]
+    assert [c.marker for c in executor._canaries()] != [c.marker for c in b]
+
+
+def test_the_canary_seed_cannot_be_derived_from_the_evaluation_id(tmp_path: Path) -> None:
+    """§3.5: the seed used to be ``0 ^ sha256(eval_id)``, and ``eval_id`` is the skill's own name
+    plus a UTC second — so a skill could mint the planted markers itself and tell evaluation canaries
+    from real credentials. Two evaluations with the *same* id now plant different markers, and the
+    seed actually used is recorded in the header so each stays reproducible from its artifacts."""
+    from bellwether.capture import mint_canaries
+    from bellwether.cli.execution import _seed_from_eval_id
+
+    first = _executor(tmp_path, eval_id="same-id", plant_canaries=True)
+    second = _executor(tmp_path, eval_id="same-id", plant_canaries=True)
+    assert [c.marker for c in first._canaries()] != [c.marker for c in second._canaries()]
+    guessed = mint_canaries(0 ^ _seed_from_eval_id("same-id"))
+    assert {c.marker for c in guessed}.isdisjoint(c.marker for c in first._canaries())
+    assert mint_canaries(first._canary_seed()) == first._canaries()
 
 
 def test_a_canary_env_wins_over_a_scenario_but_loses_to_the_proxy(tmp_path: Path) -> None:

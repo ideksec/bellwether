@@ -4092,3 +4092,39 @@ verdict moved.
 **Revert-proof.** Against the old source five of the seven new tests fail, on behaviour (the
 never-loaded skill passes `functional`; `functional.false_trigger` does not exist; no note); the
 control-off and skill-loads rows pass both ways and are the guards against over-reach.
+
+
+## §10.4.2, §3.5 — the canary scan has no free way out, and the markers cannot be guessed
+
+**Found by** the second independent review (2026-09); both reproduced before the fix.
+
+**The 256 KiB bound was a truncation.** `scan_for_canaries` cut its input to `MAX_SCAN_CHARS`
+because the decode-and-window pass costs seconds per megabyte. But everything past the bound was
+simply not looked at: 256 KiB of padding followed by the marker — verbatim, base64 or hex — was a
+clean scan, on a proxy whose byte cap defaults to 32 MiB. Written files were read to the same 256 KiB.
+The expensive pass stays bounded; past it, `_unbounded_hits` searches the *whole* text for the marker
+and its standard whole-value encodings (exact, hex either case, base64, base64url, percent-encoding).
+That is substring search — linear, costing what reading the text costs — so the bound now limits CPU,
+not coverage. Written files are read to 16 MiB. What remains a limit, stated in the test that pins it:
+a marker *inside* a larger encoded payload past the bound, whose encoding shifts with alignment and
+needs the bounded decode pass. (The first version of that test used a 6-byte prefix, which aligns to
+base64's 3-byte blocks and was found anyway; it uses 4 now.)
+
+**The canary seed was derivable.** It was `rng_seed ^ sha256(eval_id)`, with `rng_seed` defaulting to
+0 and `eval_id` the skill's own name plus a UTC second, so a skill could mint the planted markers
+itself (181 guesses in the review's reproduction) and tell evaluation canaries from real credentials
+— the §3.5 evaluation-awareness the pool exists to defeat. `SandboxRunExecutor.canary_entropy` (64 bits
+from `secrets`, one per executor, so markers stay identical across an evaluation's repetitions) is now
+mixed in. The seed actually used is still recorded in the run header, so an evaluation stays
+reproducible from its own artifacts; the CI container test pins the entropy to 0 to recompute markers.
+
+**Two tests asserted the defects.** `test_the_scan_is_bounded_to_max_scan_chars` asserted that a marker
+past the bound is *not* found; `test_the_canary_seed_is_per_evaluation_stable_across_repetitions`
+built two executors and required equal markers, which only a derivable seed gives. Both now assert the
+fixed behaviour and fail against the old source, on behaviour, as does the new
+`test_the_canary_seed_cannot_be_derived_from_the_evaluation_id`.
+
+**Not addressed here.** Cross-request chunking — a marker split across requests, DNS labels or files in
+pieces shorter than `MIN_WINDOW` — needs a per-destination concatenated corpus the scan does not build;
+the scan's own docstring claimed one, and that claim is still false. The scan runs synchronously in the
+proxy hook, so a crafted body stalls other flows for its (bounded) duration.

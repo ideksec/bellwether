@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import secrets
 import shutil
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -117,11 +118,12 @@ __all__ = [
 #: so a divergence between requested and served is recorded (§9.4).
 ClientFactory = Callable[["RunPlan"], tuple[ModelClient, str]]
 
-#: How many bytes of a written file are read for the canary scan. Matches the scan's own
-#: ``MAX_SCAN_CHARS`` bound (§10.4.2): an unbounded read of a skill-written file is the same
-#: CPU/memory exhaustion vector the scan already guards, reached through the filesystem. A marker
-#: past this point in a single file is the documented limit, on the same footing as the scan's.
-_CANARY_FILE_SCAN_BYTES = 262_144
+#: How many bytes of a written file are read for the canary scan. The scan's expensive
+#: decode-and-window pass is bounded by ``MAX_SCAN_CHARS`` inside ``scan_for_canaries`` whatever
+#: this is; past that bound only the linear whole-value pass runs, so this bounds memory, not CPU.
+#: It used to equal ``MAX_SCAN_CHARS`` (256 KiB), which made "put the marker after 256 KiB of
+#: padding" a clean scan. A marker past 16 MiB in one file remains a documented limit.
+_CANARY_FILE_SCAN_BYTES = 16 * 1024 * 1024
 
 #: Bounds on the retained final-workspace snapshot (§12.2). The copy runs on the host, outside
 #: the container's own resource limits, so a skill that fills its workspace must not be able to
@@ -451,6 +453,13 @@ class SandboxRunExecutor:
     eval_id: str
     run_root: Path
     rng_seed: int = 0
+    #: Fresh entropy mixed into the canary seed (§3.5, §10.4). Without it the seed was
+    #: ``rng_seed ^ sha256(eval_id)`` with ``rng_seed`` defaulting to 0 and ``eval_id`` being the
+    #: skill name plus a UTC second — so a skill knowing its own name and the clock could mint
+    #: the planted markers itself (181 guesses in the review's reproduction) and tell evaluation
+    #: canaries from real credentials. The resulting seed is still recorded in the run header, so
+    #: an evaluation stays reproducible from its own artifacts; tests pin this to 0.
+    canary_entropy: int = field(default_factory=lambda: secrets.randbits(64))
     limits: RunLimits = field(default_factory=RunLimits)
     #: §12.6: the platform baseline's version, recorded in every run header where one is
     #: applied so the trace says which infrastructure allowlist its analysis subtracted.
@@ -969,7 +978,7 @@ class SandboxRunExecutor:
         repetition), while still differing between evaluations. :func:`mint_canaries` opens its own
         ``"canary"`` stream from this, distinct from the sandbox-identifier stream.
         """
-        return self.rng_seed ^ _seed_from_eval_id(self.eval_id)
+        return self.rng_seed ^ _seed_from_eval_id(self.eval_id) ^ self.canary_entropy
 
     def _canaries(self) -> list[Canary]:
         """Mint this evaluation's canaries, or none when planting is off (§10.4)."""
