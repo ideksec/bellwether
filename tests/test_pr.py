@@ -35,8 +35,12 @@ _MARKER = comment_marker(_KEY)
 class _FakeGitHub:
     """Records every call and replays scripted responses (§24 offline discipline)."""
 
-    def __init__(self, existing: list[dict[str, object]] | None = None) -> None:
+    def __init__(
+        self, existing: list[dict[str, object]] | None = None, *, write_status: int | None = None
+    ) -> None:
         self.existing = existing or []
+        #: Answer every POST/PATCH with this status instead of success — a refused write.
+        self.write_status = write_status
         self.calls: list[tuple[str, str, dict[str, str], bytes | None]] = []
 
     def __call__(self, method, url, headers, body):  # type: ignore[no-untyped-def]
@@ -48,6 +52,8 @@ class _FakeGitHub:
             page = int(query.get("page", ["1"])[0])
             batch = self.existing[(page - 1) * 100 : page * 100]
             return GitHubResponse(200, json.dumps(batch).encode("utf-8"))
+        if self.write_status is not None and method in ("POST", "PATCH"):
+            return GitHubResponse(self.write_status, b'{"message": "Resource not accessible"}')
         if method == "POST":
             return GitHubResponse(201, b'{"id": 999}')
         if method == "PATCH":
@@ -108,15 +114,10 @@ def test_second_run_edits_the_same_comment() -> None:
 
 
 def test_a_failed_post_raises_rather_than_reporting_success() -> None:
-    class _Failing(_FakeGitHub):
-        def __call__(self, method, url, headers, body):  # type: ignore[no-untyped-def]
-            self.calls.append((method, url, dict(headers), body))
-            if method == "GET":
-                return GitHubResponse(200, b"[]")
-            return GitHubResponse(403, b'{"message": "Resource not accessible"}')
-
+    refused = _FakeGitHub(write_status=403)
     with pytest.raises(BellwetherError, match="HTTP 403"):
-        upsert_pr_comment(_Failing(), _CTX, "## report", key=_KEY, token=_TOKEN)
+        upsert_pr_comment(refused, _CTX, "## report", key=_KEY, token=_TOKEN)
+    assert [call[0] for call in refused.calls] == ["GET", "POST"]
 
 
 def test_the_token_travels_only_in_the_auth_header() -> None:
