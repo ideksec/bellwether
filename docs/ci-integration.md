@@ -17,7 +17,10 @@ skill repository and adapt it. What is proven and what is still narrow is called
    `ANTHROPIC_API_KEY` **repository secret**.
 4. `bellwether run` writes the artifact tree, including `report/pr_comment.md` and
    `report/report.html`, and exits `0` for `ready`/`conditional` or `2` for `not_ready`.
-5. `bellwether pr-comment` posts (or updates in place) the rendered comment on the PR. Because
+5. `bellwether pr-comment` posts (or updates in place) the rendered comment on the PR. Each
+   evaluation — a skill on its targets, read from the `summary.json` beside the report — owns its
+   own comment, so two harnesses or two changed skills on one PR each keep their verdict visible
+   and a re-run edits only its own. Pass it the evaluation directory. Because
    the job propagates the exit code, a `not_ready` verdict shows as a failed required check
    and blocks the merge.
 

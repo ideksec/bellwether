@@ -56,7 +56,7 @@ _What the skill **sometimes** does — a class absent from at least one run. Inv
 
 ### Declared vs observed
 
-_No manifest scope to compare._
+_Nothing observed outside the declared scope, and no declared capability went unused._
 
 <details>
 <summary>Trajectory clusters</summary>

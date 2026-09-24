@@ -96,6 +96,7 @@ from bellwether.trace import (
     filesystem_actions,
     harness_actions,
     model_channel_actions,
+    provider_rejection_from_events,
     read_trace,
     redact_trace_actions,
     token_totals_from_events,
@@ -722,6 +723,14 @@ class SandboxRunExecutor:
                 )
             else:
                 events = list(adapter.run(plan.scenario.prompt, model_id=model_id, limits=limits))
+            # §13.2: a provider refusal is infrastructure, not a result. The api-loop client
+            # raises on a non-200 before any event exists; the claude-code CLI reports the status
+            # on its result line instead, and scored as a `harness_error` it read as the skill
+            # failing. Stop the evaluation the same way on both — the `finally` below still
+            # tears the sandbox and its sidecars down.
+            rejection = provider_rejection_from_events(events)
+            if rejection is not None:
+                raise BellwetherError(rejection)
             observed_at = dt.datetime.now(dt.UTC)
 
             # §10.0: quiesce before observing. Every plane below is read from outside the
@@ -883,7 +892,7 @@ class SandboxRunExecutor:
                 started_at=started_at,
             )
             # A run with no exit event never reached an end Bellwether observed; that is a
-            # harness_error (not_evaluable, §12.7), never a silent success.
+            # harness_error (scored a fail, §12.7), never a silent success.
             exit_reason = exit_reason_from_events(events) or "harness_error"
             footer = RunFooter(
                 ended_at=observed_at,

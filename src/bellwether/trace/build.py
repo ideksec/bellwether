@@ -121,6 +121,32 @@ def exit_reason_from_events(events: list[RawHarnessEvent]) -> ExitReason | None:
     return None
 
 
+def provider_rejection_from_events(events: Sequence[RawHarnessEvent]) -> str | None:
+    """Why the provider refused the run's model call, where the harness reported one; else None.
+
+    The two harnesses reach the model differently and used to disagree about what a provider
+    refusal *is*. On ``api-loop`` Bellwether makes the call itself, so any non-200 raises and the
+    evaluation stops as an infrastructure error (exit 3). On ``claude-code`` the CLI makes the
+    call and reports the status on its result line (``api_error_status``), which the adapter
+    records as a ``harness_error`` — scored a *fail* (§12.7). A key the provider rejected then
+    read as the skill "consistently failing" 0/6, blaming the skill for the operator's key.
+
+    §13.2 names a provider error as an infrastructural cause, not a result; this is the one fact
+    both harnesses can agree on, so the executor asks it of every run and stops the evaluation
+    the same way ``api-loop`` does. Only the numeric status the harness reported counts — never
+    the error text, which a model can be induced to echo.
+    """
+    for event in events:
+        if event.kind != "harness_error":
+            continue
+        status = event.data.get("api_error_status")
+        if isinstance(status, int) and not isinstance(status, bool):
+            detail = event.data.get("detail")
+            shown = " ".join(str(detail).split())[:300] if detail else "no detail reported"
+            return f"model API returned HTTP {status} (reported by the harness): {shown}"
+    return None
+
+
 def filesystem_actions(
     events: list[FilesystemEvent],
     *,

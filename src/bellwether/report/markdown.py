@@ -40,7 +40,7 @@ from bellwether.report.figures import (
 from bellwether.report.mdsafe import code, text
 from bellwether.report.summary import Summary
 
-__all__ = ["Figures", "ScopeRow", "render_pr_comment"]
+__all__ = ["Figures", "ScopeRow", "render_pr_comment", "scope_table_empty_note"]
 
 #: The consistently-failing threshold (§13.3, §13.7): at or below this pass rate the BCI is
 #: annotated, because it is measuring the stability of a failure.
@@ -93,6 +93,11 @@ class Figures:
     heatmap: tuple[CapabilityRow, ...] = ()
     run_labels: tuple[str, ...] = ()
     declared_vs_observed: tuple[ScopeRow, ...] = field(default_factory=tuple)
+    #: Whether the package declared a scope at all. An empty table means two different things —
+    #: no manifest to compare against, or a manifest the runs stayed exactly inside — and the
+    #: comment said the first on PR #91 when the truth was the second. ``None`` where the
+    #: composition did not report it, which is worded as neither.
+    scope_declared: bool | None = None
 
 
 def _yesno(value: bool) -> str:
@@ -230,9 +235,21 @@ def _sequential_design(summary: Summary) -> str:
     return "\n".join(lines)
 
 
+def scope_table_empty_note(scope_declared: bool | None) -> str:
+    """What an empty Declared-vs-Observed table means, said once for both renderers."""
+    if scope_declared is True:
+        return (
+            "Nothing observed outside the declared scope, and no declared capability went unused."
+        )
+    if scope_declared is False:
+        return "No manifest scope to compare: the package declares none."
+    return "No differences between declared and observed scope to show."
+
+
 def _declared_vs_observed(figures: Figures) -> str:
     if not figures.declared_vs_observed:
-        return "### Declared vs observed\n\n_No manifest scope to compare._"
+        note = scope_table_empty_note(figures.scope_declared)
+        return f"### Declared vs observed\n\n_{note}_"
     header = "| Capability | Declared | Observed | Disposition |\n|---|---|---|---|"
     rows = [
         f"| {code(r.capability)} | {_yesno(r.declared)} | {_yesno(r.observed)} "

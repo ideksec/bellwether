@@ -522,18 +522,58 @@ def test_run_with_a_missing_config_refuses(tmp_path: Path) -> None:
 def test_pr_comment_dry_run_prints_without_a_token(tmp_path: Path) -> None:
     """`pr-comment --dry-run` needs no token or network: it prints the marked comment. This is
     how a contributor previews what would land on the PR."""
-    comment = tmp_path / "pr_comment.md"
+    comment = _eval_dir(tmp_path) / "report" / "pr_comment.md"
     comment.write_text("## Bellwether — `conditional`\n", encoding="utf-8")
     result = runner.invoke(app, ["pr-comment", str(comment), "--dry-run"])
     assert result.exit_code == ExitCode.OK
     assert "conditional" in result.output
-    assert "bellwether-report" in result.output  # the idempotence marker
+    assert "bellwether-report key=" in result.output  # the idempotence marker, keyed
+
+
+def _eval_dir(tmp_path: Path, skill: str = "a-skill", targets: tuple[str, ...] = ("t1",)) -> Path:
+    """The layout `bellwether run` writes: report/pr_comment.md beside summary.json."""
+    root = tmp_path / f"eval-{skill}-{'-'.join(targets)}"
+    (root / "report").mkdir(parents=True, exist_ok=True)
+    (root / "summary.json").write_text(
+        json.dumps({"skill": {"name": skill}, "matrix": {"target_slugs": list(targets)}}),
+        encoding="utf-8",
+    )
+    (root / "report" / "pr_comment.md").write_text("## report\n", encoding="utf-8")
+    return root
+
+
+def test_pr_comment_keys_each_evaluation_separately(tmp_path: Path) -> None:
+    """PR #91: two harnesses on one skill shared a marker, so one verdict overwrote the other.
+    The CLI keys the marker from the summary beside the report."""
+
+    def marker(root: Path) -> str:
+        result = runner.invoke(app, ["pr-comment", str(root), "--dry-run"])
+        assert result.exit_code == ExitCode.OK, result.output
+        return result.output.strip().splitlines()[-1]
+
+    api_loop = marker(_eval_dir(tmp_path, targets=("api-loop-anthropic-haiku",)))
+    claude_code = marker(_eval_dir(tmp_path, targets=("claude-code-anthropic-haiku",)))
+    other_skill = marker(
+        _eval_dir(tmp_path, skill="b-skill", targets=("api-loop-anthropic-haiku",))
+    )
+    assert len({api_loop, claude_code, other_skill}) == 3
+    rerun = marker(_eval_dir(tmp_path, targets=("api-loop-anthropic-haiku",)))
+    assert rerun == api_loop
+
+
+def test_pr_comment_without_a_summary_refuses(tmp_path: Path) -> None:
+    """A bare comment file has no identity to key by; posting it under a guessed one is how
+    verdicts overwrote each other, so it is refused."""
+    comment = tmp_path / "pr_comment.md"
+    comment.write_text("## report\n", encoding="utf-8")
+    result = runner.invoke(app, ["pr-comment", str(comment), "--dry-run"])
+    assert result.exit_code == ExitCode.INFRASTRUCTURE
+    assert "summary.json" in result.output
 
 
 def test_pr_comment_without_a_token_refuses(tmp_path: Path) -> None:
     """A real post with no token in the environment fails loudly, not silently."""
-    comment = tmp_path / "pr_comment.md"
-    comment.write_text("## report\n", encoding="utf-8")
+    comment = _eval_dir(tmp_path) / "report" / "pr_comment.md"
     result = runner.invoke(
         app,
         ["pr-comment", str(comment), "--repo", "octo/skills", "--pr", "3", "--token-env", "NOPE"],

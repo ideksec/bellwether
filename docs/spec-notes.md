@@ -4216,3 +4216,55 @@ C-quoted-refusal test and the extracted-step run above are the behavioural proof
 old `cli/app.py` (exit 3, `INFRASTRUCTURE`); `test_an_explicit_policy_still_wins` passes on both, as
 a guard against the new default overriding an explicit path. The prose changes are checked by hand
 against `doctor`'s own output on a fresh `init`.
+
+## §18.2, §13.2, §12.5 — what the live re-run disclosed
+
+**Found by** the labelled live re-run on PR #91 (2026-09): the first attempt used a key the provider
+refused; the second reached `ready` on both harnesses. Neither run's verdict was wrong about the
+skill; three things around the verdict were.
+
+- **One comment marker per pull request (§18.2).** `pr-comment` found "our" comment by one fixed
+  marker, so every evaluation posted on a PR edited the same comment. On PR #91 the claude-code
+  verdict replaced the api-loop one. With two changed skills a later `ready` would have replaced an
+  earlier `not_ready` in the comment reviewers read (the check still failed, but the comment
+  contradicted it). The marker now carries a key — a hash of the skill name and its sorted target
+  slugs, read from the `summary.json` beside the report — so each evaluation owns one comment and a
+  re-run edits only its own. A bare comment file with no summary beside it is refused rather than
+  posted under a guessed identity. The key is a hash, not the name, so a skill-chosen name cannot
+  close the HTML comment. Because anyone can compute another evaluation's key, and reports quote
+  skill-chosen text raw inside code spans, the lookup also requires the marker to be the body's
+  **last line**: a report carrying another evaluation's marker mid-body cannot claim its comment.
+  Comments posted under the old unkeyed marker are no longer recognised; on a PR that has one, the
+  next run adds a keyed comment beside it rather than editing it.
+- **A provider refusal scored as a skill failure (§13.2, §12.7).** On `api-loop` Bellwether makes the
+  model call, so a non-200 raises and `run` exits 3. On `claude-code` the CLI makes the call and
+  reports the status on its result line (`api_error_status`; the real CLI sends `subtype: success`,
+  `is_error: true`, read back from all six uploaded traces), which the adapter records as a
+  `harness_error`, a `fail`. The verdict read `not_ready`, "consistently failing", with "6/6 runs
+  evaluable". The executor now asks `provider_rejection_from_events` of every run and raises inside
+  the `try` whose `finally` tears the sandbox and sidecars down, so both harnesses end the same way.
+  Only the numeric status the harness reported counts, never error text a model could echo.
+  *Not done:* §13.2's retry of infrastructural failures (`execution.retry_on_infra_error` is parsed
+  but no retry loop exists). A transient provider 5xx therefore stops the evaluation on both
+  harnesses rather than being retried. That was already true of `api-loop`, and it is an
+  infrastructure exit, not a verdict. A skill that makes the provider refuse (for example by
+  flooding the context past the model's limit) now also ends as exit 3 rather than `not_ready`;
+  either way the check is red and no `ready` is issued.
+- **An empty Declared-vs-Observed table said the wrong empty (§12.5).** The table lists only
+  exceeded and unused capabilities, so a skill that declared a scope and stayed exactly inside it
+  rendered "No manifest scope to compare", the same words a package with no manifest got. All
+  three committed demo reports said it. `Figures.scope_declared` now carries the fact the
+  `scope.require_manifest` gate already reads, persisted in `figures.json`, and both renderers
+  word the three cases apart. A `figures.json` from before the field reads as "not reported".
+
+**Revert-checked, per change:**
+- The last-line lookup, reverted to `marker in body`, fails
+  `test_a_marker_quoted_inside_a_report_does_not_claim_the_comment`.
+- The key collapsed to one constant fails the per-evaluation tests in `tests/test_pr.py` and
+  `test_pr_comment_keys_each_evaluation_separately`.
+- The three-line executor wiring removed fails `test_the_executor_asks_the_question_of_every_run`.
+  That test is a source check, because the executor needs a Docker daemon. The behavioural proof is
+  the CI-only container test `test_a_provider_refusal_stops_the_evaluation_as_infrastructure`,
+  which runs the real CLI against a fake API answering 400.
+- `scope_declared` left unwired in `orchestrate` fails the `True` and `False` cases of
+  `test_an_empty_scope_table_says_which_empty_it_is`.

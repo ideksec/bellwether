@@ -796,3 +796,24 @@ def test_scope_block_on_not_evaluable_actually_blocks(tmp_path: Path) -> None:
     )
 
     assert _scope_result(reading, profile).status == "not_evaluable"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("manifest_present", "expected"),
+    [
+        (True, "Nothing observed outside the declared scope"),
+        (False, "No manifest scope to compare: the package declares none."),
+        (None, "No differences between declared and observed scope to show."),
+    ],
+)
+def test_an_empty_scope_table_says_which_empty_it_is(
+    tmp_path: Path, manifest_present: bool | None, expected: str
+) -> None:
+    """PR #91: the live smoke declares a manifest and stayed inside it, and the comment said
+    "No manifest scope to compare" — the same words a package with no manifest got. The fact
+    the ``scope.require_manifest`` gate already reads now reaches both renderers."""
+    result = _run_pipeline(tmp_path, tmp_path / "out", manifest_present=manifest_present)
+    comment = result.artifacts.pr_comment.read_text(encoding="utf-8")
+    html_report = (result.artifacts.root / "report" / "report.html").read_text(encoding="utf-8")
+    assert expected in comment
+    assert expected in html_report

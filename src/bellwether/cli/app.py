@@ -17,6 +17,7 @@ printing an empty result that reads like a clean run.
 from __future__ import annotations
 
 import enum
+import json
 import os
 import subprocess
 import sys
@@ -994,6 +995,35 @@ def changed_skills_command(
     _emit({"changed_skills": skills}, as_json=json_output, lines=skills)
 
 
+def _report_key_beside(comment: Path) -> str:
+    """The comment key for the evaluation that rendered ``comment`` (§18.2).
+
+    ``bellwether run`` writes ``<eval>/report/pr_comment.md`` beside ``<eval>/summary.json``; the
+    key is the skill and the targets the summary records. A comment with no summary beside it is
+    refused rather than posted under a guessed identity — a shared key is exactly how one
+    evaluation's verdict came to overwrite another's.
+    """
+    from bellwether.cli.pr import report_key
+
+    summary_path = comment.parent.parent / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise BellwetherError(
+            f"no summary.json at {summary_path}: pass the evaluation directory `bellwether run` "
+            "wrote (or its report/pr_comment.md), so the comment can be keyed to what it reports"
+        ) from None
+    except (OSError, ValueError) as error:
+        raise BellwetherError(f"cannot read {summary_path}: {error}") from None
+    skill = summary.get("skill") if isinstance(summary, dict) else None
+    matrix = summary.get("matrix") if isinstance(summary, dict) else None
+    name = skill.get("name") if isinstance(skill, dict) else None
+    slugs = matrix.get("target_slugs") if isinstance(matrix, dict) else None
+    if not isinstance(name, str) or not isinstance(slugs, list):
+        raise BellwetherError(f"{summary_path} records no skill.name and matrix.target_slugs")
+    return report_key(name, [str(slug) for slug in slugs])
+
+
 @app.command(name="pr-comment")
 def pr_comment(
     report: Annotated[
@@ -1022,8 +1052,10 @@ def pr_comment(
     """Post (or update in place) a Bellwether report comment on a pull request (§18.2).
 
     Reads the comment `bellwether run` already rendered and upserts it: a re-run edits the
-    same comment rather than stacking a new one. Repo and PR default to the GitHub Actions
-    environment; the token is read from ``--token-env`` and used only in the auth header.
+    same comment rather than stacking a new one. Each evaluation — a skill on its targets —
+    owns its own comment, keyed from the ``summary.json`` beside the report, so two harnesses
+    or two skills on one PR never overwrite each other. Repo and PR default to the GitHub
+    Actions environment; the token is read from ``--token-env`` and used only in the auth header.
     """
     from bellwether.cli.pr import (
         PrContext,
@@ -1036,12 +1068,16 @@ def pr_comment(
     source = report / "report" / "pr_comment.md" if report.is_dir() else report
     try:
         body = source.read_text(encoding="utf-8")
+        key = _report_key_beside(source)
     except OSError as error:
         typer.echo(f"bellwether pr-comment: cannot read {source}: {error}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    except BellwetherError as error:
+        typer.echo(f"bellwether pr-comment: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
 
     if dry_run:
-        typer.echo(marked_body(body))
+        typer.echo(marked_body(body, key))
         return
 
     try:
@@ -1054,7 +1090,7 @@ def pr_comment(
         if not token:
             raise BellwetherError(f"no GitHub token in ${token_env}; cannot post the comment")
         action = upsert_pr_comment(
-            github_transport(), context, body, token=token, api_root=api_root
+            github_transport(), context, body, key=key, token=token, api_root=api_root
         )
     except (BellwetherError, ValueError) as error:
         typer.echo(f"bellwether pr-comment: {error}", err=True)

@@ -95,6 +95,7 @@
     "r5",
     "r6"
   ],
+  "scope_declared": true,
   "strip": [
     {
       "cells": [
