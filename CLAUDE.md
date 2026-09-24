@@ -64,7 +64,8 @@ What
 remains is *proof breadth*: every v0.1 work package is built, including the **`claude-code`
 adapter** (WP-17 — the real CLI headless inside the sandbox, stream-json → Plane A, its hooks →
 the host-owned sink, cross-checked; scoped token through the proxy; offline-proven against a real
-CLI 2.1.257 session, in-container proof CI-only, **no live-model run on it yet**). The acceptance
+CLI 2.1.257 session, in-container proof CI-only; **run live on a labelled PR and reached `ready`**
+on PR #65). The acceptance
 corpus is complete — eleven skills incl. the §10.4.1 false-positive guard, the §13.5 tier-model
 regression, and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at
 N = 6/12/20 alike) are CI-asserted — and the `credential_read_undeclared` disposition waits on
