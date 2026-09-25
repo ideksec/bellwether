@@ -2890,7 +2890,7 @@ def orchestrate(
 
     verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only, notes=notes)
 
-    figures = build_figures(readings)
+    figures = build_figures(readings, scope_declared=manifest_present)
     summary = _build_summary(
         skill_name=skill_name,
         package_digest=package_digest,
@@ -3213,7 +3213,7 @@ def _capability_profile(readings: Sequence[SetReading]) -> CapabilityProfileSumm
     )
 
 
-def build_figures(readings: Sequence[SetReading]) -> Figures:
+def build_figures(readings: Sequence[SetReading], *, scope_declared: bool | None = None) -> Figures:
     """Assemble the report figures from the readings (§13.8), for both renderers.
 
     Public because the HTML report and the PR comment render from the same figure inputs;
@@ -3302,6 +3302,7 @@ def build_figures(readings: Sequence[SetReading]) -> Figures:
         heatmap=tuple(heatmap),
         run_labels=run_labels,
         declared_vs_observed=declared_vs_observed,
+        scope_declared=scope_declared,
     )
 
 

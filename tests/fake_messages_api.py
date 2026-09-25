@@ -15,6 +15,9 @@ from pathlib import Path
 
 WORKSPACE = os.environ["FAKE_WS"]
 REQ_LOG = os.environ.get("FAKE_REQ_LOG")
+#: Set to an HTTP status (e.g. "400") to refuse every /v1/messages call with an Anthropic-shaped
+#: error body, the way a provider rejects a key it will not serve.
+FAKE_STATUS = os.environ.get("FAKE_STATUS")
 
 TURNS = [
     [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "demo-skill"}}],
@@ -59,6 +62,18 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.split("?")[0].endswith("/messages"):
             self.send_response(404)
             self.end_headers()
+            return
+        if FAKE_STATUS:
+            error = {
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": "fake provider rejection"},
+            }
+            payload = json.dumps(error).encode()
+            self.send_response(int(FAKE_STATUS))
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
             return
         index = min(STATE["turn"], len(TURNS) - 1)
         STATE["turn"] += 1

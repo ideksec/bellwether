@@ -63,6 +63,20 @@ and links the threat model, SECURITY.md describes the configured-image pin as ad
 unhashed sidecar installs as open, and the live-config notes say the DNS resolver is wired. That
 closes the second independent review's remediation list.
 
+**Live re-run after the remediation (PR #91) — both harnesses `ready`, three defects found.** The
+labelled re-run of `claude-code-live-smoke` reached `ready` on api-loop and on claude-code (10/10
+gates, 6/6 runs each; every model call through the fail-closed proxy). Its first attempt, on a key
+the provider refused, and the passing run together disclosed three defects in Bellwether itself,
+each fixed with a revert-checked test (spec-notes "§18.2, §13.2, §12.5 — what the live re-run
+disclosed"): **(1)** one PR-comment marker per pull request, so the claude-code verdict overwrote
+the api-loop one — and on a PR changing two skills a later `ready` would have replaced an earlier
+`not_ready` in the only comment a reviewer reads; the marker is now keyed by skill and targets and
+matched only on the comment's last line. **(2)** A provider refusal (HTTP 400) on claude-code was
+scored as the skill "consistently failing" 0/6; the executor now stops the evaluation as
+infrastructure (exit 3), as api-loop already did. **(3)** An empty Declared-vs-Observed table read
+"No manifest scope to compare" for a skill that declared one and stayed inside it — the three
+committed demo reports all said so.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -896,7 +910,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1715 tests: 1656 offline, 59 under the `docker` mark (48 run locally, 11 CI-only skips with stated reasons; all 59 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1729 tests: 1669 offline, 60 under the `docker` mark (48 run locally, 12 CI-only skips with stated reasons; all 60 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

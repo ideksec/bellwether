@@ -9,7 +9,10 @@ and the real transport is a small urllib wrapper.
 Two properties matter and are pinned by tests. First, **idempotence**: a hidden marker is
 embedded in every comment we post, so a re-run on the same PR *edits* the prior comment
 rather than stacking a new one under it every push — a wall of stale verdicts is worse than
-one that keeps up. Second, **the token never travels anywhere but the Authorization header**:
+one that keeps up. The marker is **keyed by what was evaluated** — the skill and the targets it
+ran on — so each evaluation owns one comment. It used to be one marker per pull request: on PR
+#91 the claude-code verdict overwrote the api-loop one, and on a PR changing two skills a later
+``ready`` would have replaced an earlier ``not_ready`` in the only comment a reviewer reads. Second, **the token never travels anywhere but the Authorization header**:
 it is read from the environment at the call site, put in one header, and never logged, never
 placed in a URL, never returned.
 
@@ -20,20 +23,23 @@ remote service* is orchestration, which is what ``cli`` is for.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Callable, Mapping
+import re
+from collections.abc import Callable, Mapping, Sequence
 from typing import NamedTuple
 
 from bellwether.errors import BellwetherError
 
 __all__ = [
-    "COMMENT_MARKER",
     "GITHUB_API_ROOT",
     "GitHubResponse",
     "GitHubTransport",
     "PrContext",
+    "comment_marker",
     "find_existing_comment",
     "marked_body",
+    "report_key",
     "resolve_pr_context",
     "upsert_pr_comment",
 ]
@@ -42,10 +48,27 @@ __all__ = [
 #: different host — an endpoint, not a secret, so it is a plain argument.
 GITHUB_API_ROOT = "https://api.github.com"
 
-#: An HTML comment is invisible in the rendered PR but present in the raw body, so we can
-#: recognise our own comment on a later run and edit it. Stable forever: changing it would
-#: orphan every comment already posted and start stacking again.
-COMMENT_MARKER = "<!-- bellwether-report: do not edit; this comment is updated in place -->"
+_KEY = re.compile(r"[0-9a-f]{16}")
+
+
+def report_key(skill_name: str, target_slugs: Sequence[str]) -> str:
+    """The identity of one evaluation's comment: its skill and the targets it ran on.
+
+    Hashed, so the skill-chosen name never reaches the marker's HTML comment (a name holding
+    ``-->`` would otherwise end it early), and the targets are sorted so the key does not depend
+    on matrix order. Two workflows evaluating the same skill on different harnesses get two
+    keys, and so two comments; a re-run of either gets its own comment back.
+    """
+    material = json.dumps([skill_name, sorted(target_slugs)], ensure_ascii=True)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def comment_marker(key: str) -> str:
+    """The hidden marker for one evaluation's comment. An HTML comment is invisible in the
+    rendered PR but present in the raw body, so a later run recognises its own comment."""
+    if not _KEY.fullmatch(key):
+        raise BellwetherError(f"not a report key: {key!r} (expected 16 lowercase hex digits)")
+    return f"<!-- bellwether-report key={key}: do not edit; this comment is updated in place -->"
 
 
 class GitHubResponse(NamedTuple):
@@ -72,13 +95,14 @@ class PrContext(NamedTuple):
         return f"{self.owner}/{self.repo}"
 
 
-def marked_body(comment: str) -> str:
+def marked_body(comment: str, key: str) -> str:
     """Append the idempotence marker to a rendered comment (§18.2).
 
     The marker goes last, on its own line, so it never disturbs the rendered content and a
-    reader viewing the raw body sees the rendered report first.
+    reader viewing the raw body sees the rendered report first. *Last* is also what the lookup
+    matches on: see :func:`find_existing_comment`.
     """
-    return f"{comment.rstrip()}\n\n{COMMENT_MARKER}\n"
+    return f"{comment.rstrip()}\n\n{comment_marker(key)}\n"
 
 
 def find_existing_comment(comments: list[Mapping[str, object]], marker: str) -> int | None:
@@ -93,13 +117,21 @@ def find_existing_comment(comments: list[Mapping[str, object]], marker: str) -> 
     (the token may not edit another user's comment) and, with CI's ``|| true``, nothing was
     posted at all. A person cannot author as a bot account, so only a ``Bot`` comment is ours to
     update; anything else is left alone and a fresh comment is created.
+
+    The marker must also be the body's **last line**, not merely somewhere in it. Every report
+    quotes skill-chosen text — paths, argv, names — and a code span shows that text raw, so a
+    skill could put another evaluation's marker (the key is only a hash of a skill name and its
+    targets) inside its own bot-posted report. Matched anywhere, that evaluation's next post
+    would edit this comment and replace one skill's verdict with another's. Nothing a skill
+    writes can come after the marker :func:`marked_body` appends.
     """
     for comment in comments:
         body = comment.get("body")
         comment_id = comment.get("id")
         user = comment.get("user")
         by_bot = isinstance(user, Mapping) and user.get("type") == "Bot"
-        if by_bot and isinstance(body, str) and marker in body and isinstance(comment_id, int):
+        ours = isinstance(body, str) and body.rstrip().endswith(marker)
+        if by_bot and ours and isinstance(comment_id, int):
             return comment_id
     return None
 
@@ -157,6 +189,7 @@ def upsert_pr_comment(
     context: PrContext,
     comment: str,
     *,
+    key: str,
     token: str,
     api_root: str = GITHUB_API_ROOT,
 ) -> str:
@@ -168,10 +201,10 @@ def upsert_pr_comment(
     """
     root = api_root.rstrip("/")
     headers = _auth_headers(token)
-    body = marked_body(comment)
+    body = marked_body(comment, key)
 
     existing = find_existing_comment(
-        _list_comments(transport, root, context, headers), COMMENT_MARKER
+        _list_comments(transport, root, context, headers), comment_marker(key)
     )
 
     payload = json.dumps({"body": body}).encode("utf-8")

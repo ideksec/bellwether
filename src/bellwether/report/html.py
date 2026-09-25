@@ -27,7 +27,7 @@ from collections.abc import Mapping
 
 from bellwether.determinism import format_float
 from bellwether.report.figures import CapabilityRow, StripCell, StripRow
-from bellwether.report.markdown import Figures, ScopeRow
+from bellwether.report.markdown import Figures, ScopeRow, scope_table_empty_note
 from bellwether.report.summary import Summary
 
 __all__ = ["render_html_report"]
@@ -388,7 +388,7 @@ def _declared_vs_observed(figures: Figures) -> str:
     if not figures.declared_vs_observed:
         return (
             '<section class="block-section">\n  <h2>Declared vs observed</h2>\n'
-            "  <p>No manifest scope to compare, or nothing observed outside it.</p>\n</section>"
+            f"  <p>{_esc(scope_table_empty_note(figures.scope_declared))}</p>\n</section>"
         )
     rows = "\n".join(
         _scope_row(row)

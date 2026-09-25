@@ -37,6 +37,7 @@ from bellwether.cli.orchestrator import RunPlan, TargetInfo
 from bellwether.cli.proxy_run import SidecarProxyProvider
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
 from bellwether.determinism import SeededRng
+from bellwether.errors import BellwetherError
 from bellwether.harness import CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS, ScriptedClient
 from bellwether.sandbox import DockerBackend, overlay_available
 from bellwether.skill import load_skill
@@ -263,3 +264,78 @@ def test_the_real_cli_runs_in_the_sandbox_behind_the_proxy(
             assert "sk-real-fake-provider-key" not in path.read_text(
                 encoding="utf-8", errors="replace"
             )
+
+
+def test_a_provider_refusal_stops_the_evaluation_as_infrastructure(
+    images: tuple[str, str],
+    skill_dir: Path,
+    fixture_source: Path,
+    tmp_path: Path,
+) -> None:
+    """The live run on PR #91: the provider refused the key (HTTP 400) and the real CLI reported
+    it on its result line as ``api_error_status``. Scored as a ``harness_error`` that read as the
+    skill failing 0/6; the executor now stops the evaluation the way the api-loop path does, and
+    the sandbox and its proxy are still torn down."""
+    sandbox_image, sidecar_image = images
+    host_ip = _host_ip_for_containers()
+    port = _free_port()
+    base_url = f"http://{host_ip}:{port}"
+    server = subprocess.Popen(
+        [sys.executable, str(_FAKE_API), str(port), "0.0.0.0"],
+        env={**os.environ, "FAKE_WS": _WORKSPACE_ROOT, "FAKE_STATUS": "400"},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(1)
+    os.environ[_FAKE_KEY_ENV] = "sk-real-fake-provider-key"
+    before = _bellwether_containers()
+    try:
+        broker = CredentialBroker.for_run(
+            {"anthropic": _FAKE_KEY_ENV}, os.environ, rng=SeededRng(2, "claude-code-refusal")
+        )
+        proxy = SidecarProxyProvider(
+            backend=DockerBackend(image=sandbox_image),
+            image=sidecar_image,
+            allowlist=EgressAllowlist(
+                provider_endpoints=provider_hosts([base_url]),
+                infrastructure_endpoints=frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS),
+            ),
+            max_requests=50,
+            max_request_bytes=1 << 20,
+            broker=broker,
+            provider_of_host=dict.fromkeys(provider_hosts([base_url]), "anthropic"),
+        )
+        executor = SandboxRunExecutor(
+            backend=DockerBackend(image=sandbox_image),
+            package=load_skill(skill_dir),
+            fixture=fixture_source,
+            client_factory=lambda _plan: (ScriptedClient([]), "fake-model-v1"),
+            eval_id="refusal",
+            run_root=tmp_path / "runs",
+            proxy=proxy,
+            randomize_identifiers=False,
+            provider_base_urls={"anthropic": base_url},
+        )
+        scenario = Scenario(
+            id="take-notes",
+            expectation="should_trigger",
+            prompt="Use the demo-skill to take notes.",
+            assertions=[AssertionSpec(name="skill_activated", params=True)],
+        )
+        target = TargetInfo(harness="claude-code", provider="anthropic", model_alias="frontier")
+        with pytest.raises(BellwetherError, match="HTTP 400"):
+            executor.execute(RunPlan(scenario=scenario, target=target, repetition=1))
+    finally:
+        server.kill()
+        server.wait()
+        os.environ.pop(_FAKE_KEY_ENV, None)
+
+    # The raise came from inside the executor's try: nothing it started is left running.
+    assert _bellwether_containers() == before
+
+
+def _bellwether_containers() -> set[str]:
+    listing = subprocess.run(
+        ["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True, text=True, check=True
+    )
+    return {name for name in listing.stdout.split() if name}

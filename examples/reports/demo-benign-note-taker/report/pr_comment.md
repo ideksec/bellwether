@@ -48,7 +48,7 @@ _6 run(s); columns are runs left-to-right. `!` marks a high-risk capability._
 
 ### Declared vs observed
 
-_No manifest scope to compare._
+_Nothing observed outside the declared scope, and no declared capability went unused._
 
 <details>
 <summary>Trajectory clusters</summary>
