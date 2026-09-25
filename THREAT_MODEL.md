@@ -163,10 +163,11 @@ except designated writable mounts, dropped capabilities, no host network, defaul
 seccomp, `--pids-limit`, memory and CPU caps, no Docker socket.
 
 This is adequate for *observing* skills of unknown quality. It is **not** adequate for
-detonating confirmed malware. Policy supports a `require_hardened_sandbox` flag that
-refuses to run unless a stronger isolation backend (gVisor, Firecracker, or a dedicated
-ephemeral VM) is configured; gVisor support is planned for v0.3 — no hardened backend
-ships today.
+detonating confirmed malware. The spec calls for a `require_hardened_sandbox` policy flag that
+refuses to run unless a stronger isolation backend (gVisor, Firecracker, or a dedicated ephemeral
+VM) is configured; neither the flag nor any hardened backend is built yet (gVisor is planned for
+v0.3). Until then `sandbox.backend` refuses any value but `docker`, so no run silently gets a
+weaker boundary than the one its config asked for.
 
 ## Evaluation-aware behaviour
 

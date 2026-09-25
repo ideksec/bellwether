@@ -12,6 +12,7 @@ from bellwether.config.models.provider import ProviderConfig
 from bellwether.constants import SENSITIVE_DIRECTORIES
 
 __all__ = [
+    "NOT_BUILT_SETTINGS",
     "BciWeights",
     "CanaryConfig",
     "CaptureConfig",
@@ -56,6 +57,19 @@ class SandboxConfig(StrictModel):
         default_factory=lambda: ["/work", "/tmp", "/home/agent/.claude"]
     )
     randomize_identifiers: bool = True
+
+    @field_validator("backend")
+    @classmethod
+    def _only_docker_is_built(cls, value: str) -> str:
+        # §9.2 names gVisor and Firecracker, and the schema accepted both — but every run started
+        # a plain Docker container. An operator who asked for the stronger boundary silently got
+        # the weaker one, which is the worst way for a control to be inert. Refused, not warned.
+        if value != "docker":
+            raise ValueError(
+                f"sandbox.backend {value!r} is not built in this version; only 'docker' is — "
+                "a run would start a plain Docker container, not the isolation you asked for"
+            )
+        return value
 
 
 class ZoneConfig(StrictModel):
@@ -340,6 +354,24 @@ class Config(Document):
         return value
 
     @model_validator(mode="after")
+    def _harness_type_is_its_name(self) -> Config:
+        # The executor chooses the adapter by the harness's *name*, and ``type`` was never read:
+        # ``harnesses: {claude-code: {type: api-loop}}`` ran the Claude Code CLI. A declaration
+        # that disagrees with what runs is refused, as is the adapter that was never built.
+        for name, harness in self.harnesses.items():
+            if harness.type == "generic-subprocess":
+                raise ValueError(
+                    f"harnesses.{name}.type 'generic-subprocess' is not built in this version; "
+                    "the built harnesses are 'api-loop' and 'claude-code'"
+                )
+            if name != harness.type:
+                raise ValueError(
+                    f"harnesses.{name}.type is {harness.type!r}, but the harness that runs is "
+                    f"chosen by its name ({name!r}); name the entry {harness.type!r}"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _judges_reference_a_configured_provider(self) -> Config:
         if self.judges and self.providers and self.judges.default.provider not in self.providers:
             known = ", ".join(sorted(self.providers)) or "none configured"
@@ -348,6 +380,19 @@ class Config(Document):
                 f"is not a configured provider (configured: {known})"
             )
         return self
+
+    def not_built_settings(self) -> list[tuple[str, str]]:
+        """The settings this ``config.yaml`` sets that this build does not act on, with why.
+
+        Only what the document sets explicitly — a default the operator never wrote is not a
+        claim they made — and each registry entry at most once, at the path it was written.
+        """
+        found: dict[str, tuple[str, str]] = {}
+        for path in _explicit_paths(self):
+            for pattern, reason in NOT_BUILT_SETTINGS.items():
+                if pattern not in found and _matches(pattern, path):
+                    found[pattern] = (".".join(path.split(".")[: len(pattern.split("."))]), reason)
+        return sorted(found.values())
 
     def enforced_setting_violations(self) -> list[EnforcedSetting]:
         """Return the §21 enforced settings that have been turned off."""
@@ -434,3 +479,61 @@ class Config(Document):
                 "not_evaluable rather than passing (§10.7)"
             )
         return notes
+
+
+#: Settings the schema accepts that this build does not act on, and why (CLAUDE.md: "a control
+#: the schema accepts must enforce or refuse"). A path matches a field and everything under it;
+#: ``*`` matches one dict key. :meth:`Config.not_built_settings` reports every one of these that a
+#: ``config.yaml`` sets explicitly, and ``doctor`` and ``run`` say so, so an operator never reads a
+#: setting as honoured when nothing reads it. ``tests/test_config_registry.py`` fails the build on a
+#: field classified nowhere, and on an entry here that the code has started to read.
+NOT_BUILT_SETTINGS: dict[str, str] = {
+    "harnesses.*.install": "Bellwether installs no harness; the sandbox image carries it",
+    "harnesses.*.tools": "api-loop always offers its built-in tool set",
+    "capture.filesystem_writes": "the overlay write plane is always mounted; 'off' is ignored",
+    "capture.filesystem_reads": "the fanotify read plane is not built (v0.2)",
+    "capture.process": "the eBPF/ptrace process plane is not built (v0.3)",
+    "capture.harness_hooks": "claude-code's hooks are always installed",
+    "capture.harness_event_sink": "the hook sink is always a host-owned FIFO",
+    "egress.record_response_bodies": "the proxy records requests; response bodies are not kept",
+    "egress.max_body_bytes": "the proxy records requests; response bodies are not kept",
+    "egress.parse_server_side_tools": "server-side tool calls are not parsed (plane unavailable)",
+    "egress.volume_anomaly_factor": "the egress_volume_anomaly disposition is not scored",
+    "dns.log_all_queries": "the controlled resolver always records every query",
+    "canaries.canary_set": "the default canary set is always planted",
+    "canaries.custom_path": "the default canary set is always planted",
+    "canaries.randomize_paths": "canary files are planted at fixed paths (~/.aws/credentials, …)",
+    "canaries.alerting_webhook": "no alert is sent; a leak is reported in the verdict",
+    "judges": "the judge subsystem is not built; judged gates are not composed",
+    "embeddings": "no embedding provider is used; the BCI output component is excluded",
+    "baselines.storage": "baselines are read from the --baselines directory",
+    "execution.concurrency": "runs execute one at a time",
+    "reporting.html": "the HTML report is always written",
+    "reporting.sarif": "no SARIF report is produced",
+    "reporting.retention_days": "Bellwether never prunes artifacts",
+}
+
+
+def _explicit_paths(model: StrictModel, prefix: str = "") -> list[str]:
+    """Every field path a document set explicitly, dict entries included as ``*``-free keys."""
+    paths: list[str] = []
+    for name in sorted(model.model_fields_set):
+        path = f"{prefix}.{name}" if prefix else name
+        paths.append(path)
+        value = getattr(model, name)
+        if isinstance(value, StrictModel):
+            paths.extend(_explicit_paths(value, path))
+        elif isinstance(value, dict):
+            for key in sorted(value):
+                entry = value[key]
+                paths.append(f"{path}.{key}")
+                if isinstance(entry, StrictModel):
+                    paths.extend(_explicit_paths(entry, f"{path}.{key}"))
+    return paths
+
+
+def _matches(pattern: str, path: str) -> bool:
+    want, have = pattern.split("."), path.split(".")
+    if len(have) < len(want):
+        return False
+    return all(w in ("*", h) for w, h in zip(want, have, strict=False))

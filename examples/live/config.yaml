@@ -21,7 +21,6 @@ providers:
 harnesses:
   api-loop:
     type: api-loop
-    tools: [read, write, bash, fetch]
 
 sandbox:
   backend: docker
@@ -55,11 +54,8 @@ dns:
   image: bw-resolver-sidecar:live
 
 capture:
-  filesystem_writes: overlay
-  filesystem_reads: fanotify
-  process: ebpf
-  harness_hooks: true
-  harness_event_sink: fifo
+  # The overlay write plane and claude-code's hook sink are always on; the read and process
+  # planes are not built. Setting them here would only be listed by `bellwether doctor`.
   zones:
     workspace: /work
     harness_state: /home/agent/.claude

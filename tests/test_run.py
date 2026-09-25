@@ -1671,3 +1671,63 @@ def test_run_evaluation_hands_the_configured_retry_budget_to_the_driver(
 
     assert captured["retry_on_infra_error"] == 5
     assert callable(captured["on_retry"])
+
+
+def test_run_evaluation_hands_the_configured_metrics_block_to_the_driver(
+    package: SkillPackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The outer hop for `metrics.bci_weights` and `metrics.trajectory_cluster_threshold`, which
+    `doctor` validated and nothing downstream ever read."""
+    from bellwether.cli import run as run_module
+
+    config = _config()
+    metrics = config.metrics.model_copy(
+        update={
+            "bci_weights": config.metrics.bci_weights.model_copy(
+                update={"outcome": 0.5, "capability": 0.1}
+            ),
+            "trajectory_cluster_threshold": 0.35,
+        }
+    )
+    config = config.model_copy(update={"metrics": metrics})
+    captured: dict[str, object] = {}
+    real = run_module.drive_evaluation
+
+    def spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "drive_evaluation", spy)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=config,
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="firstlight",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+    weights = captured["bci_weights"]
+    assert isinstance(weights, dict) and weights["outcome"] == 0.5 and weights["capability"] == 0.1
+    assert captured["trajectory_cluster_threshold"] == 0.35
+
+
+def test_a_not_built_setting_is_disclosed_in_the_verdict(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    """Whoever reads the verdict did not necessarily read config.yaml: a setting it sets that this
+    build does not act on is named in the notes, not only by `doctor`."""
+    from bellwether.config.models.config import ExecutionConfig
+
+    config = _config().model_copy(update={"execution": ExecutionConfig(concurrency=8)})
+    result = _evaluate_with(package, tmp_path, config=config)
+    assert any("does not act on: execution.concurrency" in note for note in result.verdict.notes), (
+        result.verdict.notes
+    )

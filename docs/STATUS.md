@@ -88,6 +88,25 @@ cache replay resets both, since nothing was retried in the evaluation it serves.
 stops the evaluation as infrastructure (exit 3) rather than dropping the slot (spec-notes). A sweep
 for other config fields read by nothing found more candidates; they are the next brick.
 
+**Every `config.yaml` setting now enforces, refuses, or says it is not built.** A runtime probe of
+which config fields package code reads, checked by hand field by field, found:
+- **`metrics.bci_weights` never reached the BCI.** It was validated by `doctor`, but the BCI (the
+  headline consistency gate) was always composed from the default table. It is now wired, and so
+  is `metrics.trajectory_cluster_threshold`, which likewise never reached clustering.
+- **`sandbox.backend: gvisor` / `firecracker` parsed and ran plain Docker.** It is now refused at
+  parse. THREAT_MODEL.md also claimed a `require_hardened_sandbox` policy flag that does not exist,
+  and now says so.
+- **`harnesses.<name>.type` was never read.** The adapter is chosen by the entry's name, so
+  `claude-code: {type: api-loop}` ran the CLI. A mismatch, or the unbuilt `generic-subprocess`, is
+  now refused.
+- **Twenty-three more settings did nothing.** They are listed with reasons in
+  `NOT_BUILT_SETTINGS`. `doctor` warns on any that `config.yaml` sets, and `run` names them in
+  the verdict notes. The `init` template and both live configs set none of them; the template
+  shows them commented out.
+
+`tests/test_config_registry.py` classifies every config field, and fails the build on an
+unclassified one or on a registry entry gone stale in either direction.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -921,7 +940,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1740 tests: 1679 offline, 61 under the `docker` mark (49 run locally, 12 CI-only skips with stated reasons; all 61 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1815 tests: 1754 offline, 61 under the `docker` mark (49 run locally, 12 CI-only skips with stated reasons; all 61 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

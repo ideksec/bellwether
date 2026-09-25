@@ -90,8 +90,11 @@ def test_bci_weights_that_do_not_sum_to_one(config_document: dict[str, Any]) -> 
 
 
 def test_judge_pointing_at_an_unconfigured_provider(config_document: dict[str, Any]) -> None:
+    # The shipped template no longer sets `judges` (the subsystem is not built), but a config that
+    # does is still validated against the providers it names.
     message = _mutate(
-        config_document, lambda d: d["judges"]["default"].__setitem__("provider", "x")
+        config_document,
+        lambda d: d.__setitem__("judges", {"default": {"provider": "x", "model_alias": "mid"}}),
     )
     assert "not a configured provider" in message
     assert "anthropic" in message
