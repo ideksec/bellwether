@@ -26,6 +26,7 @@ configuration) surfaces the gap without blocking, exactly as §25 prescribes.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -61,7 +62,7 @@ from bellwether.constants import (
     SENSITIVE_DIRECTORIES,
 )
 from bellwether.determinism import canonical_json, round6
-from bellwether.errors import BellwetherError
+from bellwether.errors import BellwetherError, InfrastructureError
 from bellwether.metrics import (
     PeripheralCapability,
     RareCapabilityFinding,
@@ -176,6 +177,20 @@ class RunPlan:
     #: scenario by :func:`plan_matrix`; offered through the harness beside the primary so an
     #: assertion on *which* skill activated has competitors to observe.
     companions: tuple[SkillPackage, ...] = ()
+    #: Which try at this repetition this is (§13.2). A retry *replaces* the failed attempt in the
+    #: set, so it keeps the repetition index and records the attempt instead.
+    attempt: int = 1
+
+    @property
+    def run_id(self) -> str:
+        """The run's identity within ``eval_id``: stable per repetition, distinct per attempt."""
+        base = f"{self.scenario.id}-{self.target.slug}-{self.repetition:03d}"
+        return base if self.attempt == 1 else f"{base}-attempt{self.attempt}"
+
+    @property
+    def first_run_id(self) -> str:
+        """The run id of this repetition's first attempt, which a retry names as ``retry_of``."""
+        return f"{self.scenario.id}-{self.target.slug}-{self.repetition:03d}"
 
 
 @dataclass(frozen=True)
@@ -461,6 +476,11 @@ def scope_table_of(executed: ExecutedRun, declared: DeclaredScope) -> ScopeTable
     return evaluate_scope(declared, index)
 
 
+def _retry_backoff_seconds(attempt: int) -> float:
+    """Exponential backoff before retry ``attempt + 1``: 2 s, 4 s, 8 s …, capped at 60 s."""
+    return float(min(60, 2**attempt))
+
+
 def drive_evaluation(
     plans: Sequence[RunPlan],
     executor: RunExecutor,
@@ -473,6 +493,9 @@ def drive_evaluation(
     looks_for: Callable[[str], Sequence[int]] | None = None,
     platform_baseline: PlatformBaseline | None = None,
     sensitive_directories: tuple[str, ...] = SENSITIVE_DIRECTORIES,
+    retry_on_infra_error: int = 0,
+    sleep: Callable[[float], None] = time.sleep,
+    on_retry: Callable[[str], None] | None = None,
 ) -> list[SetReading]:
     """Run every plan through the executor and roll each repetition set into a reading.
 
@@ -497,6 +520,14 @@ def drive_evaluation(
     than the earliest pre-registered decision point (§13.1) has no boundary to stop at and would
     yield a figure the sequential design does not license — so it is refused rather than quietly
     reported, the same reflex as the rest of the pipeline.
+
+    ``retry_on_infra_error`` is §13.2's retry budget per repetition. Only an
+    :class:`~bellwether.errors.InfrastructureError` marked ``retryable`` — a provider rate limit,
+    overload or 5xx, a dropped connection — is retried, with exponential backoff; the retry keeps
+    the repetition index and records ``attempt`` / ``retry_of``, and ``on_retry`` is told so the
+    report can disclose it. A refusal, or anything the skill caused, is never retried. A
+    repetition that exhausts its budget stops the evaluation as infrastructure rather than being
+    dropped from the set (see spec-notes).
 
     Sets are executed **look by look** (§13.1): a set runs to its first pre-registered decision
     point, the design is consulted, and the next batch is bought only on a ``continue``. Before
@@ -523,8 +554,30 @@ def drive_evaluation(
             order.append((plan.scenario.id, plan.target.slug, plan.target))
         by_set[set_key].append(plan)
 
+    def execute_with_retries(plan: RunPlan) -> tuple[RunPlan, ExecutedRun]:
+        attempt = plan
+        while True:
+            try:
+                return attempt, executor.execute(attempt)
+            except InfrastructureError as error:
+                if not error.retryable:
+                    raise
+                if attempt.attempt > retry_on_infra_error:
+                    raise InfrastructureError(
+                        f"{error} — still failing after {attempt.attempt} attempt(s) at "
+                        f"{attempt.run_id}; execution.retry_on_infra_error is "
+                        f"{retry_on_infra_error} (§13.2)"
+                    ) from error
+                if on_retry is not None:
+                    on_retry(
+                        f"{attempt.run_id}: attempt {attempt.attempt} hit a transient "
+                        f"infrastructure error and was retried (§13.2): {error}"
+                    )
+                sleep(_retry_backoff_seconds(attempt.attempt))
+                attempt = replace(attempt, attempt=attempt.attempt + 1)
+
     def execute_and_analyse(plan: RunPlan) -> AnalysedRun:
-        executed = executor.execute(plan)
+        plan, executed = execute_with_retries(plan)
         run = analyse_run(
             plan,
             executed,

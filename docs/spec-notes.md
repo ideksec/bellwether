@@ -4268,3 +4268,56 @@ skill; three things around the verdict were.
   which runs the real CLI against a fake API answering 400.
 - `scope_declared` left unwired in `orchestrate` fails the `True` and `False` cases of
   `test_an_empty_scope_table_says_which_empty_it_is`.
+
+## §13.2 — `retry_on_infra_error` is read, and what it retries
+
+**Found by** a sweep for config fields no code reads (2026-09). `execution.retry_on_infra_error` is
+in every config (default 2), and nothing read it: the first provider 529, 5xx, or dropped connection
+stopped the whole evaluation. That is an accepted-and-inert control, the defect class CLAUDE.md
+names.
+
+**What is retried.** Only an `InfrastructureError` marked `retryable`:
+- a provider 429, 529 or other 5xx — raised by the api-loop client, or recorded by the claude-code
+  CLI as `api_error_status`;
+- an api-loop request that never got an answer (connection refused or reset, timeout, DNS failure).
+
+A provider *refusal* is never retried: 400, 401, 403, 404 or any other non-transient 4xx. The
+rejected key on PR #91 answers the same way on every attempt. Nothing the skill causes raises this
+class, so §13.2's "never retry a failure attributable to the skill" holds by construction. A skill
+that makes the provider fail with a 5xx would be retried, then stop the evaluation. That never
+yields a `ready`.
+
+**How.** The loop lives in `drive_evaluation`, where it is harness-agnostic and tested offline. Each
+retry:
+- keeps the repetition index;
+- gets its own run id (`…-003-attempt2`) and its own sandbox scratch (`runs/…/3/attempt-2`);
+- records `attempt` and `retry_of` in the header (§13.2);
+- waits before running, backing off exponentially (2 s, 4 s, …, capped at 60 s);
+- is reported through `on_retry` into the verdict notes.
+
+A run served from the cache resets `attempt` to 1 and `retry_of` to none, because nothing was
+retried in the evaluation it is served to; `cached_from` still names the original.
+
+**Two divergences from §13.2, deliberately:**
+- *An exhausted budget stops the evaluation (exit 3) instead of dropping the slot.* Dropping needs
+  a slot the driver can aggregate around. Neither harness leaves a trace for the failed attempt:
+  api-loop raises before one exists, and claude-code raises before planes are read. A set short of
+  its first look is already refused (§13.1). Stopping is the conservative reading: infrastructure
+  that fails three times is broken, and a verdict built around the gap would be the survivorship
+  hazard §13.2 warns of.
+- *"Both traces are retained" is not met for the failed attempt, which has no trace.* What
+  remains is the retry's `retry_of`, the verdict note naming the attempt and its error, and the
+  failed attempt's sandbox scratch directory.
+
+**Revert-checked, per change:**
+- `run_evaluation` no longer passing the budget fails
+  `test_run_evaluation_hands_the_configured_retry_budget_to_the_driver`.
+- A driver that never retries fails the retry and exhausted-budget tests in
+  `tests/test_infra_retry.py`.
+- The api-loop client never marking an error retryable fails
+  `test_the_api_loop_client_classifies_what_it_raises`.
+- The claude-code rejection never retryable fails `test_a_rate_limit_or_overload_is_retryable`.
+- The cache replay not resetting the fields fails
+  `test_a_replayed_retry_is_not_reported_as_a_retry_of_this_evaluation`.
+- The executor not writing `attempt`/`retry_of` fails the container test
+  `test_a_retry_attempt_is_recorded_on_the_header_in_its_own_scratch`, which runs locally.

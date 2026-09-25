@@ -244,3 +244,43 @@ def test_an_entry_of_another_format_or_past_its_ttl_is_not_served(tmp_path: Path
     meta["cache_format"] = "0"
     (entry / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     assert cache.lookup("sha256:" + "2" * 64) is None
+
+
+def test_a_replayed_retry_is_not_reported_as_a_retry_of_this_evaluation(tmp_path: Path) -> None:
+    """§13.2: a trace stored from a run that succeeded on its second attempt carries
+    ``attempt: 2`` and a ``retry_of`` naming a run of *that* evaluation. Served to a later
+    evaluation, nothing was retried there — the replayed header says attempt 1, no retry_of, and
+    ``cached_from`` still points at the original."""
+
+    class _RetriedExecutor:
+        def execute(self, plan: RunPlan) -> ExecutedRun:
+            path = write_trace(
+                tmp_path / "retried.arf.jsonl",
+                make_header(attempt=2, retry_of="old-s-api-loop-anthropic-frontier-001"),
+                [make_action(0)],
+                make_footer(exit_reason="completed"),
+            )
+            return ExecutedRun(
+                trace=read_trace(path),
+                context=NormalizationContext(
+                    workspace_root="/work/ws", home="/home/agent", tmp="/tmp"
+                ),
+                trace_jsonl=path.read_text(encoding="utf-8"),
+            )
+
+    cache = RunCache(root=tmp_path / "cache", ttl_days=14)
+    plan = RunPlan(
+        scenario=_scenario(), target=TargetInfo("api-loop", "anthropic", "frontier"), repetition=1
+    )
+    first = CachingExecutor(
+        _RetriedExecutor(), cache, lambda _p: _inputs(), eval_id="old", run_root=tmp_path / "a"
+    )
+    first.execute(plan)
+    later = CachingExecutor(
+        _RetriedExecutor(), cache, lambda _p: _inputs(), eval_id="new", run_root=tmp_path / "b"
+    )
+    replayed = later.execute(plan)
+    assert later.served_from_cache == ["s/api-loop-anthropic-frontier/1"]
+    header = replayed.trace.header
+    assert (header.attempt, header.retry_of) == (1, None)
+    assert header.cached_from is not None and header.cached_from.startswith("01JEVAL")

@@ -287,3 +287,26 @@ def test_the_sandbox_is_gone_and_its_workspace_retained_before_evidence_is_read(
     assert executed.workspace.is_dir()
     assert (executed.workspace / "report.md").is_file()
     assert (tmp_path / "runs") in executed.workspace.parents
+
+
+def test_a_retry_attempt_is_recorded_on_the_header_in_its_own_scratch(
+    backend: DockerBackend, skill_dir: Path, fixture_source: Path, tmp_path: Path
+) -> None:
+    """§13.2: a retry keeps the repetition, records ``attempt`` and ``retry_of``, gets a distinct
+    run id, and runs in its own sandbox scratch beside the failed attempt's."""
+    executor = SandboxRunExecutor(
+        backend=backend,
+        package=load_skill(skill_dir),
+        fixture=fixture_source,
+        client_factory=_client_factory,
+        eval_id="retry",
+        run_root=tmp_path / "runs",
+    )
+    target = TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
+    plan = RunPlan(scenario=_scenario(), target=target, repetition=3, attempt=2)
+    header = executor.execute(plan).trace.header
+    assert header.repetition == 3
+    assert header.attempt == 2
+    assert header.run_id == "retry-benign-stable-api-loop-scripted-frontier-003-attempt2"
+    assert header.retry_of == "retry-benign-stable-api-loop-scripted-frontier-003"
+    assert (tmp_path / "runs" / "benign-stable" / target.slug / "3" / "attempt-2").is_dir()

@@ -77,6 +77,17 @@ infrastructure (exit 3), as api-loop already did. **(3)** An empty Declared-vs-O
 "No manifest scope to compare" for a skill that declared one and stayed inside it — the three
 committed demo reports all said so.
 
+**`execution.retry_on_infra_error` is read (§13.2).** It shipped in every config (default 2) and
+nothing read it — an accepted-and-inert control. A provider 529 or a dropped connection stopped the
+whole evaluation on the first try. `drive_evaluation` now retries a repetition up to the configured
+budget with exponential backoff, but only for an `InfrastructureError` marked retryable: a provider
+429, 529 or 5xx on either harness, or an api-loop connection that never answered. A refusal (the
+rejected key of PR #91) is final. A retry keeps the repetition, gets its own run id and sandbox
+scratch, records `attempt`/`retry_of` in the header, and is disclosed in the verdict notes; a
+cache replay resets both, since nothing was retried in the evaluation it serves. An exhausted budget
+stops the evaluation as infrastructure (exit 3) rather than dropping the slot (spec-notes). A sweep
+for other config fields read by nothing found more candidates; they are the next brick.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -910,7 +921,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1729 tests: 1669 offline, 60 under the `docker` mark (48 run locally, 12 CI-only skips with stated reasons; all 60 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1740 tests: 1679 offline, 61 under the `docker` mark (49 run locally, 12 CI-only skips with stated reasons; all 61 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

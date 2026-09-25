@@ -35,7 +35,7 @@ from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from bellwether.config.models.provider import ProviderConfig
-from bellwether.errors import BellwetherError
+from bellwether.errors import BellwetherError, InfrastructureError, transient_http_status
 from bellwether.harness.provider import (
     ModelClient,
     ModelRequest,
@@ -244,6 +244,12 @@ def _urllib_post(url: str, headers: Mapping[str, str], body: bytes, timeout: flo
             return HttpResponse(int(response.status), response.read())
     except urllib.error.HTTPError as error:
         return HttpResponse(int(error.code), error.read())
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        # The request never got an answer — a reset, a timeout, a DNS failure. §13.2 counts a
+        # dropped connection as transient, so it is retryable; it is never the skill's result.
+        raise InfrastructureError(
+            f"model API unreachable at {url}: {error}", retryable=True
+        ) from error
 
 
 @dataclass
@@ -276,8 +282,9 @@ class AnthropicClient:
         response = self.transport(url, headers, body, self.timeout)
         if response.status != 200:
             snippet = response.body[:500].decode("utf-8", "replace")
-            raise BellwetherError(
-                f"model API returned HTTP {response.status} from {url}: {snippet}"
+            raise InfrastructureError(
+                f"model API returned HTTP {response.status} from {url}: {snippet}",
+                retryable=transient_http_status(response.status),
             )
         try:
             payload = json.loads(response.body)
@@ -558,8 +565,9 @@ class OpenAiCompatibleClient:
         response = self.transport(url, headers, body, self.timeout)
         if response.status != 200:
             snippet = response.body[:500].decode("utf-8", "replace")
-            raise BellwetherError(
-                f"model API returned HTTP {response.status} from {url}: {snippet}"
+            raise InfrastructureError(
+                f"model API returned HTTP {response.status} from {url}: {snippet}",
+                retryable=transient_http_status(response.status),
             )
         try:
             payload = json.loads(response.body)

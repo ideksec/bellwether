@@ -508,6 +508,10 @@ class SandboxRunExecutor:
         run_dir = (
             self.run_root / plan.scenario.id / plan.target.slug / str(plan.repetition)
         ).resolve()
+        if plan.attempt > 1:
+            # A retry gets its own sandbox scratch: the failed attempt's overlay and sidecar
+            # directories are its evidence, not a starting state.
+            run_dir = run_dir / f"attempt-{plan.attempt}"
 
         # This evaluation's canaries (§10.4). Minted per *evaluation*, not per repetition, so the
         # markers are identical across the runs in an evaluation. The whole pool is delivered — the
@@ -730,7 +734,7 @@ class SandboxRunExecutor:
             # tears the sandbox and its sidecars down.
             rejection = provider_rejection_from_events(events)
             if rejection is not None:
-                raise BellwetherError(rejection)
+                raise rejection
             observed_at = dt.datetime.now(dt.UTC)
 
             # §10.0: quiesce before observing. Every plane below is read from outside the
@@ -823,10 +827,13 @@ class SandboxRunExecutor:
             )
 
             header = RunHeader(
-                run_id=f"{self.eval_id}-{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}",
+                run_id=f"{self.eval_id}-{plan.run_id}",
                 eval_id=self.eval_id,
                 scenario_id=plan.scenario.id,
                 repetition=plan.repetition,
+                # §13.2: a retry replaces the failed attempt and says so.
+                attempt=plan.attempt,
+                retry_of=f"{self.eval_id}-{plan.first_run_id}" if plan.attempt > 1 else None,
                 skill=SkillRef(
                     name=self.package.name,
                     package_digest=self.package.package_digest,

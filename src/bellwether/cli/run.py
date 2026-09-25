@@ -459,6 +459,10 @@ def run_evaluation(
         looks_for=lambda scenario_id: schedule[scenario_id][0],
         platform_baseline=applied_baseline,
         sensitive_directories=tuple(config.metrics.sensitive_directories),
+        # §13.2: the configured retry budget for transient infrastructure errors. Parsed for as
+        # long as the config has existed and read by nothing until this line.
+        retry_on_infra_error=config.execution.retry_on_infra_error,
+        on_retry=baseline_notes.append,
     )
     if caching is not None and caching.bypassed:
         # §19.2: disclosed, not silent — the operator turned the cache on and part of the
