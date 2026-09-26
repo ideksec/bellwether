@@ -215,6 +215,57 @@ class ProxyAddon:
         self._flows.append(flow)
         return BlockResponse(status=BLOCK_STATUS_DENIED, reason=flow.block_reason)
 
+    def on_websocket_message(
+        self,
+        host: str,
+        port: int,
+        *,
+        scheme: str,
+        path: str,
+        content: bytes,
+        sni: str = "",
+    ) -> BlockResponse | None:
+        """Decide one client-to-server WebSocket frame as a request of its own (§10.5.0, §10.5.2).
+
+        The upgrade request is decided by :meth:`on_request`; after it, mitmproxy relays frames
+        through a hook that request-level logic never sees. Each frame was therefore relayed
+        unscanned and uncounted: a canary in a frame reached an allowlisted server with only the
+        upgrade on record, and a socket carried unbounded traffic past the per-run caps. A frame now
+        goes through :func:`decide_request` exactly as a request body does — recorded, scanned for
+        canaries, charged to the caps — and a frame over a cap is refused.
+        """
+        decision = decide_request(
+            ts=self.clock(),
+            method="WEBSOCKET",
+            scheme="wss" if scheme.lower() in ("https", "wss") else "ws",
+            host=host,
+            port=port,
+            path=path,
+            headers={},
+            body=content,
+            allowlist=self.allowlist,
+            provider_endpoints=self.provider_endpoints,
+            infrastructure_endpoints=self.infrastructure_endpoints,
+            broker=self.broker,
+            provider_of_host=self.provider_of_host,
+            caps=self.caps,
+            canaries=self.canaries,
+            sni=sni,
+        )
+        self._flows.append(decision.flow)
+        if decision.action == "forward":
+            return None
+        if decision.cap_exceeded is not None:
+            return BlockResponse(
+                status=BLOCK_STATUS_BUDGET,
+                reason=f"egress budget exceeded: {decision.cap_exceeded}",
+                cap_exceeded=decision.cap_exceeded,
+            )
+        return BlockResponse(
+            status=BLOCK_STATUS_DENIED,
+            reason=decision.flow.block_reason or "egress blocked by default-deny allowlist",
+        )
+
     def on_raw_tcp(self, host: str, port: int) -> BlockResponse:
         """Refuse a raw-TCP stream, whatever its destination, and record the attempt."""
         return self._refuse(

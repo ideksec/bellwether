@@ -403,3 +403,31 @@ def test_a_real_run_injects_on_forward_blocks_on_deny_and_leaks_nothing(
 def _diagnostics(proxy_name: str) -> str:
     logs = subprocess.run(["docker", "logs", proxy_name], capture_output=True, text=True)
     return f"--- sidecar logs ---\n{logs.stdout[-3000:]}\n{logs.stderr[-3000:]}"
+
+
+def test_the_vendored_hook_list_matches_the_pinned_mitmproxy(sidecar_image: str) -> None:
+    """``tests/test_sidecar_entry.MITMPROXY_HOOKS`` classifies every hook the addon could be
+    missing. It is vendored because mitmproxy lives only in the sidecar image; this reads the
+    image's real registry, so a mitmproxy bump that adds a relaying hook fails the build instead
+    of being relayed undecided."""
+    import json
+
+    from tests.test_sidecar_entry import MITMPROXY_HOOKS
+
+    script = (
+        "import json\n"
+        "from mitmproxy import hooks\n"
+        "import mitmproxy.addons\n"
+        "import mitmproxy.proxy.layers.http, mitmproxy.proxy.layers.websocket\n"
+        "import mitmproxy.proxy.layers.tcp, mitmproxy.proxy.layers.udp\n"
+        "import mitmproxy.proxy.layers.dns, mitmproxy.proxy.layers.tls\n"
+        "import mitmproxy.proxy.layers.quic\n"
+        "print(json.dumps(sorted(hooks.all_hooks)))\n"
+    )
+    probe = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "python", sidecar_image, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert set(json.loads(probe.stdout)) == MITMPROXY_HOOKS
