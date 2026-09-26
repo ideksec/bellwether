@@ -107,6 +107,16 @@ which config fields package code reads, checked by hand field by field, found:
 `tests/test_config_registry.py` classifies every config field, and fails the build on an
 unclassified one or on a registry entry gone stale in either direction.
 
+**WebSocket frames are decided like requests (§10.5.0–§10.5.2).** Reproduced against the pinned
+mitmproxy 12.2.3 with the real `proxy_entry.py`: after a permitted upgrade, frames went through a
+hook the addon did not implement. A frame carrying a planted canary reached an allowlisted server
+with only the `GET` upgrade on record, and 21 frames passed a proxy capped at `max_requests=5`.
+`websocket_message` now records every client-to-server frame, scans it for canaries and charges it
+to the caps, dropping a frame over a cap or one it cannot decide. The hand-written list of relaying
+hooks that had missed it is replaced by all 46 hooks the pinned mitmproxy defines, each classified
+with a reason. A CI test compares that list with the sidecar image's real mitmproxy.
+`stream_large_bodies` joins the settings `extra_settings` may not loosen.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -940,7 +950,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1815 tests: 1754 offline, 61 under the `docker` mark (49 run locally, 12 CI-only skips with stated reasons; all 61 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1824 tests: 1762 offline, 62 under the `docker` mark (49 run locally, 13 CI-only skips with stated reasons; all 62 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

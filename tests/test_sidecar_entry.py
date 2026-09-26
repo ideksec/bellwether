@@ -448,10 +448,95 @@ def test_a_refusal_that_cannot_be_rendered_kills_the_flow(tmp_path: Path) -> Non
     assert flow.response is None and flow.killed
 
 
-#: Every mitmproxy event hook through which a regular-mode proxy relays client traffic to a
-#: destination. Each must be implemented, or traffic reaching that hook is relayed undecided. A
-#: hook added here without an implementation fails the test below; so does removing one.
-_RELAYING_HOOKS = ("http_connect", "request", "tcp_start", "tcp_message")
+#: Every event hook mitmproxy 12.2.3 defines (``mitmproxy.hooks.all_hooks``, the pinned version).
+#: The CI container test ``test_the_vendored_hook_list_matches_the_pinned_mitmproxy`` compares this
+#: against the sidecar image's real mitmproxy, so a version bump that adds a hook fails the build.
+MITMPROXY_HOOKS = frozenset({
+    "add_log", "client_connected", "client_disconnected", "configure", "dns_error",
+    "dns_request", "dns_response", "done", "error", "http_connect", "http_connect_error",
+    "http_connect_upstream", "http_connected", "load", "next_layer", "quic_start_client",
+    "quic_start_server", "request", "requestheaders", "response", "responseheaders", "running",
+    "server_connect", "server_connect_error", "server_connected", "server_disconnected",
+    "socks5_auth", "tcp_end", "tcp_error", "tcp_message", "tcp_start", "tls_clienthello",
+    "tls_established_client", "tls_established_server", "tls_failed_client",
+    "tls_failed_server", "tls_start_client", "tls_start_server", "udp_end", "udp_error",
+    "udp_message", "udp_start", "update", "websocket_end", "websocket_message",
+    "websocket_start",
+})  # fmt: skip
+
+#: The hooks through which a regular-mode proxy relays client traffic to a destination. Each must
+#: be implemented, or traffic reaching it is relayed undecided. ``websocket_message`` was missing
+#: from the hand-written list this replaced — which is how frames after an upgrade were relayed
+#: unscanned and uncapped while this test passed.
+_RELAYING_HOOKS = frozenset(
+    {"http_connect", "request", "tcp_start", "tcp_message", "websocket_message"}
+)
+
+#: Every other hook, with why it relays no client data a decision is owed for.
+_NOT_RELAYING: dict[str, str] = {
+    **dict.fromkeys(
+        ("load", "configure", "running", "done", "update", "add_log"), "addon lifecycle"
+    ),
+    **dict.fromkeys(
+        (
+            "client_connected",
+            "client_disconnected",
+            "server_connect",
+            "server_connected",
+            "server_disconnected",
+            "server_connect_error",
+            "next_layer",
+        ),
+        "connection bookkeeping; the data on the connection reaches a relaying hook",
+    ),
+    **dict.fromkeys(
+        (
+            "tls_clienthello",
+            "tls_start_client",
+            "tls_start_server",
+            "tls_established_client",
+            "tls_established_server",
+            "tls_failed_client",
+            "tls_failed_server",
+        ),
+        "the TLS handshake; the application data inside reaches a relaying hook",
+    ),
+    "requestheaders": "the body is not streamed (stream_large_bodies is pinned off), so the "
+    "request hook sees every request before it is sent",
+    "response": "server-to-client; not the sandbox's egress",
+    "responseheaders": "server-to-client; not the sandbox's egress",
+    "error": "reports a failed flow; nothing is relayed",
+    "http_connected": "after http_connect decided the tunnel",
+    "http_connect_error": "a tunnel that failed to open",
+    "http_connect_upstream": "upstream-proxy mode only; the sidecar runs regular mode",
+    "socks5_auth": "SOCKS mode only; the sidecar runs regular mode",
+    "tcp_end": "end of a stream tcp_start already refused",
+    "tcp_error": "error on a stream tcp_start already refused",
+    "websocket_start": "the upgrade was decided by the request hook; no frame yet",
+    "websocket_end": "the socket closed; no frame",
+    **dict.fromkeys(
+        (
+            "udp_start",
+            "udp_message",
+            "udp_end",
+            "udp_error",
+            "dns_request",
+            "dns_response",
+            "dns_error",
+            "quic_start_client",
+            "quic_start_server",
+        ),
+        "regular (HTTP proxy) mode accepts TCP only; the sandbox reaches DNS through the "
+        "controlled resolver, not this proxy",
+    ),
+}
+
+
+def test_every_mitmproxy_hook_is_classified_exactly_once() -> None:
+    """Fix the class, not the instance: a hand-written list of relaying hooks is only as good as
+    the memory of whoever wrote it. Every hook the pinned mitmproxy defines is classified here."""
+    assert _RELAYING_HOOKS.isdisjoint(_NOT_RELAYING)
+    assert set(_RELAYING_HOOKS) | set(_NOT_RELAYING) == MITMPROXY_HOOKS
 
 
 def test_every_relaying_mitmproxy_hook_is_implemented() -> None:

@@ -45,7 +45,7 @@ SIDECAR_SHARED_MOUNT = PurePosixPath("/bw")
 
 #: mitmdump options the sidecar sets for enforcement, which ``extra_settings`` may not override:
 #: loosening one would let the proxy relay traffic it neither decides nor records.
-_PINNED_SETTINGS = frozenset({"rawtcp", "block_global", "confdir"})
+_PINNED_SETTINGS = frozenset({"rawtcp", "block_global", "confdir", "stream_large_bodies"})
 
 #: The mitmdump entry the image runs (placed there by ``sidecar/proxy/Dockerfile``). A fixed path
 #: rather than the installed package location, so the argv does not depend on a site-packages layout.
