@@ -1630,3 +1630,44 @@ def test_run_evaluation_hands_the_configured_sensitive_list_to_the_driver(
     )
 
     assert captured["sensitive_directories"] == (".npmrc/",)
+
+
+def test_run_evaluation_hands_the_configured_retry_budget_to_the_driver(
+    package: SkillPackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`execution.retry_on_infra_error` was parsed from every config and read by nothing (§13.2).
+    The driver's retry loop is tested on its own; this pins the hop that was missing — the value
+    `run_evaluation` actually hands down, and that retries are disclosed in the verdict notes."""
+    from bellwether.cli import run as run_module
+
+    config = _config()
+    config = config.model_copy(
+        update={"execution": config.execution.model_copy(update={"retry_on_infra_error": 5})}
+    )
+    captured: dict[str, object] = {}
+    real = run_module.drive_evaluation
+
+    def spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "drive_evaluation", spy)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=config,
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="firstlight",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+
+    assert captured["retry_on_infra_error"] == 5
+    assert callable(captured["on_retry"])

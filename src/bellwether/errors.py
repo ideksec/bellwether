@@ -15,15 +15,36 @@ from pathlib import Path
 __all__ = [
     "BellwetherError",
     "ConfigurationError",
+    "InfrastructureError",
     "PreconditionError",
     "SkillError",
     "TraceError",
     "UserFacingProblem",
+    "transient_http_status",
 ]
 
 
 class BellwetherError(Exception):
     """Base class for every error Bellwether raises deliberately."""
+
+
+class InfrastructureError(BellwetherError):
+    """The run could not be evaluated for a reason outside the skill (§13.2).
+
+    ``retryable`` is true only for the causes §13.2 names as transient — a provider 5xx or rate
+    limit, a dropped connection. A provider that *refuses* the request (a rejected key, a model it
+    will not serve) is infrastructure too, but retrying it spends time to get the same answer.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
+def transient_http_status(status: int) -> bool:
+    """Whether a provider's HTTP status is one §13.2 retries: rate limiting (429), overload
+    (529), or any server error (5xx). Every other failure status is an answer, not a flake."""
+    return status == 429 or 500 <= status <= 599
 
 
 @dataclass(frozen=True)

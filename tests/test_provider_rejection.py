@@ -70,8 +70,17 @@ def test_the_real_cli_refusal_shape_is_named_a_provider_rejection() -> None:
     # ...but it is recognised as the provider's refusal, with the status and the reason.
     rejection = provider_rejection_from_events(events)
     assert rejection is not None
-    assert "HTTP 400" in rejection
-    assert "not scoped to a workspace" in rejection
+    assert "HTTP 400" in str(rejection)
+    assert "not scoped to a workspace" in str(rejection)
+    # A refusal is final: §13.2 retries rate limits and server errors, not a rejected key.
+    assert rejection.retryable is False
+
+
+def test_a_rate_limit_or_overload_is_retryable() -> None:
+    for status in (429, 500, 529):
+        refused = _REFUSED.replace('"api_error_status": 400', f'"api_error_status": {status}')
+        rejection = provider_rejection_from_events(_events(refused))
+        assert rejection is not None and rejection.retryable, status
 
 
 def test_a_run_that_completed_is_not_a_rejection() -> None:
@@ -118,7 +127,7 @@ def test_the_executor_asks_the_question_of_every_run() -> None:
         Path(__file__).resolve().parents[1] / "src" / "bellwether" / "cli" / "execution.py"
     ).read_text(encoding="utf-8")
     call = source.index("rejection = provider_rejection_from_events(events)")
-    assert "raise BellwetherError(rejection)" in source[call : call + 200]
+    assert "raise rejection" in source[call : call + 200]
     # Before the planes are read, and inside the try that the teardown `finally` closes.
     assert call < source.index("observed_at = dt.datetime.now(dt.UTC)")
     assert source.rfind("try:", 0, call) > source.rfind("finally:", 0, call)

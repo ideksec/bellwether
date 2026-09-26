@@ -323,10 +323,14 @@ class CachingExecutor:
             return None
         header = cached.header.model_copy(
             update={
-                "run_id": f"{self.eval_id}-{plan.scenario.id}-{plan.target.slug}-{plan.repetition:03d}",
+                "run_id": f"{self.eval_id}-{plan.run_id}",
                 "eval_id": self.eval_id,
                 "scenario_id": plan.scenario.id,
                 "repetition": plan.repetition,
+                # A run served from the cache was not retried *in this evaluation*; the cached
+                # trace's own attempt history stays reachable through ``cached_from``.
+                "attempt": plan.attempt,
+                "retry_of": None,
                 "cached_from": f"{cached.header.eval_id}/{cached.header.run_id}",
             }
         )

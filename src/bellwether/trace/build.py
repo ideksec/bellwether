@@ -29,6 +29,7 @@ from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
 from bellwether.capture.egress import EgressCanaryHit, EgressFlow
 from bellwether.capture.model_channel import ModelRequestScan
 from bellwether.determinism import canonical_json
+from bellwether.errors import InfrastructureError, transient_http_status
 from bellwether.harness import RawHarnessEvent
 from bellwether.trace.models import (
     Action,
@@ -121,7 +122,9 @@ def exit_reason_from_events(events: list[RawHarnessEvent]) -> ExitReason | None:
     return None
 
 
-def provider_rejection_from_events(events: Sequence[RawHarnessEvent]) -> str | None:
+def provider_rejection_from_events(
+    events: Sequence[RawHarnessEvent],
+) -> InfrastructureError | None:
     """Why the provider refused the run's model call, where the harness reported one; else None.
 
     The two harnesses reach the model differently and used to disagree about what a provider
@@ -143,7 +146,11 @@ def provider_rejection_from_events(events: Sequence[RawHarnessEvent]) -> str | N
         if isinstance(status, int) and not isinstance(status, bool):
             detail = event.data.get("detail")
             shown = " ".join(str(detail).split())[:300] if detail else "no detail reported"
-            return f"model API returned HTTP {status} (reported by the harness): {shown}"
+            return InfrastructureError(
+                f"model API returned HTTP {status} (reported by the harness): {shown}",
+                # §13.2: a rate limit or server error is retried; a refusal is final.
+                retryable=transient_http_status(status),
+            )
     return None
 
 
