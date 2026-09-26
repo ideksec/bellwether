@@ -339,3 +339,69 @@ def _bellwether_containers() -> set[str]:
         ["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True, text=True, check=True
     )
     return {name for name in listing.stdout.split() if name}
+
+
+def test_a_proxy_cap_ends_a_claude_code_run_as_budget_exceeded(
+    images: tuple[str, str],
+    skill_dir: Path,
+    fixture_source: Path,
+    tmp_path: Path,
+) -> None:
+    """§10.5.1: the proxy refuses the request that would cross ``max_requests`` with a 429, which
+    the CLI reports exactly as a provider rate limit. The run must end ``budget_exceeded`` — not
+    be retried as a transient provider error, and not stop the evaluation as infrastructure."""
+    sandbox_image, sidecar_image = images
+    host_ip = _host_ip_for_containers()
+    port = _free_port()
+    base_url = f"http://{host_ip}:{port}"
+    server = subprocess.Popen(
+        [sys.executable, str(_FAKE_API), str(port), "0.0.0.0"],
+        env={**os.environ, "FAKE_WS": _WORKSPACE_ROOT},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(1)
+    os.environ[_FAKE_KEY_ENV] = "sk-real-fake-provider-key"
+    try:
+        broker = CredentialBroker.for_run(
+            {"anthropic": _FAKE_KEY_ENV}, os.environ, rng=SeededRng(3, "claude-code-cap")
+        )
+        proxy = SidecarProxyProvider(
+            backend=DockerBackend(image=sandbox_image),
+            image=sidecar_image,
+            allowlist=EgressAllowlist(
+                provider_endpoints=provider_hosts([base_url]),
+                infrastructure_endpoints=frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS),
+            ),
+            max_requests=1,
+            max_request_bytes=1 << 20,
+            broker=broker,
+            provider_of_host=dict.fromkeys(provider_hosts([base_url]), "anthropic"),
+        )
+        executor = SandboxRunExecutor(
+            backend=DockerBackend(image=sandbox_image),
+            package=load_skill(skill_dir),
+            fixture=fixture_source,
+            client_factory=lambda _plan: (ScriptedClient([]), "fake-model-v1"),
+            eval_id="cap",
+            run_root=tmp_path / "runs",
+            proxy=proxy,
+            randomize_identifiers=False,
+            provider_base_urls={"anthropic": base_url},
+        )
+        scenario = Scenario(
+            id="take-notes",
+            expectation="should_trigger",
+            prompt="Use the demo-skill to take notes.",
+            assertions=[AssertionSpec(name="skill_activated", params=True)],
+        )
+        target = TargetInfo(harness="claude-code", provider="anthropic", model_alias="frontier")
+        executed = executor.execute(RunPlan(scenario=scenario, target=target, repetition=1))
+    finally:
+        server.kill()
+        server.wait()
+        os.environ.pop(_FAKE_KEY_ENV, None)
+
+    assert executed.trace.exit_reason == "budget_exceeded", executed.trace.footer
+    capped = [a for a in executed.trace.actions_on_plane("egress") if a.action.get("cap_exceeded")]
+    assert capped and capped[0].action["cap_exceeded"] == "max_requests"

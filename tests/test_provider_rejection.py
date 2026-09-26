@@ -126,8 +126,11 @@ def test_the_executor_asks_the_question_of_every_run() -> None:
     source = (
         Path(__file__).resolve().parents[1] / "src" / "bellwether" / "cli" / "execution.py"
     ).read_text(encoding="utf-8")
-    call = source.index("rejection = provider_rejection_from_events(events)")
+    call = source.index("provider_rejection_from_events(events)")
     assert "raise rejection" in source[call : call + 200]
-    # Before the planes are read, and inside the try that the teardown `finally` closes.
-    assert call < source.index("observed_at = dt.datetime.now(dt.UTC)")
+    # Only after the proxy's own record is read: a 429 the proxy sent for a per-run cap is
+    # `budget_exceeded`, not the provider's rate limit (§10.5.1) — see test_budget_refusal.py.
+    assert source.index("budget_cap = budget_refusal(egress_flows)") < call
+    assert "None if budget_cap else" in source[call - 60 : call]
+    # Inside the try that the teardown `finally` closes.
     assert source.rfind("try:", 0, call) > source.rfind("finally:", 0, call)

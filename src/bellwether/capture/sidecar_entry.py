@@ -171,8 +171,14 @@ def client_sni(flow: Any) -> str:
 
 def block_response_args(block: BlockResponse) -> tuple[int, bytes, dict[str, str]]:
     """Reduce a :class:`BlockResponse` to the ``(status, body, headers)`` triple mitmproxy's
-    ``http.Response.make`` takes. Pure, so the block path is tested without mitmproxy."""
-    return block.status, block.reason.encode("utf-8"), {"content-type": "text/plain; charset=utf-8"}
+    ``http.Response.make`` takes. Pure, so the block path is tested without mitmproxy.
+
+    ``x-should-retry: false`` because every refusal is final: a per-run cap stays exceeded and a
+    denied host stays denied. Without it the Anthropic SDK inside the claude-code CLI treats the
+    budget refusal's 429 as a rate limit and backs off and retries it, spending the run's wall
+    clock on requests the proxy will refuse again (§10.5.1)."""
+    headers = {"content-type": "text/plain; charset=utf-8", "x-should-retry": "false"}
+    return block.status, block.reason.encode("utf-8"), headers
 
 
 def _wall_clock() -> str:

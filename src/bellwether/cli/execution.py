@@ -42,6 +42,7 @@ from bellwether.capture import (
     mint_canaries,
     plan_canary_planting,
 )
+from bellwether.capture.egress import budget_refusal
 from bellwether.cli.dns_run import DnsResolverProvider, RunResolver
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
@@ -732,9 +733,6 @@ class SandboxRunExecutor:
             # on its result line instead, and scored as a `harness_error` it read as the skill
             # failing. Stop the evaluation the same way on both — the `finally` below still
             # tears the sandbox and its sidecars down.
-            rejection = provider_rejection_from_events(events)
-            if rejection is not None:
-                raise rejection
             observed_at = dt.datetime.now(dt.UTC)
 
             # §10.0: quiesce before observing. Every plane below is read from outside the
@@ -773,6 +771,20 @@ class SandboxRunExecutor:
             # Plane D: what the recording proxy saw. Read while the sidecar is still up (before the
             # finally closes it). Absent a proxy, there is no egress plane and coverage says so.
             egress_flows = run_proxy.flows() if run_proxy is not None else []
+            # §10.5.1: a request the proxy refused on a per-run cap ends the run as
+            # `budget_exceeded`. The proxy answers that refusal with a 429, which the claude-code
+            # CLI reports exactly as it would a provider's rate limit — so the cap is established
+            # from the proxy's own record first, and only a 429 the proxy did not send is the
+            # provider's (retried, §13.2).
+            budget_cap = budget_refusal(egress_flows)
+            # §13.2: a provider refusal is infrastructure, not a result. The api-loop client
+            # raises on a non-200 before any event exists; the claude-code CLI reports the status
+            # on its result line instead, and scored as a `harness_error` it read as the skill
+            # failing. Stop the evaluation the same way on both — the `finally` below still
+            # tears the sandbox and its sidecars down.
+            rejection = None if budget_cap else provider_rejection_from_events(events)
+            if rejection is not None:
+                raise rejection
             plane_d = egress_actions(egress_flows, start_seq=len(plane_a) + len(plane_b))
             # Plane E: what the controlled resolver saw. Read while the resolver is still up (before
             # the finally closes it). Absent a resolver, there is no DNS plane and coverage says so.
@@ -901,6 +913,11 @@ class SandboxRunExecutor:
             # A run with no exit event never reached an end Bellwether observed; that is a
             # harness_error (scored a fail, §12.7), never a silent success.
             exit_reason = exit_reason_from_events(events) or "harness_error"
+            if budget_cap:
+                # The proxy refused a request on an operator limit: whatever the harness made of
+                # the refusal, the run is `budget_exceeded` — not_evaluable, never the skill's
+                # failure (§10.5.1, §12.7).
+                exit_reason = "budget_exceeded"
             footer = RunFooter(
                 ended_at=observed_at,
                 wall_clock_ms=int((observed_at - started_at).total_seconds() * 1000),

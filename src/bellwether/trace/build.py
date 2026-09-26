@@ -250,6 +250,8 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
             payload["sni"] = flow.sni
         if flow.blocked:
             payload["block_reason"] = flow.block_reason
+        if flow.cap_exceeded:
+            payload["cap_exceeded"] = flow.cap_exceeded
 
         actions.append(
             Action(
