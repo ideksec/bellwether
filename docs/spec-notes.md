@@ -4321,3 +4321,68 @@ retried in the evaluation it is served to; `cached_from` still names the origina
   `test_a_replayed_retry_is_not_reported_as_a_retry_of_this_evaluation`.
 - The executor not writing `attempt`/`retry_of` fails the container test
   `test_a_retry_attempt_is_recorded_on_the_header_in_its_own_scratch`, which runs locally.
+
+## §21, §9.2, §13.7 — every config setting enforces, refuses, or says it is not built
+
+**Found by** a runtime probe (2026-09): the offline suite was run with every config-field read
+from package code recorded, then each field the probe never saw was checked by hand. The probe
+cannot see reads that happen only in container runs or reads by string path, so the hand check
+decided each case.
+
+**Wired (the setting now does what it says):**
+- `metrics.bci_weights`: validated by `doctor` and never used. The BCI was always composed from
+  the default table.
+- `metrics.trajectory_cluster_threshold`: the clustering was always cut at 0.2.
+
+**Refused (a value that would not be honoured stops at parse):**
+- `sandbox.backend` other than `docker`. `gvisor` and `firecracker` parsed and then ran plain
+  Docker, so an operator who asked for the stronger boundary got the weaker one silently.
+- `harnesses.<name>.type` that differs from `<name>`, or is `generic-subprocess`. The executor
+  picks the adapter by the entry's name, and `type` was never read.
+
+**Not built, and said so.** `NOT_BUILT_SETTINGS` in `config/models/config.py` lists 23 settings
+with the reason each has no effect:
+- the capture switches, and the read and process planes;
+- the egress body-recording, server-side-tool and volume knobs;
+- `dns.log_all_queries`;
+- four canary options;
+- `judges` and `embeddings`;
+- `baselines.storage`;
+- `execution.concurrency` (runs are sequential);
+- the three `reporting` keys.
+
+`Config.not_built_settings()` reports those a document sets explicitly; a default the operator
+never wrote is not a claim they made. `doctor` shows them as a `warn` check with the reasons, and
+`run` names them in the verdict notes. The `init` template shows them commented out, and the two
+live configs no longer set them, so none of the shipped configs promises behaviour this build
+lacks. A test pins this.
+
+**THREAT_MODEL.md** said policy "supports a `require_hardened_sandbox` flag". The flag is only in
+the spec's roadmap. The document now says neither the flag nor a hardened backend is built, and
+that `sandbox.backend` refuses rather than degrades.
+
+**The registry test** (`tests/test_config_registry.py`) is the config counterpart of
+`test_control_registry.py`:
+- every config field is classified exactly once: read, refused-otherwise, fixed, or not built;
+- a not-built entry whose `parent.leaf` access appears in package code fails the build (it has
+  been built, so `doctor` would be lying);
+- a read entry that nothing references fails the build.
+
+**Revert-checked, per change:**
+
+| Reverted | Failing test |
+|---|---|
+| The backend refusal | `test_a_non_docker_backend_is_refused` |
+| The harness-type check | both `test_a_harness_type_that_would_not_run_is_refused` cases |
+| The `doctor` warning | `test_doctor_names_a_not_built_setting_and_why` |
+| The `run` note | `test_a_not_built_setting_is_disclosed_in_the_verdict` |
+| The template promising `concurrency` again | `test_shipped_configs_set_nothing_unbuilt` |
+| A read of `execution.concurrency` added to package code | `test_a_not_built_setting_is_not_read[execution.concurrency]` |
+| `aggregate` ignoring the weights | `test_the_driver_hands_the_configured_weights_and_threshold_to_the_metrics` |
+| `run` not passing the metrics block | `test_run_evaluation_hands_the_configured_metrics_block_to_the_driver` |
+
+**Not proved:**
+- That the weights *change* the BCI end to end. The driver test replays identical runs, so every
+  component is 1.0 and any weighting yields 100; the test pins the hand-off instead.
+- The staleness signature is a regex. A read spelled some other way (a `getattr` with a string, or
+  a variable one hop removed) would not trip it.

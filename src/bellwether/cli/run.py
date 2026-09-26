@@ -375,6 +375,15 @@ def run_evaluation(
     weights = resolve_capability_weights(resolved.profile.metrics.capability_risk_weights)
     applied_baseline: PlatformBaseline | None = None
     baseline_notes: list[str] = []
+    not_built = config.not_built_settings()
+    if not_built:
+        # Disclosed in the verdict, not only in `doctor`: whoever reads the report did not
+        # necessarily read the config, and must not assume a setting in it was applied.
+        baseline_notes.append(
+            f"config.yaml sets {len(not_built)} setting(s) this build does not act on: "
+            + ", ".join(path for path, _reason in not_built)
+            + " (bellwether doctor says why)"
+        )
     if platform_baseline is not None:
         applicable, why = platform_baseline.applicable_to(config.sandbox.image)
         if applicable:
@@ -462,6 +471,9 @@ def run_evaluation(
         # §13.2: the configured retry budget for transient infrastructure errors. Parsed for as
         # long as the config has existed and read by nothing until this line.
         retry_on_infra_error=config.execution.retry_on_infra_error,
+        # §13.7 / §13.4: the metrics block, validated by doctor and — until this — never used.
+        bci_weights=config.metrics.bci_weights.model_dump(),
+        trajectory_cluster_threshold=config.metrics.trajectory_cluster_threshold,
         on_retry=baseline_notes.append,
     )
     if caching is not None and caching.bypassed:

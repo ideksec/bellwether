@@ -494,6 +494,8 @@ def drive_evaluation(
     platform_baseline: PlatformBaseline | None = None,
     sensitive_directories: tuple[str, ...] = SENSITIVE_DIRECTORIES,
     retry_on_infra_error: int = 0,
+    bci_weights: Mapping[str, float] | None = None,
+    trajectory_cluster_threshold: float = 0.2,
     sleep: Callable[[float], None] = time.sleep,
     on_retry: Callable[[str], None] | None = None,
 ) -> list[SetReading]:
@@ -636,6 +638,8 @@ def drive_evaluation(
                 profile=profile,
                 weights=weights,
                 looks=looks_of(scenario_id),
+                bci_weights=bci_weights,
+                trajectory_cluster_threshold=trajectory_cluster_threshold,
             )
             if reading.look_outcome != "continue":
                 break
@@ -658,6 +662,8 @@ def drive_evaluation(
             profile=profile,
             weights=weights,
             looks=looks_of(scenario_id),
+            bci_weights=bci_weights,
+            trajectory_cluster_threshold=trajectory_cluster_threshold,
         )
         for scenario_id, slug, target in order
     ]
@@ -1440,6 +1446,8 @@ def aggregate(
     profile: ProfileSpec,
     weights: Mapping[str, int] | None = None,
     looks: Sequence[int] | None = None,
+    bci_weights: Mapping[str, float] | None = None,
+    trajectory_cluster_threshold: float = 0.2,
 ) -> SetReading:
     """Roll a repetition set up through the §13 metrics into one reading.
 
@@ -1447,6 +1455,10 @@ def aggregate(
     ``profile.matrix``, so a configured non-default schedule is scored with its own
     correction rather than the hard-coded three-look constant. ``looks`` overrides the
     schedule for one set — how a scenario's own §7.2 ``looks``/``n_max`` reach the metrics.
+
+    ``bci_weights`` and ``trajectory_cluster_threshold`` are the config's ``metrics`` block
+    (§13.7, §13.4). Both were validated by ``doctor`` and then ignored: the BCI was always
+    composed from the default table and trajectories always cut at 0.2, whatever the operator set.
     """
     look_points = list(looks) if looks is not None else list(profile.matrix.looks)
     boundary_z = profile.matrix.boundary_z
@@ -1472,7 +1484,9 @@ def aggregate(
     # The calibrated floor rides in so the metric itself decides `at_noise_floor` (§13.4):
     # the decision lives beside the number it qualifies, not in a renderer.
     trajectory = summarise_trajectory(
-        [run.steps for run in runs], noise_floor_distance=NOISE_FLOOR_TRAJECTORY
+        [run.steps for run in runs],
+        threshold=trajectory_cluster_threshold,
+        noise_floor_distance=NOISE_FLOOR_TRAJECTORY,
     )
 
     components: dict[str, float | None] = {
@@ -1482,7 +1496,7 @@ def aggregate(
         "trigger": None,
         "output": None,
     }
-    bci = compute_bci(components, pass_rate=stability.pass_rate)
+    bci = compute_bci(components, weights=bci_weights, pass_rate=stability.pass_rate)
 
     look = _look_reached(stability.denominators.n_evaluable, look_points)
     decision = decide_at_look(

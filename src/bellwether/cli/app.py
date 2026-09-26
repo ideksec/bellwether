@@ -229,6 +229,22 @@ def doctor(
             }
         )
 
+    # A setting the schema accepts and this build does not act on reads, to anyone editing the
+    # file, like one that is honoured. Say which, and why, rather than let the file promise it.
+    not_built = loaded_config.not_built_settings()
+    checks.append(
+        {
+            "check": "settings not built in this version",
+            "status": "warn" if not_built else "ok",
+            "detail": (
+                "config.yaml sets these, and nothing in this build acts on them: "
+                + "; ".join(f"{path} ({reason})" for path, reason in not_built)
+                if not_built
+                else "every setting in config.yaml is acted on"
+            ),
+        }
+    )
+
     # §13.7: a BCI component weighted 0 does not disable the component — it silently drops it
     # from the composite (use metrics.components_excluded to disable one). The config model
     # already rejects a weight set that does not sum to 1.0, so what remains to catch here is a
