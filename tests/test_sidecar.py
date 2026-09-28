@@ -304,7 +304,7 @@ def test_the_sidecar_never_relays_raw_tcp() -> None:
     assert "rawtcp=false" in argv
 
 
-@pytest.mark.parametrize("setting", ["rawtcp", "block_global", "confdir"])
+@pytest.mark.parametrize("setting", ["rawtcp", "block_global", "confdir", "stream_large_bodies"])
 def test_extra_settings_may_not_loosen_an_enforcement_setting(setting: str) -> None:
     from pathlib import PurePosixPath
 

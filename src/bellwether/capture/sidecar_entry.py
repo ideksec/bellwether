@@ -205,11 +205,14 @@ class _RecordingAddon:
     ``request.content`` raise, and the request went out undecided). Each hook therefore turns any
     failure into a recorded refusal, and if even rendering the refusal fails, kills the flow.
 
-    Three hooks, because HTTP requests are not the only thing a proxy relays:
+    Four kinds of hook, because HTTP requests are not the only thing a proxy relays:
 
     * ``http_connect`` gates a ``CONNECT`` tunnel on the allowlist *before* mitmproxy dials it —
       without it, mitmproxy answers ``200 Connection established`` to any host:port.
     * ``request`` decides each HTTP request, inside a tunnel or not.
+    * ``websocket_message`` decides each client-to-server frame after a permitted upgrade —
+      recorded, scanned for canaries, charged to the caps — which mitmproxy otherwise relays
+      with only the upgrade request on record.
     * ``tcp_start``/``tcp_message`` refuse a raw-TCP stream (bytes that are neither TLS nor HTTP,
       which mitmproxy otherwise relays verbatim and no request hook ever sees). ``rawtcp=false``
       on the command line stops mitmproxy choosing that layer at all; these are the backstop, and
@@ -261,6 +264,46 @@ class _RecordingAddon:
         for message in messages[-1:]:
             message.content = b""
         self._kill(flow)
+
+    def websocket_message(self, flow: Any) -> None:
+        """Decide each client-to-server frame; a refused frame is dropped and the socket closed.
+
+        A server-to-client frame is not the sandbox's egress and passes untouched. Anything that
+        fails — reading the frame, deciding it, or recording the decision — drops the frame rather
+        than relaying it undecided, the same fail-closed rule as the other hooks.
+        """
+        message: Any = None
+        try:
+            message = flow.websocket.messages[-1]
+            if not message.from_client:
+                return
+            request = flow.request
+            block = self._addon.on_websocket_message(
+                request.host,
+                request.port,
+                scheme=request.scheme,
+                path=request.path,
+                content=message.content,
+                sni=client_sni(flow),
+            )
+        except Exception as error:
+            block = self._error(flow, "websocket_message", error)
+        try:
+            self._flush()
+        except Exception as error:
+            block = block or BlockResponse(
+                status=BLOCK_STATUS_ERROR,
+                reason=f"the flow log could not be written ({type(error).__name__})",
+            )
+        if block is None:
+            return
+        # mitmproxy relays the frame after this hook returns; ``drop`` is what stops it. The socket
+        # is *not* closed: measured against mitmproxy 12.2.3, ``flow.kill()`` on a WebSocket flow
+        # marks it and keeps relaying later frames. So the control is this hook deciding every
+        # frame — past a cap each one is refused on its own, as the cap stays exceeded.
+        if message is not None:
+            with contextlib.suppress(Exception):
+                message.drop()
 
     def done(self) -> None:
         self._flush()

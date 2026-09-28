@@ -3889,8 +3889,8 @@ Reproduced after: with the CA, one `https` flow and confirmation; without it, a 
 rejection and no flow. Two new offline wiring tests fail on the old probe on behaviour.
 
 **Not addressed here.** WebSocket frames after a permitted upgrade are relayed without a canary scan
-(the upgrade request itself is decided); a `CONNECT` to a permitted host is decided on the host
-alone, not the port.
+(the upgrade request itself is decided) — *since fixed, see "§10.5.0 — WebSocket frames are egress"*;
+a `CONNECT` to a permitted host is decided on the host alone, not the port.
 
 
 ## §11.4, §12.6, §13.5.4 — one path, every spelling: `//` was a way past the gate
@@ -4386,3 +4386,62 @@ that `sandbox.backend` refuses rather than degrades.
   component is 1.0 and any weighting yields 100; the test pins the hand-off instead.
 - The staleness signature is a regex. A read spelled some other way (a `getattr` with a string, or
   a variable one hop removed) would not trip it.
+
+
+## §10.5.0, §10.5.1, §10.5.2 — WebSocket frames are egress
+
+**Found by** the open-limitations list (2026-09), reproduced against the pinned mitmproxy 12.2.3
+with the real `sidecar/proxy/proxy_entry.py`, a local WebSocket server on an allowlisted host, and
+a planted canary. After the `GET` upgrade (decided by the `request` hook), mitmproxy relays frames
+through `websocket_message`, which the addon did not implement. Two consequences:
+- a frame carrying the canary reached the server with **one** flow on record, the upgrade, and no
+  canary hit;
+- frames were **uncounted**: 21 went through a proxy with `max_requests=5`. An open socket was
+  unbounded bandwidth past the §10.5.1 residual-channel caps.
+
+**What changed.** `websocket_message` hands every client-to-server frame to
+`ProxyAddon.on_websocket_message`, which runs `decide_request` exactly as for a request body
+(method `WEBSOCKET`, scheme `ws`/`wss`, the upgrade's host and path):
+- the frame is recorded as a flow;
+- it is scanned for canaries, and any hit is recorded by reference;
+- it is charged to the caps, and a frame that would cross a cap is refused.
+
+A refused frame, one that raises while being decided, or one the flow log cannot record is
+dropped with `message.drop()`. Server-to-client frames are not the sandbox's egress and pass
+unrecorded.
+
+**`kill` does not close a WebSocket.** Measured on 12.2.3: `flow.kill()` on a WebSocket flow marks
+it killed and mitmproxy keeps relaying later frames through the same hook. Frames sent after the
+kill, including one two seconds later, reached the server. The control is therefore the hook
+deciding *every* frame. Past a cap, each later frame is refused on its own, because the cap stays
+exceeded. The socket stays open until the client closes it.
+
+**Parity, not more.** A canary in a frame is recorded and forwarded, as a canary in an HTTP body
+is; the verdict's `security_runtime.canaries` gate is what blocks. A frame refused by a cap is
+recorded, as an HTTP request refused by a cap is, with the 429-style refusal. Whether a cap refusal
+of either kind reaches the run as `exit_reason: budget_exceeded` (the `CapLedger` docstring says it
+does) was not checked here and is worth its own look.
+
+**Measured** (real mitmdump 12.2.3, real `proxy_entry.py`, `max_requests=5`):
+
+| Case | Before | After |
+|---|---|---|
+| Frame carrying the canary | delivered; 1 flow (the upgrade), no hit | delivered; recorded with the hit |
+| 21 frames, awaiting each echo | all 21 delivered; 1 flow | 4 delivered (upgrade + 4 = cap); the 5th dropped |
+| 9 frames without waiting, then 1 more after 2 s | — | 4 delivered, 6 dropped; 11 flows recorded |
+
+**The class, not the instance.** `test_every_relaying_mitmproxy_hook_is_implemented` checked a
+hand-written list of relaying hooks that did not include `websocket_message`, so it passed while
+frames went through undecided. The list is now `MITMPROXY_HOOKS`: all 46 hooks mitmproxy 12.2.3
+defines, each either relaying (and required to be implemented) or exempt with a stated reason.
+`test_the_vendored_hook_list_matches_the_pinned_mitmproxy` (CI container job) compares it with the
+image's real `mitmproxy.hooks.all_hooks`, so a bump that adds a hook fails the build.
+
+One exemption rests on a setting. `requestheaders` needs no decision only while request bodies
+are not streamed, so `stream_large_bodies` joins the settings `extra_settings` may not override.
+
+**Revert-checked:**
+- Removing the hook fails `test_every_relaying_mitmproxy_hook_is_implemented` and the WebSocket
+  tests.
+- Un-pinning `stream_large_bodies` fails its parametrised case.
+- The behavioural proof is the table above, run against both sources.
