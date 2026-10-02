@@ -37,7 +37,7 @@ from bellwether.capture.egress import (
     EgressFlow,
     make_flow,
 )
-from bellwether.capture.proxy_core import decide_request
+from bellwether.capture.proxy_core import ProxyDecision, decide_request
 from bellwether.determinism import canonical_json
 
 __all__ = [
@@ -171,7 +171,7 @@ class ProxyAddon:
             claimed_host=request.host_header or "",
             sni=sni,
         )
-        self._flows.append(decision.flow)
+        self._flows.append(_recorded(decision))
 
         if decision.action == "block":
             if decision.cap_exceeded is not None:
@@ -252,7 +252,7 @@ class ProxyAddon:
             canaries=self.canaries,
             sni=sni,
         )
-        self._flows.append(decision.flow)
+        self._flows.append(_recorded(decision))
         if decision.action == "forward":
             return None
         if decision.cap_exceeded is not None:
@@ -319,6 +319,20 @@ class ProxyAddon:
         return list(self._flows)
 
 
+def _recorded(decision: ProxyDecision) -> EgressFlow:
+    """The flow as it goes on record. A cap refusal was recorded as the permitted request it would
+    have been — ``blocked=False`` for a request that never left — so the egress plane showed it as
+    sent and nothing downstream could see that a cap had been hit (§10.5.1)."""
+    if decision.cap_exceeded is None:
+        return decision.flow
+    return replace(
+        decision.flow,
+        blocked=True,
+        block_reason=f"egress budget exceeded: {decision.cap_exceeded} (§10.5.1)",
+        cap_exceeded=decision.cap_exceeded,
+    )
+
+
 # ---------------------------------------------------------------------------
 # The sidecar ↔ host flow-record contract (§10.5)
 # ---------------------------------------------------------------------------
@@ -345,6 +359,7 @@ def _flow_to_dict(flow: EgressFlow) -> dict[str, Any]:
         "sni": flow.sni,
         "claimed_host": flow.claimed_host,
         "block_reason": flow.block_reason,
+        "cap_exceeded": flow.cap_exceeded,
         "canary_hits": [
             {
                 "canary_id": hit.canary_id,
@@ -389,6 +404,7 @@ def _flow_from_dict(payload: Mapping[str, Any]) -> EgressFlow:
             for hit in payload.get("canary_hits", ())
         ),
         block_reason=payload["block_reason"],
+        cap_exceeded=payload.get("cap_exceeded", ""),
     )
 
 

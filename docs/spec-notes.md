@@ -4420,7 +4420,8 @@ exceeded. The socket stays open until the client closes it.
 is; the verdict's `security_runtime.canaries` gate is what blocks. A frame refused by a cap is
 recorded, as an HTTP request refused by a cap is, with the 429-style refusal. Whether a cap refusal
 of either kind reaches the run as `exit_reason: budget_exceeded` (the `CapLedger` docstring says it
-does) was not checked here and is worth its own look.
+does) was not checked here and is worth its own look — *it did not; see "§10.5.1 — a cap refusal
+ends the run as `budget_exceeded`"*.
 
 **Measured** (real mitmdump 12.2.3, real `proxy_entry.py`, `max_requests=5`):
 
@@ -4445,3 +4446,45 @@ are not streamed, so `stream_large_bodies` joins the settings `extra_settings` m
   tests.
 - Un-pinning `stream_large_bodies` fails its parametrised case.
 - The behavioural proof is the table above, run against both sources.
+
+
+## §10.5.1, §12.7, §13.2 — a cap refusal ends the run as `budget_exceeded`
+
+**Found by** following up the WebSocket fix (2026-09). The `CapLedger` docstring says a request that
+would cross a per-run cap "is refused and the run records `exit_reason: budget_exceeded`". The first
+half held, the second did not, and the gap interacted badly with the §13.2 retry added in #94.
+
+- **The refusal was recorded as a permitted request.** `ProxyAddon` appended `decision.flow` for a
+  cap refusal, and that flow was the would-be request with `blocked=False`. The egress plane showed a
+  request that never left as sent, and nothing downstream could tell a cap had been hit.
+- **Nothing produced `budget_exceeded`.** No code read a cap refusal into the run's exit reason.
+- **On claude-code the cap became a retried "infrastructure" failure.** The proxy answers a cap
+  refusal with a 429. The CLI reports it as `api_error_status: 429`, which
+  `provider_rejection_from_events` reads as a provider rate limit, retryable under §13.2. So the run
+  was retried against a fresh proxy, which hit the same cap, and once the budget was exhausted the
+  evaluation stopped with exit 3.
+
+**What changed.**
+- A cap refusal is recorded `blocked=True` with a new `EgressFlow.cap_exceeded`. That field crosses
+  the sidecar-to-host wire and appears on the trace's egress action. The same holds for a WebSocket
+  frame over a cap.
+- The executor reads the proxy's flows before the provider-rejection check. `budget_refusal(flows)`
+  names the cap. When a cap was hit, the run's `exit_reason` is `budget_exceeded` (not_evaluable,
+  §12.7) whatever the harness made of the 429, and the 429 is not treated as the provider's.
+- Every proxy refusal now carries `x-should-retry: false`. Without it, the Anthropic SDK in the CLI
+  backs off and retries the budget 429, spending the run's wall clock on requests the proxy will
+  refuse again. A denied host and an exhausted cap are both final.
+
+**Measured** (real mitmdump 12.2.3, real `proxy_entry.py`, `max_requests=1`, two plain HTTP GETs):
+the first returns 200; the second returns `429` with `x-should-retry: false` and never reaches
+upstream. The flow log records `/req2` as `blocked=True`, `cap_exceeded='max_requests'`.
+
+**Revert-checked:**
+- Recording the refusal as sent fails the four record, wire and trace tests in
+  `tests/test_budget_refusal.py`.
+- Reading every 429 as the provider's fails `test_the_executor_asks_the_question_of_every_run`.
+- Dropping the header fails `test_a_refusal_tells_the_client_not_to_retry`.
+
+The executor's `budget_exceeded` settlement is pinned on the source offline. Its behavioural proof
+is the CI-only container test `test_a_proxy_cap_ends_a_claude_code_run_as_budget_exceeded`: the
+real CLI through a proxy capped at one request, which must end `budget_exceeded` and not raise.

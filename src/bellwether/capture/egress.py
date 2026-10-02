@@ -277,6 +277,11 @@ class EgressFlow:
     #: two agree, which is the ordinary case, so the record only carries the discrepancy.
     #: §10.5.0: the allowlist and credential injection are decided on ``host``, never on this.
     claimed_host: str = ""
+    #: The per-run cap (``max_requests`` / ``max_request_bytes``) this request would have crossed,
+    #: when that is why the proxy refused it (§10.5.1); empty otherwise. Recorded so the host can
+    #: tell its own budget refusal from a provider's rate limit — the proxy answers both with a
+    #: 429, and a run that hit a cap is ``budget_exceeded``, not an infrastructure failure.
+    cap_exceeded: str = ""
 
     @property
     def counts_as_egress(self) -> bool:
@@ -460,3 +465,8 @@ class RecordingProxy:
 
     def stop(self) -> None:
         raise NotImplementedError
+
+
+def budget_refusal(flows: Iterable[EgressFlow]) -> str:
+    """The first per-run cap the proxy refused a request on, or ``""`` if none (§10.5.1)."""
+    return next((flow.cap_exceeded for flow in flows if flow.cap_exceeded), "")

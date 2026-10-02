@@ -230,6 +230,16 @@ def test_block_response_args_is_a_plain_status_body_headers_triple() -> None:
     assert headers["content-type"].startswith("text/plain")
 
 
+def test_a_refusal_tells_the_client_not_to_retry() -> None:
+    """The budget refusal is a 429. Without ``x-should-retry: false`` the Anthropic SDK inside the
+    claude-code CLI backs off and retries it, spending the run's clock on requests that will be
+    refused again — the cap stays exceeded (§10.5.1)."""
+    _, _, headers = block_response_args(
+        BlockResponse(status=429, reason="egress budget exceeded", cap_exceeded="max_requests")
+    )
+    assert headers["x-should-retry"] == "false"
+
+
 # ---------------------------------------------------------------------------
 # load_addon_from_env — the mitmdump entry, and its refusal to run unconfigured
 # ---------------------------------------------------------------------------
