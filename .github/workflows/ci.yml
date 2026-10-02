@@ -78,8 +78,11 @@ jobs:
       # taken from (sandbox/claude-code/Dockerfile pins the same). With it on PATH the
       # offline suite drives the real binary headless against a scripted Messages API on
       # localhost — no key, no container — so a CLI format change breaks a test here.
+      # Installed from the same integrity-locked package-lock.json the sandbox image uses.
       - name: Install the Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.257
+        run: |
+          npm ci --prefix sandbox/claude-code/cli --omit=dev --no-audit --no-fund
+          echo "$PWD/sandbox/claude-code/cli/node_modules/.bin" >> "$GITHUB_PATH"
 
       # The offline suite: no API key, no daemon. The container tests are a separate
       # job so that their absence here is a deselection rather than a silent skip.

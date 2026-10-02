@@ -127,6 +127,19 @@ host and the trace. The executor settles the run as `budget_exceeded` before ask
 was the provider's. The refusal also tells the client `x-should-retry: false`, so the Anthropic SDK
 inside the CLI stops retrying it.
 
+**Every package an image installs comes from a lock that records its bytes.** The sidecars
+installed `mitmproxy==12.2.3` and `dnslib==0.9.25` by version, with their transitive closure
+floating under a single `typing-extensions` constraint, and the claude-code sandbox and CI ran
+`npm install -g` of the CLI by version: a version names a release, not its contents. Each sidecar
+now installs its whole closure from a `--generate-hashes` lock (`sidecar/*/requirements.txt`,
+compiled from `pyproject.toml` + `requirements.in`) with `--require-hashes --only-binary :all:`,
+then builds Bellwether offline against the locked hatchling and runs `pip check`. The CLI is
+installed with `npm ci` from `sandbox/claude-code/cli/package-lock.json`, in the image and in CI.
+`tools/pin_lint.py` gains rule 4, an allowlist of locked install forms over every Dockerfile,
+workflow and shell script; `tests/test_image_locks.py` holds each lock to `pyproject.toml`, its
+`requirements.in` and the golden session's CLI version. Not covered: the sandbox's `apt-get`
+packages (signed archive, floating versions), and Dependabot does not bump these locks.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -960,7 +973,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1831 tests: 1768 offline, 63 under the `docker` mark (49 run locally, 14 CI-only skips with stated reasons; all 63 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1875 tests: 1812 offline, 63 under the `docker` mark (49 run locally, 14 CI-only skips with stated reasons; all 63 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1480,10 +1493,11 @@ assertion, so a remote failure is diagnosable from the job output. The credentia
 The **container that runs the addon**, in `sidecar/proxy` — proven on CI:
 
 - **`sidecar/proxy/Dockerfile`** builds from a **digest-pinned** `python:3.12-slim`, installs
-  `mitmproxy==12.2.3` (exact — its addon API is not stable across majors), installs Bellwether from
-  `pyproject.toml` + `src` (validated: the wheel builds with a static version, so no git in the
-  image), and copies the `mitmdump` loader `sidecar/proxy/proxy_entry.py` to the fixed
-  `SIDECAR_ENTRY_PATH`. There is deliberately no `ENTRYPOINT` — the launcher passes the full
+  the hash-locked closure in `sidecar/proxy/requirements.txt` (`mitmproxy==12.2.3` exact — its
+  addon API is not stable across majors — with `--require-hashes`), builds Bellwether from
+  `pyproject.toml` + `src` offline against the locked build backend (validated: the wheel builds
+  with a static version, so no git in the image), and copies the `mitmdump` loader
+  `sidecar/proxy/proxy_entry.py` to the fixed `SIDECAR_ENTRY_PATH`. There is deliberately no `ENTRYPOINT` — the launcher passes the full
   `mitmdump … -s …` argv so the exact command stays recordable, as the sandbox backend does.
 - **`tools/pin_lint.py` now also lints Dockerfiles** — every `FROM` that names a registry image must
   carry an `@sha256:` digest (build-stage `FROM`s and `scratch` exempt). A floating base is the same

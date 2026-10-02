@@ -47,3 +47,6 @@ secrets/
 .idea/
 .vscode/
 .DS_Store
+
+# The claude-code CLI lock's install tree (sandbox/claude-code/cli; `npm ci` recreates it).
+node_modules/

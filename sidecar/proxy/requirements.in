@@ -1,0 +1,14 @@
+# The recording-proxy sidecar's direct requirements, compiled together with Bellwether's own
+# runtime dependencies (pyproject.toml) into the hash-locked closure the image installs:
+#
+#   uv pip compile --universal --python-version 3.12 --generate-hashes \
+#       pyproject.toml sidecar/proxy/requirements.in -o sidecar/proxy/requirements.txt
+#
+# Re-run it after bumping anything here or in pyproject.toml's `dependencies`;
+# tests/test_image_locks.py fails the build when the lock no longer satisfies either.
+
+# The addon API is not stable across majors (§22): bump deliberately.
+mitmproxy==12.2.3
+# The build backend, so Bellwether is built from the lock with --no-build-isolation rather than
+# from a backend pip fetches unhashed into an isolated build environment.
+hatchling>=1.27

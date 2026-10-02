@@ -20,6 +20,14 @@ graph are enforced — by failing the build, not by convention:
    value that carries a tag but no ``@sha256:`` digest (and is not a ``$VAR``) is flagged.
 3. **Every Dockerfile ``FROM`` is pinned by digest.** The sidecar image builds from a base; a
    floating base tag is the same mutable-input hole as a floating action, one layer down.
+4. **Every package a Dockerfile, workflow or shell script installs comes from a lock that
+   records its bytes.** A version pin (``mitmproxy==12.2.3``, ``pkg@2.1.257``) names a release,
+   not its contents. The check is an allowlist of *locked forms*, not a list of bad ones: ``pip
+   install`` must carry ``--require-hashes`` (or ``--no-index``, which fetches nothing), and
+   ``npm`` may run only subcommands that install nothing from a manifest (``npm ci`` installs
+   exactly ``package-lock.json`` and checks each ``integrity``). Any other package manager is
+   refused until its locked form is added here. OS packages (``apt-get``) are out of scope:
+   they come from a signed distribution archive, which pins their origin but not their version.
 
 Run: ``uv run python tools/pin_lint.py`` (CI runs it on every push).
 """
@@ -186,6 +194,103 @@ def check_dockerfile(path: Path) -> list[str]:
     return problems
 
 
+#: A shell command boundary. Splitting on these isolates each simple command, so ``cd x && npm
+#: install`` is judged on ``npm install``. A heuristic, not a shell parser — it is paired with an
+#: allowlist, so a spelling it fails to split is flagged rather than passed.
+_SHELL_BOUNDARY = re.compile(r"&&|\|\||[;|()`]|\$\(")
+#: Leading tokens that wrap a command without changing which program runs.
+_COMMAND_WRAPPERS = frozenset({"sudo", "-E", "exec", "command", "env", "time", "nohup"})
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_PIP = re.compile(r"^pip[0-9.]*$")
+_PYTHON = re.compile(r"^python[0-9.]*$")
+#: The npm subcommands that install nothing from a manifest. ``ci`` installs ``package-lock.json``
+#: exactly and refuses a tarball whose ``integrity`` differs; the rest read or clean. Everything
+#: else — ``install`` and its many aliases (``i``, ``add``, ``isntall``...), ``update``, ``exec``
+#: — is refused, which is why this is an allowlist: npm's alias table is longer than any
+#: denylist would stay.
+_NPM_LOCKED = frozenset({"ci", "cache", "view", "ls", "run", "test", "config"})
+#: Package managers with no locked form recognised here yet: refused outright, not passed.
+_UNRECOGNISED_INSTALLERS = frozenset({"npx", "yarn", "pnpm", "bun", "pipx", "gem", "cargo"})
+
+
+def _subcommand(args: list[str]) -> str | None:
+    """The first non-flag argument (``pip --no-cache-dir install`` → ``install``), or None."""
+    return next((arg for arg in args if not arg.startswith("-")), None)
+
+
+def install_problems(command: str) -> list[str]:
+    """Each package install in a shell command line that does not install from a lock (rule 4)."""
+    problems: list[str] = []
+    for segment in _SHELL_BOUNDARY.split(command):
+        tokens = segment.replace('"', " ").replace("'", " ").replace(",", " ").split()
+        # Exec-form RUN (`RUN ["pip", "install", ...]`) and a YAML list item / `run:` key.
+        tokens = [token.strip("[]") for token in tokens if token.strip("[]")]
+        while tokens and (
+            tokens[0] in _COMMAND_WRAPPERS
+            or tokens[0] in {"-", "run:", "RUN"}
+            or _ENV_ASSIGNMENT.match(tokens[0])
+        ):
+            tokens.pop(0)
+        if not tokens:
+            continue
+        tool, args = tokens[0].rsplit("/", 1)[-1], tokens[1:]
+        if _PYTHON.match(tool) and args[:2] == ["-m", "pip"]:
+            tool, args = "pip", args[2:]
+        elif tool == "uv" and args[:1] == ["pip"]:
+            tool, args = "pip", args[1:]
+        if _PIP.match(tool):
+            if _subcommand(args) == "install" and not (
+                "--require-hashes" in args or "--no-index" in args
+            ):
+                problems.append(
+                    f"'{' '.join(tokens)}' installs without --require-hashes; install from a "
+                    f"hash-locked requirements file (or --no-index for a local build)"
+                )
+        elif tool == "npm":
+            sub = _subcommand(args)
+            if sub is not None and sub not in _NPM_LOCKED:
+                problems.append(
+                    f"'{' '.join(tokens)}' is not a locked npm install; commit a "
+                    f"package-lock.json and install it with 'npm ci'"
+                )
+        elif tool in _UNRECOGNISED_INSTALLERS:
+            problems.append(
+                f"'{' '.join(tokens)}' uses {tool}, which has no locked form recognised by "
+                f"tools/pin_lint.py; add one there or install through a lock it accepts"
+            )
+    return problems
+
+
+def _logical_lines(path: Path) -> list[tuple[int, str]]:
+    """Non-comment lines with ``\\`` continuations joined, each with its first line number."""
+    lines: list[tuple[int, str]] = []
+    pending: list[str] = []
+    start = 0
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if raw.lstrip().startswith("#"):
+            continue
+        if not pending:
+            start = number
+        if raw.rstrip().endswith("\\"):
+            pending.append(raw.rstrip()[:-1])
+            continue
+        pending.append(raw)
+        lines.append((start, " ".join(pending)))
+        pending = []
+    if pending:
+        lines.append((start, " ".join(pending)))
+    return lines
+
+
+def check_installs(path: Path) -> list[str]:
+    """Rule 4 over one Dockerfile, workflow or shell script."""
+    return [
+        f"{path}:{number}: {problem}"
+        for number, line in _logical_lines(path)
+        for problem in install_problems(line)
+    ]
+
+
 def main(argv: list[str]) -> int:
     root = Path(argv[1]) if len(argv) > 1 else Path()
     workflow_root = root / ".github" / "workflows" if root == Path() else root
@@ -198,6 +303,11 @@ def main(argv: list[str]) -> int:
         # object store is not this project's supply-chain input.
         if not any(part in _IGNORED_DIRS for part in path.parts)
     ]
+    scripts = [
+        path
+        for path in sorted(root.rglob("*.sh"))
+        if not any(part in _IGNORED_DIRS for part in path.parts)
+    ]
     if not workflows and not dockerfiles:
         print(f"pin-lint: no workflow or Dockerfile inputs under {root}", file=sys.stderr)
         return 0
@@ -207,19 +317,22 @@ def main(argv: list[str]) -> int:
         problems.extend(check_workflow(path))
     for path in dockerfiles:
         problems.extend(check_dockerfile(path))
+    for path in [*workflows, *dockerfiles, *scripts]:
+        problems.extend(check_installs(path))
 
     if problems:
         print("\n".join(problems), file=sys.stderr)
         print(
             f"\n{len(problems)} unpinned supply-chain input(s). Bellwether pins every action "
-            f"by commit SHA and every image by digest; see tools/pin_lint.py.",
+            f"by commit SHA, every image by digest and every installed package by a lock that "
+            f"records its bytes; see tools/pin_lint.py.",
             file=sys.stderr,
         )
         return 1
 
     print(
-        f"pin-lint: {len(workflows)} workflow + {len(dockerfiles)} Dockerfile input(s) — "
-        f"every action and image is pinned."
+        f"pin-lint: {len(workflows)} workflow + {len(dockerfiles)} Dockerfile + {len(scripts)} "
+        f"script input(s) — every action and image is pinned, every install is locked."
     )
     return 0
 
