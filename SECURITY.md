@@ -49,10 +49,17 @@ and where it is enforced:
   `examples/live` configs use locally built tags.
 - **Python dependencies** are hash-pinned in `uv.lock`; `uv sync --frozen` verifies every
   recorded hash on install, so a tampered wheel on the index fails the build rather than
-  entering it. `uv` and the Python version are pinned in CI too. The proxy and resolver
-  sidecar images pin their direct dependencies by version but install without
-  `--require-hashes`, and the claude-code sandbox installs the CLI with `npm install` at a
-  pinned version without a lockfile — both are open items.
+  entering it. `uv` and the Python version are pinned in CI too.
+- **Image packages** are locked the same way. The proxy and resolver sidecars install their whole
+  Python closure from a `--generate-hashes` lock (`sidecar/*/requirements.txt`) with
+  `pip install --require-hashes --only-binary :all:`, and build Bellwether itself offline against
+  the locked build backend. The claude-code sandbox, and CI's offline suite, install the CLI with
+  `npm ci` from a committed `package-lock.json`, which refuses a tarball whose sha512 differs from
+  the recorded `integrity`. `tools/pin_lint.py` fails the build on any `pip install` without
+  `--require-hashes` and any `npm` subcommand other than a locked one, in every Dockerfile,
+  workflow and shell script. **Not covered:** the sandbox's `apt-get` packages come from Debian's
+  signed archive — their origin is pinned, their version is not — and Dependabot does not yet
+  propose bumps to these locks.
 - **`.github/dependabot.yml`** keeps these pins current, because a pin that never updates
   is its own risk; each bump is a reviewed PR that CI re-verifies.
 
