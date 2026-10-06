@@ -49,8 +49,10 @@ measurement, including the rows that come back unproved and why.** The matcher w
 to **normalise rather than enumerate**: three of the four rounds' headline findings were
 regressions from the previous round's fix in the same predicate, which is what a blacklist does —
 every reject-clause has an unenumerated spelling. Reduce an input to what it certainly means, then
-compare; do not list the ways it can be wrong. Five of thirteen `security_runtime` dispositions are enforced, eight remain
-inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise.
+compare; do not list the ways it can be wrong. Six of thirteen `security_runtime` dispositions are enforced, seven remain
+inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. The sixth,
+`unexpected_provider_endpoint`, holds every request to a provider host to §10.5.2's shape at the
+proxy — the expected shape was *observed* from the pinned CLI binary, not inferred from its path list.
 An **independent external review** then found twelve real defects (one critical: the proxy
 authorised a `Host` header the evaluated container writes, so a spoofed request could collect the
 real provider key). All twelve are fixed and revert-proved, and the round ended with four

@@ -18,6 +18,7 @@ import pytest
 
 from bellwether.capture import (
     CredentialBroker,
+    ProviderRequestShape,
     SidecarConfig,
     block_response_args,
     build_addon,
@@ -30,6 +31,13 @@ from bellwether.determinism import SeededRng
 _REAL_KEY = "sk-real-ANTHROPIC-secret-value"
 _HOST_ENVIRON = {"ANTHROPIC_API_KEY": _REAL_KEY}
 _TS = "2026-08-06T00:00:00+00:00"
+#: The §10.5.2 shape the provider host is held to. Every config here carries one, because a
+#: sidecar config without shapes is refused at load (``provider_shapes`` is required).
+_SHAPES = {
+    "api.anthropic.com": ProviderRequestShape(paths=("/v1/messages",), model_ids=("fake-model-v1",))
+}
+#: A request body the shape rule admits: a model call naming the configured model.
+_MODEL_BODY = b'{"model": "fake-model-v1", "messages": []}'
 
 
 @dataclass
@@ -45,7 +53,9 @@ class _FakeRequest:
     port: int = 443
     path: str = "/v1/messages"
     headers: dict[str, str] = field(default_factory=dict)
-    content: bytes | None = b""
+    #: A model call by default, because the sidecar holds the provider host to §10.5.2's shape
+    #: and an empty body to it is refused as "no model named".
+    content: bytes | None = _MODEL_BODY
 
     def __post_init__(self) -> None:
         if self.host_header is None:
@@ -74,6 +84,7 @@ def _config(broker: CredentialBroker, flow_log: str) -> SidecarConfig:
         max_requests=100,
         max_request_bytes=1_000_000,
         flow_log_path=flow_log,
+        provider_shapes=_SHAPES,
     )
 
 
@@ -143,6 +154,7 @@ def test_the_config_round_trips_canary_markers() -> None:
         max_requests=base.max_requests,
         max_request_bytes=base.max_request_bytes,
         flow_log_path=base.flow_log_path,
+        provider_shapes=base.provider_shapes,
         canary_markers=tuple((c.id, c.marker) for c in canaries),
     )
     assert SidecarConfig.from_json(config.to_json()) == config
@@ -162,6 +174,7 @@ def test_build_addon_scans_a_body_for_the_configs_canaries() -> None:
         max_requests=100,
         max_request_bytes=1_000_000,
         flow_log_path="/shared/flows.jsonl",
+        provider_shapes=_SHAPES,
         canary_markers=tuple((c.id, c.marker) for c in canaries),
     )
     addon = build_addon(config, _HOST_ENVIRON, clock=lambda: _TS)
@@ -209,6 +222,7 @@ def test_build_addon_enforces_caps_from_config() -> None:
         max_requests=1,
         max_request_bytes=1_000_000,
         flow_log_path="/shared/flows.jsonl",
+        provider_shapes=_SHAPES,
     )
     addon = build_addon(config, _HOST_ENVIRON, clock=lambda: _TS)
     assert addon.on_request(_FakeRequest()) is None  # first forwards

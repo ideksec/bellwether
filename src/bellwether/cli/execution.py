@@ -97,6 +97,7 @@ from bellwether.trace import (
     filesystem_actions,
     harness_actions,
     model_channel_actions,
+    provider_endpoint_actions,
     provider_rejection_from_events,
     read_trace,
     redact_trace_actions,
@@ -786,6 +787,11 @@ class SandboxRunExecutor:
             if rejection is not None:
                 raise rejection
             plane_d = egress_actions(egress_flows, start_seq=len(plane_a) + len(plane_b))
+            # §10.5.2: a request to a provider host the proxy refused for not being a model
+            # call is a `high` finding, anchored to the refusal it is read from.
+            plane_d += provider_endpoint_actions(
+                plane_d, start_seq=len(plane_a) + len(plane_b) + len(plane_d)
+            )
             # Plane E: what the controlled resolver saw. Read while the resolver is still up (before
             # the finally closes it). Absent a resolver, there is no DNS plane and coverage says so.
             dns_queries = run_resolver.queries() if run_resolver is not None else []

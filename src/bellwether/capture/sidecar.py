@@ -33,6 +33,7 @@ from pathlib import Path, PurePosixPath
 from bellwether.capture.canary import Canary
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import CapLedger, EgressAllowlist, EgressFlow, RecordingProxy
+from bellwether.capture.provider_shape import ProviderRequestShape
 from bellwether.capture.proxy_addon import read_flow_records
 from bellwether.capture.sidecar_entry import CONFIG_ENV_VAR, SidecarConfig
 from bellwether.errors import BellwetherError
@@ -116,6 +117,9 @@ class MitmproxySidecar(RecordingProxy):
     #: a setting that changed what the proxy does would change what the trace means. The §9.2
     #: interception probe is the one caller, and it says why in its own module.
     extra_settings: Mapping[str, str] = field(default_factory=dict)
+    #: Per provider endpoint host, the request shape the sidecar holds it to (§10.5.2). Built
+    #: beside ``provider_of_host`` from the same configured providers; carried into the config.
+    provider_shapes: Mapping[str, ProviderRequestShape] = field(default_factory=dict)
     _handle: SidecarHandle | None = field(default=None, repr=False)
 
     def _network_is_user_defined(self) -> bool:
@@ -194,6 +198,7 @@ class MitmproxySidecar(RecordingProxy):
             max_requests=caps.max_requests,
             max_request_bytes=caps.max_request_bytes,
             flow_log_path=str(SIDECAR_SHARED_MOUNT / _FLOW_LOG_NAME),
+            provider_shapes=dict(self.provider_shapes),
             listen_port=self.listen_port,
             canary_markers=tuple((canary.id, canary.marker) for canary in canaries),
         )

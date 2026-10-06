@@ -37,6 +37,7 @@ from bellwether.capture.egress import (
     EgressFlow,
     make_flow,
 )
+from bellwether.capture.provider_shape import ProviderRequestShape
 from bellwether.capture.proxy_core import ProxyDecision, decide_request
 from bellwether.determinism import canonical_json
 
@@ -138,6 +139,9 @@ class ProxyAddon:
     #: The run's planted canaries. ``decide_request`` scans each request body for their markers and
     #: records any hit on the flow by reference (§10.5.2); empty when planting is off.
     canaries: tuple[Canary, ...] = ()
+    #: Per provider endpoint host, the request shape it is expected to receive (§10.5.2).
+    #: ``decide_request`` refuses a request to a provider host that is not a model call.
+    provider_shapes: Mapping[str, ProviderRequestShape] = field(default_factory=dict)
     _flows: list[EgressFlow] = field(default_factory=list, repr=False)
 
     def on_request(self, request: RequestLike, *, sni: str = "") -> BlockResponse | None:
@@ -170,6 +174,7 @@ class ProxyAddon:
             canaries=self.canaries,
             claimed_host=request.host_header or "",
             sni=sni,
+            provider_shapes=self.provider_shapes,
         )
         self._flows.append(_recorded(decision))
 
@@ -251,6 +256,7 @@ class ProxyAddon:
             caps=self.caps,
             canaries=self.canaries,
             sni=sni,
+            provider_shapes=self.provider_shapes,
         )
         self._flows.append(_recorded(decision))
         if decision.action == "forward":
@@ -360,6 +366,7 @@ def _flow_to_dict(flow: EgressFlow) -> dict[str, Any]:
         "claimed_host": flow.claimed_host,
         "block_reason": flow.block_reason,
         "cap_exceeded": flow.cap_exceeded,
+        "shape_violation": flow.shape_violation,
         "canary_hits": [
             {
                 "canary_id": hit.canary_id,
@@ -405,6 +412,7 @@ def _flow_from_dict(payload: Mapping[str, Any]) -> EgressFlow:
         ),
         block_reason=payload["block_reason"],
         cap_exceeded=payload.get("cap_exceeded", ""),
+        shape_violation=payload.get("shape_violation", ""),
     )
 
 

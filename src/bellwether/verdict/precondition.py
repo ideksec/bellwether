@@ -233,6 +233,25 @@ def check_preconditions(
                     ),
                 )
             )
+        # The provider-endpoint gate (§10.5.2) is decided from the same proxy record as the
+        # egress gate: with no proxy in the composition, no request to a provider host is ever
+        # seen, so the gate would sit not_evaluable and block after the matrix was paid for.
+        if gates.security_runtime.unexpected_provider_endpoint == "block" and not target.observes(
+            "egress_observable"
+        ):
+            failures.append(
+                PreconditionFailure(
+                    gate="security_runtime.unexpected_provider_endpoint",
+                    target=target.label,
+                    remedy=(
+                        "requests to the provider are not observable for this target (no "
+                        "recording proxy in the composition), so the provider-endpoint gate "
+                        "would be not_evaluable and block after the matrix was paid for; "
+                        "configure egress.image to wire the proxy, or set "
+                        "unexpected_provider_endpoint to 'warn'"
+                    ),
+                )
+            )
         if gates.security_runtime.dns_outside_allowlist == "block" and not target.observes(
             "dns_observable"
         ):

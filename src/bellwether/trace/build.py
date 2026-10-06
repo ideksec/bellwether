@@ -252,6 +252,8 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
             payload["block_reason"] = flow.block_reason
         if flow.cap_exceeded:
             payload["cap_exceeded"] = flow.cap_exceeded
+        if flow.shape_violation:
+            payload["shape_violation"] = flow.shape_violation
 
         actions.append(
             Action(
@@ -262,6 +264,44 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
                 action=payload,
             )
         )
+    return actions
+
+
+def provider_endpoint_actions(plane_d: Iterable[Action], *, start_seq: int = 0) -> list[Action]:
+    """Derive the §10.5.2 ``unexpected_provider_endpoint`` findings from Plane D (§11.3).
+
+    The proxy refuses a request to a provider host that is not a model call and records the
+    rule it broke on the flow (``shape_violation``); this turns each such refusal into one
+    finding action, ``high`` by classification, anchored to the ``egress_blocked`` record that
+    carries the request itself — the same by-reference shape a Plane C canary finding takes.
+    The finding is a reading of the blocked record, not a second event: it is excluded from
+    the trajectory (``canonical._NON_STEP_KINDS``), so one refused request is one step.
+
+    Deterministic: findings follow Plane D's order (§24).
+    """
+    actions: list[Action] = []
+    seq = start_seq
+    for source in plane_d:
+        violation = source.action.get("shape_violation")
+        if source.kind != "egress_blocked" or not isinstance(violation, str) or not violation:
+            continue
+        actions.append(
+            Action(
+                seq=seq,
+                ts=source.ts,
+                plane="egress",
+                kind="unexpected_provider_endpoint",
+                action={
+                    "host": source.action.get("host"),
+                    "method": source.action.get("method"),
+                    "path": source.action.get("path"),
+                    "severity": "high",
+                    "reason": violation,
+                },
+                correlation=Correlation(anchor_seq=source.seq),
+            )
+        )
+        seq += 1
     return actions
 
 

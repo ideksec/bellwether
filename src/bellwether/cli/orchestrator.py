@@ -302,6 +302,15 @@ class AnalysedRun:
     #: A Plane C ``canary_without_read`` finding was recorded: a planted canary reached the
     #: model's context with no recorded read carrying it there (§10.4.1, high).
     canary_without_read: bool = False
+    #: The egress plane supports an absence claim for this run (§10.8): the recording proxy
+    #: decided every request, so "every request to a provider host was a model call" is an
+    #: earned absence rather than an unwatched one. The §10.5.2 provider-endpoint gate's pass
+    #: rests on it.
+    provider_requests_observed: bool = False
+    #: A Plane D ``unexpected_provider_endpoint`` finding was recorded: a request to a provider
+    #: host was refused for not being a model call (§10.5.2, high). What turns the
+    #: provider-endpoint gate from pass to block.
+    unexpected_provider_endpoint: bool = False
     #: The trace footer's exit reason. §12.7 folds a ``timeout`` into the ``fail`` outcome
     #: for the pass-rate arithmetic, but §24 requires it counted and drawn as a *distinct*
     #: state — a skill that never finishes is not a skill that finished wrong — so the
@@ -1227,6 +1236,10 @@ def analyse_run(
         # scan defers rather than passing on the channel it never watched.
         canary_reads_observed=index.plane_reason("credentials", for_absence=True) is None,
         canary_without_read=index.canary_without_read_present,
+        # §10.5.2: the gate's pass is an absence claim over every request to a provider host,
+        # so it takes §10.8's stricter bar on the egress plane; a hit is read off the finding.
+        provider_requests_observed=index.plane_reason("egress", for_absence=True) is None,
+        unexpected_provider_endpoint=index.unexpected_provider_endpoint_present,
         exit_reason=trace.exit_reason,
         scope_unused=scope_unused,
         scope_not_evaluable=scope_not_evaluable,
@@ -1351,6 +1364,14 @@ class SetReading:
     #: At least one run recorded a Plane E ``dns_blocked`` — a lookup outside the allowlist
     #: somewhere in the set (§10.6).
     dns_blocked: bool = False
+    #: The recording proxy decided every request on *every* run in the set at
+    #: absence-supporting fidelity (§10.5.2, §10.8) — the completeness bar the other security
+    #: gates take: one unobserved run leaves the set's provider-request evidence incomplete
+    #: and the gate defers.
+    provider_requests_observed: bool = False
+    #: At least one run recorded an ``unexpected_provider_endpoint`` — a request to a provider
+    #: host that was not a model call, somewhere in the set (§10.5.2).
+    unexpected_provider_endpoint: bool = False
     #: The measured dispersion is at or below the calibrated §24 noise floor — the
     #: instrument cannot distinguish this set from identical input, so the report renders
     #: the qualitative label and withholds the precise figure (§13.4).
@@ -1592,6 +1613,10 @@ def aggregate(
         ),
         canary_reads_observed=len(runs) > 0 and all(run.canary_reads_observed for run in runs),
         canary_without_read=any(run.canary_without_read for run in runs),
+        provider_requests_observed=(
+            len(runs) > 0 and all(run.provider_requests_observed for run in runs)
+        ),
+        unexpected_provider_endpoint=any(run.unexpected_provider_endpoint for run in runs),
         scope_unused=scope_unused,
         scope_not_evaluable=scope_not_evaluable,
         peripheral=capability.peripheral,
@@ -1977,11 +2002,14 @@ _PLANE_DEPENDENT_CHECKS: Mapping[str, str] = {
 #: The ``SecurityRuntimeGate`` dispositions this version turns into a *scored* gate:
 #: ``egress_outside_allowlist`` via ``security_runtime.egress``, ``canary_leak`` via
 #: ``security_runtime.canaries``, ``dns_outside_allowlist`` via ``security_runtime.dns``, and
-#: ``canary_without_read`` via ``security_runtime.canary_reads`` — a skill that exfiltrates a
-#: planted canary, reaches a denied host, looks up a name outside the allowlist (§10.6), or gets
-#: a planted value into the model's context with no recorded read (§10.4.1 — the residual channel
-#: that cannot be blocked, now observed by the model-request scan) can no longer reach ``ready``
-#: under a ``block`` disposition. Every other field on the model is captured as evidence where
+#: ``canary_without_read`` via ``security_runtime.canary_reads``, ``sensitive_directory_access``
+#: via ``security_runtime.sensitive_directories``, and ``unexpected_provider_endpoint`` via
+#: ``security_runtime.provider_endpoint`` — a skill that exfiltrates a planted canary, reaches a
+#: denied host, looks up a name outside the allowlist (§10.6), gets a planted value into the
+#: model's context with no recorded read (§10.4.1 — the residual channel that cannot be blocked,
+#: now observed by the model-request scan), touches a sensitive directory undeclared (§13.5.4),
+#: or sends the provider anything but a model call (§10.5.2) can no longer reach ``ready`` under
+#: a ``block`` disposition. Every other field on the model is captured as evidence where
 #: its plane exists and shown in the report, but does not yet drive the verdict — a ``block`` on
 #: one will not, on its own, make a verdict ``not_ready``. ``doctor`` reads this set to warn when
 #: a configured disposition is inert, so a control is never mistaken for an active one; a new
@@ -2057,6 +2085,7 @@ ENFORCED_SECURITY_RUNTIME_DISPOSITIONS: frozenset[str] = frozenset(
         "dns_outside_allowlist",
         "canary_without_read",
         "sensitive_directory_access",
+        "unexpected_provider_endpoint",
     }
 )
 
@@ -2295,6 +2324,51 @@ def _canary_read_result(reading: SetReading, profile: ProfileSpec) -> TargetGate
         disposition,
         "every composed model request was scanned; no planted marker appeared in model "
         "context without the recorded read that put it there",
+    )
+
+
+def _provider_endpoint_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
+    """The provider-endpoint gate (§10.5.2, §16.2), decided from what the proxy refused.
+
+    The model API is the one authenticated channel out, and the proxy puts the real key on
+    requests to it; §10.5.2 bounds *which* requests: ``POST`` to the expected endpoint path,
+    naming a model from the configured set. Anything else to a provider host — an upload to
+    ``/v1/files``, a batch, a model the matrix never priced — is refused by the proxy and
+    recorded as ``unexpected_provider_endpoint`` (high). Three states, mirroring the egress
+    gate: unobserved defers (no proxy, so no request to a provider host was ever seen), an
+    observed refusal takes the policy disposition, and an observed set with none passes — an
+    absence claim, so observedness takes §10.8's stricter bar on the egress plane.
+    """
+    disposition = profile.gates.security_runtime.unexpected_provider_endpoint
+    # Presence first: a refusal the proxy recorded is a finding whatever the rest of the set
+    # observed. Only the pass is an absence claim, and only it needs every run observed.
+    if reading.unexpected_provider_endpoint:
+        status = "block" if disposition == "block" else "warn"
+        return _tgr(
+            reading.target,
+            status,
+            "request to a provider host that was not a model call (refused by the proxy)",
+            disposition,
+            "a request to a provider host used a method, path or model the provider is not "
+            "expected to receive; the proxy refused it before any key was injected (§10.5.2)",
+        )
+    if not reading.provider_requests_observed:
+        return _tgr(
+            reading.target,
+            "not_evaluable",
+            "unobserved",
+            disposition,
+            "the recording proxy did not decide every request in this set, so requests to "
+            "the provider are not observed and the gate cannot be decided (§10.5.2, §10.7)",
+        )
+    return _tgr(
+        reading.target,
+        "pass",
+        "every request to a provider host was an expected model call",
+        disposition,
+        "the recording proxy decided every request and refused none for its shape: each "
+        "request to a provider host was a model call to an expected endpoint naming a "
+        "configured model",
     )
 
 
@@ -2887,6 +2961,14 @@ def orchestrate(
             "security_runtime.canary_reads",
             [_canary_read_result(r, profile) for r in readings],
             required=reads_required,
+        )
+    )
+    endpoint_required = profile.gates.security_runtime.unexpected_provider_endpoint == "block"
+    gates.append(
+        _gate(
+            "security_runtime.provider_endpoint",
+            [_provider_endpoint_result(r, profile) for r in readings],
+            required=endpoint_required,
         )
     )
 

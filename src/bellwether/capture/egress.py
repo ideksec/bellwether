@@ -282,6 +282,12 @@ class EgressFlow:
     #: tell its own budget refusal from a provider's rate limit — the proxy answers both with a
     #: 429, and a run that hit a cap is ``budget_exceeded``, not an infrastructure failure.
     cap_exceeded: str = ""
+    #: The §10.5.2 request-shape rule this request to a provider host broke — a method, path or
+    #: model the provider is not expected to receive — when that is why the proxy refused it;
+    #: empty otherwise. Recorded so the host can raise the ``unexpected_provider_endpoint``
+    #: finding from the flow, and so the refusal is never mistaken for an allowlist denial: the
+    #: host *was* permitted, the request to it was not a model call.
+    shape_violation: str = ""
 
     @property
     def counts_as_egress(self) -> bool:

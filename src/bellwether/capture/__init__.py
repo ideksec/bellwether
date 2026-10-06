@@ -98,6 +98,13 @@ from bellwether.capture.model_channel import (
     scan_model_request,
 )
 from bellwether.capture.planting import CanaryPlanting, PlantedSlot, plan_canary_planting
+from bellwether.capture.provider_shape import (
+    PROVIDER_PATH_SUFFIXES,
+    ProviderRequestShape,
+    expected_request_paths,
+    request_shape,
+    shape_violation,
+)
 from bellwether.capture.proxy_addon import (
     BlockResponse,
     ProxyAddon,
@@ -123,6 +130,7 @@ __all__ = [
     "DEFAULT_CA_CONTAINER_PATH",
     "DEFAULT_HEADER_ALLOWLIST",
     "DNS_DESTINATION",
+    "PROVIDER_PATH_SUFFIXES",
     "SANDBOX_TOKEN_PREFIX",
     "BlockResponse",
     "CaMechanism",
@@ -147,6 +155,7 @@ __all__ = [
     "ModelRequestScan",
     "PlaneStatus",
     "PlantedSlot",
+    "ProviderRequestShape",
     "ProxyAddon",
     "ProxyDecision",
     "RecordingProxy",
@@ -169,6 +178,7 @@ __all__ = [
     "decide_query",
     "decide_request",
     "decoded_forms",
+    "expected_request_paths",
     "filesystem_writes_status",
     "flow_record_line",
     "interception_confirmed",
@@ -186,9 +196,11 @@ __all__ = [
     "read_query_records",
     "redact_canaries",
     "redact_headers",
+    "request_shape",
     "scan_for_canaries",
     "scan_model_request",
     "scan_query_for_canaries",
+    "shape_violation",
     "strip_and_inject",
     "strip_dns_labels",
     "system_store_install_commands",

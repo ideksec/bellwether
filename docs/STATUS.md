@@ -127,6 +127,21 @@ host and the trace. The executor settles the run as `budget_exceeded` before ask
 was the provider's. The refusal also tells the client `x-should-retry: false`, so the Anthropic SDK
 inside the CLI stops retrying it.
 
+**A request to the provider must be a model call (§10.5.2) — `unexpected_provider_endpoint` is
+produced and scored.** The one disposition with no producer anywhere: the proxy decided
+`model_api` by host alone, so any request to a provider host — `POST /v1/files`, a batch, a model
+outside the configured set — got the real key swapped in; measured against the real mitmproxy,
+all five such requests forwarded. The proxy now holds every provider host to a per-type request
+shape (`capture/provider_shape.py`: `POST`, an expected path joined to the `base_url`, a `model`
+from the configured set; a spelling it cannot reduce is refused, not resolved), before the cap and
+before injection. The refusal crosses the wire as `shape_violation`, becomes the §11.3
+`unexpected_provider_endpoint` action anchored to the refused request, is read by the evidence
+index as its own finding (never as an allowlist denial), and drives the sixth scored gate,
+`security_runtime.provider_endpoint`, with the §16.4 clause to match. The expected shape was
+**observed**: the pinned CLI binary run headless twice sends exactly `POST /v1/messages?beta=true`
+with the configured model. Twelve guards, each revert-checked individually (one is a source pin
+and says so); the before/after table and the observation are in spec-notes.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -960,7 +975,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1831 tests: 1768 offline, 63 under the `docker` mark (49 run locally, 14 CI-only skips with stated reasons; all 63 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1883 tests: 1820 offline, 63 under the `docker` mark (49 run locally, 14 CI-only skips with stated reasons; all 63 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

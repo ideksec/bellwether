@@ -164,6 +164,12 @@ the checks that can actually move a skill off `ready`:
   (info — read-then-send is the legitimate shape), and the gate fires only on the value arriving
   by a path the trace cannot account for. This observes the residual channel the threat model
   names — the allowlisted model API — which cannot be blocked without breaking the evaluation.
+- **security_runtime.provider_endpoint** — a request to a provider host that is not a model call
+  (`unexpected_provider_endpoint`, §10.5.2): the proxy holds every provider host to a per-type
+  request shape — `POST` to the expected endpoint path, naming a model from `providers.<name>.models`
+  — and refuses anything else *before* the real key is injected, so a skill holding the
+  sandbox-scoped token cannot turn it into an upload to `/v1/files`, a batch, or a model the matrix
+  never priced. The refusal is recorded and gates; where no proxy ran, the gate defers.
 - **budget.wall_clock** — what the matrix spent, summed from every run's footer, against the
   profile's `max_wall_clock_minutes`. A run with no footer has an *unobserved* duration: it is
   bounded by the per-run cap where that fits, and otherwise the gate defers rather than counting
@@ -179,11 +185,14 @@ the checks that can actually move a skill off `ready`:
   baseline exists and its key is comparable (same canon version and target set); otherwise the
   verdict says why. The BCI is compared only under the same weights digest.
 
-What is **captured as evidence but does not yet gate** the scored verdict: undeclared
-credential reads (`credential_read_undeclared` — needs the read-capture plane), sensitive-directory
-access, and the volume/anomaly checks. Their findings appear in the report, but a `block` disposition
-on them will not, on its own, make a verdict `not_ready` in this version — wiring each into a gate is
-per-plane roadmap work. `bellwether doctor` names exactly which configured dispositions are inert, so
+What is **declared in the policy but does not yet gate** the scored verdict: undeclared
+credential reads (`credential_read_undeclared` — needs the read-capture plane), undeclared process
+execution (`process_exec_undeclared` — needs the process plane), the instrumentation probe
+(`instrumentation_probe` — needs the §3.5 probe suite), the egress volume anomaly
+(`egress_volume_anomaly` — needs a volume baseline), `harness_state_write` (its gate was withdrawn
+for never being able to fire), and the two advisory-by-design findings (`trace_inconsistency`,
+`possible_egress_induced_failure`). A `block` disposition on them will not, on its own, make a
+verdict `not_ready` in this version — wiring each into a gate is per-plane roadmap work. `bellwether doctor` names exactly which configured dispositions are inert, so
 a control is never mistaken for an active one. The model-API channel is by design out of the egress *scan* — it legitimately carries the skill's
 content to the provider — which is exactly why it gets its own read-state gate above
 (§ THREAT_MODEL).

@@ -131,6 +131,7 @@ def _policy() -> Policy:
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
             "canary_without_read": "warn",
+            "unexpected_provider_endpoint": "warn",
         }
     )
     gates = low.gates.model_copy(update={"security_runtime": security})
@@ -404,6 +405,7 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
             "canary_without_read": "warn",
+            "unexpected_provider_endpoint": "warn",
         }
     )
     gates = high.gates.model_copy(update={"security_runtime": security})

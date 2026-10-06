@@ -107,6 +107,7 @@ def _firstlight_profile() -> object:
             "dns_outside_allowlist": "warn",
             "canary_leak": "warn",
             "canary_without_read": "warn",
+            "unexpected_provider_endpoint": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})
