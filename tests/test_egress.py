@@ -112,7 +112,7 @@ def test_a_userinfo_authority_routes_to_the_real_host_not_the_userinfo() -> None
         classify_egress(host, provider_endpoints=_PROVIDERS, infrastructure_endpoints=_INFRA)
         == "skill_attributed"
     )
-    assert not _allowlist().permits(host)
+    assert not _allowlist().permits(host, 443)
     flow = _flow(host)
     assert flow.host == "evil.com"
     assert flow.egress_class == "skill_attributed"
@@ -128,7 +128,7 @@ def test_a_leading_dot_host_does_not_match_a_provider() -> None:
         classify_egress(host, provider_endpoints=_PROVIDERS, infrastructure_endpoints=_INFRA)
         == "skill_attributed"
     )
-    assert not _allowlist().permits(host)
+    assert not _allowlist().permits(host, 443)
 
 
 def test_provider_hosts_parses_base_urls() -> None:
@@ -143,19 +143,19 @@ def test_provider_hosts_parses_base_urls() -> None:
 
 def test_providers_and_infrastructure_are_permitted() -> None:
     allow = _allowlist()
-    assert allow.permits("api.anthropic.com")
-    assert allow.permits("telemetry.example-harness.com")
+    assert allow.permits("api.anthropic.com", 443)
+    assert allow.permits("telemetry.example-harness.com", 443)
 
 
 def test_an_unknown_host_is_blocked_with_a_reason() -> None:
     allow = _allowlist()
-    assert not allow.permits("evil.example.com")
-    assert "default-deny" in allow.block_reason("evil.example.com")
+    assert not allow.permits("evil.example.com", 443)
+    assert "default-deny" in allow.block_reason("evil.example.com", 443)
 
 
 def test_an_extra_allowlist_entry_is_permitted() -> None:
     allow = _allowlist(extra=frozenset({"cache.example.com"}))
-    assert allow.permits("cache.example.com")
+    assert allow.permits("cache.example.com", 443)
 
 
 # ---------------------------------------------------------------------------

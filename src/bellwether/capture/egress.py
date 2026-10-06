@@ -29,8 +29,10 @@ from urllib.parse import urlsplit
 
 from bellwether.capture.canary import Canary, scan_for_canaries
 from bellwether.determinism import stable_hash
+from bellwether.errors import ConfigurationError, UserFacingProblem
 
 __all__ = [
+    "DEFAULT_EGRESS_PORTS",
     "DEFAULT_HEADER_ALLOWLIST",
     "CapLedger",
     "EgressAllowlist",
@@ -42,6 +44,7 @@ __all__ = [
     "correlate_egress_induced_failure",
     "identity_mismatch",
     "make_flow",
+    "provider_authorities",
     "provider_hosts",
     "redact_headers",
 ]
@@ -120,6 +123,68 @@ def _host_matches(host: str, endpoint: str) -> bool:
     return host == endpoint or host.endswith("." + endpoint)
 
 
+#: The ports an allowlist entry with no ``:port`` permits: HTTPS and plain HTTP. An entry names a
+#: host *and* where on it the sandbox may connect; a bare host meaning "any port" let a CONNECT
+#: reach every service an allowlisted address runs (§10.5.0). Anything else is spelled
+#: ``host:port`` and permits that port alone.
+DEFAULT_EGRESS_PORTS: frozenset[int] = frozenset({80, 443})
+
+
+def _endpoint_port(endpoint: str) -> int | None:
+    """The explicit port of an allowlist entry, or ``None`` for a bare host.
+
+    Parsed the way :func:`_norm_host` parses the host, so the two halves of an entry are read
+    from one authority: ``[::1]:8443`` is port 8443 and a bare ``::1`` has none. A port that is
+    not a number in range makes :func:`_norm_host` return ``""``, so such an entry matches
+    nothing — and :class:`EgressAllowlist` refuses it before it can.
+    """
+    endpoint = endpoint.strip()
+    if "[" not in endpoint and "@" not in endpoint and endpoint.count(":") >= 2:
+        return None  # a bare IPv6 literal: every colon is the address's own
+    try:
+        return urlsplit(f"//{endpoint}").port
+    except ValueError:
+        return None
+
+
+def _port_permitted(endpoint: str, port: int) -> bool:
+    explicit = _endpoint_port(endpoint)
+    return port in DEFAULT_EGRESS_PORTS if explicit is None else port == explicit
+
+
+def _authority_problem(entry: str) -> str:
+    """Why an allowlist entry names no single host and port, or ``""`` when it does."""
+    if not _norm_host(entry):
+        return f"{entry!r} names no host a client could route to"
+    if "/" in entry or "@" in entry:
+        return f"{entry!r} is not a bare host or host:port"
+    if _endpoint_port(entry) == 0:
+        return f"{entry!r} names port 0"
+    return ""
+
+
+def provider_authorities(base_urls: Iterable[str]) -> frozenset[str]:
+    """The egress allowlist entries the configured provider ``base_url`` values imply (§9.4).
+
+    A ``base_url`` that names its port (``http://10.0.0.5:8080``) permits that port and no
+    other; one that does not (``https://api.anthropic.com``) is a bare host, permitted on
+    :data:`DEFAULT_EGRESS_PORTS`. Use this, not :func:`provider_hosts`, wherever an
+    :class:`EgressAllowlist` is built: the hosts alone would refuse a provider on its own port.
+    """
+    authorities: set[str] = set()
+    for url in base_urls:
+        parsed = urlsplit(url if "://" in url else f"//{url}", scheme="https")
+        if not parsed.hostname:
+            continue
+        host = _norm_host(parsed.hostname)
+        if not host:
+            continue
+        if ":" in host:
+            host = f"[{host}]"
+        authorities.add(host if parsed.port is None else f"{host}:{parsed.port}")
+    return frozenset(authorities)
+
+
 def provider_hosts(base_urls: Iterable[str]) -> frozenset[str]:
     """The hosts of the configured provider ``base_url`` values (§9.4).
 
@@ -158,29 +223,57 @@ def classify_egress(
 class EgressAllowlist:
     """The default-deny egress allowlist (§10.5.0 enforcement).
 
-    A host is permitted only if it is a configured provider endpoint, a declared harness
-    infrastructure endpoint, or an explicit allowlist entry. Nothing else — the proxy
-    blocks it and records ``egress_blocked``. Provider and infrastructure endpoints are
-    always permitted, because blocking the model API or the harness's own telemetry would
-    fail runs for infrastructure reasons, which §10.5.0 forbids.
+    A destination is permitted only if its host is a configured provider endpoint, a declared
+    harness infrastructure endpoint, or an explicit allowlist entry — **and** its port is one that
+    entry permits: the entry's own ``:port`` where it names one, else
+    :data:`DEFAULT_EGRESS_PORTS`. Nothing else — the proxy blocks it and records
+    ``egress_blocked``. Provider and infrastructure endpoints are always permitted, because
+    blocking the model API or the harness's own telemetry would fail runs for infrastructure
+    reasons, which §10.5.0 forbids.
+
+    Construction refuses an entry that names no single host and port: such an entry would match
+    nothing, a control the configuration accepted and then silently did not apply.
     """
 
     provider_endpoints: frozenset[str]
     infrastructure_endpoints: frozenset[str]
     extra: frozenset[str] = frozenset()
 
-    def permits(self, host: str) -> bool:
+    def __post_init__(self) -> None:
+        problems = [
+            UserFacingProblem(f"egress.allowlist[{entry!r}]", problem, _ALLOWLIST_ENTRY_HINT)
+            for entry in sorted(self._entries())
+            if (problem := _authority_problem(entry))
+        ]
+        if problems:
+            raise ConfigurationError("the egress allowlist", problems)
+
+    def _entries(self) -> tuple[str, ...]:
+        return (*self.provider_endpoints, *self.infrastructure_endpoints, *self.extra)
+
+    def permits(self, host: str, port: int) -> bool:
         return any(
-            _host_matches(host, endpoint)
-            for endpoint in (*self.provider_endpoints, *self.infrastructure_endpoints, *self.extra)
+            _host_matches(host, endpoint) and _port_permitted(endpoint, port)
+            for endpoint in self._entries()
         )
 
-    def block_reason(self, host: str) -> str:
-        return (
-            ""
-            if self.permits(host)
-            else f"{_norm_host(host)} is not in the egress allowlist (default-deny, §10.5.0)"
-        )
+    def block_reason(self, host: str, port: int) -> str:
+        if self.permits(host, port):
+            return ""
+        if any(_host_matches(host, endpoint) for endpoint in self._entries()):
+            return (
+                f"{_norm_host(host)} is in the egress allowlist, but not on port {port} "
+                f"(an entry without a port permits {_DEFAULT_PORTS_TEXT}; name another port as "
+                f"host:port) (default-deny, §10.5.0)"
+            )
+        return f"{_norm_host(host)} is not in the egress allowlist (default-deny, §10.5.0)"
+
+
+_DEFAULT_PORTS_TEXT = " and ".join(str(port) for port in sorted(DEFAULT_EGRESS_PORTS))
+_ALLOWLIST_ENTRY_HINT = (
+    f"write a host (permitted on ports {_DEFAULT_PORTS_TEXT}) or host:port, "
+    f"e.g. api.example.com or api.example.com:8443"
+)
 
 
 @dataclass
@@ -408,7 +501,7 @@ def make_flow(
         infrastructure_endpoints=infrastructure_endpoints,
     )
     mismatch = identity_mismatch(host, claimed_host=claimed_host, sni=sni)
-    permitted = not mismatch and allowlist.permits(host)
+    permitted = not mismatch and allowlist.permits(host, port)
     return EgressFlow(
         ts=ts,
         method=method,
@@ -424,7 +517,7 @@ def make_flow(
         response_status=response_status,
         response_size=response_size,
         sni=sni,
-        block_reason=mismatch or allowlist.block_reason(host),
+        block_reason=mismatch or allowlist.block_reason(host, port),
         canary_hits=_scan_request_for_canaries(
             request_headers or {}, request_body, egress_class, canaries
         ),
