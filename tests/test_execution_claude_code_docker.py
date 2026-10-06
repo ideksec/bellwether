@@ -1,7 +1,7 @@
 """WP-17's container half: the real Claude Code CLI inside the sandbox, behind the proxy (§9.4).
 
-**CI-only.** Building the sandbox image (an ``npm install`` of the CLI) and the proxy sidecar
-image needs the public registries the restricted build environment blocks, so this is gated on
+**CI-only.** Building the sandbox image (an ``npm ci`` of the CLI from its lock) and the proxy
+sidecar image needs the public registries the restricted build environment blocks, so this is gated on
 ``CI`` and skips locally with a stated reason — the same honesty the ``docker``-mark skips carry.
 
 This is the executor-level done-when for the ``claude-code`` adapter, with every piece real

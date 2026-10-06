@@ -1,0 +1,8 @@
+{
+  "name": "bellwether-claude-code-cli",
+  "private": true,
+  "description": "The Claude Code CLI the claude-code sandbox runs, pinned here so package-lock.json can record each package's integrity. Install with `npm ci`; regenerate the lock with `npm install --package-lock-only` after a deliberate bump.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.257"
+  }
+}

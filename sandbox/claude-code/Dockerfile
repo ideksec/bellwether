@@ -19,8 +19,17 @@ RUN apt-get update \
 # The CLI, pinned to the exact version whose stream and hook formats the adapter was built
 # against (tests/golden/claude-code — `claude_code_version: 2.1.257`). Bump deliberately, and
 # re-take the golden session when you do: a format change must break a test, not empty Plane A.
-RUN npm install -g @anthropic-ai/claude-code@2.1.257 \
-    && npm cache clean --force
+#
+# Installed with `npm ci` from a committed lockfile rather than `npm install -g <pkg>@<version>`:
+# a version pin names a release, but only the lock's `integrity` field names its bytes, and
+# `npm ci` refuses a tarball whose sha512 differs from it — the CLI and its per-platform native
+# package alike. tests/test_image_locks.py holds the lock to the version above.
+COPY sandbox/claude-code/cli/package.json sandbox/claude-code/cli/package-lock.json /opt/claude-code/
+RUN cd /opt/claude-code \
+    && npm ci --omit=dev --no-audit --no-fund \
+    && npm cache clean --force \
+    && ln -s /opt/claude-code/node_modules/.bin/claude /usr/local/bin/claude \
+    && claude --version
 
 # The sandbox runs as uid 1000 (§9.2 — the isolation profile passes `--user 1000:1000`), and the
 # node image already owns that uid as `node`. The agent's home is /home/agent (the harness-state

@@ -1,0 +1,14 @@
+# The controlled-resolver sidecar's direct requirements, compiled together with Bellwether's own
+# runtime dependencies (pyproject.toml) into the hash-locked closure the image installs:
+#
+#   uv pip compile --universal --python-version 3.12 --generate-hashes \
+#       pyproject.toml sidecar/resolver/requirements.in -o sidecar/resolver/requirements.txt
+#
+# Re-run it after bumping anything here or in pyproject.toml's `dependencies`;
+# tests/test_image_locks.py fails the build when the lock no longer satisfies either.
+
+# The UDP server and the query-record producer: bump deliberately.
+dnslib==0.9.25
+# The build backend, so Bellwether is built from the lock with --no-build-isolation rather than
+# from a backend pip fetches unhashed into an isolated build environment.
+hatchling>=1.27
