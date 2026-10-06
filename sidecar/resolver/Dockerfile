@@ -10,23 +10,21 @@
 # registry for the new 3.12-slim manifest digest and replace it here.
 FROM python:3.12-slim@sha256:646fb0bca3dd3ea1bcc6feb72c17ed16eed6e10cffc732fcc1478bd3e7f02d7b
 
-# A pip constraint file bounds the sidecar's shared transitive deps so installing Bellwether cannot
-# bump one out from under the pinned dnslib — the same bounded stopgap the recording proxy uses for
-# mitmproxy (BW-17). The complete fix is to hash-pin the sidecar's whole Python closure
-# (`uv export` -> `pip install --require-hashes`); see sidecar/resolver/constraints.txt.
-COPY sidecar/resolver/constraints.txt /app/constraints.txt
-
-# dnslib pinned to an exact version: it is the UDP server and the query-record producer, so a
-# floating version could change packet handling under us. Pure-Python, no compiled deps. Bump
-# deliberately.
-RUN pip install --no-cache-dir --constraint /app/constraints.txt dnslib==0.9.25
+# Every Python package the image runs is hash-locked: requirements.txt is the whole closure —
+# dnslib, Bellwether's runtime dependencies and the build backend — compiled from requirements.in
+# with `--generate-hashes`, the same discipline as the recording-proxy sidecar. `--require-hashes`
+# makes pip refuse any file whose digest is not recorded and any dependency the lock does not pin;
+# `--only-binary :all:` refuses an sdist, whose build backend pip would fetch unhashed.
+COPY sidecar/resolver/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r /app/requirements.txt
 
 # Install Bellwether so the entry can import the resolver core (decide_query, the query serializer,
 # load_resolver_from_env). Only the package metadata and source are copied — never the venv, tests,
-# or git tree — so the build context stays small and reproducible.
-COPY pyproject.toml README.md /app/
+# or git tree — so the build context stays small and reproducible. Built offline against the locked
+# hatchling, adding no dependency of its own; `pip check` fails the build if the lock fell short.
+COPY pyproject.toml README.md LICENSE NOTICE /app/
 COPY src /app/src
-RUN pip install --no-cache-dir --constraint /app/constraints.txt /app
+RUN pip install --no-cache-dir --no-index --no-deps --no-build-isolation /app && pip check
 
 # The resolver entry, at the fixed path the launcher references
 # (capture.dns_sidecar.RESOLVER_ENTRY_PATH).

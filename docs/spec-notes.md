@@ -4490,6 +4490,67 @@ The executor's `budget_exceeded` settlement is pinned on the source offline. Its
 is the CI-only container test `test_a_proxy_cap_ends_a_claude_code_run_as_budget_exceeded`: the
 real CLI through a proxy capped at one request, which must end `budget_exceeded` and not raise.
 
+
+## §22, §24 — every package an image installs comes from a lock that records its bytes
+
+**Found by** the second independent review (2026-09), named as an open item in SECURITY.md since.
+`uv.lock` hash-pins the main package, but the images that do the observing were built from version
+pins alone. The sidecars ran `pip install mitmproxy==12.2.3` / `dnslib==0.9.25` with the transitive
+closure floating under one `typing-extensions` constraint. The claude-code sandbox and CI's offline
+suite ran `npm install -g @anthropic-ai/claude-code@2.1.257`. A version names a release, not its
+contents, so a tampered or re-uploaded file on the index entered the evidence path unchecked. The
+Dockerfiles' own comments called the constraint "a bounded stopgap, not the full pin."
+
+**What changed.**
+- **Sidecars.** `sidecar/{proxy,resolver}/requirements.txt` is the whole closure: the sidecar's
+  direct pin, Bellwether's runtime dependencies (read from `pyproject.toml`, not copied) and the
+  build backend. It is compiled universal for Python 3.12 with `--generate-hashes`, and installed
+  with `--require-hashes --only-binary :all:`. `--require-hashes` refuses a file with an unrecorded
+  digest, and a dependency the lock does not pin. `--only-binary` refuses an sdist, whose build
+  backend pip would otherwise fetch unhashed into an isolated environment. Bellwether is then built
+  `--no-index --no-deps --no-build-isolation` against the locked hatchling, so it fetches nothing
+  and adds nothing, and `pip check` fails the build if the lock fell short. The constraint files
+  are gone. The resolver now resolves `typing-extensions` and `pydantic` on its own, because the
+  bound existed only for mitmproxy.
+- **The CLI.** `sandbox/claude-code/cli/package-lock.json` records the CLI and its eight
+  per-platform native packages, each with a sha512 `integrity`. The image and CI install it with
+  `npm ci`, which refuses a tarball that does not match.
+- **The class.** `tools/pin_lint.py` rule 4 is an allowlist of locked install forms, applied to
+  every Dockerfile, workflow and shell script. A `pip install` must carry `--require-hashes`, or
+  `--no-index` (which fetches nothing). `npm` may run only subcommands that install nothing from a
+  manifest, so `install` and its alias table (`i`, `add`, `isntall`…) are refused without being
+  listed. Any other package manager is refused until a locked form for it is added.
+- `tests/test_image_locks.py` holds each lock to what it locks: every pin hashed, every
+  `pyproject.toml` dependency and `requirements.in` line satisfied, each Dockerfile installing the
+  lock it copies, and the CLI lock at the golden session's `claude_code_version`.
+
+**Measured.**
+- Both locks were installed with the Dockerfile's exact flags into clean Python 3.12 venvs. All
+  packages installed from wheels, the offline Bellwether build succeeded, `pip check` was clean,
+  and mitmproxy 12.2.3 and both entry modules imported.
+- `pip download --only-binary :all:` found a wheel for every locked package on both
+  `manylinux x86_64` and `aarch64`.
+- With one dnslib hash zeroed, pip refused the install: `THESE PACKAGES DO NOT MATCH THE HASHES`.
+- With the CLI's `integrity` altered, `npm ci` against an empty cache stopped with `EINTEGRITY`
+  and installed nothing.
+- `npm ci` of the real lock gave a working `claude` that reports `2.1.257`.
+- The image builds themselves need open egress, so they are CI-only, as before.
+
+**Revert-checked.**
+- Rule 4 against `origin/main`'s three Dockerfiles and `ci.yml` flags all six old installs.
+- A `pyproject.toml` floor raised past the lock fails both satisfaction tests.
+- A hash stripped from the lock fails `test_every_locked_package_carries_a_hash`.
+- A drifted CLI version fails `test_the_cli_lock_pins_the_golden_session_version`.
+
+**Not covered, stated.**
+- The sandbox's `apt-get` packages come from Debian's signed archive. Their origin is pinned by
+  the archive key; their version is not.
+- Dependabot does not propose bumps to these locks. Re-run the compile command in each
+  `requirements.in`, or `npm install --package-lock-only`, and the tests say when one is due.
+- The lint is a heuristic command splitter paired with an allowlist, so a spelling it fails to
+  split is flagged, not passed. A package manager that it never sees as a command (one invoked
+  through an indirection such as a script variable) is outside it.
+
 ## §10.5.2 — a request to the provider must be a model call
 
 **Found by** reading the inert list (2026-10): `unexpected_provider_endpoint` was the one
