@@ -40,12 +40,12 @@ jobs:
       security-events: write
       contents: read
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@e429ea58a9912cadc53f8132ad35562b54de1b30 # v3.38.1
+        uses: github/codeql-action/init@3ea06614dafe36dec890db3446326e0d40ce53d4 # v3.38.1
         with:
           languages: python
           # Beyond the default set: `quality` adds correctness queries that are cheap here and
@@ -55,6 +55,6 @@ jobs:
       # No build step: Python needs none, and CodeQL's autobuild would only add a way for the
       # analysis to fail for reasons that have nothing to do with the code.
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@e429ea58a9912cadc53f8132ad35562b54de1b30 # v3.38.1
+        uses: github/codeql-action/analyze@3ea06614dafe36dec890db3446326e0d40ce53d4 # v3.38.1
         with:
           category: "/language:python"
