@@ -4551,6 +4551,59 @@ Dockerfiles' own comments called the constraint "a bounded stopgap, not the full
   split is flagged, not passed. A package manager that it never sees as a command (one invoked
   through an indirection such as a script variable) is outside it.
 
+
+## §10.5.0 — the allowlist names a port, not just a host
+
+**Found by** the second independent review (2026-09). It was named as "not addressed" in the
+§10.5.0 hooks entry above: "a `CONNECT` to a permitted host is decided on the host alone, not the
+port." The spec says the allowlist decides on "the destination the proxy will actually connect to",
+and a destination is a host and a port. `EgressAllowlist.permits` took only the host:
+- An allowlisted name opened every service its address ran (a database, an admin port, SSH behind
+  an HTTP-speaking front).
+- The provider's own host was reachable on any port, with the real key injected onto a request
+  there.
+
+**What changed.**
+- **The rule.** An entry with no port permits `DEFAULT_EGRESS_PORTS`, which is 443 and 80. An entry
+  written `host:port` permits that port and no other: naming a port does not also open 443. Both
+  halves of an entry are read from one authority by one parser.
+  - `permits(host, port)` takes the port as a required argument, so mypy finds every caller.
+  - `make_flow` passes the real port, so the `CONNECT`, request and WebSocket hooks are all judged
+    on it.
+- **Provider endpoints.** A provider's allowlist entry comes from `provider_authorities`, which keeps
+  the `base_url`'s explicit port: an `openai_compatible` server at `http://10.0.0.5:8080` is
+  reachable on 8080 alone. `provider_hosts` stays host-only, for the DNS allowlist (a query carries
+  no port) and for the provider-to-key map.
+- **Refuse, don't ignore.** `EgressAllowlist` refuses an entry that names no single host and port
+  (a non-numeric or out-of-range port, port 0, a scheme, a path, userinfo, an empty or leading-dot
+  host). Accepted, such an entry would have matched nothing, a control taken and then not applied.
+  `DnsAllowlist` refuses `name:port` for the same reason. The refusal is in the capture layer, not
+  the config schema, because `config` may not import `urllib` (§8.1's offline contract). Every
+  allowlist the proxy uses is built through these constructors, so no path skips the check.
+
+**Measured** (mitmdump 12.2.3, real `proxy_entry.py`, a local upstream on a random port):
+
+| allowlist entry | `main`: GET / CONNECT | this change: GET / CONNECT |
+|---|---|---|
+| `127.0.0.1` (bare) | 200, forwarded, recorded permitted / `200 Connection established` | 403, recorded blocked "not on port N" / 403, recorded |
+| `127.0.0.1:<port>` | 200 / 200 | 200 / 200 |
+
+**Revert-checked.**
+- Making the port check always pass fails 16 of the 29 tests in `tests/test_egress_ports.py`.
+- Building `run`'s allowlist from `provider_hosts` again fails the provider-port test.
+- Passing a fixed 443 from `make_flow` fails all seven hook tests: CONNECT, request (no key
+  injected), explicit-port entry, and WebSocket frame.
+- The sidecar hand-off test compares the allowlist the sidecar rebuilds from the serialised config
+  with the one the host built, so a port lost on that wire fails it.
+
+**What it changes for users.** An allowlist entry that relied on a non-default port must now name it
+(`host:8443`). The claude-code container tests (CI-only) reach a scripted provider at
+`http://<ip>:<port>`; they now build their allowlist with `provider_authorities`, as `run` does.
+
+**Not changed.** Classification (`model_api` / infrastructure / skill) stays host-based. A request
+on a refused port is blocked whatever its class, so the class never reaches a forwarding or
+injection decision.
+
 ## §10.5.2 — a request to the provider must be a model call
 
 **Found by** reading the inert list (2026-10): `unexpected_provider_endpoint` was the one

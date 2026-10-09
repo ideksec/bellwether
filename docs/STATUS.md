@@ -140,6 +140,17 @@ workflow and shell script; `tests/test_image_locks.py` holds each lock to `pypro
 `requirements.in` and the golden session's CLI version. Not covered: the sandbox's `apt-get`
 packages (signed archive, floating versions), and Dependabot does not bump these locks.
 
+**The egress allowlist names ports as well as hosts (§10.5.0).** An entry permitted its host on
+any port, so a `CONNECT` (and every request inside one) to an allowlisted name reached every service
+its address ran, and the provider host on a port nobody chose got the real key injected toward it.
+Measured on the pinned mitmproxy with the real `proxy_entry.py` and a bare `127.0.0.1` entry: `main`
+forwarded a GET and opened a `CONNECT` to an arbitrary port, recording the GET as permitted. A bare
+entry now permits ports 443 and 80 only, and `host:port` permits that port alone. Provider endpoints
+carry their `base_url`'s port (`provider_authorities`), while DNS stays host-only. An entry that
+names no single host and port, or a port in `dns.allowlist`, is refused when the allowlist is built,
+not accepted and matched against nothing. `tests/test_egress_ports.py` tests the sidecar's hooks,
+`run`'s builder and the config hand-off to the sidecar.
+
 **A request to the provider must be a model call (§10.5.2) — `unexpected_provider_endpoint` is
 produced and scored.** The one disposition with no producer anywhere: the proxy decided
 `model_api` by host alone, so any request to a provider host — `POST /v1/files`, a batch, a model
@@ -988,7 +999,7 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1927 tests: 1864 offline, 63 under the `docker` mark (49 run locally, 14 CI-only skips with stated reasons; all 63 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+1956 tests: 1893 offline, 63 under the `docker` mark (49 run locally, 14 CI-only skips with stated reasons; all 63 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

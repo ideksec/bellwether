@@ -797,6 +797,7 @@ def build_proxy_provider(
         CredentialBroker,
         EgressAllowlist,
         ProviderRequestShape,
+        provider_authorities,
         provider_hosts,
         request_shape,
     )
@@ -811,7 +812,9 @@ def build_proxy_provider(
     }
     brokered = sorted(set(brokered_providers))
     allowlist = EgressAllowlist(
-        provider_endpoints=provider_hosts(base_url_of.values()),
+        # Host *and* port: a provider on its own port (an `openai_compatible` server, a
+        # local gateway) is permitted there and nowhere else on that host (§10.5.0).
+        provider_endpoints=provider_authorities(base_url_of.values()),
         infrastructure_endpoints=(
             frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS) if brokered else frozenset()
         ),

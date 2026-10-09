@@ -31,7 +31,12 @@ from pathlib import Path
 
 import pytest
 
-from bellwether.capture import CredentialBroker, EgressAllowlist, provider_hosts
+from bellwether.capture import (
+    CredentialBroker,
+    EgressAllowlist,
+    provider_authorities,
+    provider_hosts,
+)
 from bellwether.cli.execution import SandboxRunExecutor
 from bellwether.cli.orchestrator import RunPlan, TargetInfo
 from bellwether.cli.proxy_run import SidecarProxyProvider
@@ -180,7 +185,7 @@ def test_the_real_cli_runs_in_the_sandbox_behind_the_proxy(
             backend=DockerBackend(image=sandbox_image),
             image=sidecar_image,
             allowlist=EgressAllowlist(
-                provider_endpoints=provider_hosts([base_url]),
+                provider_endpoints=provider_authorities([base_url]),
                 infrastructure_endpoints=frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS),
             ),
             max_requests=50,
@@ -297,7 +302,7 @@ def test_a_provider_refusal_stops_the_evaluation_as_infrastructure(
             backend=DockerBackend(image=sandbox_image),
             image=sidecar_image,
             allowlist=EgressAllowlist(
-                provider_endpoints=provider_hosts([base_url]),
+                provider_endpoints=provider_authorities([base_url]),
                 infrastructure_endpoints=frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS),
             ),
             max_requests=50,
@@ -370,7 +375,7 @@ def test_a_proxy_cap_ends_a_claude_code_run_as_budget_exceeded(
             backend=DockerBackend(image=sandbox_image),
             image=sidecar_image,
             allowlist=EgressAllowlist(
-                provider_endpoints=provider_hosts([base_url]),
+                provider_endpoints=provider_authorities([base_url]),
                 infrastructure_endpoints=frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS),
             ),
             max_requests=1,

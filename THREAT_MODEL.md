@@ -91,7 +91,10 @@ convenience accessor for "the host" that prefers the header (mitmproxy's `pretty
 whose own docstring warns it "may not reflect the actual destination as the Host header
 could be spoofed"); it must not be used for a security decision. A request whose asserted
 identity disagrees with its destination is blocked in either direction, and the real key
-is never written onto a plaintext request. See §10.5 and `docs/spec-notes.md`.
+is never written onto a plaintext request. The allowlist names ports as well as hosts: an
+entry without a port permits 443 and 80 only, so an allowlisted name does not open every
+service its address runs, and the key is never injected toward a port nobody chose. See
+§10.5 and `docs/spec-notes.md`.
 
 ### Critical invariant 2 — no observer inside the observed
 

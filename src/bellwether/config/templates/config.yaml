@@ -89,7 +89,8 @@ capture:
 egress:
   mode: proxy
   deployment: sidecar          # enforced (§21)
-  allowlist: []                # default-deny; model endpoints are added automatically
+  allowlist: []                # default-deny; model endpoints are added automatically.
+                               # `host` permits ports 443 and 80; `host:port` that port alone
   # record_response_bodies: true   # not built in this version — `bellwether doctor` lists any of these you set
   # max_body_bytes: 65536
   scan_model_api_bodies: true  # enforced (§21) — the allowlisted model channel is the
@@ -106,7 +107,7 @@ egress:
 # ---------------------------------------------------------------------------
 dns:
   mode: controlled_resolver    # enforced (§21)
-  allowlist: []
+  allowlist: []                # bare names: a query carries no port
   # log_all_queries: true      # not built in this version — `bellwether doctor` lists any of these you set (every query is recorded)
 
 # ---------------------------------------------------------------------------
