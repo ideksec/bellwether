@@ -18,6 +18,11 @@ to the addon:
 1. **Classify and allowlist-check** (§10.5.0). A request to a denied host is blocked and
    recorded as ``egress_blocked`` — a blocked attempt is evidence, not an error, and is kept
    in full for security metrics.
+1b. **Shape-check a model-API request** (§10.5.2). A request to a provider host must be a
+   model call — ``POST`` to an expected endpoint path, naming a model from the configured set.
+   Anything else is refused before the cap is charged and before any key is injected, and the
+   flow records the rule it broke, so the host raises ``unexpected_provider_endpoint`` from it.
+   The host was permitted; the request to it was not what the allowlist admits the host *for*.
 2. **Cap-check** the permitted request (§10.5.1). If forwarding it would cross a per-run
    request or byte cap on the sandbox-scoped token, it is refused and the run records
    ``budget_exceeded`` — the bound on residual-channel exfiltration.
@@ -33,7 +38,7 @@ to the addon:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from bellwether.capture.canary import Canary
@@ -45,6 +50,7 @@ from bellwether.capture.egress import (
     _host_matches,
     make_flow,
 )
+from bellwether.capture.provider_shape import ProviderRequestShape, shape_violation
 
 __all__ = ["ProxyDecision", "decide_request"]
 
@@ -90,6 +96,7 @@ def decide_request(
     canaries: Sequence[Canary] = (),
     claimed_host: str = "",
     sni: str = "",
+    provider_shapes: Mapping[str, ProviderRequestShape] | None = None,
 ) -> ProxyDecision:
     """Decide one request (§10.5). See the module docstring for the fixed order.
 
@@ -104,6 +111,10 @@ def decide_request(
     key. ``caps`` is mutated (a forwarded request is counted); a blocked one is not. ``canaries``
     are the run's planted markers; ``make_flow`` scans the headers and body for them and records
     any hit by reference before the values are reduced to a digest (§10.5.2).
+
+    ``provider_shapes`` maps a provider endpoint host to the request shape it is expected to
+    receive (§10.5.2); a permitted ``model_api`` request to a host with a shape is refused where
+    it is not a model call. Matched by the same label-boundary rule as ``provider_of_host``.
     """
     # (0)+(1) Check the asserted identity against the real destination, classify, allowlist-check,
     # redact, scan headers and body for canaries, reduce the body — make_flow does all of it and
@@ -126,6 +137,27 @@ def decide_request(
     )
     if flow.blocked:
         return ProxyDecision(action="block", flow=flow)
+
+    # (1b) A request to a provider host must be a model call. Checked before the cap and before
+    # injection: a refused request is charged to nothing and receives no key. The shape is
+    # looked up by the same suffix match the broker uses, so a provider subdomain is held to
+    # its provider's shape rather than slipping past an exact lookup.
+    if flow.egress_class == "model_api":
+        shape = next(
+            (
+                shape
+                for endpoint, shape in sorted((provider_shapes or {}).items())
+                if _host_matches(flow.host, endpoint)
+            ),
+            None,
+        )
+        if shape is not None:
+            violation = shape_violation(method=method, path=path, body=body, shape=shape)
+            if violation:
+                flow = replace(
+                    flow, blocked=True, block_reason=violation, shape_violation=violation
+                )
+                return ProxyDecision(action="block", flow=flow)
 
     # (2) Cap-check the permitted request. A request that would cross a cap is refused before
     # it leaves — the residual-channel bound only holds if it is enforced *before* forwarding.

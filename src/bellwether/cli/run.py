@@ -796,8 +796,10 @@ def build_proxy_provider(
     from bellwether.capture import (
         CredentialBroker,
         EgressAllowlist,
+        ProviderRequestShape,
         provider_authorities,
         provider_hosts,
+        request_shape,
     )
     from bellwether.determinism import SeededRng
     from bellwether.harness import CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS
@@ -818,6 +820,22 @@ def build_proxy_provider(
         ),
         extra=frozenset(egress.allowlist),
     )
+    # §10.5.2: every provider host is held to the request shape of the provider(s) behind it —
+    # not only the brokered ones. The host is allowlisted for every target, and a request to it
+    # that is not a model call is the finding whether or not a key would have been injected.
+    # Two providers on one host (two aliases of one gateway) union their model sets.
+    provider_shapes: dict[str, ProviderRequestShape] = {}
+    for name in sorted(config.providers):
+        configured = config.providers[name]
+        shape = request_shape(configured.type, base_url_of[name], configured.models.values())
+        for host in provider_hosts([base_url_of[name]]):
+            existing = provider_shapes.get(host)
+            if existing is not None:
+                shape = ProviderRequestShape(
+                    paths=tuple(sorted(set(existing.paths) | set(shape.paths))),
+                    model_ids=tuple(sorted(set(existing.model_ids) | set(shape.model_ids))),
+                )
+            provider_shapes[host] = shape
     broker = CredentialBroker({})
     provider_of_host: dict[str, str] = {}
     if brokered:
@@ -843,6 +861,7 @@ def build_proxy_provider(
         max_request_bytes=egress.per_run_caps.max_request_bytes,
         broker=broker,
         provider_of_host=provider_of_host,
+        provider_shapes=provider_shapes,
     )
 
 

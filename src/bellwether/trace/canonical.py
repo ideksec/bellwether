@@ -71,7 +71,11 @@ _PLANE_TRAJ_LETTER: dict[str, str] = {
 #: an adapter's cross-check finding, a permission the harness raised. They are evidence,
 #: never trajectory — a step sequence that varied with how the harness reported itself
 #: would read as skill nondeterminism (§11.4, §11.6).
-_NON_STEP_KINDS: frozenset[str] = frozenset({"trace_inconsistency", "permission_prompt"})
+_NON_STEP_KINDS: frozenset[str] = frozenset(
+    # `unexpected_provider_endpoint` is a reading of the `egress_blocked` record it anchors to
+    # (§10.5.2), not a second thing the skill did: one refused request is one step.
+    {"trace_inconsistency", "permission_prompt", "unexpected_provider_endpoint"}
+)
 
 
 def _in_trajectory(action: Action, trajectory_planes: frozenset[str]) -> bool:

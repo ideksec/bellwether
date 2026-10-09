@@ -137,6 +137,11 @@ class EvidenceIndex:
     #: name outside the allowlist (§10.6) — evidence of intent, exactly like a default-deny
     #: egress block, and what turns the DNS gate from pass to block.
     dns_blocked_present: bool = False
+    #: A Plane D ``unexpected_provider_endpoint`` finding is in the trace: a request to a
+    #: provider host was refused for not being a model call — the wrong method, a path other
+    #: than the expected endpoint, or a model outside the configured set (§10.5.2, high).
+    #: What turns the provider-endpoint gate from pass to block.
+    unexpected_provider_endpoint_present: bool = False
     context: NormalizationContext = field(
         default_factory=lambda: NormalizationContext(workspace_root="/work")
     )
@@ -162,6 +167,7 @@ class EvidenceIndex:
         canary_without_read = False
         dns_blocked = False
         dns_blocked_seqs: list[int] = []
+        unexpected_provider_endpoint = False
 
         for action in trace.actions:
             if action.plane == "harness":
@@ -175,6 +181,12 @@ class EvidenceIndex:
                 if write is not None:
                     writes.append(write)
             elif action.kind == "egress_blocked":
+                # A §10.5.2 shape refusal is on a *permitted* host: the allowlist admitted it
+                # and the request to it was not a model call. It is its own finding
+                # (`unexpected_provider_endpoint`, below), not an allowlist denial, and must
+                # not read as "egress outside the allowlist" or as the skill's own egress.
+                if action.action.get("shape_violation"):
+                    continue
                 egress_blocked = True
                 host = action.action.get("host")
                 egress_class = action.action.get("egress_class")
@@ -198,6 +210,8 @@ class EvidenceIndex:
             elif action.kind == "dns_blocked":
                 dns_blocked = True
                 dns_blocked_seqs.append(action.seq)
+            elif action.kind == "unexpected_provider_endpoint":
+                unexpected_provider_endpoint = True
             elif action.plane == "credentials" and action.kind == "canary_leak":
                 canary_leak = True
             elif action.plane == "credentials" and action.kind == "canary_without_read":
@@ -225,6 +239,7 @@ class EvidenceIndex:
             canary_without_read_present=canary_without_read,
             dns_blocked_present=dns_blocked,
             dns_blocked_seqs=tuple(dns_blocked_seqs),
+            unexpected_provider_endpoint_present=unexpected_provider_endpoint,
             context=context,
         )
 

@@ -30,6 +30,7 @@ from typing import Any
 from bellwether.capture.canary import Canary
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import CapLedger, EgressAllowlist
+from bellwether.capture.provider_shape import ProviderRequestShape
 from bellwether.capture.proxy_addon import (
     BLOCK_STATUS_ERROR,
     BlockResponse,
@@ -72,6 +73,11 @@ class SidecarConfig:
     max_requests: int
     max_request_bytes: int
     flow_log_path: str
+    #: Per provider endpoint host, the request shape it is expected to receive (§10.5.2).
+    #: Required, not defaulted: a sidecar with no shapes would put the real key on any request
+    #: to a provider host, which is the hole this field closes, so a config that omits them is
+    #: refused at load rather than read as "no rule".
+    provider_shapes: Mapping[str, ProviderRequestShape]
     listen_port: int = 8080
     #: The run's planted canaries as ``(id, marker)`` pairs, so the sidecar can scan request bodies
     #: for them (§10.5.2). Sensitive like the scoped tokens above — both live only on the shared
@@ -92,6 +98,10 @@ class SidecarConfig:
                 "max_requests": self.max_requests,
                 "max_request_bytes": self.max_request_bytes,
                 "flow_log_path": self.flow_log_path,
+                "provider_shapes": {
+                    host: {"paths": list(shape.paths), "model_ids": list(shape.model_ids)}
+                    for host, shape in self.provider_shapes.items()
+                },
                 "listen_port": self.listen_port,
                 "canary_markers": [list(pair) for pair in self.canary_markers],
             }
@@ -111,6 +121,12 @@ class SidecarConfig:
             max_requests=payload["max_requests"],
             max_request_bytes=payload["max_request_bytes"],
             flow_log_path=payload["flow_log_path"],
+            provider_shapes={
+                host: ProviderRequestShape(
+                    paths=tuple(entry["paths"]), model_ids=tuple(entry["model_ids"])
+                )
+                for host, entry in payload["provider_shapes"].items()
+            },
             listen_port=payload.get("listen_port", 8080),
             canary_markers=tuple((pair[0], pair[1]) for pair in payload.get("canary_markers", ())),
         )
@@ -152,6 +168,7 @@ def build_addon(
         ),
         clock=clock,
         canaries=canaries,
+        provider_shapes=dict(config.provider_shapes),
     )
 
 

@@ -53,6 +53,8 @@ def test_benign_is_conditional_and_consistent(tmp_path: Path) -> None:
         "security_runtime.canaries",
         "security_runtime.dns",
         "security_runtime.canary_reads",
+        # No proxy, so no request to a provider host was ever decided (§10.5.2).
+        "security_runtime.provider_endpoint",
     ]
 
 

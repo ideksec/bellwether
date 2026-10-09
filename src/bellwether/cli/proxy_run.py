@@ -36,6 +36,7 @@ from bellwether.capture import (
     EgressAllowlist,
     EgressFlow,
     MitmproxySidecar,
+    ProviderRequestShape,
     ca_trust_environment,
     proxy_environment,
 )
@@ -143,6 +144,10 @@ class SidecarProxyProvider:
     provider_of_host: dict[str, str] = field(default_factory=dict)
     #: Extra mitmdump ``--set`` options. Empty for a run; see :attr:`MitmproxySidecar.extra_settings`.
     extra_settings: Mapping[str, str] = field(default_factory=dict)
+    #: host → the request shape a provider endpoint is expected to receive (§10.5.2), for every
+    #: configured provider whether or not a key is brokered for it: a skill on api-loop holds no
+    #: token, but the provider host is allowlisted and a request to it is still held to shape.
+    provider_shapes: Mapping[str, ProviderRequestShape] = field(default_factory=dict)
     sidecar_factory: SidecarFactory | None = None
 
     def open(self, run_id: str, *, shared_dir: Path, canaries: Sequence[Canary] = ()) -> RunProxy:
@@ -202,4 +207,5 @@ class SidecarProxyProvider:
             provider_of_host=self.provider_of_host,
             shared_dir=shared_dir,
             extra_settings=self.extra_settings,
+            provider_shapes=self.provider_shapes,
         )

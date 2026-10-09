@@ -3591,18 +3591,19 @@ does demonstrate it somewhere to say so.
 
 ### What this leaves
 
-**Eight** dispositions remain inert — five enforced of thirteen — and the reasons are not
+**Seven** dispositions remain inert — six enforced of thirteen — and the reasons are not
 uniform. `process_exec_undeclared` and `credential_read_undeclared` wait on capture that does not
 exist yet (the §10.3 process plane, the read plane). `instrumentation_probe` waits on the §3.5
 probe suite. `egress_volume_anomaly` needs a volume baseline to be anomalous against.
-`unexpected_provider_endpoint` has no producer at all — the finding kind is defined in §11.3 and in
-`RUNTIME_FINDING_KINDS`, and nothing in the pipeline emits it, which makes it the next one worth
-closing. `trace_inconsistency` and `possible_egress_induced_failure` are computed and deliberately
+`unexpected_provider_endpoint` *was* on this list with no producer at all — the finding kind was
+defined in §11.3 and in `RUNTIME_FINDING_KINDS` and nothing emitted it; it is now produced at the
+proxy and scored (see "§10.5.2 — a request to the provider must be a model call", below).
+`trace_inconsistency` and `possible_egress_induced_failure` are computed and deliberately
 advisory. And **`harness_state_write`**, whose gate was written and withdrawn in this same change
 for never being able to fire: it is still configured, still inert, and belongs on this list
 precisely because the withdrawal is what keeps it there.
 
-An earlier draft of this section said *seven* and listed seven, omitting `harness_state_write` —
+An earlier draft of this section said *seven* and listed seven (when the true count was eight), omitting `harness_state_write` —
 counting the withdrawn control as closed. In a section whose whole subject is that a declared
 control which does nothing must be named, undercounting the inert set is the one direction the
 error must not go. The count is now computed from `ENFORCED_SECURITY_RUNTIME_DISPOSITIONS` and the
@@ -4602,3 +4603,100 @@ and a destination is a host and a port. `EgressAllowlist.permits` took only the 
 **Not changed.** Classification (`model_api` / infrastructure / skill) stays host-based. A request
 on a refused port is blocked whatever its class, so the class never reaches a forwarding or
 injection decision.
+
+## §10.5.2 — a request to the provider must be a model call
+
+**Found by** reading the inert list (2026-10): `unexpected_provider_endpoint` was the one
+disposition with no producer anywhere, and §10.5.2 says what it is for. The proxy injects the
+operator's real key into a permitted `model_api` request (§10.5.1), and "model_api" was decided by
+*host* alone. So any request to a provider host got the key: `POST /v1/files` — an upload to the
+provider on the operator's account, a destination the canary body scan deliberately skips because
+it is the model channel — a batch, an admin call, or a `/v1/messages` call naming a model the
+matrix never priced. Measured against the pinned mitmproxy 12.2.3 with the real
+`sidecar/proxy/proxy_entry.py` before the change: five requests to the provider host — the
+observed model call, an upload, a `GET /v1/models`, an unconfigured model, a dot-segment path —
+**all five forwarded, 200, none blocked**.
+
+**The rule, and where it sits.** `capture/provider_shape.py` is pure and allowlist-shaped in
+every clause: per provider *type*, the request paths it is expected to receive
+(`anthropic`: `/v1/messages`, `/v1/messages/count_tokens`; `openai_compatible`:
+`/chat/completions`), joined to the `base_url` path exactly as the host-side clients join it;
+the method must be `POST`; the body must be a JSON object whose `model` is in the configured set
+(`providers.<name>.models`, every alias). The path is compared after the query string is
+dropped, and only when it is a plain segment spelling: a dot segment, an empty segment or a
+percent escape is **refused rather than resolved** — what the provider's server would make of
+`/v1/messages/../files` is not knowable on this side, and a grammar is the one reject rule with no
+unenumerated spelling. `decide_request` applies it as step 1b: after the allowlist, before the cap
+(a refused request is charged to nothing) and before injection (it never sees the key). The
+refusal is recorded `blocked=True` with the rule on `EgressFlow.shape_violation`, crosses the
+sidecar-to-host wire, and `provider_endpoint_actions` turns it into the §11.3
+`unexpected_provider_endpoint` action (Plane D, `high`, anchored to the `egress_blocked` record
+it is read from, excluded from the trajectory because it is a reading of that record and not a
+second step). The evidence index reads it as its own finding and **not** as an allowlist denial:
+the host was permitted, so `egress_blocked_present`, `no_egress` and the network scope rows must
+not call a refused model-host request "egress outside the allowlist". The gate is
+`security_runtime.provider_endpoint`, with the same three states as egress and DNS — unobserved
+defers, a refusal takes the disposition, observed-clean passes at §10.8's absence bar — and the
+§16.4 preflight refuses `unexpected_provider_endpoint: block` with no proxy in the composition.
+A shape rides in the sidecar config for every provider host, brokered or not, and a config
+without shapes is refused at load: a proxy with none is the hole reopened by omission.
+
+**The expected shape is observed, not assumed.** The pinned claude-code CLI (2.1.257, the native
+binary) was run headless against the repository's scripted Messages API with a request log, under
+the harness's telemetry environment, twice: as root with `dontAsk`, and as uid 1000 with
+`bypassPermissions` and a real model id. Both sessions sent exactly four
+`POST /v1/messages?beta=true`, every one naming the configured model, and nothing else — no
+`/v1/models`, no `count_tokens`, no second model for a background task. The binary does embed
+`/v1/models`, `count_tokens`, `/v1/messages/batches` and `/v1/files` paths, which is why the
+observation was made rather than inferred from a path list. `count_tokens` is admitted anyway: the
+same API family, the same `model` field this rule checks, and reachable by the SDK under context
+pressure a short session never produces. `GET /v1/models` is not: a `GET` with an
+attacker-chosen path is not a model call, and nothing observed needs it. The live policies keep
+`unexpected_provider_endpoint: block`, so the next labelled run is the live proof; a benign CLI
+run has no request this rule refuses.
+
+**Presence before observedness.** Unlike the canary gate, which reads completeness first and
+renders a leak in a half-observed set as `not_evaluable`, this gate reads the refusal first: a
+request the proxy refused is a recorded fact whatever the rest of the set observed, and only the
+*pass* is an absence claim. Under `block` both orderings keep the skill from `ready`; under
+`warn` this one surfaces the finding where the other would have deferred it.
+
+**Measured** (real mitmdump 12.2.3, real `proxy_entry.py`, a local upstream standing in for the
+provider host, the sidecar config built with the shape the live claude-code config yields):
+
+| Request to the provider host | Before | After |
+|---|---|---|
+| `POST /v1/messages?beta=true`, configured model (the CLI's observed shape) | 200, forwarded | 200, forwarded |
+| `POST /v1/files?beta=true` | 200, forwarded | 403, refused, recorded `shape_violation` |
+| `GET /v1/models` | 200, forwarded | 403 |
+| `POST /v1/messages`, model outside the configured set | 200, forwarded | 403 |
+| `POST /v1/messages/../files` | 200, forwarded | 403, "refused rather than resolved" |
+| Flow log | 5 flows, 0 blocked | 5 flows, 4 blocked, 4 shape refusals |
+
+Every refusal carries `x-should-retry: false`, as the cap refusal does.
+
+**Revert-checked, per change** (each guard disabled in turn on a copy, the slice re-run; the test
+named is the first to fail):
+
+| Change | Reverted as | Caught by |
+|---|---|---|
+| `decide_request` step 1b | shape check returns `""` | `test_an_unexpected_endpoint_is_blocked_and_never_sees_the_key` |
+| addon threads the shapes | `on_request` passes none | `test_the_addon_refuses_with_a_denial_and_records_the_rule` |
+| sidecar config requires shapes | `from_json` defaults to `{}` | `test_the_sidecar_config_carries_the_shapes_and_refuses_to_load_without_them` |
+| `build_proxy_provider` builds them | sidecar handed `{}` | `test_build_proxy_provider_gives_every_provider_host_a_shape_from_its_config` |
+| `provider_endpoint_actions` | emits nothing | `test_the_trace_carries_the_finding_anchored_to_the_refusal` |
+| finding is not a trajectory step | removed from `_NON_STEP_KINDS` | `test_the_finding_is_a_reading_of_the_refusal_not_a_second_step` |
+| evidence index: not an allowlist denial | `continue` removed | `test_the_index_reads_the_finding_and_not_an_allowlist_denial` |
+| gate reads presence first | observedness first | `test_a_refusal_in_an_otherwise_unobserved_set_still_surfaces` |
+| gate assembled into the verdict | append dropped | `test_benign_stable_is_conditional_because_egress_cannot_be_evaluated_yet` |
+| disposition in the enforced set | removed | `test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet` |
+| §16.4 clause | condition `False` | `test_a_blocking_provider_endpoint_gate_with_no_proxy_is_refused_up_front` |
+| executor derives the finding | call dropped | `test_the_executor_derives_the_finding_from_plane_d_before_the_header_is_built` — **a source pin, not a behavioural test**: the executor needs a daemon and the minimal sandbox test image has no HTTP client to send a refused request with. The behavioural proof is the mitmdump table above plus the producer and gate tests; the in-container proof is the next labelled live run. |
+
+**Not covered, stated.** The rule is per provider *type*, and two types exist; a new type must
+add its paths or `request_shape` raises at wiring. Request *headers* (`anthropic-beta`, the
+version) are not part of the shape. An `openai_compatible` gateway that serves other paths under
+its `base_url` will see them refused — name a second provider for them, or set the disposition
+to `warn`. The egress gate's `egress_blocked_present` still counts a *cap* refusal as a block;
+that predates this change and is left as it was.
+

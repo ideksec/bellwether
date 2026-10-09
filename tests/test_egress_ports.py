@@ -188,6 +188,7 @@ def test_the_ported_entries_survive_the_hand_off_to_the_sidecar(tmp_path: Path) 
         infrastructure_endpoints=tuple(sorted(allowlist.infrastructure_endpoints)),
         allowlist_extra=tuple(sorted(allowlist.extra)),
         provider_of_host={},
+        provider_shapes=dict(provider.provider_shapes),
         credential_export={},
         max_requests=10,
         max_request_bytes=1000,
