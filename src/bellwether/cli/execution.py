@@ -96,6 +96,7 @@ from bellwether.trace import (
     assemble_coverage,
     canary_actions,
     dns_actions,
+    dns_reassembly_actions,
     egress_actions,
     egress_body_actions,
     exit_reason_from_events,
@@ -876,6 +877,23 @@ class SandboxRunExecutor:
             # source that carried it. The Plane C sequence space follows the other planes.
             plane_c_base = len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e) + len(plane_k)
             plane_c = canary_actions(plane_a + plane_d + plane_e, canaries, start_seq=plane_c_base)
+            # A marker split *across* DNS queries is in no single name: the names are scanned
+            # together too, in query order, and a split is anchored to the query that completed
+            # it (§10.4.2). Host-side, because the names are already here in full and the resolver
+            # holds no marker. (Request bodies are reassembled sidecar-side, where they exist; the
+            # hits ride on the flows into ``egress_body_actions`` below.)
+            dns_split, dns_reassembly_limit = dns_reassembly_actions(
+                plane_e, canaries, start_seq=plane_c_base + len(plane_c)
+            )
+            plane_c += dns_split
+            reassembly_limit = dns_reassembly_limit or next(
+                (
+                    flow.canary_reassembly_limit
+                    for flow in egress_flows
+                    if flow.canary_reassembly_limit
+                ),
+                "",
+            )
             # The contents of files the skill *wrote*: Plane B records writes by hash only, so the
             # bytes are read host-side here and scanned — a marker in a written file is a written_file
             # leak correlated to the Plane B write that created it (§10.4.1). The content never enters
@@ -985,7 +1003,16 @@ class SandboxRunExecutor:
                     # contents, and — since the model-channel scan landed — every composed model
                     # request, graded canary_in_context vs canary_without_read by the per-request
                     # read state (§10.4.1). With that last channel observed, the plane is `full`.
-                    credentials=(PlaneStatus(fidelity="full") if planting is not None else None),
+                    # One exception: where the cross-request reassembly reached its stream bound
+                    # (§10.4.2), a split across the folded views may have been missed, and the
+                    # plane says so rather than claiming a full scan.
+                    credentials=(
+                        None
+                        if planting is None
+                        else PlaneStatus(fidelity="partial", reason=reassembly_limit)
+                        if reassembly_limit
+                        else PlaneStatus(fidelity="full")
+                    ),
                     filesystem_reads=reads_status,
                     process=process_status,
                 ),
