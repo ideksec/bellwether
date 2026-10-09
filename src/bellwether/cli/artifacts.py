@@ -63,6 +63,8 @@ class ArtifactTree:
     #: The persisted report figures (``metrics/figures.json``), when written — what lets
     #: ``bellwether report`` re-render the tree without the readings.
     figures_json: Path | None = None
+    #: ``findings.sarif`` (§17.1, §17.3), when ``reporting.sarif`` asked for one.
+    findings_sarif: Path | None = None
 
 
 def _write_text(path: Path, text: str) -> Path:
@@ -83,12 +85,16 @@ def write_artifact_tree(
     canonicals: Mapping[RunKey, str],
     report_html: str | None = None,
     figures_json: str | None = None,
+    findings_sarif: str | None = None,
 ) -> ArtifactTree:
     """Write ``<out_dir>/<eval_id>/`` per §17.1 and return the paths.
 
     ``traces`` and ``canonicals`` map each run to its already-serialised JSONL / JSON text;
     this function only places them. Keys are written in sorted order so the walk is stable.
-    ``report_html``, when given, is placed at ``report/report.html`` beside the PR comment.
+    ``report_html``, when given, is placed at ``report/report.html`` beside the PR comment;
+    ``findings_sarif``, when given, at the tree root as ``findings.sarif`` (§17.1). Either is
+    ``None`` where ``reporting.html`` / ``reporting.sarif`` turned it off, and then no file
+    of that name is written.
     """
     root = out_dir / eval_id
     root.mkdir(parents=True, exist_ok=True)
@@ -100,6 +106,10 @@ def write_artifact_tree(
         _write_text(root / "report" / "report.html", report_html)
         if report_html is not None
         else None
+    )
+
+    sarif_path = (
+        _write_text(root / "findings.sarif", findings_sarif) if findings_sarif is not None else None
     )
 
     figures_path = (
@@ -127,4 +137,5 @@ def write_artifact_tree(
         canonicals=tuple(canon_paths),
         report_html=report_html_path,
         figures_json=figures_path,
+        findings_sarif=sarif_path,
     )

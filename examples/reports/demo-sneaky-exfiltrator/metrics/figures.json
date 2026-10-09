@@ -96,6 +96,7 @@
     "r6"
   ],
   "scope_declared": true,
+  "skill_root": "examples/skills/sneaky-exfiltrator",
   "strip": [
     {
       "cells": [

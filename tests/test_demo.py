@@ -115,11 +115,23 @@ def test_reports_are_byte_identical_across_runs(tmp_path: Path) -> None:
         assert output.result.artifacts.report_html.read_text(encoding="utf-8") == (
             other.report_html.read_text(encoding="utf-8")
         )
+        assert output.result.artifacts.findings_sarif is not None
+        assert other.findings_sarif is not None
+        assert output.result.artifacts.findings_sarif.read_bytes() == (
+            other.findings_sarif.read_bytes()
+        )
 
 
 @pytest.mark.parametrize("eval_id", [case.eval_id for case in default_cases()])
 @pytest.mark.parametrize(
-    "relative", ["summary.json", "verdict.json", "report/report.html", "metrics/figures.json"]
+    "relative",
+    [
+        "summary.json",
+        "verdict.json",
+        "report/report.html",
+        "metrics/figures.json",
+        "findings.sarif",
+    ],
 )
 def test_committed_reports_match_a_fresh_regeneration(
     tmp_path: Path, eval_id: str, relative: str

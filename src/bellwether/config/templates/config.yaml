@@ -179,7 +179,7 @@ execution:
     max_tool_calls: 128
     max_total_tokens: 1000000
 
-# reporting:                   # not built in this version — `bellwether doctor` lists any of these you set
-#   html: true                 (the HTML report is always written)
-#   sarif: true
-#   retention_days: 30
+reporting:
+  html: true                   # report/report.html — the static HTML report (§17.4)
+  sarif: true                  # findings.sarif — runtime security findings mirrored for code scanning (§17.3)
+  # retention_days: 30         # not built in this version: Bellwether never prunes artifacts

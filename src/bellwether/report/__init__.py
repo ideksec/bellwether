@@ -15,8 +15,9 @@ footer carries the §2 limitations verbatim. The §16.3 language lint applies to
 template in this package.
 
 WP-12 ships ``summary.json`` (:mod:`.summary`), the three text figures (:mod:`.figures`),
-and the Markdown PR comment (:mod:`.markdown`). The findings containers, the artifact
-tree, and the static HTML report follow in later packages.
+and the Markdown PR comment (:mod:`.markdown`); the static HTML report is :mod:`.html` and
+``findings.sarif`` — the §17.3 mirror of the runtime security findings — is :mod:`.sarif`.
+``findings.json`` (§17.3's runtime container) is not built yet.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from bellwether.report.figures import (
 from bellwether.report.html import render_html_report
 from bellwether.report.markdown import Figures, ScopeRow, render_pr_comment
 from bellwether.report.persist import FIGURES_VERSION, figures_from_json, render_figures_json
+from bellwether.report.sarif import SARIF_RULES, SARIF_VERSION, SarifRule, render_sarif
 from bellwether.report.summary import (
     SCHEMA_VERSION,
     CapabilityProfileSummary,
@@ -59,6 +61,8 @@ from bellwether.report.summary import (
 
 __all__ = [
     "FIGURES_VERSION",
+    "SARIF_RULES",
+    "SARIF_VERSION",
     "SCHEMA_VERSION",
     "STRIP_GLYPHS",
     "CapabilityProfileSummary",
@@ -75,6 +79,7 @@ __all__ = [
     "PlatformBaselineSummary",
     "PolicyRef",
     "RegressionSummary",
+    "SarifRule",
     "ScopeRow",
     "SecuritySummary",
     "SkillRef",
@@ -89,6 +94,7 @@ __all__ = [
     "render_figures_json",
     "render_html_report",
     "render_pr_comment",
+    "render_sarif",
     "render_strip_chart",
     "render_summary_json",
     "render_trajectory_clusters",

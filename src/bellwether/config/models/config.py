@@ -308,6 +308,10 @@ class ExecutionConfig(StrictModel):
 
 
 class ReportingConfig(StrictModel):
+    """§21 ``reporting``. ``html`` writes ``report/report.html``; ``sarif`` writes
+    ``findings.sarif`` (§17.3). Off means the file is not written at all. ``retention_days`` is
+    not built (``NOT_BUILT_SETTINGS``)."""
+
     html: bool = True
     sarif: bool = True
     retention_days: Annotated[int, Field(ge=0)] = 30
@@ -517,8 +521,6 @@ NOT_BUILT_SETTINGS: dict[str, str] = {
     "judges": "the judge subsystem is not built; judged gates are not composed",
     "embeddings": "no embedding provider is used; the BCI output component is excluded",
     "baselines.storage": "baselines are read from the --baselines directory",
-    "reporting.html": "the HTML report is always written",
-    "reporting.sarif": "no SARIF report is produced",
     "reporting.retention_days": "Bellwether never prunes artifacts",
 }
 

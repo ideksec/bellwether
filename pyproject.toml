@@ -66,6 +66,8 @@ dev = [
     "mypy>=1.11",
     "import-linter>=2.0",
     "types-PyYAML>=6.0",
+    # Validates findings.sarif against the vendored OASIS SARIF 2.1.0 schema (tests/schemas/).
+    "jsonschema>=4.22",
 ]
 
 # ---------------------------------------------------------------------------

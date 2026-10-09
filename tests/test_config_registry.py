@@ -78,6 +78,8 @@ READ = {
     "execution.limits.max_turns",
     "execution.limits.max_tool_calls",
     "execution.limits.max_total_tokens",
+    "reporting.html",
+    "reporting.sarif",
 }
 #: Refused when set to anything but the built behaviour: the §21 enforced settings, the sandbox
 #: backend (only Docker is built), and a harness whose declared type is not what would run.
@@ -99,7 +101,6 @@ _ACCESS = {
     "harnesses.*.tools": r"(?<!bellwether)\.harness\w*\.tools\b|entry\.tools\b",
     "judges": r"\.judges\b",
     "embeddings": r"\.embeddings\b",
-    "reporting.html": r"reporting\.html\b",
 }
 
 
@@ -211,10 +212,7 @@ def test_a_setting_nested_under_a_not_built_block_is_reported_once(tmp_path: Pat
     config = load_config(
         _write_config(tmp_path, "\nreporting:\n  sarif: true\n  retention_days: 7\n")
     )
-    assert [path for path, _ in config.not_built_settings()] == [
-        "reporting.retention_days",
-        "reporting.sarif",
-    ]
+    assert [path for path, _ in config.not_built_settings()] == ["reporting.retention_days"]
 
 
 def test_a_non_docker_backend_is_refused(tmp_path: Path) -> None:
