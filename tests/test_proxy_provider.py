@@ -44,9 +44,9 @@ def test_an_image_wires_a_provider_with_a_default_deny_allowlist() -> None:
     assert provider.image == _PROXY_IMG
     # The configured anthropic provider's host is permitted by construction; so is the operator's
     # explicit addition; nothing else.
-    assert provider.allowlist.permits("api.anthropic.com")
-    assert provider.allowlist.permits("pypi.org")
-    assert not provider.allowlist.permits("evil.example.com")
+    assert provider.allowlist.permits("api.anthropic.com", 443)
+    assert provider.allowlist.permits("pypi.org", 443)
+    assert not provider.allowlist.permits("evil.example.com", 443)
 
 
 def test_the_broker_is_empty_so_the_sandbox_gets_no_credential() -> None:

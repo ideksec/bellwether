@@ -74,6 +74,7 @@ from bellwether.capture.dns import (
 )
 from bellwether.capture.dns_sidecar import DnsResolverSidecar, ResolverHandle
 from bellwether.capture.egress import (
+    DEFAULT_EGRESS_PORTS,
     DEFAULT_HEADER_ALLOWLIST,
     CapLedger,
     EgressAllowlist,
@@ -83,6 +84,7 @@ from bellwether.capture.egress import (
     classify_egress,
     correlate_egress_induced_failure,
     make_flow,
+    provider_authorities,
     provider_hosts,
     redact_headers,
 )
@@ -121,6 +123,7 @@ __all__ = [
     "CA_MECHANISMS",
     "DEFAULT_CANARY_POOL",
     "DEFAULT_CA_CONTAINER_PATH",
+    "DEFAULT_EGRESS_PORTS",
     "DEFAULT_HEADER_ALLOWLIST",
     "DNS_DESTINATION",
     "SANDBOX_TOKEN_PREFIX",
@@ -179,6 +182,7 @@ __all__ = [
     "parse_flow_record",
     "parse_query_record",
     "plan_canary_planting",
+    "provider_authorities",
     "provider_hosts",
     "proxy_environment",
     "query_record_line",

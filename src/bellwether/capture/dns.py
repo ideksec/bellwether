@@ -29,6 +29,7 @@ from bellwether.capture.canary import (
     scan_for_canaries,
 )
 from bellwether.determinism import canonical_json
+from bellwether.errors import ConfigurationError, UserFacingProblem
 
 __all__ = [
     "DNS_DESTINATION",
@@ -83,6 +84,22 @@ class DnsAllowlist:
     """The controlled resolver's allowlist (§10.6). Default-deny: a name not on it gets NXDOMAIN."""
 
     allowed: frozenset[str]
+
+    def __post_init__(self) -> None:
+        # A query name carries no port, so ``host:8443`` here would match nothing — an entry the
+        # configuration accepted and the resolver silently never applied. (A bare IPv6 literal
+        # has several colons and is left alone: it is no name, so it is inert either way.)
+        problems = [
+            UserFacingProblem(
+                f"dns.allowlist[{entry!r}]",
+                "a DNS name carries no port, so this entry would match no query",
+                "list the bare name here; a port belongs in egress.allowlist",
+            )
+            for entry in sorted(self.allowed)
+            if entry.count(":") == 1
+        ]
+        if problems:
+            raise ConfigurationError("the DNS allowlist", problems)
 
     def permits(self, name: str) -> bool:
         return any(_qname_matches(name, entry) for entry in self.allowed)

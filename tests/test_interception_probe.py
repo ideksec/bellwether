@@ -493,6 +493,6 @@ def test_the_probes_proxy_lets_the_probe_host_tunnel_and_nothing_else(monkeypatc
     unresolvable, and no other host is widened."""
     _, captured = _probe_with_flows(monkeypatch, [])
     allowlist = captured["allowlist"]
-    assert allowlist.permits(PROBE_HOST)  # type: ignore[attr-defined]
-    assert not allowlist.permits("example.com")  # type: ignore[attr-defined]
+    assert allowlist.permits(PROBE_HOST, 443)  # type: ignore[attr-defined]
+    assert not allowlist.permits("example.com", 443)  # type: ignore[attr-defined]
     assert PROBE_HOST.endswith(".invalid")

@@ -793,7 +793,12 @@ def build_proxy_provider(
     if not egress.image:
         return None
 
-    from bellwether.capture import CredentialBroker, EgressAllowlist, provider_hosts
+    from bellwether.capture import (
+        CredentialBroker,
+        EgressAllowlist,
+        provider_authorities,
+        provider_hosts,
+    )
     from bellwether.determinism import SeededRng
     from bellwether.harness import CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS
     from bellwether.harness.live_client import DEFAULT_ANTHROPIC_BASE_URL
@@ -805,7 +810,9 @@ def build_proxy_provider(
     }
     brokered = sorted(set(brokered_providers))
     allowlist = EgressAllowlist(
-        provider_endpoints=provider_hosts(base_url_of.values()),
+        # Host *and* port: a provider on its own port (an `openai_compatible` server, a
+        # local gateway) is permitted there and nowhere else on that host (§10.5.0).
+        provider_endpoints=provider_authorities(base_url_of.values()),
         infrastructure_endpoints=(
             frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS) if brokered else frozenset()
         ),
