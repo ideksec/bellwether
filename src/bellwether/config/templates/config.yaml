@@ -159,7 +159,12 @@ metrics:
 #   storage: git
 
 execution:
-  # concurrency: 4             # not built in this version — `bellwether doctor` lists any of these you set (runs execute one at a time)
+  # How many runs of one look execute at once (§19.3). Parallel only inside a look of the
+  # sequential design (§13.1): every run of a look finishes before the stopping decision, so
+  # the runs bought — and the spend — are the same as at 1; results are ordered by matrix
+  # coordinate, so traces and verdict are too (§24). Each run keeps its own per-run token cap.
+  # 1 runs one repetition at a time.
+  concurrency: 4
   retry_on_infra_error: 2      # infrastructure causes only; an OOM is data (§13.2)
   cache: true
   cache_ttl_days: 14

@@ -71,6 +71,7 @@ READ = {
     "metrics.bci_weights.output",
     "metrics.trajectory_cluster_threshold",
     "metrics.sensitive_directories",
+    "execution.concurrency",
     "execution.retry_on_infra_error",
     "execution.cache",
     "execution.cache_ttl_days",
@@ -199,14 +200,11 @@ def test_doctor_names_a_not_built_setting_and_why(tmp_path: Path) -> None:
     assert CliRunner().invoke(app, ["init", str(root)]).exit_code == 0
     config = root / ".bellwether" / "config.yaml"
     config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "  retry_on_infra_error:", "  concurrency: 8\n  retry_on_infra_error:"
-        ),
-        encoding="utf-8",
+        config.read_text(encoding="utf-8") + "\nreporting:\n  sarif: true\n", encoding="utf-8"
     )
     result = CliRunner().invoke(app, ["doctor", "--config", str(config), "--json"])
     assert "settings not built in this version" in result.output
-    assert "execution.concurrency (runs execute one at a time)" in result.output
+    assert "reporting.sarif (no SARIF report is produced)" in result.output
 
 
 def test_a_setting_nested_under_a_not_built_block_is_reported_once(tmp_path: Path) -> None:

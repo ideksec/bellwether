@@ -9,6 +9,7 @@ one seam short of a real container.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -178,9 +179,14 @@ class _ScriptedExecutor:
         self.tmp_path = tmp_path
         self.client_factory = client_factory
         self.calls = 0
+        # `execution.concurrency` defaults to 4, so `run_evaluation` calls this from worker
+        # threads: the count is locked and each trace file is named by its coordinate, never by
+        # the call count, or two runs in flight could write and read each other's file.
+        self._lock = threading.Lock()
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
-        self.calls += 1
+        with self._lock:
+            self.calls += 1
         _client, model_id = self.client_factory(plan)  # exercises build_model_client + key lookup
         adapter = ApiLoopAdapter(
             ScriptedClient(_TRANSCRIPT, model_id_reported="model-as-served"),
@@ -223,7 +229,11 @@ class _ScriptedExecutor:
             tokens=token_totals_from_events(events),
         )
         path = write_trace(
-            self.tmp_path / f"run-{self.calls}.jsonl", header, harness_actions(events), footer
+            self.tmp_path
+            / f"run-{plan.scenario.id}-{plan.target.slug}-{plan.repetition}-{plan.attempt}.jsonl",
+            header,
+            harness_actions(events),
+            footer,
         )
         return ExecutedRun(
             trace=read_trace(path),
@@ -1739,10 +1749,10 @@ def test_a_not_built_setting_is_disclosed_in_the_verdict(
 ) -> None:
     """Whoever reads the verdict did not necessarily read config.yaml: a setting it sets that this
     build does not act on is named in the notes, not only by `doctor`."""
-    from bellwether.config.models.config import ExecutionConfig
+    from bellwether.config.models.config import ReportingConfig
 
-    config = _config().model_copy(update={"execution": ExecutionConfig(concurrency=8)})
+    config = _config().model_copy(update={"reporting": ReportingConfig(sarif=True)})
     result = _evaluate_with(package, tmp_path, config=config)
-    assert any("does not act on: execution.concurrency" in note for note in result.verdict.notes), (
+    assert any("does not act on: reporting.sarif" in note for note in result.verdict.notes), (
         result.verdict.notes
     )
