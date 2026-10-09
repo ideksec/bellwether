@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
@@ -507,6 +508,7 @@ def drive_evaluation(
     trajectory_cluster_threshold: float = 0.2,
     sleep: Callable[[float], None] = time.sleep,
     on_retry: Callable[[str], None] | None = None,
+    concurrency: int = 1,
 ) -> list[SetReading]:
     """Run every plan through the executor and roll each repetition set into a reading.
 
@@ -545,7 +547,25 @@ def drive_evaluation(
     this, every set ran to ``n_max`` and the stopping decision was computed from the finished
     matrix — the design named where a set *would have* stopped, having already paid for the runs
     past that point.
+
+    ``concurrency`` (``execution.concurrency``, §21) is how many runs of one look execute at once.
+    Parallelism lives strictly *inside* a look: the runs between the set's current count and its
+    next decision point are executed together, at most ``concurrency`` in flight, and the design is
+    consulted only once every one of them has returned — so no run of look k+1 starts before look
+    k is decided, and a parallel evaluation buys exactly the runs a serial one buys. Results are
+    re-assembled in plan (matrix-coordinate) order, never completion order, and analysed on the
+    calling thread in that order; retry notes are buffered per run and handed to ``on_retry`` in
+    the same order, so the readings, the verdict, and the notes are the same bytes at any
+    ``concurrency`` (§24). A failing run cancels the runs of its look that have not started, waits
+    for the started ones to finish (each tears its own sandbox and sidecars down), and the
+    failure raised is the one at the lowest coordinate — the one a serial run would have stopped
+    at. ``1`` is the serial path, unchanged: each run is analysed before the next one starts.
     """
+    if concurrency < 1:
+        raise BellwetherError(
+            f"execution.concurrency must be at least 1 (1 runs one repetition at a time), "
+            f"got {concurrency}"
+        )
 
     # §7.2: a scenario may carry its own look schedule; each set is aggregated — and held to
     # its first-look floor — under the schedule its scenario actually ran.
@@ -565,7 +585,9 @@ def drive_evaluation(
             order.append((plan.scenario.id, plan.target.slug, plan.target))
         by_set[set_key].append(plan)
 
-    def execute_with_retries(plan: RunPlan) -> tuple[RunPlan, ExecutedRun]:
+    def execute_with_retries(
+        plan: RunPlan, notes: Callable[[str], None] | None
+    ) -> tuple[RunPlan, ExecutedRun]:
         attempt = plan
         while True:
             try:
@@ -579,16 +601,15 @@ def drive_evaluation(
                         f"{attempt.run_id}; execution.retry_on_infra_error is "
                         f"{retry_on_infra_error} (§13.2)"
                     ) from error
-                if on_retry is not None:
-                    on_retry(
+                if notes is not None:
+                    notes(
                         f"{attempt.run_id}: attempt {attempt.attempt} hit a transient "
                         f"infrastructure error and was retried (§13.2): {error}"
                     )
                 sleep(_retry_backoff_seconds(attempt.attempt))
                 attempt = replace(attempt, attempt=attempt.attempt + 1)
 
-    def execute_and_analyse(plan: RunPlan) -> AnalysedRun:
-        plan, executed = execute_with_retries(plan)
+    def analyse(plan: RunPlan, executed: ExecutedRun) -> AnalysedRun:
         run = analyse_run(
             plan,
             executed,
@@ -616,6 +637,50 @@ def drive_evaluation(
             )
         return run
 
+    def execute_and_analyse(plan: RunPlan) -> AnalysedRun:
+        return analyse(*execute_with_retries(plan, on_retry))
+
+    def execute_look(batch: Sequence[RunPlan]) -> list[AnalysedRun]:
+        """Execute one look's increment, up to ``concurrency`` at once, analysed in plan order."""
+        if concurrency == 1 or len(batch) < 2:
+            # The serial path exactly as it always was: execute, analyse, then the next run.
+            return [execute_and_analyse(plan) for plan in batch]
+        # One note buffer per run, flushed in plan order below: `on_retry` lands in the verdict
+        # notes, and appending from the workers would order them by whichever retry fired first.
+        buffers: list[list[str]] = [[] for _ in batch]
+        pool = ThreadPoolExecutor(
+            max_workers=min(concurrency, len(batch)), thread_name_prefix="bellwether-run"
+        )
+        try:
+            futures = [
+                pool.submit(execute_with_retries, plan, buffer.append)
+                for plan, buffer in zip(batch, buffers, strict=True)
+            ]
+            wait(futures, return_when=FIRST_EXCEPTION)
+        finally:
+            # On a failure (or an interrupt in this thread) the queued runs are never started —
+            # a serial run would not have reached them — while the started ones are waited for,
+            # so every sandbox, proxy and resolver is torn down by its own run before we return.
+            pool.shutdown(wait=True, cancel_futures=True)
+        executed: list[tuple[RunPlan, ExecutedRun]] = []
+        for future, buffer in zip(futures, buffers, strict=True):
+            if on_retry is not None:
+                for note in buffer:
+                    on_retry(note)
+            # The pool starts work in submission order, so a cancelled run sits after every
+            # started one: the first failure met here is the lowest coordinate that failed,
+            # which is where the serial path would have stopped.
+            if future.cancelled():
+                raise BellwetherError(
+                    "a run was cancelled without an earlier run failing; this is a bug in the "
+                    "concurrent look executor"
+                )
+            error = future.exception()
+            if error is not None:
+                raise error
+            executed.append(future.result())
+        return [analyse(plan, run) for plan, run in executed]
+
     # §13.1: **execute by look**, not straight to ``n_max``. The plan matrix expands to the last
     # look because that is the most a set can need; running all of it and computing the stopping
     # decision afterwards made the sequential design a label on the report rather than a
@@ -634,10 +699,10 @@ def drive_evaluation(
             set_looks = [*set_looks, len(set_plans)]
         target = next(t for sid, sl, t in order if (sid, sl) == set_key)
         for look in set_looks:
-            while len(analysed_by_set[set_key]) < look:
-                analysed_by_set[set_key].append(
-                    execute_and_analyse(set_plans[len(analysed_by_set[set_key])])
-                )
+            done = len(analysed_by_set[set_key])
+            if done < look:
+                # §13.1: the whole increment to this look, and nothing past it, before deciding.
+                analysed_by_set[set_key].extend(execute_look(set_plans[done:look]))
             if look >= len(set_plans):
                 break
             reading = aggregate(

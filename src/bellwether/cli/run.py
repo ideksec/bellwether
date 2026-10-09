@@ -475,6 +475,11 @@ def run_evaluation(
         bci_weights=config.metrics.bci_weights.model_dump(),
         trajectory_cluster_threshold=config.metrics.trajectory_cluster_threshold,
         on_retry=baseline_notes.append,
+        # §19.3/§21: how many runs of one look execute at once. Parallel only *within* a look
+        # (§13.1), re-ordered by matrix coordinate (§24): the same runs are bought and the same
+        # bytes come out as at 1; each run still owns its sandbox, proxy and resolver, and is
+        # bounded by its own per-run token cap and proxy caps.
+        concurrency=config.execution.concurrency,
     )
     if caching is not None and caching.bypassed:
         # §19.2: disclosed, not silent — the operator turned the cache on and part of the

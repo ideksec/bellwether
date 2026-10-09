@@ -125,6 +125,12 @@ class DockerBackend:
     #: A zone in this set with an empty upper dir was *observed to be untouched*; a zone
     #: never in it was *unobserved*. The two must not read the same (§10.7).
     _observed: set[str] = field(default_factory=set, repr=False)
+    #: One backend serves every run of an evaluation, and with ``execution.concurrency`` above 1
+    #: those runs mount, unmount and read the two maps above from several threads at once. Each
+    #: run touches only its own keys (its own upper directories), so this guards the containers,
+    #: not the meaning — but it means correctness does not rest on the GIL's per-operation
+    #: atomicity, which a free-threaded interpreter does not provide.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def available(self) -> tuple[bool, str]:
         """Whether a daemon is reachable, and why not where it is not.
@@ -239,14 +245,16 @@ class DockerBackend:
             for _, undo in reversed(mounted):
                 undo.unmount()
             raise
-        self._mounts.update(mounted)
-        self._observed.update(key for key, _ in mounted)
+        with self._lock:
+            self._mounts.update(mounted)
+            self._observed.update(key for key, _ in mounted)
         return overlay
 
     def unmount(self, prepared: PreparedSandbox) -> None:
         keys = [str(prepared.upper_dir)] + [str(zone.upper) for zone in prepared.captured_zones]
         for key in keys:
-            overlay = self._mounts.pop(key, None)
+            with self._lock:
+                overlay = self._mounts.pop(key, None)
             if overlay is not None:
                 overlay.unmount()
 
@@ -340,7 +348,9 @@ class DockerBackend:
                 "pinned by digest so two evaluations stay comparable"
             )
 
-        overlay = self._mounts.get(str(prepared.upper_dir))
+        with self._lock:
+            overlay = self._mounts.get(str(prepared.upper_dir))
+            mounted_uppers = set(self._mounts)
         workspace_source = overlay.merged if overlay else prepared.workspace.root
         workspace_target = PurePosixPath(prepared.identifiers.workspace_root)
 
@@ -385,7 +395,7 @@ class DockerBackend:
         zone_binds = {
             PurePosixPath(zone.container_path): zone
             for zone in prepared.captured_zones
-            if str(zone.upper) in self._mounts
+            if str(zone.upper) in mounted_uppers
         }
         for writable in prepared.isolation.writable_paths:
             target = PurePosixPath(writable)
@@ -577,8 +587,10 @@ class DockerBackend:
         changes: dict[Zone, list[PathChange]] = {
             "workspace": read_overlay_diff(prepared.upper_dir, prepared.workspace.root)
         }
+        with self._lock:
+            observed = set(self._observed)
         for zone in prepared.captured_zones:
-            if str(zone.upper) in self._observed:
+            if str(zone.upper) in observed:
                 changes[zone.zone] = read_overlay_diff(zone.upper, zone.lower)
         return changes
 

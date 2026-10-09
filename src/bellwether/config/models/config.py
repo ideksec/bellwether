@@ -289,6 +289,10 @@ class RunLimitsConfig(StrictModel):
 
 
 class ExecutionConfig(StrictModel):
+    #: How many runs of one look execute at once (§19.3). Parallel only within a look of the
+    #: sequential design (§13.1) and re-ordered by matrix coordinate, so it changes elapsed time
+    #: and nothing else: the runs bought, the traces, and the verdict are the same at any value
+    #: (§24). 1 runs one repetition at a time.
     concurrency: Annotated[int, Field(ge=1)] = 4
     #: Infrastructure causes only. A skill that OOMs is data, not a flake (§13.2).
     retry_on_infra_error: Annotated[int, Field(ge=0)] = 2
@@ -507,7 +511,6 @@ NOT_BUILT_SETTINGS: dict[str, str] = {
     "judges": "the judge subsystem is not built; judged gates are not composed",
     "embeddings": "no embedding provider is used; the BCI output component is excluded",
     "baselines.storage": "baselines are read from the --baselines directory",
-    "execution.concurrency": "runs execute one at a time",
     "reporting.html": "the HTML report is always written",
     "reporting.sarif": "no SARIF report is produced",
     "reporting.retention_days": "Bellwether never prunes artifacts",
