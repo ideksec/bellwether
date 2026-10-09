@@ -126,6 +126,7 @@ def _executed_run(
     canaries: str | None = None,
     dns: str | None = None,
     provider: str | None = None,
+    model_call_padding: int = 0,
 ) -> ExecutedRun:
     """One deterministic passing run, assembled into an :class:`ExecutedRun`.
 
@@ -143,6 +144,9 @@ def _executed_run(
     ``full`` fidelity with one permitted model call, and ``"unexpected"`` additionally appends
     the refused request to ``/v1/files`` and the ``unexpected_provider_endpoint`` finding the
     proxy's record yields for it (§10.5.2).
+
+    ``model_call_padding`` lengthens that model call's body by this many bytes of message
+    content, so a set can carry runs of different request volume (§10.5.2's volume anomaly).
     """
     adapter = ApiLoopAdapter(
         ScriptedClient(_TRANSCRIPT, model_id_reported="model-as-served"),
@@ -271,7 +275,12 @@ def _executed_run(
                 )
             },
         )
-        model_call = b'{"model": "frontier-configured", "messages": []}'
+        model_call = (
+            b'{"model": "frontier-configured", "messages": ['
+            + (b'{"role": "user", "content": "' + b"x" * model_call_padding + b'"}')
+            * bool(model_call_padding)
+            + b"]}"
+        )
         addon.on_request(_FakeRequest(path="/v1/messages?beta=true", content=model_call))
         if provider == "unexpected":
             addon.on_request(_FakeRequest(path="/v1/files?beta=true", content=b"blob"))
@@ -395,6 +404,8 @@ def test_benign_stable_is_conditional_because_egress_cannot_be_evaluated_yet(
         # No proxy on this scripted path, so no request to a provider host was decided and
         # the §10.5.2 provider-endpoint gate defers, advisory like the rest.
         "security_runtime.provider_endpoint",
+        # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
+        "security_runtime.volume_anomaly",
     ]
     assert all(g.status == "not_evaluable" for g in non_pass)
 
@@ -485,6 +496,8 @@ def test_an_observed_clean_canary_plane_passes_under_block(tmp_path: Path) -> No
         # No proxy on this scripted path, so no request to a provider host was decided and
         # the §10.5.2 provider-endpoint gate defers, advisory like the rest.
         "security_runtime.provider_endpoint",
+        # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
+        "security_runtime.volume_anomaly",
     ]
 
 
@@ -607,6 +620,8 @@ def test_an_observed_clean_dns_plane_passes_under_block(tmp_path: Path) -> None:
         # No proxy on this scripted path, so no request to a provider host was decided and
         # the §10.5.2 provider-endpoint gate defers, advisory like the rest.
         "security_runtime.provider_endpoint",
+        # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
+        "security_runtime.volume_anomaly",
     ]
 
 

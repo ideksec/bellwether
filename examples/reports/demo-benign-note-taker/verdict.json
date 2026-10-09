@@ -62,6 +62,12 @@
       "status": "not_evaluable"
     },
     {
+      "name": "security_runtime.volume_anomaly",
+      "reason": "api-loop-scripted-frontier: the recording proxy did not decide every request on every run in this set, so request volume is not observed and the gate cannot be decided (§10.5.2, §10.7)",
+      "required": false,
+      "status": "not_evaluable"
+    },
+    {
       "name": "budget.wall_clock",
       "reason": "matrix: the matrix spent 6.00 min of wall clock, within the 60 min ceiling",
       "required": true,

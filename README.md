@@ -170,6 +170,14 @@ the checks that can actually move a skill off `ready`:
   — and refuses anything else *before* the real key is injected, so a skill holding the
   sandbox-scoped token cannot turn it into an upload to `/v1/files`, a batch, or a model the matrix
   never priced. The refusal is recorded and gates; where no proxy ran, the gate defers.
+- **security_runtime.volume_anomaly** — a run that sent far more than its peers
+  (`egress_volume_anomaly`, §10.5.2): each run's forwarded request body bytes, summed over every
+  host the proxy let through, against the median of the *other* runs in its repetition set; more
+  than `egress.volume_anomaly_factor` (default 5×) is the finding. This is aimed at bulk data
+  leaving through the allowlisted model channel that canary scanning cannot recognise because it
+  was never planted. It ships at `warn`. Where no proxy ran the gate defers, and a set with fewer
+  than three runs has no reference and defers too — never a pass. It is blind to a skill that
+  sends the same excess on every run, since then no run stands out from its peers.
 - **budget.wall_clock** — what the matrix spent, summed from every run's footer, against the
   profile's `max_wall_clock_minutes`. A run with no footer has an *unobserved* duration: it is
   bounded by the per-run cap where that fits, and otherwise the gate defers rather than counting
@@ -188,8 +196,7 @@ the checks that can actually move a skill off `ready`:
 What is **declared in the policy but does not yet gate** the scored verdict: undeclared
 credential reads (`credential_read_undeclared` — needs the read-capture plane), undeclared process
 execution (`process_exec_undeclared` — needs the process plane), the instrumentation probe
-(`instrumentation_probe` — needs the §3.5 probe suite), the egress volume anomaly
-(`egress_volume_anomaly` — needs a volume baseline), `harness_state_write` (its gate was withdrawn
+(`instrumentation_probe` — needs the §3.5 probe suite), `harness_state_write` (its gate was withdrawn
 for never being able to fire), and the two advisory-by-design findings (`trace_inconsistency`,
 `possible_egress_induced_failure`). A `block` disposition on them will not, on its own, make a
 verdict `not_ready` in this version — wiring each into a gate is per-plane roadmap work. `bellwether doctor` names exactly which configured dispositions are inert, so

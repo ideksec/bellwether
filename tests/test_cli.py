@@ -192,6 +192,9 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     # ...and unexpected_provider_endpoint since the proxy began holding provider hosts to
     # §10.5.2's request shape and the refusal became a scored gate.
     assert "unexpected_provider_endpoint" not in inert_list
+    # ...and egress_volume_anomaly since a run's request volume is compared with its peers'
+    # median and the comparison became a scored gate (§10.5.2).
+    assert "egress_volume_anomaly" not in inert_list
     assert "canary_leak," not in inert_list and not inert_list.startswith("canary_leak")
     # It is advisory, not a blocking problem — the gap is disclosed, not treated as a failure.
     assert json.loads(result.output)["blocking_problems"] == 0

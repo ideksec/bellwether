@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 
 from bellwether.config.models.common import Document, StrictModel, YamlWord
 from bellwether.config.models.provider import ProviderConfig
-from bellwether.constants import SENSITIVE_DIRECTORIES
+from bellwether.constants import DEFAULT_VOLUME_ANOMALY_FACTOR, SENSITIVE_DIRECTORIES
 
 __all__ = [
     "NOT_BUILT_SETTINGS",
@@ -118,7 +118,9 @@ class EgressConfig(StrictModel):
     max_body_bytes: Annotated[int, Field(ge=0)] = 65_536
     scan_model_api_bodies: bool = True
     parse_server_side_tools: bool = True
-    volume_anomaly_factor: Annotated[float, Field(gt=0)] = 5.0
+    #: §10.5.2: a run whose forwarded request body bytes exceed this multiple of the median of
+    #: its repetition-set peers raises ``egress_volume_anomaly`` (the ``volume_anomaly`` gate).
+    volume_anomaly_factor: Annotated[float, Field(gt=0)] = DEFAULT_VOLUME_ANOMALY_FACTOR
     per_run_caps: PerRunCaps = Field(default_factory=PerRunCaps)
 
 
@@ -498,7 +500,6 @@ NOT_BUILT_SETTINGS: dict[str, str] = {
     "egress.record_response_bodies": "the proxy records requests; response bodies are not kept",
     "egress.max_body_bytes": "the proxy records requests; response bodies are not kept",
     "egress.parse_server_side_tools": "server-side tool calls are not parsed (plane unavailable)",
-    "egress.volume_anomaly_factor": "the egress_volume_anomaly disposition is not scored",
     "dns.log_all_queries": "the controlled resolver always records every query",
     "canaries.canary_set": "the default canary set is always planted",
     "canaries.custom_path": "the default canary set is always planted",

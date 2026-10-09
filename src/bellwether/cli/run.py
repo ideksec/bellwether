@@ -474,6 +474,9 @@ def run_evaluation(
         # §13.7 / §13.4: the metrics block, validated by doctor and — until this — never used.
         bci_weights=config.metrics.bci_weights.model_dump(),
         trajectory_cluster_threshold=config.metrics.trajectory_cluster_threshold,
+        # §10.5.2: the multiple of its peers' median a run's request volume may reach before it
+        # is an `egress_volume_anomaly`. Listed as not built until the volume gate read it.
+        volume_anomaly_factor=config.egress.volume_anomaly_factor,
         on_retry=baseline_notes.append,
     )
     if caching is not None and caching.bypassed:

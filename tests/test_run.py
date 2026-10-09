@@ -1721,6 +1721,46 @@ def test_run_evaluation_hands_the_configured_metrics_block_to_the_driver(
     assert captured["trajectory_cluster_threshold"] == 0.35
 
 
+def test_run_evaluation_hands_the_configured_volume_factor_to_the_driver(
+    package: SkillPackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The outer hop for `egress.volume_anomaly_factor` (§10.5.2), listed as not built until the
+    volume gate read it. The driver-to-comparison hop is pinned in
+    `tests/test_volume_anomaly_gate.py`; this pins the value `run_evaluation` hands down."""
+    from bellwether.cli import run as run_module
+
+    config = _config()
+    config = config.model_copy(
+        update={"egress": config.egress.model_copy(update={"volume_anomaly_factor": 3.5})}
+    )
+    captured: dict[str, object] = {}
+    real = run_module.drive_evaluation
+
+    def spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "drive_evaluation", spy)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=config,
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="firstlight",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+
+    assert captured["volume_anomaly_factor"] == 3.5
+
+
 def test_a_not_built_setting_is_disclosed_in_the_verdict(
     package: SkillPackage, tmp_path: Path
 ) -> None:

@@ -142,6 +142,14 @@ class EvidenceIndex:
     #: than the expected endpoint, or a model outside the configured set (§10.5.2, high).
     #: What turns the provider-endpoint gate from pass to block.
     unexpected_provider_endpoint_present: bool = False
+    #: Request body bytes the recording proxy *forwarded* for this run, summed over every
+    #: permitted Plane D flow — model API, harness infrastructure and skill-attributed alike
+    #: (§10.5.2's "request body bytes per run"). A refused request is not counted: its body
+    #: never left, and the refusal is already its own finding. Proxy-inferred records (§10.5.3)
+    #: are not counted either — they describe a call the provider made, not bytes the sandbox
+    #: sent. Read only where the egress plane supports an absence claim; a run with no proxy
+    #: has no volume, not a volume of zero.
+    egress_request_bytes: int = 0
     context: NormalizationContext = field(
         default_factory=lambda: NormalizationContext(workspace_root="/work")
     )
@@ -168,6 +176,7 @@ class EvidenceIndex:
         dns_blocked = False
         dns_blocked_seqs: list[int] = []
         unexpected_provider_endpoint = False
+        egress_request_bytes = 0
 
         for action in trace.actions:
             if action.plane == "harness":
@@ -201,6 +210,14 @@ class EvidenceIndex:
                         )
                     )
             elif action.kind == "egress_request":
+                if action.plane == "egress":
+                    body_bytes = action.action.get("request_body_bytes")
+                    if (
+                        isinstance(body_bytes, int)
+                        and not isinstance(body_bytes, bool)
+                        and body_bytes > 0
+                    ):
+                        egress_request_bytes += body_bytes
                 host = action.action.get("host")
                 egress_class = action.action.get("egress_class")
                 if isinstance(host, str) and isinstance(egress_class, str):
@@ -240,6 +257,7 @@ class EvidenceIndex:
             dns_blocked_present=dns_blocked,
             dns_blocked_seqs=tuple(dns_blocked_seqs),
             unexpected_provider_endpoint_present=unexpected_provider_endpoint,
+            egress_request_bytes=egress_request_bytes,
             context=context,
         )
 

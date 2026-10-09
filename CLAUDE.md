@@ -49,7 +49,7 @@ measurement, including the rows that come back unproved and why.** The matcher w
 to **normalise rather than enumerate**: three of the four rounds' headline findings were
 regressions from the previous round's fix in the same predicate, which is what a blacklist does —
 every reject-clause has an unenumerated spelling. Reduce an input to what it certainly means, then
-compare; do not list the ways it can be wrong. Six of thirteen `security_runtime` dispositions are enforced, seven remain
+compare; do not list the ways it can be wrong. Seven of thirteen `security_runtime` dispositions are enforced, six remain
 inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. The sixth,
 `unexpected_provider_endpoint`, holds every request to a provider host to §10.5.2's shape at the
 proxy — the expected shape was *observed* from the pinned CLI binary, not inferred from its path list.

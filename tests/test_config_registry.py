@@ -59,6 +59,7 @@ READ = {
     "egress.allowlist",
     "egress.per_run_caps.max_requests",
     "egress.per_run_caps.max_request_bytes",
+    "egress.volume_anomaly_factor",
     "dns.image",
     "dns.allowlist",
     "canaries.enabled",

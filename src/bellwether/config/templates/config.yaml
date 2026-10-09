@@ -97,7 +97,8 @@ egress:
                                # residual exfiltration path and it is not closed by a
                                # proxy that must let model traffic through (§3.3)
   # parse_server_side_tools: true  # not built in this version — `bellwether doctor` lists any of these you set
-  # volume_anomaly_factor: 5.0
+  volume_anomaly_factor: 5.0   # a run sending more than this × its peers' median request
+                               # body bytes raises egress_volume_anomaly (§10.5.2)
   per_run_caps:
     max_requests: 400
     max_request_bytes: 33554432
