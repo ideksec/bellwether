@@ -25,7 +25,11 @@ from bellwether.capture.canary import (
     redact_canaries,
     scan_for_canaries,
 )
-from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
+from bellwether.capture.dns import (
+    DnsQuery,
+    reassemble_queries_for_canaries,
+    scan_query_for_canaries,
+)
 from bellwether.capture.egress import EgressCanaryHit, EgressFlow
 from bellwether.capture.model_channel import ModelRequestScan
 from bellwether.determinism import canonical_json
@@ -45,6 +49,7 @@ __all__ = [
     "assemble_coverage",
     "canary_actions",
     "dns_actions",
+    "dns_reassembly_actions",
     "egress_actions",
     "egress_body_actions",
     "exit_reason_from_events",
@@ -254,6 +259,8 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
             payload["cap_exceeded"] = flow.cap_exceeded
         if flow.shape_violation:
             payload["shape_violation"] = flow.shape_violation
+        if flow.canary_reassembly_limit:
+            payload["canary_reassembly_limit"] = flow.canary_reassembly_limit
 
         actions.append(
             Action(
@@ -415,6 +422,38 @@ def canary_actions(
             actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
             seq += 1
     return actions
+
+
+def dns_reassembly_actions(
+    plane_e: Sequence[Action], canaries: Sequence[Canary], *, start_seq: int = 0
+) -> tuple[list[Action], str]:
+    """Derive Plane C findings from a marker split *across* DNS queries (§10.4.2, §10.6).
+
+    :func:`canary_actions` scans each query name on its own; this scans them together, in query
+    order (:func:`~bellwether.capture.dns.reassemble_queries_for_canaries`), and anchors each
+    finding to the ``dns_query``/``dns_blocked`` action that completed the marker. A canary that
+    query already carried on its own is not reported again. Returns the actions and the
+    reassembly's limit reason (``""`` unless its stream bound was reached), which the caller
+    records on the credentials plane's coverage so a degraded scan never reads as a full one.
+
+    Deterministic: queries are consumed in order and each one's findings come back sorted (§24).
+    """
+    queries = [
+        action
+        for action in plane_e
+        if action.kind in ("dns_query", "dns_blocked")
+        and isinstance(action.action.get("name"), str)
+    ]
+    found, limit = reassemble_queries_for_canaries(
+        [str(action.action["name"]) for action in queries], canaries
+    )
+    actions: list[Action] = []
+    for offset, (index, finding) in enumerate(found):
+        source = queries[index]
+        actions.append(
+            _plane_c_action(finding, seq=start_seq + offset, ts=source.ts, anchor_seq=source.seq)
+        )
+    return actions, limit
 
 
 def _plane_c_action(
