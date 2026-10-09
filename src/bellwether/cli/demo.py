@@ -465,6 +465,9 @@ def run_demo_case(
         manifest_present=package.manifest is not None,
         review_state=package.review_state(),
         review_age_days=package.review_age_days(dt.datetime.fromisoformat(_CREATED_AT).date()),
+        # Fixed, like the trace header's `source`: the committed demo trees must not depend on
+        # where the checkout lives or which directory the demo was started from.
+        skill_root=f"examples/skills/{case.skill_dir}",
     )
     return DemoOutput(case=case, result=result)
 

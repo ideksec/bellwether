@@ -9,6 +9,7 @@ one seam short of a real container.
 from __future__ import annotations
 
 import datetime as dt
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,7 +18,7 @@ import pytest
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.run import policy_digest, run_evaluation
 from bellwether.config.models.common import Target
-from bellwether.config.models.config import Config, SandboxConfig
+from bellwether.config.models.config import Config, ReportingConfig, SandboxConfig
 from bellwether.config.models.policy import Policy, Selection
 from bellwether.config.models.provider import ProviderConfig
 from bellwether.errors import BellwetherError
@@ -49,6 +50,7 @@ from bellwether.trace import (
     token_totals_from_events,
     write_trace,
 )
+from tests.test_sarif import assert_valid_sarif
 
 _API = {"apiVersion": "bellwether/v1"}
 _KEY_ENV = "ANTHROPIC_API_KEY"
@@ -230,7 +232,7 @@ class _ScriptedExecutor:
         )
 
 
-def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON):  # type: ignore[no-untyped-def]
+def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON, config=None):  # type: ignore[no-untyped-def]
     holder: dict[str, _ScriptedExecutor] = {}
 
     def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
@@ -238,7 +240,7 @@ def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON):  # ty
         return holder["exec"]
 
     result = run_evaluation(
-        config=_config(),
+        config=config if config is not None else _config(),
         policy=_policy(),
         package=package,
         fixture=tmp_path / "fixture",
@@ -482,6 +484,63 @@ def test_run_evaluation_produces_a_verdict_and_an_artifact_tree(
     assert executor.calls == looks[0]
     assert executor.calls < _policy().profile("low").matrix.n_max
     assert result.artifacts.summary_json.exists()
+
+
+# ---------------------------------------------------------------------------
+# §21 `reporting`: the switches decide which reports `run` writes
+# ---------------------------------------------------------------------------
+
+
+def _reporting(**switches: bool) -> Config:
+    return _config().model_copy(update={"reporting": ReportingConfig(**switches)})
+
+
+def test_run_writes_the_html_report_and_the_sarif_by_default(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, _ = _evaluate(package, tmp_path)
+    tree = result.artifacts.root
+    assert result.artifacts.report_html == tree / "report" / "report.html"
+    assert result.artifacts.report_html.is_file()
+    assert result.artifacts.findings_sarif == tree / "findings.sarif"
+    document = assert_valid_sarif(result.artifacts.findings_sarif.read_text(encoding="utf-8"))
+    run = document["runs"][0]
+    assert run["properties"]["eval_id"] == "firstlight"
+    rules = {rule["id"] for rule in run["tool"]["driver"]["rules"]}
+    assert "canary_leak" in rules
+    assert run["automationDetails"]["id"].startswith("bellwether/security-review/")
+    assert not any("reporting." in note for note in result.verdict.notes)
+
+
+def test_reporting_html_false_writes_no_html_report(package: SkillPackage, tmp_path: Path) -> None:
+    result, _ = _evaluate(package, tmp_path, config=_reporting(html=False))
+    assert result.artifacts.report_html is None
+    assert not (result.artifacts.root / "report" / "report.html").exists()
+    # Only the HTML is off: the comment, the SARIF and the persisted figures are still written,
+    # so `bellwether report --format html` can render it later on request.
+    assert result.artifacts.pr_comment.is_file()
+    assert result.artifacts.findings_sarif is not None
+    assert result.artifacts.findings_sarif.is_file()
+    assert (result.artifacts.root / "metrics" / "figures.json").is_file()
+    assert not any("reporting." in note for note in result.verdict.notes)
+
+
+def test_reporting_sarif_false_writes_no_sarif(package: SkillPackage, tmp_path: Path) -> None:
+    result, _ = _evaluate(package, tmp_path, config=_reporting(sarif=False))
+    assert result.artifacts.findings_sarif is None
+    assert not (result.artifacts.root / "findings.sarif").exists()
+    assert result.artifacts.report_html is not None
+    assert result.artifacts.report_html.is_file()
+
+
+def test_the_sarif_anchor_follows_the_repository_root(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    (tmp_path / ".git").mkdir()
+    result, _ = _evaluate(package, tmp_path, config=_reporting(html=False))
+    assert result.artifacts.findings_sarif is not None
+    figures = json.loads((result.artifacts.root / "metrics" / "figures.json").read_text("utf-8"))
+    assert figures["skill_root"] == "security-review"
 
 
 def test_run_evaluation_refuses_a_missing_api_key(package: SkillPackage, tmp_path: Path) -> None:

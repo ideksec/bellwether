@@ -57,6 +57,7 @@ from bellwether.trace import (
     token_totals_from_events,
     write_trace,
 )
+from tests.test_sarif import assert_valid_sarif
 
 _WORKSPACE = "/work/security-review"
 _SKILL = OfferedSkill(
@@ -332,6 +333,7 @@ def _run_pipeline(  # type: ignore[no-untyped-def]
     manifest_present: bool | None = None,
     review_state: str | None = None,
     review_age_days: int | None = None,
+    **report_options: object,
 ):
     profile = profile if profile is not None else _firstlight_profile()
     scenario = _scenario()
@@ -360,6 +362,7 @@ def _run_pipeline(  # type: ignore[no-untyped-def]
         manifest_present=manifest_present,
         review_state=review_state,
         review_age_days=review_age_days,
+        **report_options,  # type: ignore[arg-type]
     )
 
 
@@ -459,6 +462,73 @@ def test_a_canary_leak_under_a_warn_disposition_holds_at_conditional(tmp_path: P
     assert result.verdict.verdict == "conditional"
     canary_gates = [g for g in result.verdict.gates if g.name == "security_runtime.canaries"]
     assert canary_gates and canary_gates[0].status == "warn"
+
+
+def _sarif_results(result) -> list[dict[str, object]]:  # type: ignore[no-untyped-def]
+    assert result.artifacts.findings_sarif is not None
+    document = assert_valid_sarif(result.artifacts.findings_sarif.read_text(encoding="utf-8"))
+    return document["runs"][0]["results"]  # type: ignore[no-any-return]
+
+
+def test_a_canary_leak_is_mirrored_into_sarif_as_an_error(tmp_path: Path) -> None:
+    """§17.3: the leak that blocks the verdict reaches the Security tab — one ``canary_leak``
+    result at ``error``, anchored at the skill's SKILL.md line 1, carrying the gate's reason."""
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        canaries="leak",
+        profile=_blocking_canary_profile(),
+        skill_root="skills/security-review",
+    )
+    results = _sarif_results(result)
+    leaks = [r for r in results if r["ruleId"] == "canary_leak"]
+    assert len(leaks) == 1
+    leak = leaks[0]
+    assert leak["level"] == "error"
+    assert leak["properties"]["severity"] == "critical"  # type: ignore[index]
+    location = leak["locations"][0]["physicalLocation"]  # type: ignore[index]
+    assert location["artifactLocation"]["uri"] == "skills/security-review/SKILL.md"
+    assert location["region"] == {"startLine": 1}
+    assert "non-model destination" in leak["message"]["text"]  # type: ignore[index]
+
+
+def test_a_canary_leak_under_warn_is_mirrored_as_a_warning(tmp_path: Path) -> None:
+    result = _run_pipeline(tmp_path, tmp_path / "out", canaries="leak")
+    levels = {r["ruleId"]: r["level"] for r in _sarif_results(result)}
+    assert levels.get("canary_leak") == "warning"
+
+
+def test_a_clean_canary_plane_has_no_canary_result(tmp_path: Path) -> None:
+    result = _run_pipeline(
+        tmp_path, tmp_path / "out", canaries="clean", profile=_blocking_canary_profile()
+    )
+    assert "canary_leak" not in {r["ruleId"] for r in _sarif_results(result)}
+
+
+def test_two_leaking_runs_write_byte_identical_sarif(tmp_path: Path) -> None:
+    first = _run_pipeline(tmp_path / "a", tmp_path / "a" / "out", canaries="leak")
+    second = _run_pipeline(tmp_path / "b", tmp_path / "b" / "out", canaries="leak")
+    assert first.artifacts.findings_sarif is not None
+    assert second.artifacts.findings_sarif is not None
+    assert (
+        first.artifacts.findings_sarif.read_bytes() == second.artifacts.findings_sarif.read_bytes()
+    )
+
+
+@pytest.mark.parametrize(
+    ("write_html", "write_sarif"), [(True, True), (False, True), (True, False), (False, False)]
+)
+def test_orchestrate_writes_exactly_the_reports_it_is_asked_for(
+    tmp_path: Path, write_html: bool, write_sarif: bool
+) -> None:
+    result = _run_pipeline(
+        tmp_path, tmp_path / "out", write_html=write_html, write_sarif=write_sarif
+    )
+    root = result.artifacts.root
+    assert (root / "report" / "report.html").exists() is write_html
+    assert (root / "findings.sarif").exists() is write_sarif
+    assert (result.artifacts.report_html is not None) is write_html
+    assert (result.artifacts.findings_sarif is not None) is write_sarif
 
 
 def test_an_observed_clean_canary_plane_passes_under_block(tmp_path: Path) -> None:
@@ -931,3 +1001,25 @@ def test_an_empty_scope_table_says_which_empty_it_is(
     html_report = (result.artifacts.root / "report" / "report.html").read_text(encoding="utf-8")
     assert expected in comment
     assert expected in html_report
+
+
+def test_a_gate_summary_pairs_the_worst_targets_observation_with_its_reason() -> None:
+    """``observed``/``threshold`` came from the *first* target while ``reason`` came from the
+    worst, so a two-target gate could pair one target's reason with the other's observation —
+    and the SARIF mirror prints both in one message. All three now come from the worst."""
+    from bellwether.cli.orchestrator import _gate_summaries
+    from bellwether.verdict import build_gate
+    from bellwether.verdict.models import TargetGateResult
+
+    gate = build_gate(
+        "security_runtime.sensitive_directories",
+        [
+            TargetGateResult("frontier", "pass", "nothing", "none", "clean"),
+            TargetGateResult("small", "block", "~/.aws/", "none", "touched ~/.aws/"),
+        ],
+        required=True,
+    )
+    (summary,) = _gate_summaries([gate])
+    assert summary.status == "block"
+    assert summary.reason == "small: touched ~/.aws/"
+    assert summary.observed == "~/.aws/"

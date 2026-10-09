@@ -84,6 +84,7 @@ __all__ = [
     "claude_code_providers",
     "depth_options",
     "policy_digest",
+    "repository_relative_root",
     "run_evaluation",
     "select_scenarios",
 ]
@@ -528,7 +529,29 @@ def run_evaluation(
         manifest_present=package.manifest is not None,
         review_state=package.review_state(),
         review_age_days=package.review_age_days(_evaluation_date(created_at)),
+        # §21 `reporting`: each report is written only where the config asks for it.
+        write_html=config.reporting.html,
+        write_sarif=config.reporting.sarif,
+        skill_root=repository_relative_root(package.root),
     )
+
+
+def repository_relative_root(root: Path) -> str | None:
+    """The skill directory relative to the git repository holding it, as POSIX, or ``None``.
+
+    ``findings.sarif`` anchors its results at ``<skill>/SKILL.md`` (§17.3), and GitHub code
+    scanning resolves a result's ``uri`` against the repository root — so the anchor is the
+    path from the nearest ancestor holding a ``.git`` entry (a directory, or the file a
+    worktree or submodule has), not from wherever the command happened to be started. Outside
+    any repository there is no root to be relative to, and ``None`` says so rather than
+    guessing; the SARIF then names the gap. ``""`` is a skill at the repository root.
+    """
+    resolved = root.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            relative = resolved.relative_to(candidate).as_posix()
+            return "" if relative == "." else relative
+    return None
 
 
 #: §19.1's tiered depth: (target aliases to keep, look schedule, fixed repetitions).

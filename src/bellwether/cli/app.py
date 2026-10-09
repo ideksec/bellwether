@@ -1409,17 +1409,19 @@ def render_report(
     out: Annotated[
         Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
     ] = RUN_OUTPUT_DIR,
-    fmt: Annotated[str, typer.Option("--format", help="md, html, or all.")] = "all",
+    fmt: Annotated[str, typer.Option("--format", help="md, html, sarif, or all.")] = "all",
     to: Annotated[
         Path | None,
-        typer.Option("--to", help="Write here instead of the tree's own report/ directory."),
+        typer.Option(
+            "--to", help="Write here instead of the tree's own report/ directory (and root)."
+        ),
     ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Re-render a stored evaluation's report from its artifacts (§17.1, §20).
 
-    Reads ``summary.json`` and ``metrics/figures.json`` and renders the PR comment and the
-    HTML report again — the same renderers ``bellwether run`` used, on the same inputs, so
+    Reads ``summary.json`` and ``metrics/figures.json`` and renders the PR comment, the
+    HTML report and ``findings.sarif`` again — the same renderers ``bellwether run`` used, on the same inputs, so
     the bytes match what the run wrote. A tree written before the figures were persisted
     is refused with the reason, never rendered from a guess.
     """

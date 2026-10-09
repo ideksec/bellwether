@@ -96,6 +96,7 @@ from bellwether.report import (
     render_figures_json,
     render_html_report,
     render_pr_comment,
+    render_sarif,
     render_summary_json,
 )
 from bellwether.sandbox import tidy_container_spelling
@@ -2819,13 +2820,27 @@ def _gate_summaries(gates: Sequence[GateResult]) -> tuple[GateSummary, ...]:
         GateSummary(
             name=gate.name,
             status=gate.status,
-            observed=gate.per_target[0].observed if gate.per_target else "",
-            threshold=gate.per_target[0].threshold if gate.per_target else "",
+            observed=worst.observed if worst is not None else "",
+            threshold=worst.threshold if worst is not None else "",
             reason=gate.worst_reason,
             required=gate.required,
         )
         for gate in gates
+        for worst in (_worst_target(gate),)
     )
+
+
+def _worst_target(gate: GateResult) -> TargetGateResult | None:
+    """The per-target result that set the gate's status — the same one ``worst_reason`` names.
+
+    ``observed`` and ``threshold`` used to come from the *first* target while ``reason`` came
+    from the worst, so on a multi-target gate the summary could pair one target's reason with
+    another target's observation. Every surface (and the SARIF mirror) reads these together.
+    """
+    for result in gate.per_target:
+        if result.status == gate.status:
+            return result
+    return gate.per_target[0] if gate.per_target else None
 
 
 def orchestrate(
@@ -2860,6 +2875,13 @@ def orchestrate(
     #: (§6.3). Both only read where the profile sets ``human_review.required``.
     review_state: str | None = None,
     review_age_days: int | None = None,
+    #: §21 ``reporting.html`` / ``reporting.sarif``: whether ``report/report.html`` and
+    #: ``findings.sarif`` are written. The defaults match the config defaults.
+    write_html: bool = True,
+    write_sarif: bool = True,
+    #: The skill directory, repository-relative POSIX, that ``findings.sarif`` anchors its
+    #: results under (§17.3). ``None`` where the caller does not know it.
+    skill_root: str | None = None,
 ) -> EvalResult:
     """Compose the verdict from the set readings, render, and write the artifact tree.
 
@@ -3039,7 +3061,9 @@ def orchestrate(
 
     verdict = compose_verdict(tuple(gates), descriptive_only=descriptive_only, notes=notes)
 
-    figures = build_figures(readings, scope_declared=manifest_present)
+    figures = replace(
+        build_figures(readings, scope_declared=manifest_present), skill_root=skill_root
+    )
     summary = _build_summary(
         skill_name=skill_name,
         package_digest=package_digest,
@@ -3068,7 +3092,11 @@ def orchestrate(
         summary_json=render_summary_json(summary),
         verdict_json=_verdict_json(verdict),
         pr_comment=render_pr_comment(summary, figures),
-        report_html=render_html_report(summary, figures),
+        # §21 `reporting.html` / `reporting.sarif`: a switched-off report is not written at all,
+        # rather than written and ignored. The figures are persisted either way, so `bellwether
+        # report` can still render either one from the stored tree on demand.
+        report_html=render_html_report(summary, figures) if write_html else None,
+        findings_sarif=render_sarif(summary, figures) if write_sarif else None,
         figures_json=render_figures_json(figures),
         traces={run.key: run.trace_jsonl for r in readings for run in r.runs},
         canonicals={run.key: run.canonical_json for r in readings for run in r.runs},
