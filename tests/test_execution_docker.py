@@ -108,6 +108,8 @@ def _firstlight_profile() -> object:
             "canary_leak": "warn",
             "canary_without_read": "warn",
             "unexpected_provider_endpoint": "warn",
+            "credential_read_undeclared": "warn",
+            "process_exec_undeclared": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})

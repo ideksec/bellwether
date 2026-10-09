@@ -601,6 +601,33 @@ class DockerBackend:
             self.build_argv(prepared, command, image=image, network=network, sink_bind=sink_bind)
         )
 
+    def container_pid(self, prepared: PreparedSandbox) -> int:
+        """The host pid of the persistent container's init process (its ``/proc`` entry is how
+        the host-side recorder reaches the container's mounts, §10.2/§10.3)."""
+        result = subprocess.run(
+            [
+                self.binary,
+                "inspect",
+                "--format",
+                "{{.State.Pid}}",
+                prepared.identifiers.container_name,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        try:
+            pid = int(result.stdout.strip())
+        except ValueError:
+            pid = 0
+        if result.returncode != 0 or pid <= 0:
+            raise BellwetherError(
+                "could not read the sandbox container's pid: "
+                f"{result.stderr.strip() or result.stdout.strip() or result.returncode}"
+            )
+        return pid
+
     def _force_remove(self, container_name: str) -> None:
         subprocess.run(
             [self.binary, "rm", "-f", container_name],

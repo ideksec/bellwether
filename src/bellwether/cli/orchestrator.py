@@ -47,6 +47,8 @@ from bellwether.assertions import (
     expand_braces,
     run_outcome,
     trace_inconsistencies,
+    undeclared_credential_reads,
+    undeclared_processes,
 )
 from bellwether.cli.artifacts import ArtifactTree, RunKey, target_slug, write_artifact_tree
 from bellwether.cli.baselines import BaselineRecord, target_set_digest
@@ -136,6 +138,7 @@ __all__ = [
     "consistent_schedule",
     "drive_evaluation",
     "effective_schedule",
+    "fold_declared_scope",
     "observed_paths",
     "orchestrate",
     "plan_matrix",
@@ -311,6 +314,17 @@ class AnalysedRun:
     #: host was refused for not being a model call (§10.5.2, high). What turns the
     #: provider-endpoint gate from pass to block.
     unexpected_provider_endpoint: bool = False
+    #: Read capture watched every planted credential on this run at absence-supporting
+    #: fidelity (§10.2, §10.8) — what ``credential_read_undeclared``'s pass rests on.
+    credential_reads_observed: bool = False
+    #: Planted credentials this run read that ``credentials.expects`` does not declare
+    #: (§12.5, §16.1), as ``<path> (<canary id>)``. Presence evidence from either plane.
+    undeclared_credential_reads: tuple[str, ...] = ()
+    #: Process capture observed this run at absence-supporting fidelity (§10.3, §10.8).
+    processes_observed: bool = False
+    #: Skill processes neither declared in ``processes.allow`` nor accounted for by the
+    #: applicable platform baseline (§10.3, §12.6), each with why.
+    undeclared_processes: tuple[str, ...] = ()
     #: The trace footer's exit reason. §12.7 folds a ``timeout`` into the ``fail`` outcome
     #: for the pass-rate arithmetic, but §24 requires it counted and drawn as a *distinct*
     #: state — a skill that never finishes is not a skill that finished wrong — so the
@@ -479,10 +493,84 @@ def scope_unused_of(executed: ExecutedRun, declared: DeclaredScope) -> tuple[str
     return tuple(sorted(entry.subject for entry in scope_table_of(executed, declared).unused()))
 
 
-def scope_table_of(executed: ExecutedRun, declared: DeclaredScope) -> ScopeTable:
+def scope_table_of(
+    executed: ExecutedRun,
+    declared: DeclaredScope,
+    *,
+    platform_baseline: PlatformBaseline | None = None,
+) -> ScopeTable:
     """The full Declared-vs-Observed table for one run against a declared scope (§12.5)."""
     index = EvidenceIndex.from_trace(executed.trace, executed.context, workspace=executed.workspace)
-    return evaluate_scope(declared, index)
+    return evaluate_scope(
+        declared,
+        index,
+        process_baseline=_applicable_baseline(
+            platform_baseline, executed.trace.header.sandbox.image
+        ),
+    )
+
+
+def _applicable_baseline(
+    baseline: PlatformBaseline | None, sandbox_image: str
+) -> PlatformBaseline | None:
+    """``baseline`` where it is keyed to this run's image (§12.6), else ``None``."""
+    if baseline is None or not baseline.applicable_to(sandbox_image)[0]:
+        return None
+    return baseline
+
+
+def fold_declared_scope(
+    run: AnalysedRun,
+    executed: ExecutedRun,
+    declared: DeclaredScope,
+    *,
+    platform_baseline: PlatformBaseline | None = None,
+) -> AnalysedRun:
+    """Every manifest-derived field of one run, judged against ``declared`` (§12.5, §13.5.4).
+
+    The live path, the demo and the acceptance harness analyse a run with ``scope=None`` and
+    carry the manifest separately, so each declaration-dependent reading has to be recomputed
+    from it. Doing that field by field at each caller is how a new one gets missed — a fold
+    that forgot ``credentials.expects`` would mark a declared credential read undeclared and
+    hand §10.4.1's false-positive guard the very false positive it exists to prevent. So the
+    fold is one function, and every caller uses it.
+    """
+    index = EvidenceIndex.from_trace(executed.trace, executed.context, workspace=executed.workspace)
+    baseline = _applicable_baseline(platform_baseline, executed.trace.header.sandbox.image)
+    table = evaluate_scope(declared, index, process_baseline=baseline)
+    return replace(
+        run,
+        scope_exceeded=tuple(sorted(entry.subject for entry in table.exceeded())),
+        scope_unused=tuple(sorted(entry.subject for entry in table.unused())),
+        scope_not_evaluable=tuple(sorted(entry.subject for entry in table.not_evaluable())),
+        undeclared_sensitive_hits=undeclared_sensitive_hits(run.sensitive_hits, declared),
+        undeclared_credential_reads=_credential_read_labels(declared, index),
+        undeclared_processes=_process_labels(declared, index, baseline),
+    )
+
+
+def _credential_read_labels(scope: DeclaredScope | None, index: EvidenceIndex) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                f"{read.path} ({read.canary_id})"
+                for read in undeclared_credential_reads(scope, index)
+            }
+        )
+    )
+
+
+def _process_labels(
+    scope: DeclaredScope | None, index: EvidenceIndex, baseline: PlatformBaseline | None
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                f"{' '.join(process.argv) if process.argv else process.argv0}: {why}"
+                for process, why in undeclared_processes(scope, index, baseline=baseline)
+            }
+        )
+    )
 
 
 def _retry_backoff_seconds(attempt: int) -> float:
@@ -599,20 +687,13 @@ def drive_evaluation(
             require_activation=profile.gates.functional.require_all_should_trigger,
         )
         if declared_scope is not None:
-            table = scope_table_of(executed, declared_scope)
-            run = replace(
-                run,
-                scope_exceeded=tuple(sorted(entry.subject for entry in table.exceeded())),
-                scope_unused=tuple(sorted(entry.subject for entry in table.unused())),
-                scope_not_evaluable=tuple(sorted(entry.subject for entry in table.not_evaluable())),
-                # Recomputed here, not left as `analyse_run` derived it: the live path passes
-                # `scope=None` and carries the manifest in `declared_scope`, so deriving the
-                # §13.5.4 exclusions from `scope` alone would mark *every* hit undeclared and
-                # give the gate the guaranteed false positive §10.4.1 exists to prevent —
-                # `legit-credential-reader` declares its credential read and must stay `ready`.
-                undeclared_sensitive_hits=undeclared_sensitive_hits(
-                    run.sensitive_hits, declared_scope
-                ),
+            # Recomputed here, not left as `analyse_run` derived it: the live path passes
+            # `scope=None` and carries the manifest in `declared_scope`, so deriving the
+            # §13.5.4 exclusions and the undeclared credential reads from `scope` alone would
+            # mark *every* hit undeclared — `legit-credential-reader` declares its credential
+            # read and must stay `ready`.
+            run = fold_declared_scope(
+                run, executed, declared_scope, platform_baseline=platform_baseline
             )
         return run
 
@@ -1145,11 +1226,14 @@ def analyse_run(
     )
     tier3_by_class = _tier3_by_class(trace.actions, context, platform_baseline_t3, absorbed_t1)
 
+    # §12.6: the process half of the baseline applies on the same terms as the path half —
+    # only where it is keyed to this run's image.
+    process_baseline = _applicable_baseline(platform_baseline, trace.header.sandbox.image)
     scope_exceeded: tuple[str, ...] = ()
     scope_unused: tuple[str, ...] = ()
     scope_not_evaluable: tuple[str, ...] = ()
     if scope is not None:
-        table = evaluate_scope(scope, index)
+        table = evaluate_scope(scope, index, process_baseline=process_baseline)
         scope_exceeded = tuple(sorted(entry.subject for entry in table.exceeded()))
         scope_unused = tuple(sorted(entry.subject for entry in table.unused()))
         scope_not_evaluable = tuple(sorted(entry.subject for entry in table.not_evaluable()))
@@ -1240,6 +1324,15 @@ def analyse_run(
         # so it takes §10.8's stricter bar on the egress plane; a hit is read off the finding.
         provider_requests_observed=index.plane_reason("egress", for_absence=True) is None,
         unexpected_provider_endpoint=index.unexpected_provider_endpoint_present,
+        # §16.1 `credential_read_undeclared`: the pass is an absence claim over the planted
+        # credentials, so both the planting and read capture must support absence.
+        credential_reads_observed=(
+            index.plane_reason("credentials") is None
+            and index.plane_reason("filesystem_reads", for_absence=True) is None
+        ),
+        undeclared_credential_reads=_credential_read_labels(scope, index),
+        processes_observed=index.plane_reason("process", for_absence=True) is None,
+        undeclared_processes=_process_labels(scope, index, process_baseline),
         exit_reason=trace.exit_reason,
         scope_unused=scope_unused,
         scope_not_evaluable=scope_not_evaluable,
@@ -1372,6 +1465,14 @@ class SetReading:
     #: At least one run recorded an ``unexpected_provider_endpoint`` — a request to a provider
     #: host that was not a model call, somewhere in the set (§10.5.2).
     unexpected_provider_endpoint: bool = False
+    #: Read capture watched every planted credential on **every** run of the set (§10.8).
+    credential_reads_observed: bool = False
+    #: Undeclared planted-credential reads across the set, de-duplicated and sorted.
+    undeclared_credential_reads: tuple[str, ...] = ()
+    #: Process capture observed **every** run of the set at absence-supporting fidelity.
+    processes_observed: bool = False
+    #: Undeclared skill processes across the set, de-duplicated and sorted.
+    undeclared_processes: tuple[str, ...] = ()
     #: The measured dispersion is at or below the calibrated §24 noise floor — the
     #: instrument cannot distinguish this set from identical input, so the report renders
     #: the qualitative label and withholds the precise figure (§13.4).
@@ -1617,6 +1718,16 @@ def aggregate(
             len(runs) > 0 and all(run.provider_requests_observed for run in runs)
         ),
         unexpected_provider_endpoint=any(run.unexpected_provider_endpoint for run in runs),
+        credential_reads_observed=(
+            len(runs) > 0 and all(run.credential_reads_observed for run in runs)
+        ),
+        undeclared_credential_reads=tuple(
+            sorted({read for run in runs for read in run.undeclared_credential_reads})
+        ),
+        processes_observed=len(runs) > 0 and all(run.processes_observed for run in runs),
+        undeclared_processes=tuple(
+            sorted({process for run in runs for process in run.undeclared_processes})
+        ),
         scope_unused=scope_unused,
         scope_not_evaluable=scope_not_evaluable,
         peripheral=capability.peripheral,
@@ -1996,7 +2107,8 @@ def _scope_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult
 _PLANE_DEPENDENT_CHECKS: Mapping[str, str] = {
     "egress_outside_allowlist": "egress",
     "dns_outside_allowlist": "dns",
-    "credential_read_undeclared": "credentials",
+    "credential_read_undeclared": "filesystem_reads",
+    "process_exec_undeclared": "process",
 }
 
 #: The ``SecurityRuntimeGate`` dispositions this version turns into a *scored* gate:
@@ -2086,6 +2198,8 @@ ENFORCED_SECURITY_RUNTIME_DISPOSITIONS: frozenset[str] = frozenset(
         "canary_without_read",
         "sensitive_directory_access",
         "unexpected_provider_endpoint",
+        "credential_read_undeclared",
+        "process_exec_undeclared",
     }
 )
 
@@ -2369,6 +2483,83 @@ def _provider_endpoint_result(reading: SetReading, profile: ProfileSpec) -> Targ
         "the recording proxy decided every request and refused none for its shape: each "
         "request to a provider host was a model call to an expected endpoint naming a "
         "configured model",
+    )
+
+
+def _credential_reads_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
+    """The undeclared-credential-read gate (§10.4, §12.5, §16.1), from Plane B read capture.
+
+    §10.4.1 grades a canary that reaches the model after a recorded read as ``info`` — and says
+    nothing is lost by that, *because* a read ``credentials.expects`` does not declare is already
+    a ``credential_read_undeclared`` violation that blocks under the default policy. Until read
+    capture existed that sentence rested on a gate nobody composed. Three states, as the other
+    security gates: a recorded undeclared read takes the disposition whatever else the set saw
+    (presence), an unobserved set defers, and an observed set with none passes.
+    """
+    disposition = profile.gates.security_runtime.credential_read_undeclared
+    if reading.undeclared_credential_reads:
+        status = "block" if disposition == "block" else "warn"
+        return _tgr(
+            reading.target,
+            status,
+            ", ".join(reading.undeclared_credential_reads),
+            disposition,
+            "the skill read a planted credential its manifest does not declare under "
+            "credentials.expects (§12.5)",
+        )
+    if not reading.credential_reads_observed:
+        return _tgr(
+            reading.target,
+            "not_evaluable",
+            "unobserved",
+            disposition,
+            "read capture did not watch every planted credential on every run in this set, so "
+            "an undeclared credential read cannot be ruled out (§10.2, §10.7)",
+        )
+    return _tgr(
+        reading.target,
+        "pass",
+        "no undeclared credential read",
+        disposition,
+        "read capture watched every planted credential and recorded no read the manifest "
+        "does not declare",
+    )
+
+
+def _processes_result(reading: SetReading, profile: ProfileSpec) -> TargetGateResult:
+    """The undeclared-process gate (§10.3, §12.5, §16.1), from Plane D′.
+
+    Bash tool calls report what the agent *asked* to run; process capture shows what actually
+    ran — every ``execve`` in the container, attributed by tree to the harness or the skill, and
+    each skill process judged against ``processes.allow`` and the applicable platform baseline.
+    """
+    disposition = profile.gates.security_runtime.process_exec_undeclared
+    if reading.undeclared_processes:
+        status = "block" if disposition == "block" else "warn"
+        return _tgr(
+            reading.target,
+            status,
+            "; ".join(reading.undeclared_processes),
+            disposition,
+            "the skill executed a process its manifest does not declare under processes.allow "
+            "and the platform baseline does not account for (§10.3, §12.6)",
+        )
+    if not reading.processes_observed:
+        return _tgr(
+            reading.target,
+            "not_evaluable",
+            "unobserved",
+            disposition,
+            "process capture did not observe every run in this set, so an undeclared process "
+            "cannot be ruled out (§10.3, §10.7)",
+        )
+    return _tgr(
+        reading.target,
+        "pass",
+        "no undeclared process",
+        disposition,
+        "process capture observed every exec in every run and every skill process was "
+        "declared or accounted for by the platform baseline",
     )
 
 
@@ -2969,6 +3160,22 @@ def orchestrate(
             "security_runtime.provider_endpoint",
             [_provider_endpoint_result(r, profile) for r in readings],
             required=endpoint_required,
+        )
+    )
+    credential_reads_required = profile.gates.security_runtime.credential_read_undeclared == "block"
+    gates.append(
+        _gate(
+            "security_runtime.credential_reads",
+            [_credential_reads_result(r, profile) for r in readings],
+            required=credential_reads_required,
+        )
+    )
+    processes_required = profile.gates.security_runtime.process_exec_undeclared == "block"
+    gates.append(
+        _gate(
+            "security_runtime.processes",
+            [_processes_result(r, profile) for r in readings],
+            required=processes_required,
         )
     )
 

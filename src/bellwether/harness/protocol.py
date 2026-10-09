@@ -21,6 +21,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 __all__ = [
     "HarnessAdapter",
     "HarnessCapabilities",
+    "HarnessProcessRules",
     "RawHarnessEvent",
     "RunLimits",
 ]
@@ -108,6 +109,41 @@ class HarnessCapabilities:
         record["infrastructure_endpoints"] = list(self.infrastructure_endpoints)
         record["trigger_metrics_portable"] = self.trigger_metrics_portable
         return record
+
+
+@dataclass(frozen=True)
+class HarnessProcessRules:
+    """Which processes in the sandbox are the harness's own, for Plane D′ attribution (§10.3).
+
+    The process plane sees every ``execve`` in the container, and a harness execs on its own
+    behalf: the CLI itself, the ``sh`` that carries a hook, the ``cat`` api-loop's ``read`` tool
+    runs. Those implement a tool call Plane A already records, or are Bellwether's own
+    instrumentation; judging them against the skill's ``processes.allow`` would make every run
+    of every skill a violation. So each adapter states, from its own source, the shapes of the
+    processes it starts — and nothing else is excused. Attribution is by *position in the
+    process tree*, not by name alone: a name is a claim the evaluated code can make, a parent is
+    not.
+
+    - ``own``: argv0s of a process the harness execs as a fresh **top-level** process (one whose
+      parent is outside the container), whose own image is the harness's but whose children are
+      the skill's — api-loop's ``sh -c <command>`` for its ``bash`` tool, the ``claude`` CLI.
+    - ``tool_shells``: argv0s of a shell an ``own`` process spawns as a **direct child** to run a
+      tool call (the CLI's ``bash -c <command>`` for its Bash tool). Like ``own``, the shell's
+      image is the harness's and what it runs is the skill's.
+    - ``helpers``: argv0s the harness itself spawns as a **direct child** of an ``own`` process
+      (the CLI's ``rg`` for its Grep tool); the helper and anything under it are the harness's.
+    - ``subtrees``: exact ``sh -c`` scripts the harness runs whose **whole subtree** is its own —
+      api-loop's ``write`` tool, the claude-code hook command. Matched on the full script string,
+      so a skill imitating one runs exactly that script and nothing else.
+
+    A process that re-execs in place keeps its pid but not its role: an ``own`` shell that execs
+    the command it was given becomes that command, which is the skill's.
+    """
+
+    own: frozenset[str] = frozenset()
+    tool_shells: frozenset[str] = frozenset()
+    helpers: frozenset[str] = frozenset()
+    subtrees: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

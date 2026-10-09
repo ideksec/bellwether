@@ -274,9 +274,36 @@ def capability_for(action: Action, context: NormalizationContext) -> Capability 
         )
 
     if kind == "canary_read":
+        # A planted credential was opened for reading (Plane B, §10.4). Where the *harness* read
+        # it, a tool call Plane A already classed is the reach (the `Read` of
+        # `${HOME}/.aws/credentials`), and counting it again would weigh one read twice. A skill
+        # process reading it — a script, a `bash` command — is reach Plane A could not see, and
+        # takes §13.5's heaviest read class.
+        if payload.get("role") == "harness":
+            return None
         target = payload.get("path")
         normalized = context.normalize_path(target) if isinstance(target, str) else None
         return Capability(tier1="canary_read", tier2="canary_read", tier3=normalized)
+
+    if kind == "file_read":
+        # Plane B's observed read (§10.2). A read the *harness* performed implements a tool call
+        # Plane A already carries as its capability (api-loop's `cat`, the CLI's own `Read`), so
+        # counting it here would count it twice. A read by a skill process — a script, a `bash`
+        # command — is the reach Plane A could not see, and gets the same filesystem classes a
+        # reported read would.
+        if payload.get("role") == "harness":
+            return None
+        zone = payload.get("zone")
+        path = payload.get("path")
+        if not isinstance(path, str) or not isinstance(zone, str):
+            return None
+        relative = payload.get("zone_relative")
+        return _filesystem_capability(
+            (zone, path, relative if isinstance(relative, str) else None),
+            write=False,
+            deleted=False,
+            context=context,
+        )
 
     if kind == "egress_request":
         # §13.5.1 weights `egress:<host>` at 10 and says "(non-model)" in the same breath, so
@@ -336,14 +363,19 @@ def capability_for(action: Action, context: NormalizationContext) -> Capability 
         return None
 
     if kind == "process_exec":
+        # Plane D′ (§10.3). The harness's own processes — the CLI, a hook, the `cat` behind
+        # api-loop's `read` — implement what Plane A records and are not the skill's reach.
+        if payload.get("role") == "harness":
+            return None
         argv = payload.get("argv")
-        if isinstance(argv, list) and argv and isinstance(argv[0], str):
-            argv0 = PurePosixPath(argv[0]).name
-            return Capability(
-                tier1=f"process:{argv0}",
-                tier2=f"process:{argv0}",
-                tier3=" ".join(str(part) for part in argv),
+        argv0 = payload.get("argv0")
+        if not isinstance(argv0, str) and isinstance(argv, list) and argv:
+            argv0 = PurePosixPath(str(argv[0])).name
+        if isinstance(argv0, str) and argv0:
+            tier3 = (
+                " ".join(str(part) for part in argv) if isinstance(argv, list) and argv else None
             )
+            return Capability(tier1=f"process:{argv0}", tier2=f"process:{argv0}", tier3=tier3)
         return None
 
     if kind == "subagent_spawn":

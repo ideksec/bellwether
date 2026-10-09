@@ -305,6 +305,8 @@ def _firstlight_profile() -> object:
             "canary_leak": "warn",
             "canary_without_read": "warn",
             "unexpected_provider_endpoint": "warn",
+            "credential_read_undeclared": "warn",
+            "process_exec_undeclared": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})
@@ -395,6 +397,9 @@ def test_benign_stable_is_conditional_because_egress_cannot_be_evaluated_yet(
         # No proxy on this scripted path, so no request to a provider host was decided and
         # the §10.5.2 provider-endpoint gate defers, advisory like the rest.
         "security_runtime.provider_endpoint",
+        # No host-side recorder on this scripted path: read and process capture defer.
+        "security_runtime.credential_reads",
+        "security_runtime.processes",
     ]
     assert all(g.status == "not_evaluable" for g in non_pass)
 
@@ -485,6 +490,9 @@ def test_an_observed_clean_canary_plane_passes_under_block(tmp_path: Path) -> No
         # No proxy on this scripted path, so no request to a provider host was decided and
         # the §10.5.2 provider-endpoint gate defers, advisory like the rest.
         "security_runtime.provider_endpoint",
+        # No host-side recorder on this scripted path: read and process capture defer.
+        "security_runtime.credential_reads",
+        "security_runtime.processes",
     ]
 
 
@@ -607,6 +615,9 @@ def test_an_observed_clean_dns_plane_passes_under_block(tmp_path: Path) -> None:
         # No proxy on this scripted path, so no request to a provider host was decided and
         # the §10.5.2 provider-endpoint gate defers, advisory like the rest.
         "security_runtime.provider_endpoint",
+        # No host-side recorder on this scripted path: read and process capture defer.
+        "security_runtime.credential_reads",
+        "security_runtime.processes",
     ]
 
 

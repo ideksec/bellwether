@@ -85,7 +85,10 @@ class CaptureConfig(StrictModel):
 
     filesystem_writes: Annotated[Literal["overlay", "off"], YamlWord] = "overlay"
     filesystem_reads: Annotated[Literal["fanotify", "off"], YamlWord] = "fanotify"
-    process: Annotated[Literal["ebpf", "ptrace", "off"], YamlWord] = "ebpf"
+    #: Process execution (§10.3). The spec names eBPF with a ptrace fallback; this build captures
+    #: it with fanotify permission events, the same host-side group read capture uses — see
+    #: docs/spec-notes.md. ``ebpf`` and ``ptrace`` are refused rather than accepted and ignored.
+    process: Annotated[Literal["fanotify", "off"], YamlWord] = "fanotify"
     harness_hooks: bool = True
     #: A writable file in a mount is not acceptable: the sink must be owned by the host,
     #: outside the sandbox's ability to edit its own evidence (§10.1).
@@ -473,6 +476,11 @@ class Config(Document):
                     f"providers.{name}.models still holds placeholders for: "
                     f"{', '.join(unfilled)} — fill in current model ids for your provider"
                 )
+        if self.capture.filesystem_reads == "off":
+            notes.append(
+                "capture.filesystem_reads is off; credential-read and file-read evidence will "
+                "be reported as not_evaluable rather than passing (§10.7)"
+            )
         if self.capture.process == "off":
             notes.append(
                 "capture.process is off; process-execution evidence will be reported as "
@@ -491,8 +499,6 @@ NOT_BUILT_SETTINGS: dict[str, str] = {
     "harnesses.*.install": "Bellwether installs no harness; the sandbox image carries it",
     "harnesses.*.tools": "api-loop always offers its built-in tool set",
     "capture.filesystem_writes": "the overlay write plane is always mounted; 'off' is ignored",
-    "capture.filesystem_reads": "the fanotify read plane is not built (v0.2)",
-    "capture.process": "the eBPF/ptrace process plane is not built (v0.3)",
     "capture.harness_hooks": "claude-code's hooks are always installed",
     "capture.harness_event_sink": "the hook sink is always a host-owned FIFO",
     "egress.record_response_bodies": "the proxy records requests; response bodies are not kept",

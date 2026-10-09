@@ -839,6 +839,9 @@ def run(
                     # Plant canaries and scan the observed planes for them when config enables it
                     # (§10.4); the env-var channel is delivered and scanned host-side today.
                     plant_canaries=loaded_config.canaries.enabled,
+                    # §10.2/§10.3: host-side read and process capture for every run.
+                    capture_reads=loaded_config.capture.filesystem_reads == "fanotify",
+                    capture_processes=loaded_config.capture.process == "fanotify",
                     platform_baseline_version=applied_version,
                     sampling=(
                         SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None

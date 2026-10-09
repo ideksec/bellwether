@@ -27,7 +27,6 @@ byte-for-byte reproducible — which is what lets the reports be committed under
 
 from __future__ import annotations
 
-import dataclasses
 import datetime as dt
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -41,10 +40,8 @@ from bellwether.cli.orchestrator import (
     TargetInfo,
     aggregate,
     analyse_run,
+    fold_declared_scope,
     orchestrate,
-    scope_exceeded_of,
-    scope_unused_of,
-    undeclared_sensitive_hits,
 )
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.policy import ProfileSpec
@@ -386,6 +383,8 @@ def _demo_profile(profile_name: str) -> ProfileSpec:
             "canary_leak": "warn",
             "canary_without_read": "warn",
             "unexpected_provider_endpoint": "warn",
+            "credential_read_undeclared": "warn",
+            "process_exec_undeclared": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})
@@ -421,16 +420,9 @@ def _reading_for_case(
             # without the scope's egress/write derivations — which this offline path cannot
             # observe — dragging the run to ``not_evaluable``. Both halves of the table travel:
             # what exceeded the declaration, and what the declaration named but no run used.
-            run = dataclasses.replace(
-                run,
-                scope_exceeded=scope_exceeded_of(executed, declared),
-                scope_unused=scope_unused_of(executed, declared),
-                # The §13.5.4 exclusions come from the manifest too, exactly as the live path
-                # and the corpus harness fold them in. This is the third caller of the same
-                # pattern; omitting it here would make a declared sensitive read block in the
-                # demo and pass everywhere else.
-                undeclared_sensitive_hits=undeclared_sensitive_hits(run.sensitive_hits, declared),
-            )
+            # The §13.5.4 exclusions, the undeclared credential reads and processes come from
+            # the manifest too, through the one fold the live path and the corpus harness use.
+            run = fold_declared_scope(run, executed, declared)
         analysed.append(run)
     return aggregate(scenario.id, _TARGET, analysed, profile=profile)
 

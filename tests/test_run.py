@@ -132,6 +132,8 @@ def _policy() -> Policy:
             "canary_leak": "warn",
             "canary_without_read": "warn",
             "unexpected_provider_endpoint": "warn",
+            "credential_read_undeclared": "warn",
+            "process_exec_undeclared": "warn",
         }
     )
     gates = low.gates.model_copy(update={"security_runtime": security})
@@ -379,7 +381,8 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
     package: SkillPackage, tmp_path: Path
 ) -> None:
     """§16.4 combo 2 on the real path: the high profile requires the process and read planes,
-    which are not built in this version — refuse up front, naming each missing plane."""
+    and a composition that turns them off (``capture.process: off``) cannot provide them —
+    refuse up front, naming each missing plane."""
     import yaml
 
     from bellwether.config import template_path
@@ -406,6 +409,8 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
             "canary_leak": "warn",
             "canary_without_read": "warn",
             "unexpected_provider_endpoint": "warn",
+            "credential_read_undeclared": "warn",
+            "process_exec_undeclared": "warn",
         }
     )
     gates = high.gates.model_copy(update={"security_runtime": security})
@@ -415,9 +420,17 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
     def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
         raise AssertionError("the executor must never be built for an unsatisfiable profile")
 
+    config = _config()
+    without_kernel_planes = config.model_copy(
+        update={
+            "capture": config.capture.model_copy(
+                update={"process": "off", "filesystem_reads": "off"}
+            )
+        }
+    )
     with pytest.raises(BellwetherError, match=r"capture_planes\[process\]"):
         run_evaluation(
-            config=_config(),
+            config=without_kernel_planes,
             policy=policy,
             package=package,
             fixture=tmp_path / "fixture",

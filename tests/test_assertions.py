@@ -640,13 +640,20 @@ def test_an_unused_declared_read_glob_is_not_evaluable_without_read_capture(
     assert "read capture" in row.reason
 
 
-def test_process_and_credential_declarations_await_their_planes(index: EvidenceIndex) -> None:
+def test_process_and_credential_declarations_defer_without_their_planes(
+    index: EvidenceIndex,
+) -> None:
+    """A declared process or credential is ``unused`` only where the plane that would have seen
+    its use was watching (§12.5): on a trace with neither read nor process capture, each row is
+    ``not_evaluable`` and carries the missing plane's own reason."""
     scope = make_scope(processes={"allow": ["git"]}, credentials={"expects": ["AWS_KEY"]})
     table = evaluate_scope(scope, index)
     process_row = next(e for e in table.entries if e.area == "processes")
     credential_row = next(e for e in table.entries if e.area == "credentials")
-    assert process_row.status == "not_evaluable" and "WP-18" in process_row.reason
-    assert credential_row.status == "not_evaluable" and "WP-16" in credential_row.reason
+    assert process_row.status == "not_evaluable"
+    assert process_row.reason == index.plane_reason("process")
+    assert credential_row.status == "not_evaluable"
+    assert credential_row.reason == index.plane_reason("filesystem_reads", for_absence=True)
 
 
 # ---------------------------------------------------------------------------

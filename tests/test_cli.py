@@ -176,8 +176,12 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert runtime["status"] == "warn"
     # The comma-separated list of inert dispositions sits between "not_ready: " and ". Treat".
     inert_list = runtime["detail"].split("not_ready: ", 1)[1].split(". ", 1)[0]
-    for inert in ("credential_read_undeclared", "process_exec_undeclared"):
+    for inert in ("egress_volume_anomaly", "instrumentation_probe"):
         assert inert in inert_list
+    # credential_read_undeclared and process_exec_undeclared left the list when host-side read
+    # and process capture made their evidence observable and their gates scored.
+    assert "credential_read_undeclared" not in inert_list
+    assert "process_exec_undeclared" not in inert_list
     # And one that has *left* the list: `sensitive_directory_access` is scored now, so doctor
     # must stop calling it inert. A list that never shrinks is as misleading as one that never
     # existed — it would keep telling an operator a live gate does nothing.
@@ -301,9 +305,11 @@ def test_doctor_performs_the_precondition_check_per_profile(tmp_path: Path) -> N
     assert low["status"] == "warn"
     assert "claude-code harness reaches the model only through the recording proxy" in low["detail"]
     assert "egress.image" in low["detail"]
-    # The high profile additionally requires planes this version has not built.
+    # The high profile additionally requires planes the scaffold composition does not wire: the
+    # proxy and the resolver (read and process capture are on by default now).
     high = checks["precondition check (§16.4) — profile 'high'"]
-    assert "capture_planes[process]" in high["detail"]
+    assert "capture_planes[egress]" in high["detail"]
+    assert "capture_planes[process]" not in high["detail"]
     # Advisory, not blocking: an unsatisfiable profile is a policy fact, and `run` refuses it
     # with the same failures — doctor stays exit 0 on a fresh scaffold.
     assert payload["blocking_problems"] == 0

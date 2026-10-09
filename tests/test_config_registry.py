@@ -52,6 +52,8 @@ READ = {
     "sandbox.timeout_seconds",
     "sandbox.writable_paths",
     "sandbox.randomize_identifiers",
+    "capture.filesystem_reads",
+    "capture.process",
     "capture.zones.workspace",
     "capture.zones.harness_state",
     "capture.zones.scratch",

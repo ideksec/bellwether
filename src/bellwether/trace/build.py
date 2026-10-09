@@ -630,6 +630,8 @@ def assemble_coverage(
     egress: PlaneStatus | None = None,
     dns: PlaneStatus | None = None,
     credentials: PlaneStatus | None = None,
+    filesystem_reads: PlaneStatus | None = None,
+    process: PlaneStatus | None = None,
 ) -> Coverage:
     """Build the §10.7 coverage block from what WP-5 can actually capture.
 
@@ -652,14 +654,14 @@ def assemble_coverage(
         filesystem_writes=_from_status(
             filesystem_writes, absent="no zone overlay was mounted for this run"
         ),
-        filesystem_reads=PlaneCoverage(
-            fidelity="unavailable",
-            reason="read capture is the v0.2 fanotify mechanism; overlay diff records writes only",
+        filesystem_reads=_from_status(
+            filesystem_reads,
+            absent="read capture (fanotify) was not run for this run; overlay diff records writes only",
         ),
         credentials=_from_status(credentials, absent="no canaries were planted for this run"),
         egress=_from_status(egress, absent="the recording proxy was not wired into this run"),
         dns=_from_status(dns, absent="the controlled resolver was not wired into this run"),
-        process=PlaneCoverage(fidelity="unavailable", reason="process capture lands in WP-18"),
+        process=_from_status(process, absent="process capture (fanotify) was not run for this run"),
         server_side_tools=PlaneCoverage(
             fidelity="unavailable", reason="proxy-side body parsing lands in WP-13"
         ),
@@ -669,4 +671,8 @@ def assemble_coverage(
 def _from_status(status: PlaneStatus | None, *, absent: str) -> PlaneCoverage:
     if status is None:
         return PlaneCoverage(fidelity="unavailable", reason=absent)
-    return PlaneCoverage(fidelity=status.fidelity, reason=status.reason)
+    return PlaneCoverage(
+        fidelity=status.fidelity,
+        reason=status.reason,
+        domain=list(status.domain) if status.domain is not None else None,
+    )

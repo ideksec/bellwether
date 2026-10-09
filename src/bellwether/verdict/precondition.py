@@ -302,6 +302,43 @@ def check_preconditions(
             )
         )
 
+    # The undeclared-credential-read gate (§16.1) needs both halves of its evidence: canaries
+    # planted (there is nothing to read otherwise) and read capture watching them. Missing
+    # either, the gate would sit not_evaluable after the matrix was paid for.
+    if gates.security_runtime.credential_read_undeclared == "block":
+        missing_planes = [
+            plane for plane in ("credentials", "filesystem_reads") if plane not in available_planes
+        ]
+        if missing_planes:
+            failures.append(
+                PreconditionFailure(
+                    gate="security_runtime.credential_read_undeclared",
+                    target="(runner)",
+                    remedy=(
+                        f"the {' and '.join(missing_planes)} plane(s) are not in this composition "
+                        "(canaries.enabled, capture.filesystem_reads), so no credential-read "
+                        "evidence can exist and the gate would be not_evaluable; enable them, or "
+                        "set credential_read_undeclared to 'warn'"
+                    ),
+                )
+            )
+    # And the undeclared-process gate (§10.3) needs process capture.
+    if (
+        gates.security_runtime.process_exec_undeclared == "block"
+        and "process" not in available_planes
+    ):
+        failures.append(
+            PreconditionFailure(
+                gate="security_runtime.process_exec_undeclared",
+                target="(runner)",
+                remedy=(
+                    "process capture is not in this composition (capture.process: off), so no "
+                    "process evidence can exist and the gate would be not_evaluable; set "
+                    "capture.process: fanotify, or set process_exec_undeclared to 'warn'"
+                ),
+            )
+        )
+
     # (6) Mandatory policy controls this build cannot satisfy. Each of these was accepted by
     # the schema, printed in the resolved policy, and enforced nowhere — the silent-no-op shape
     # §16.4 exists to catch, reached through the policy document instead of through the planes.

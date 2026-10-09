@@ -690,6 +690,8 @@ def sandbox_executor_factory(
     platform_baseline_version: str | None = None,
     sampling: SamplingSpec | None = None,
     artifact_root: Path | None = None,
+    capture_reads: bool = True,
+    capture_processes: bool = True,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -710,6 +712,9 @@ def sandbox_executor_factory(
 
     ``plant_canaries`` turns on canary planting and the host-side Plane C scan (§10.4); the lead
     passes ``config.canaries.enabled``. Omitted, the credentials plane stays ``not_evaluable``.
+
+    ``capture_reads`` / ``capture_processes`` are ``capture.filesystem_reads`` /
+    ``capture.process`` (§10.2, §10.3): the host-side fanotify recorder for each run.
     """
     run_limits = limits if limits is not None else RunLimits()
 
@@ -740,6 +745,8 @@ def sandbox_executor_factory(
             artifact_root=artifact_root,
             platform_baseline_version=platform_baseline_version,
             sampling=sampling,
+            capture_reads=capture_reads,
+            capture_processes=capture_processes,
         )
 
     return make

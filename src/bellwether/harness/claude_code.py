@@ -39,15 +39,23 @@ import datetime as dt
 import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, Literal, Protocol
 
 from bellwether.determinism import canonical_json, stable_hash
-from bellwether.harness.protocol import HarnessCapabilities, RawHarnessEvent, RunLimits
+from bellwether.harness.protocol import (
+    HarnessCapabilities,
+    HarnessProcessRules,
+    RawHarnessEvent,
+    RunLimits,
+)
 from bellwether.sandbox import STABLE_SINK_CONTAINER_PATH
 
 __all__ = [
+    "CLAUDE_CODE_HELPER_PROCESSES",
     "CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS",
     "CLAUDE_CODE_TELEMETRY_ENV",
+    "CLAUDE_CODE_TOOL_SHELLS",
     "ClaudeCodeAdapter",
     "HookReconciliation",
     "LaunchResult",
@@ -83,6 +91,16 @@ CLAUDE_CODE_TELEMETRY_ENV: Mapping[str, str] = {
 #: Deliberately *not* here: the download, package-registry and documentation hosts the CLI
 #: reaches for updates and plugin installs — auto-update is disabled, nothing is installed at
 #: run time, and an allowlisted content host is a route a skill could carry data out on.
+#: What the CLI spawns on its own behalf as a direct child (§10.3): ripgrep behind its Grep and
+#: Glob tools, and ``git`` for the repository state it reads at session start. Anything else the
+#: CLI's process tree contains is the skill's — including a ``git`` run *through* ``Bash``, whose
+#: parent is a shell, not the CLI.
+CLAUDE_CODE_HELPER_PROCESSES: tuple[str, ...] = ("git", "rg")
+
+#: The shells the CLI starts as a direct child to run a ``Bash`` tool call: the shell is the tool,
+#: and the command inside it is the skill's (§10.3).
+CLAUDE_CODE_TOOL_SHELLS: tuple[str, ...] = ("bash", "dash", "sh", "zsh")
+
 CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS: tuple[str, ...] = (
     "datadoghq.com",
     "sentry.io",
@@ -367,6 +385,32 @@ class ClaudeCodeAdapter:
 
     def capabilities(self) -> HarnessCapabilities:
         return self.static_capabilities()
+
+    def process_rules(self) -> HarnessProcessRules:
+        """The processes this adapter starts in the sandbox (§10.3, ``HarnessProcessRules``).
+
+        The CLI is exec'd at the top of the tree (``own``): its own image is the harness, as is
+        the shell it starts for a ``Bash`` call (``tool_shells``) — the command inside that
+        shell is the skill's. Its ripgrep (the Grep and Glob tools)
+        and its repository probe (``git``) are its helpers. Each hook is a ``sh -c`` of the
+        exact command :func:`hook_settings` wrote, and that subtree is Bellwether's own
+        instrumentation, matched on the full string the settings carry for this run.
+        """
+        commands: set[str] = set()
+        hooks = (self._settings or {}).get("hooks", {})
+        if isinstance(hooks, Mapping):
+            for entries in hooks.values():
+                for entry in entries if isinstance(entries, list) else []:
+                    for hook in entry.get("hooks", []) if isinstance(entry, Mapping) else []:
+                        command = hook.get("command") if isinstance(hook, Mapping) else None
+                        if isinstance(command, str):
+                            commands.add(command)
+        return HarnessProcessRules(
+            own=frozenset({PurePosixPath(self._binary).name}),
+            tool_shells=frozenset(CLAUDE_CODE_TOOL_SHELLS),
+            helpers=frozenset(CLAUDE_CODE_HELPER_PROCESSES),
+            subtrees=frozenset(commands),
+        )
 
     @staticmethod
     def static_capabilities() -> HarnessCapabilities:

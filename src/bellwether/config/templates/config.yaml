@@ -70,12 +70,15 @@ sandbox:
 # produces evidence may execute inside the container it observes (§10.0).
 # ---------------------------------------------------------------------------
 capture:
+  # Reads (of the workspace and the planted credentials) and every process the container
+  # execs are captured host-side with fanotify; the host must run as root, which mounting the
+  # workspace overlay already requires. `off` disables a plane and its gate defers.
+  filesystem_reads: fanotify   # enforced (§10.2): credential_read_undeclared reads it
+  process: fanotify            # enforced (§10.3): process_exec_undeclared reads it
   # The write plane (host-side overlay), claude-code's hooks and their host-owned FIFO sink
-  # are always on; the read (fanotify, v0.2) and process (eBPF, v0.3) planes are not built.
+  # are always on.
   # # not built in this version — `bellwether doctor` lists any of these you set:
   # filesystem_writes: overlay
-  # filesystem_reads: fanotify
-  # process: ebpf
   # harness_hooks: true
   # harness_event_sink: fifo
   zones:

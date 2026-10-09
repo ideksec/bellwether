@@ -26,8 +26,11 @@ from bellwether.trace import (
 )
 
 __all__ = [
+    "CredentialReadEvidence",
     "EgressEvidence",
     "EvidenceIndex",
+    "ProcessEvidence",
+    "ReadEvidence",
     "ToolCallEvidence",
     "WriteEvidence",
     "tool_name_matches",
@@ -75,6 +78,44 @@ class WriteEvidence:
     #: Normalized (``${WORKSPACE}/...``) absolute path.
     path: str
     deleted: bool
+
+
+@dataclass(frozen=True)
+class ReadEvidence:
+    """One file the kernel saw opened for reading, from Plane B read capture (§10.2)."""
+
+    seq: int
+    #: Normalized (``${WORKSPACE}/...``) absolute path.
+    path: str
+    #: ``harness`` where the reading process implements a tool call Plane A records.
+    role: str
+
+
+@dataclass(frozen=True)
+class CredentialReadEvidence:
+    """One read of a planted credential (§10.4), by reference — never the value."""
+
+    seq: int
+    #: Normalized path the credential is planted at (``${HOME}/.aws/credentials``).
+    path: str
+    canary_id: str
+    #: ``filesystem`` where Plane B observed it; ``harness`` where only a tool call reported it.
+    plane: str
+
+
+@dataclass(frozen=True)
+class ProcessEvidence:
+    """One ``execve`` the skill or the harness made, from Plane D′ (§10.3)."""
+
+    seq: int
+    #: The argv0 the process asked for, as a bare name.
+    argv0: str
+    #: The name of the file the kernel actually executed.
+    exe_name: str
+    #: argv0s above it, nearest first.
+    ancestors: tuple[str, ...]
+    role: str
+    argv: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -142,6 +183,16 @@ class EvidenceIndex:
     #: than the expected endpoint, or a model outside the configured set (§10.5.2, high).
     #: What turns the provider-endpoint gate from pass to block.
     unexpected_provider_endpoint_present: bool = False
+    #: Every read Plane B observed (§10.2), harness and skill alike, normalized.
+    observed_reads: tuple[ReadEvidence, ...] = ()
+    #: Every read of a planted credential, from Plane B or — as presence evidence where read
+    #: capture was not running — from a harness tool call that named the planted path.
+    credential_reads: tuple[CredentialReadEvidence, ...] = ()
+    #: Every process Plane D′ observed (§10.3), in exec order.
+    processes: tuple[ProcessEvidence, ...] = ()
+    #: Container mount points Plane B watched for reads, normalized. An absence claim about a
+    #: path outside them is not one read capture can support.
+    read_domain: tuple[str, ...] = ()
     context: NormalizationContext = field(
         default_factory=lambda: NormalizationContext(workspace_root="/work")
     )
@@ -168,6 +219,9 @@ class EvidenceIndex:
         dns_blocked = False
         dns_blocked_seqs: list[int] = []
         unexpected_provider_endpoint = False
+        observed_reads: list[ReadEvidence] = []
+        credential_reads: list[CredentialReadEvidence] = []
+        processes: list[ProcessEvidence] = []
 
         for action in trace.actions:
             if action.plane == "harness":
@@ -176,10 +230,28 @@ class EvidenceIndex:
                     text = action.action.get("text")
                     final_output = text if isinstance(text, str) else ""
                     final_output_seq = action.seq
+            elif action.plane == "filesystem" and action.kind in ("file_read", "canary_read"):
+                path = action.action.get("path")
+                if not isinstance(path, str):
+                    continue
+                normalized = context.normalize_path(path)
+                role = str(action.action.get("role") or "skill")
+                observed_reads.append(ReadEvidence(seq=action.seq, path=normalized, role=role))
+                canary_id = action.action.get("canary_id")
+                if action.kind == "canary_read" and isinstance(canary_id, str):
+                    credential_reads.append(
+                        CredentialReadEvidence(
+                            seq=action.seq, path=normalized, canary_id=canary_id, plane="filesystem"
+                        )
+                    )
             elif action.plane == "filesystem":
                 write = _index_filesystem_action(action, context)
                 if write is not None:
                     writes.append(write)
+            elif action.plane == "process" and action.kind == "process_exec":
+                evidence = _index_process_action(action)
+                if evidence is not None:
+                    processes.append(evidence)
             elif action.kind == "egress_blocked":
                 # A §10.5.2 shape refusal is on a *permitted* host: the allowlist admitted it
                 # and the request to it was not a model call. It is its own finding
@@ -217,6 +289,24 @@ class EvidenceIndex:
             elif action.plane == "credentials" and action.kind == "canary_without_read":
                 canary_without_read = True
 
+        # §10.4: a credential read is recorded "by Plane B read capture, or the harness's Read
+        # tool". Where Plane B observed it the tool call adds nothing; where it did not run, a tool
+        # call naming a planted path is still presence evidence — decidable from a degraded plane
+        # in a way absence never is.
+        planted = {
+            _planted_path(canary.path, context): canary.id
+            for canary in trace.header.identity.canaries_planted
+        }
+        if planted and not credential_reads:
+            for seq, path in reads:
+                canary_id = planted.get(path)
+                if canary_id is not None:
+                    credential_reads.append(
+                        CredentialReadEvidence(
+                            seq=seq, path=path, canary_id=canary_id, plane="harness"
+                        )
+                    )
+        read_plane = trace.header.coverage.filesystem_reads
         footer = trace.footer
         return cls(
             tool_calls=tuple(tool_calls),
@@ -240,6 +330,10 @@ class EvidenceIndex:
             dns_blocked_present=dns_blocked,
             dns_blocked_seqs=tuple(dns_blocked_seqs),
             unexpected_provider_endpoint_present=unexpected_provider_endpoint,
+            observed_reads=tuple(observed_reads),
+            credential_reads=tuple(credential_reads),
+            processes=tuple(processes),
+            read_domain=_read_domain(read_plane, context),
             context=context,
         )
 
@@ -320,6 +414,41 @@ def _index_filesystem_action(action: Action, context: NormalizationContext) -> W
         path=context.normalize_path(path),
         deleted=action.kind == "file_delete",
     )
+
+
+def _index_process_action(action: Action) -> ProcessEvidence | None:
+    argv0 = action.action.get("argv0")
+    exe = action.action.get("exe")
+    if not isinstance(argv0, str) or not argv0:
+        return None
+    argv = action.action.get("argv")
+    ancestors = action.action.get("ancestors")
+    return ProcessEvidence(
+        seq=action.seq,
+        argv0=argv0,
+        exe_name=Path(exe).name if isinstance(exe, str) and exe else argv0,
+        ancestors=tuple(str(a) for a in ancestors) if isinstance(ancestors, list) else (),
+        role=str(action.action.get("role") or "skill"),
+        argv=tuple(str(part) for part in argv) if isinstance(argv, list) else None,
+    )
+
+
+def _planted_path(slot: str, context: NormalizationContext) -> str:
+    """A planted canary's slot (``~/.aws/credentials``, ``.env``) in normalized form."""
+    if slot.startswith("~/"):
+        absolute = f"{context.home.rstrip('/')}/{slot[2:]}"
+    elif slot.startswith("/"):
+        absolute = slot
+    else:
+        absolute = f"{context.workspace_root.rstrip('/')}/{slot}"
+    return context.normalize_path(str(normalize_container_path(absolute)))
+
+
+def _read_domain(plane: PlaneCoverage | None, context: NormalizationContext) -> tuple[str, ...]:
+    """The container mount points read capture watched, normalized; empty where it did not run."""
+    if plane is None or not plane.is_usable() or not plane.domain:
+        return ()
+    return tuple(sorted(context.normalize_path(entry) for entry in plane.domain))
 
 
 def _normalize_tool_path(path: str, context: NormalizationContext) -> str:
