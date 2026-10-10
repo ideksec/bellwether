@@ -73,8 +73,10 @@ def test_the_run_is_left_out_of_its_own_reference() -> None:
     # 5 × 550, so a reference that included the run would excuse every heavy run. Each heavy
     # run's peers are the three quiet runs and the two other heavy ones: median 100.
     volumes = [100, 100, 100, 1_000, 1_000, 1_000]
-    assert statistics.median(volumes) == 550 and 1_000 < 5.0 * 550
-    found = volume_anomalies(volumes, factor=5.0)
+    factor = 5.0
+    whole_set_median = statistics.median(volumes)
+    assert whole_set_median == 550 and max(volumes) < factor * whole_set_median
+    found = volume_anomalies(volumes, factor=factor)
     assert found is not None
     assert [(a.index, a.reference) for a in found] == [(3, 100.0), (4, 100.0), (5, 100.0)]
 
