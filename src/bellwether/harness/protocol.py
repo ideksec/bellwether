@@ -136,6 +136,14 @@ class HarnessProcessRules:
       api-loop's ``write`` tool, the claude-code hook command. Matched on the full script string,
       so a skill imitating one runs exactly that script and nothing else.
 
+    - ``shell_tools``: the Plane A tool names whose call runs in a ``tool_shells`` shell (the
+      CLI's ``Bash``). A tool shell is the skill's channel only where such a call happened: the
+      CLI also runs ``/bin/sh -c`` for its own housekeeping (observed on CI: ``ps … | grep …``
+      in a run whose only tools were ``Skill``, ``Read`` and ``Write``), and in a run with no
+      shell-tool call the model never had a command run, so such a shell and its subtree are
+      the harness's. In a run *with* one, every tool shell stays the skill's — the
+      over-attributing direction, named in spec-notes rather than guessed away.
+
     A process that re-execs in place keeps its pid but not its role: an ``own`` shell that execs
     the command it was given becomes that command, which is the skill's.
     """
@@ -144,6 +152,7 @@ class HarnessProcessRules:
     tool_shells: frozenset[str] = frozenset()
     helpers: frozenset[str] = frozenset()
     subtrees: frozenset[str] = frozenset()
+    shell_tools: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

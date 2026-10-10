@@ -194,7 +194,9 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
 
     # The skeleton walked: a verdict was produced from real runs, and it is conditional —
     # every evaluable gate passed, but egress cannot be evaluated until the proxy lands.
-    assert result.verdict.verdict == "conditional"
+    assert result.verdict.verdict == "conditional", [
+        (g.name, g.status, g.reason) for g in result.verdict.gates if g.status != "pass"
+    ]
     assert result.exit_code == 0
     egress = [g for g in result.verdict.gates if "egress" in g.name]
     assert egress and egress[0].status == "not_evaluable"

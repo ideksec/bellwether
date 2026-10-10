@@ -4764,6 +4764,17 @@ skill's. A re-exec in place takes the role of the new image, except that a harne
 harness. Matching by name alone would let a skill run `cat` and have it excused because the read
 tool is also a `cat`.
 
+A tool shell is the skill's only in a run that **called a shell tool**. The first container run on
+CI under the real CLI recorded `/bin/sh -c "ps ax | grep …"` as the CLI's direct child in a run
+whose only tool calls were `Skill`, `Read` and `Write`, and the rule above put `ps` and `grep` on
+the skill. The CLI runs `/bin/sh` for its own housekeeping as well as for `Bash`, and nothing in
+the tree tells the two apart. Plane A does: with no `Bash` call (`HarnessProcessRules.shell_tools`)
+the model never had a command run, so such a shell and its subtree are the harness's
+(`housekeeping`). With one, every tool shell stays the skill's — the CLI's housekeeping in such a
+run can show up as an undeclared `ps` or `grep`. That is the over-attributing direction, chosen over
+correlating a shell's argv with a call's command text, which the CLI's quoting would make miss and
+the miss would hide the skill's command.
+
 ### What each gate counts
 
 - **`credential_read_undeclared`** (`security_runtime.credential_reads`) — a skill-attributed open

@@ -498,3 +498,41 @@ def test_an_interpreter_open_reported_as_running_folds_into_its_exec(tmp_path: P
     # With no exec of that pid on record, an unreadable exec-open is still a gap, not a fold.
     recorder._record_exec(81, "/usr/bin/mystery")
     assert any(gap.startswith("the argv of at least one exec") for gap in recorder._gaps)
+
+
+def _housekeeping_tree() -> _Recorder:
+    """What CI recorded under the real CLI in a run whose only tools were Skill/Read/Write."""
+    return (
+        _Recorder()
+        .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
+        .exec(31, 30, ["/bin/sh", "-c", "ps ax | grep -i code | grep -v grep"], "/bin/dash")
+        .exec(32, 31, ["ps", "ax"], "/usr/bin/ps")
+        .exec(33, 31, ["grep", "-i", "code"], "/usr/bin/grep")
+    )
+
+
+@pytest.mark.parametrize(
+    ("called", "roles"),
+    [
+        (False, ["harness", "harness", "harness", "harness"]),
+        (True, ["harness", "harness", "skill", "skill"]),
+    ],
+)
+def test_a_tool_shell_is_the_skills_only_in_a_run_that_called_a_shell_tool(
+    called: bool, roles: list[str]
+) -> None:
+    """The CLI runs `/bin/sh -c` for itself as well as for its Bash tool. With no Bash call in
+    the run the model never had a command run, so the shell and its subtree are the CLI's; with
+    one, every tool shell stays the skill's (the over-attributing direction)."""
+    actions = kernel_plane_actions(
+        _housekeeping_tree().activity(),
+        rules=_CLAUDE,
+        zones=ZoneMap(workspace=PurePosixPath(_WS)),
+        canary_paths={},
+        shell_tool_called=called,
+    )
+    assert [a.action["role"] for a in actions if a.kind == "process_exec"] == roles
+
+
+def test_claude_codes_bash_tool_is_its_shell_tool() -> None:
+    assert _CLAUDE.shell_tools == frozenset({"Bash"})

@@ -44,7 +44,7 @@ __all__ = [
 ProcessRole = Literal["harness", "skill"]
 
 #: How a process came to hold its role, for the record a reader audits.
-_Origin = Literal["own", "tool_shell", "helper", "subtree", "inherited", "skill"]
+_Origin = Literal["own", "tool_shell", "housekeeping", "helper", "subtree", "inherited", "skill"]
 
 
 @dataclass
@@ -78,6 +78,8 @@ def _attribute(
     event: ExecEvent,
     processes: Mapping[int, _Process],
     rules: HarnessProcessRules,
+    *,
+    shell_tool_called: bool,
 ) -> _Process:
     argv0 = process_name(event.argv, event.exe)
     existing = processes.get(event.pid)
@@ -104,7 +106,11 @@ def _attribute(
         if _is_subtree_script(event.argv, rules):
             return _Process(event.pid, argv0, "harness", "subtree", own_image=False)
         if parent.origin == "own" and argv0 in rules.tool_shells:
-            return _Process(event.pid, argv0, "harness", "tool_shell", own_image=True)
+            if shell_tool_called:
+                return _Process(event.pid, argv0, "harness", "tool_shell", own_image=True)
+            # No shell-tool call in the run: the model never had a command run, so this is the
+            # harness's own shell (HarnessProcessRules.shell_tools), and so is all it runs.
+            return _Process(event.pid, argv0, "harness", "housekeeping", own_image=False)
         # A helper is the harness's only as the harness's own direct child: `git` under the
         # CLI is its repository probe, `git` under the Bash tool's shell is the skill's command.
         if parent.origin == "own" and argv0 in rules.helpers:
@@ -119,8 +125,13 @@ def kernel_plane_actions(
     zones: ZoneMap,
     canary_paths: Mapping[str, str],
     start_seq: int = 0,
+    shell_tool_called: bool = True,
 ) -> list[Action]:
     """Every recorded exec and read as an action, in the order the kernel reported them.
+
+    ``shell_tool_called`` is whether Plane A recorded a call to one of ``rules.shell_tools``;
+    without one, a tool shell is the harness's housekeeping (see :class:`HarnessProcessRules`).
+    It defaults to ``True`` — the direction that attributes more to the skill, never less.
 
     ``canary_paths`` maps each planted canary's container path to its canary id: a read of one
     is recorded as ``canary_read`` (§10.4, §11.3) — by reference, never by value — whatever
@@ -138,7 +149,7 @@ def kernel_plane_actions(
     for offset, (_, ts, event) in enumerate(events):
         seq = start_seq + offset
         if isinstance(event, ExecEvent):
-            process = _attribute(event, processes, rules)
+            process = _attribute(event, processes, rules, shell_tool_called=shell_tool_called)
             parent = processes.get(event.ppid) if event.ppid is not None else None
             ancestors: tuple[str, ...] = (
                 (parent.argv0, *ancestry.get(parent.pid, ())) if parent is not None else ()

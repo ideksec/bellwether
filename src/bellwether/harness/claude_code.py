@@ -408,6 +408,7 @@ class ClaudeCodeAdapter:
         return HarnessProcessRules(
             own=frozenset({PurePosixPath(self._binary).name}),
             tool_shells=frozenset(CLAUDE_CODE_TOOL_SHELLS),
+            shell_tools=frozenset({"Bash"}),
             helpers=frozenset(CLAUDE_CODE_HELPER_PROCESSES),
             subtrees=frozenset(commands),
         )

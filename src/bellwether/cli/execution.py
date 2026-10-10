@@ -842,13 +842,19 @@ class SandboxRunExecutor:
             # Plane B reads and Plane D′ processes, from the host-side recorder (§10.2, §10.3),
             # attributed by process tree to the harness or the skill using the adapter's own
             # statement of what it starts. A disabled half is dropped from the record.
+            process_rules = adapter.process_rules()
             plane_k = (
                 kernel_plane_actions(
                     activity,
-                    rules=adapter.process_rules(),
+                    rules=process_rules,
                     zones=prepared.zones,
                     canary_paths=canary_container_paths,
                     start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
+                    shell_tool_called=any(
+                        action.kind == "tool_call"
+                        and action.action.get("tool") in process_rules.shell_tools
+                        for action in plane_a
+                    ),
                 )
                 if activity is not None
                 else []
