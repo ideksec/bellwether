@@ -101,6 +101,10 @@ _EXEC_SYSCALLS: dict[str, dict[int, tuple[int, int]]] = {
 }
 
 
+#: The start of the one gap recorded for unread argvs, however many there were.
+_ARGV_GAP = "the argv of at least one exec could not be read"
+
+
 class FanotifyUnavailableError(Exception):
     """The kernel refused the group or a mark; the planes are unavailable for this run."""
 
@@ -458,8 +462,40 @@ class FanotifyRecorder:
         self._order += 1
         return self._order
 
+    def _exec_syscall_line(self, pid: int) -> str | None:
+        """The ``/proc`` syscall line of the thread of ``pid`` that is held in ``execve``.
+
+        fanotify names the thread group, not the thread. An exec called from a secondary thread
+        (the real claude-code CLI does this) leaves the group leader in some other syscall, so
+        its line names a ``futex`` rather than the exec; the thread actually held in the exec is
+        found among ``/proc/<pid>/task/*``. Tasks are scanned in sorted order (§24).
+        """
+        leader = _read_text(self._proc / str(pid) / "syscall")
+        if self._is_exec_line(leader):
+            return leader
+        try:
+            tasks = sorted(
+                (entry.name for entry in (self._proc / str(pid) / "task").iterdir()),
+                key=lambda name: (len(name), name),
+            )
+        except OSError:
+            return leader
+        for tid in tasks:
+            line = _read_text(self._proc / str(pid) / "task" / tid / "syscall")
+            if self._is_exec_line(line):
+                return line
+        return leader
+
+    def _is_exec_line(self, line: str | None) -> bool:
+        if not line:
+            return False
+        try:
+            return int(line.split()[0]) in self._syscalls
+        except (ValueError, IndexError):
+            return False
+
     def _record_exec(self, pid: int, exe: str) -> None:
-        syscall_line = _read_text(self._proc / str(pid) / "syscall")
+        syscall_line = self._exec_syscall_line(pid)
         with self._lock:
             last = next((e for e in reversed(self._execs) if e.pid == pid), None)
             if last is not None and syscall_line and last.syscall_key == syscall_line:
@@ -470,8 +506,11 @@ class FanotifyRecorder:
             if order is None:
                 return
         filename, argv = self._read_exec_args(pid, syscall_line)
-        if argv is None:
-            self._gaps.add("the argv of at least one exec could not be read")
+        if argv is None and not any(gap.startswith(_ARGV_GAP) for gap in self._gaps):
+            self._gaps.add(
+                f"{_ARGV_GAP} (first: {PurePosixPath(exe).name}, syscall "
+                f"{(syscall_line or 'unreadable').split(' ', 1)[0]})"
+            )
         pending = _PendingExec(
             order=order,
             ts=self._clock(),

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
@@ -453,3 +453,24 @@ def test_coverage_says_what_was_watched_and_degrades_on_a_gap() -> None:
     assert "argv unread" in (process.reason or "")
     absent_reads, absent_process = kernel_plane_coverage(None, reason_if_absent="no root")
     assert absent_reads.fidelity == "unavailable" and absent_process.reason == "no root"
+
+
+def test_an_exec_from_a_secondary_thread_is_read_from_that_thread(tmp_path: Path) -> None:
+    """fanotify names the thread group; the leader of a process whose *other* thread calls
+    execve sits in a futex. The real claude-code CLI does this — CI read its argv as unreadable
+    until the recorder looked for the task actually held in the exec."""
+    from bellwether.capture.fanotify import FanotifyRecorder
+
+    task = tmp_path / "70" / "task"
+    for tid, line in (("70", "202 0x1 0x0"), ("71", "7 0x0"), ("72", "59 0x10 0x20 0x0")):
+        (task / tid).mkdir(parents=True)
+        (task / tid / "syscall").write_text(line, encoding="ascii")
+    (tmp_path / "70" / "syscall").write_text("202 0x1 0x0", encoding="ascii")
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64")
+    assert recorder._exec_syscall_line(70) == "59 0x10 0x20 0x0"
+    # The leader's own exec wins when it is the one held; no exec anywhere falls back to it.
+    (tmp_path / "70" / "syscall").write_text("59 0x1 0x2 0x0", encoding="ascii")
+    assert recorder._exec_syscall_line(70) == "59 0x1 0x2 0x0"
+    (tmp_path / "70" / "syscall").write_text("202 0x1 0x0", encoding="ascii")
+    (task / "72" / "syscall").write_text("202 0x1", encoding="ascii")
+    assert recorder._exec_syscall_line(70) == "202 0x1 0x0"

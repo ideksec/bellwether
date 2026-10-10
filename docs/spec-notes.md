@@ -4732,6 +4732,10 @@ What fanotify cannot give, and how each gap is closed:
   not be read is recorded as unread (`argv_read: false`), not guessed. An interpreter open
   (`#!/bin/sh` loading `/bin/sh` for a script) carries the same syscall line and is folded into
   the exec that caused it.
+- **Which thread.** fanotify reports the thread *group*. An exec called from a secondary thread
+  (the real claude-code CLI does this) leaves the leader in another syscall, so the recorder reads
+  the syscall line of whichever task in `/proc/<pid>/task/` is held in `execve`/`execveat`.
+  Reading only the leader's line, as the first cut did, turned every such exec into an unread argv.
 - **Process tree.** ppid comes from `/proc/<pid>/stat` at the held exec. A process whose parent is
   outside the container is top-level (the harness's `docker exec`, or the entrypoint).
 - **Reads.** `FAN_CLOSE_NOWRITE` on the workspace mount and each canary mount only — the **read
