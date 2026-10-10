@@ -207,7 +207,10 @@ are adjusted from. Its first CI run already disclosed one defect: the real CLI c
 secondary thread, fanotify names the thread group, and the group leader's `/proc` syscall line
 named a futex, so the argv read as unreadable and the plane fell to `partial`. Reproduced locally
 with a static binary whose second thread execs; the recorder now reads the syscall line of the
-task actually held in the exec.
+task actually held in the exec. The next CI run disclosed a second: the CLI's ELF interpreter open arrived with
+the caller's syscall line reading `running` (past the exec's point of no return), so it was taken
+for a new exec with an unread argv. An exec-open with no execve on any thread of a pid that already
+has an exec on record is now folded into that exec as its interpreter, kept in the record.
 
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
@@ -1044,7 +1047,7 @@ commands exhaustively instead of counting them.
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2090 tests: 2022 offline, 68 under the `docker` mark (53 run locally, 15 CI-only skips with stated reasons; all 68 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2091 tests: 2023 offline, 68 under the `docker` mark (53 run locally, 15 CI-only skips with stated reasons; all 68 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

@@ -498,8 +498,15 @@ class FanotifyRecorder:
         syscall_line = self._exec_syscall_line(pid)
         with self._lock:
             last = next((e for e in reversed(self._execs) if e.pid == pid), None)
-            if last is not None and syscall_line and last.syscall_key == syscall_line:
+            if last is not None and (
+                (syscall_line and last.syscall_key == syscall_line)
+                or not self._is_exec_line(syscall_line)
+            ):
                 # The ELF interpreter or a script's #! interpreter, opened by the same execve.
+                # Past the exec's point of no return (de_thread) the kernel can report the
+                # caller as `running` rather than repeat the execve line; an exec-open with no
+                # execve on any thread cannot be a new exec, so it is the last one's
+                # interpreter — kept in the record, never dropped.
                 last.interpreters.append(exe)
                 return
             order = self._next_order()

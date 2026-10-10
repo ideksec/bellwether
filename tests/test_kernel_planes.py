@@ -474,3 +474,27 @@ def test_an_exec_from_a_secondary_thread_is_read_from_that_thread(tmp_path: Path
     (tmp_path / "70" / "syscall").write_text("202 0x1 0x0", encoding="ascii")
     (task / "72" / "syscall").write_text("202 0x1", encoding="ascii")
     assert recorder._exec_syscall_line(70) == "202 0x1 0x0"
+
+
+def test_an_interpreter_open_reported_as_running_folds_into_its_exec(tmp_path: Path) -> None:
+    """CI's second disclosure: the real CLI's ELF interpreter open arrived with the caller's
+    syscall line reading `running`, not the execve, so it was recorded as a new exec with an
+    unread argv. An exec-open with no execve on any thread is the last exec's interpreter."""
+    from bellwether.capture.fanotify import FanotifyRecorder
+
+    (tmp_path / "80" / "task" / "80").mkdir(parents=True)
+    (tmp_path / "80" / "syscall").write_text("59 0x0 0x0 0x0", encoding="ascii")
+    (tmp_path / "80" / "mem").write_bytes(b"")  # null filename and argv pointers: nothing to read
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64")
+    recorder._record_exec(80, "/usr/bin/node")
+    for line in ("running", "202 0x1 0x0"):
+        (tmp_path / "80" / "syscall").write_text(line, encoding="ascii")
+        (tmp_path / "80" / "task" / "80" / "syscall").write_text(line, encoding="ascii")
+        recorder._record_exec(80, "/lib64/ld-linux-x86-64.so.2")
+    [only] = recorder._execs
+    assert only.exe == "/usr/bin/node"
+    assert only.interpreters == ["/lib64/ld-linux-x86-64.so.2"] * 2
+    assert not recorder._gaps
+    # With no exec of that pid on record, an unreadable exec-open is still a gap, not a fold.
+    recorder._record_exec(81, "/usr/bin/mystery")
+    assert any(gap.startswith("the argv of at least one exec") for gap in recorder._gaps)
