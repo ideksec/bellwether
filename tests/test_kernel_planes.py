@@ -311,11 +311,26 @@ def test_argv0_naming_a_declared_tool_does_not_excuse_the_binary_that_ran() -> N
 
 @pytest.mark.parametrize(
     ("argv0", "exe"),
-    [("python3", "/usr/bin/python3.11"), ("ls", "/bin/busybox"), ("git", "/usr/bin/git")],
+    [
+        ("python3", "/usr/bin/python3.11"),
+        ("python", "/usr/bin/python3"),
+        ("ls", "/bin/busybox"),
+        ("git", "/usr/bin/git"),
+    ],
 )
 def test_legitimate_name_differences_are_accounted(argv0: str, exe: str) -> None:
     index = _index(_skill_runs(([argv0, "x"], exe)), _API_LOOP)
     assert undeclared_processes(_scope(processes={"allow": [argv0]}), index) == ()
+
+
+@pytest.mark.parametrize(
+    "exe", ["/tmp/python-evil", "/tmp/pythonx", "/tmp/python3.11-shim", "/tmp/python.3a"]
+)
+def test_a_binary_whose_name_merely_starts_with_a_declared_one_is_not_excused(exe: str) -> None:
+    """Only a version may extend the declared name: `python-evil` run as `python` is not python."""
+    index = _index(_skill_runs((["python", "x"], exe)), _API_LOOP)
+    [(process, why)] = undeclared_processes(_scope(processes={"allow": ["python"]}), index)
+    assert process.exe_name in why
 
 
 def test_the_platform_baseline_accounts_for_shells_where_it_applies() -> None:

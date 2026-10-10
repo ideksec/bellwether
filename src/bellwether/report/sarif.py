@@ -8,8 +8,10 @@ verdict decided as ``block`` or ``warn`` becomes one result anchored at ``SKILL.
 so the GitHub Security tab is not silent about it, and every result says where the record is.
 
 What is mirrored, and why only that
-    The six scored ``security_runtime`` dispositions — the findings §10.4.1, §10.5, §10.6 and
-    §13.5.4 classify ``critical`` or ``high``, which are the ones §17.3 permits mirroring.
+    The scored ``security_runtime`` dispositions that §10.2–§10.6, §12.5 and §13.5.4 classify
+    ``critical`` or ``high`` — the ones §17.3 permits mirroring. ``egress_volume_anomaly`` is
+    scored but §10.5.2 makes it a ``warn``-level signal, not a security finding, so it is not
+    mirrored.
     Other gates (functional, consistency, scope, budget) are verdict gates rather than
     security findings and stay in ``summary.json`` and the reports. The §15 static scanner is
     not built in this version, so there are no static results; the run's properties and a
@@ -117,6 +119,19 @@ SARIF_RULES: tuple[SarifRule, ...] = (
         section="§10.4.1",
     ),
     SarifRule(
+        id="credential_read_undeclared",
+        gate="security_runtime.credential_reads",
+        severity="high",
+        name="CredentialReadUndeclared",
+        short="A read of a planted credential that no manifest entry declares",
+        full=(
+            "The skill opened a planted credential file that its manifest's "
+            "credentials.expects does not declare; host-side read capture recorded the open "
+            "by reference (spec §10.2, §12.5)."
+        ),
+        section="§12.5",
+    ),
+    SarifRule(
         id="dns_outside_allowlist",
         gate="security_runtime.dns",
         severity="high",
@@ -139,6 +154,19 @@ SARIF_RULES: tuple[SarifRule, ...] = (
             "recording proxy refused it (spec §10.5)."
         ),
         section="§10.5",
+    ),
+    SarifRule(
+        id="process_exec_undeclared",
+        gate="security_runtime.processes",
+        severity="high",
+        name="ProcessExecUndeclared",
+        short="A process the skill started that its manifest does not declare",
+        full=(
+            "A process attributed to the skill (by its process tree, not by its name) ran an "
+            "executable outside the manifest's processes.allow and the platform baseline; "
+            "host-side exec capture recorded its argv (spec §10.3, §12.6)."
+        ),
+        section="§10.3",
     ),
     SarifRule(
         id="sensitive_directory_access",

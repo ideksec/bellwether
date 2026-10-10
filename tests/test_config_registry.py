@@ -202,11 +202,12 @@ def test_doctor_names_a_not_built_setting_and_why(tmp_path: Path) -> None:
     assert CliRunner().invoke(app, ["init", str(root)]).exit_code == 0
     config = root / ".bellwether" / "config.yaml"
     config.write_text(
-        config.read_text(encoding="utf-8") + "\nreporting:\n  sarif: true\n", encoding="utf-8"
+        config.read_text(encoding="utf-8") + "\nreporting:\n  retention_days: 7\n",
+        encoding="utf-8",
     )
     result = CliRunner().invoke(app, ["doctor", "--config", str(config), "--json"])
     assert "settings not built in this version" in result.output
-    assert "reporting.sarif (no SARIF report is produced)" in result.output
+    assert "reporting.retention_days (Bellwether never prunes artifacts)" in result.output
 
 
 def test_a_setting_nested_under_a_not_built_block_is_reported_once(tmp_path: Path) -> None:

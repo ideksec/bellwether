@@ -166,6 +166,45 @@ index as its own finding (never as an allowlist denial), and drives the sixth sc
 with the configured model. Twelve guards, each revert-checked individually (one is a source pin
 and says so); the before/after table and the observation are in spec-notes.
 
+**The v0.1 gaps then closed in one change: read and process capture, three more scored dispositions,
+parallel runs, SARIF, and cross-request canary reassembly.**
+- **Plane B reads and Plane D′ processes are captured host-side (§10.2, §10.3)** by a fanotify group
+  each run opens on its own container's mounts — fanotify rather than the spec's eBPF, because it
+  needs only the root the overlay already needs (spec-notes "§10.2, §10.3 — reads and processes from
+  fanotify"). Every exec is recorded with its exact argv, read from `/proc` while the kernel holds the
+  exec, and attributed to the harness or the skill **by process tree** (`HarnessProcessRules` per
+  adapter), never by name. Every open of a workspace file or a planted credential is recorded, by
+  reference; the read domain is on the coverage block so an absence claim outside it is
+  `not_evaluable`. Proven on real containers (`test_kernel_planes_docker.py`, mariner and alpine):
+  busybox applets, scripts, and the canary open, with the marker never in the artifact. `doctor`
+  opens and closes the same group to say whether a run will get one.
+- **`credential_read_undeclared` → `security_runtime.credential_reads`** and
+  **`process_exec_undeclared` → `security_runtime.processes`** are scored. The corpus asserts
+  `legit-credential-reader` passes, `canary-thief` blocks, and `rare-canary-reader` blocks at N = 6,
+  12 and 20 (each revert-checked: stub the derivation and all four fail). A process is identified by
+  both its argv0 and its executable's file name; the version-suffix exception was first written as a
+  bare prefix match, which let `python-evil` borrow `python`'s allowance — found while documenting
+  the rule, fixed, and pinned by a test that fails against the prefix rule. §12.6's baseline
+  `processes` now subtract.
+- **`egress_volume_anomaly` → `security_runtime.volume_anomaly`** (§10.5.2): each run's forwarded
+  request bytes against its peers' median, `warn` as shipped. Its false-positive rate on live runs,
+  whose request bodies grow with the conversation, is **not measured**.
+- **`execution.concurrency`** (§19.3) runs a look's runs in parallel; the bytes of every artifact are
+  the same at any value (`test_concurrency.py`). The live examples pin `1`.
+- **`findings.sarif`** (§17.3) mirrors the critical/high `security_runtime` gates as results anchored
+  at `SKILL.md:1`; `reporting.html` and `reporting.sarif` now switch their files. The output is
+  validated against the vendored SARIF 2.1.0 schema.
+- **Cross-request canary reassembly** (§10.4.2): a marker sent in pieces across requests or DNS
+  lookups is reassembled per destination. Independently encoded off-boundary base64 pieces remain a
+  strict `xfail`.
+
+Nine of thirteen `security_runtime` dispositions are now enforced; the four inert ones are
+`instrumentation_probe` (needs the §3.5 probe suite), `harness_state_write` (withdrawn), and the
+two advisory-by-design findings. **Not yet observed live:** neither kernel plane has run under a
+paid labelled evaluation. The claude-code container test on CI now asserts the CLI's own processes
+are all attributed to the harness, and that is the evidence the attribution rules for the real CLI
+are adjusted from.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -997,9 +1036,11 @@ commands exhaustively instead of counting them.
 | WP-18 — plane precedence (§10.8): `trace_inconsistency` produced from the two comparable rows, fidelity-gated, advisory-surfaced; zero findings on the real overlay-diff first-light run | **done** |
 | **Model-API canary channel** — every composed request scanned host-side, §10.4.1 read-state grading per-request/per-canary, credentials plane `full`, `canary_without_read` scored (`security_runtime.canary_reads`) | **done** — finishes WP-16's capture story; corpus skills land with WP-20 |
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
+| **Read and process capture** (§10.2, §10.3) — host-side fanotify on the run's own mounts, argv at the held exec, tree attribution, read domain; `credential_read_undeclared` and `process_exec_undeclared` scored | **done** — real containers locally and on CI; not yet under a live paid run |
+| `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-1973 tests: 1907 offline, 66 under the `docker` mark (51 run locally, 15 CI-only skips with stated reasons; all 66 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2089 tests: 2021 offline, 68 under the `docker` mark (53 run locally, 15 CI-only skips with stated reasons; all 68 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1138,7 +1179,21 @@ scheduler stops"; §16.1's every-accepted-control-enforces-or-refuses; §19.1's 
 
 Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. The
 coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acceptance corpus
-(WP-20) is complete. What remains for v0.1 is **one package: the second harness** (WP-17). The
+(WP-20) is complete, and so is the second harness (WP-17).
+
+**Current state (top of the list):** every v0.1 work package is built, and the change that added
+read and process capture closed the last declared-but-unbuilt v0.1 controls (see the paragraph near
+the top). What remains is **outside v0.1 or unproven live**:
+1. **A labelled live run with the kernel planes on**, under both harnesses — needs explicit approval
+   to spend. Expect to adjust `CLAUDE_CODE_HELPER_PROCESSES` from what the real CLI execs; the CI
+   container test prints the list.
+2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
+   it from `warn`.
+3. **Later phases:** the §15 static scanner, judges and embeddings (the quality gate and the BCI
+   output component), the §3.5 instrumentation-probe suite, more providers and harnesses, and a
+   stronger isolation runtime (gVisor/Firecracker are refused at parse today).
+
+The numbered history below is kept for its record of how each piece landed. The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,
 because the build deliberately inserted the executor-integration + live-proof work (unnumbered) that
 made WP-13 usable end to end. `docs/BUILDPLAN.md` carries the same note.

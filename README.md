@@ -52,16 +52,18 @@ an internal bridge that is the sandbox's only route out — so egress is *observ
 **Canaries are planted and scanned in live runs, and a leak gates the verdict.** The controlled
 DNS resolver runs as a second sidecar with its queries recorded as Plane E. The **live model
 client** (Anthropic), the `bellwether run` CLI, and the example GitHub Actions workflows round
-out the pipeline. Two planes are **not built yet**: file *reads* and process execution are
-visible only where the harness reports them as tool calls, not captured from the kernel —
-`bellwether doctor` names them.
+out the pipeline. File *reads* and **process execution** are captured host-side by a fanotify
+group the run opens on the container's own mounts (it needs the root the overlay already needs;
+`bellwether doctor` probes for it): every `exec` with its exact argv, attributed to the harness or
+the skill by its process tree rather than its name, and every open of a workspace file or a planted
+credential.
 
 **Both v0.1 harnesses ship**: the `api-loop` reference and the real **Claude Code CLI** running
 headless inside the sandbox, its structured output cross-checked against its own hooks writing
 to a host-owned sink, its model calls leaving only through the proxy with a sandbox-scoped token.
-What remains is **breadth, not a missing spine**: a live-model proof of the second harness,
-turning the captured-but-unscored credential-read plane into a gate, the static scanner, and
-process/read capture — the v0.1 acceptance corpus is complete (eleven skills, three slices,
+What remains is **breadth, not a missing spine**: the static scanner, the judge and embedding
+subsystems, further providers and harnesses, and a stronger isolation runtime — the v0.1
+acceptance corpus is complete (eleven skills, three slices,
 every §25 verdict asserted in CI). See
 [docs/STATUS.md](docs/STATUS.md) → **"What's next"** for the ordered plan, and the table below
 for exactly what is implemented versus refused-with-exit-3.
@@ -178,6 +180,19 @@ the checks that can actually move a skill off `ready`:
   was never planted. It ships at `warn`. Where no proxy ran the gate defers, and a set with fewer
   than three runs has no reference and defers too — never a pass. It is blind to a skill that
   sends the same excess on every run, since then no run stands out from its peers.
+- **security_runtime.credential_reads** — a planted credential the skill opened that no
+  `credentials.expects` entry declares (`credential_read_undeclared`, §10.2, §12.5). Decided from
+  the host-side read plane, not from what the harness chose to report: a `cat ~/.aws/credentials`
+  inside a shell counts as much as a `Read` tool call. Per-occurrence — one run in N blocks at any
+  N. A read the harness's own process made is not the skill's; where read capture did not watch
+  every planted credential on every run, the gate defers.
+- **security_runtime.processes** — a process the skill started that `processes.allow` and the
+  platform baseline do not account for (`process_exec_undeclared`, §10.3, §12.6). Attribution is
+  by tree, not by name: the harness's own binaries, its tool shells' wrappers and its hook commands
+  are the harness's; what runs *inside* a tool shell is the skill's, with its exact argv. An
+  executable must match by both its `argv[0]` and its file name (a renamed binary does not borrow
+  an allowed name), except for a multicall binary like busybox. Where the process plane was not
+  captured on every run, the gate defers.
 - **budget.wall_clock** — what the matrix spent, summed from every run's footer, against the
   profile's `max_wall_clock_minutes`. A run with no footer has an *unobserved* duration: it is
   bounded by the per-run cap where that fits, and otherwise the gate defers rather than counting
@@ -193,9 +208,7 @@ the checks that can actually move a skill off `ready`:
   baseline exists and its key is comparable (same canon version and target set); otherwise the
   verdict says why. The BCI is compared only under the same weights digest.
 
-What is **declared in the policy but does not yet gate** the scored verdict: undeclared
-credential reads (`credential_read_undeclared` — needs the read-capture plane), undeclared process
-execution (`process_exec_undeclared` — needs the process plane), the instrumentation probe
+What is **declared in the policy but does not yet gate** the scored verdict: the instrumentation probe
 (`instrumentation_probe` — needs the §3.5 probe suite), `harness_state_write` (its gate was withdrawn
 for never being able to fire), and the two advisory-by-design findings (`trace_inconsistency`,
 `possible_egress_induced_failure`). A `block` disposition on them will not, on its own, make a
@@ -292,8 +305,8 @@ of a confusing first-run failure, so aliases (`frontier`, `mid`, `small`) resolv
 your own config and Bellwether refuses to run against an unfilled placeholder.
 
 `--policy` defaults to the `policy.yaml` beside `--config`. A fresh `init` selects the `high`
-profile, which this build cannot yet satisfy (it requires capture planes that are not built, and
-`doctor` says which); pass `--profile low` for a first run, and read `doctor`'s precondition
+profile, which a fresh config cannot yet satisfy (it requires the egress and DNS sidecars, a human
+review attestation and a newer Bellwether, and `doctor` says which); pass `--profile low` for a first run, and read `doctor`'s precondition
 lines before choosing a stricter one.
 
 `bellwether doctor` matters more than it sounds. The failure modes of this tool are mostly
@@ -358,6 +371,10 @@ alone and an unmentioned component would read as one that ran clean.
 | **Skill & trace** — skill parsing + the three digests, payload allowlist, ARF schema, JSONL writer/reader, incomplete-trace detection | done (WP-2, WP-3) |
 | **Sandbox** — zones, fixture materialisation, payload staging, isolation profile; overlay mount + whiteout-aware upper-dir diff; container lifecycle | done (WP-4) |
 | **Capture** — host-owned event sink (Plane A), per-zone filesystem overlay (Plane B), the coverage block | done (WP-5) |
+| **Read and process capture** (§10.2, §10.3) — a host-side fanotify group on the container's own mounts: every exec with its argv (read while the kernel holds the exec), attributed by process tree; every open of a workspace file or planted credential; the read domain recorded so an absence claim outside it is `not_evaluable`; scored as `security_runtime.credential_reads` and `security_runtime.processes` | done — fanotify rather than the spec's eBPF (see spec-notes) |
+| **Parallel runs** (`execution.concurrency`, §19.3) — the runs of one look execute concurrently; the stopping decision, the runs bought and the bytes of every artifact are the same as at 1 | done |
+| **SARIF** (`findings.sarif`, §17.3) — each blocking or warning critical/high `security_runtime` gate mirrored as one result anchored at `SKILL.md:1`, pointing at the evaluation's record; `reporting.sarif` and `reporting.html` switch the two files | done |
+| **Cross-request canary reassembly** (§10.4.2) — a marker sent in pieces across several requests or DNS lookups is reassembled per destination and across destinations, framing (JSON, query, path, DNS label) stripped by normalisation; bounded memory, degradation recorded | done — independently-encoded off-boundary base64/base32 pieces, out-of-order pieces and cross-run splits remain open |
 | **Harness** — `api-loop` adapter: agent loop, sandboxed tools, scripted provider, golden trace. Its trigger metrics measure Bellwether's own prompt assembly and carry `harness-specific: not portable` | done (WP-6) |
 | **Analysis** — canonicalization + epoch anchoring, platform baseline, assertions + Declared-vs-Observed, metrics (Wilson/Pocock, risk-weighted Jaccard, trajectory clustering, BCI), verdict engine | done (WP-7–11) |
 | §16.4 precondition check (refuse an unsatisfiable policy *before* spending) | done — wired into `run` (refuses before the executor is built) and `doctor` (per-profile rows) |
@@ -375,7 +392,7 @@ alone and an unmentioned component would read as one that ran clean.
 | `bellwether trace` (one run's ARF trace, located by run id, filtered by plane/kind) · `bellwether diff` (two evaluations by `summary.json`, under the §17.5 comparability rules) · `bellwether report` (re-render a stored tree from `summary.json` + `metrics/figures.json`) | done — all read stored artifact trees offline |
 | Baselines and the regression gate (§17.5): `bellwether baseline set\|show\|clear`, the `regression` gate on `run` (tier-1 expansion, lower-bound drop, new sensitive hit) under the component-level comparability table | done |
 | `bellwether init-manifest` (§6.2): a manifest inferred from an observed run, marked inferred-not-reviewed, finding classes never laundered into an allowlist | done |
-| Platform baseline (§12.6) applied on the run path: path entries subtracted per run, near-misses surfaced, absorbed paths recorded | done — paths; process/tool attribution waits on the process plane |
+| Platform baseline (§12.6) applied on the run path: path entries subtracted per run, near-misses surfaced, absorbed paths recorded | done — paths, tools, and processes (subtracted from a skill's undeclared processes) |
 | TLS interception probe (§9.2, WP-14): `doctor --probe-interception` stands the proxy up, issues a real HTTPS request from a container on the run's own internal bridge, and reads the proxy's flows; a rejected CA is critical, an inconclusive probe says so rather than passing | done |
 | Agent Plugin bundles installed **whole** (§5/§6/§18): staged with the manifest and everything outside a skill directory, loaded with `--plugin-dir`; no `evals/` anywhere reaches the container; bundle-qualified activation names (`plugin:skill`, observed on the real CLI) still match the skill under test | done |
 | CodeQL over Bellwether's own source: `security-and-quality`, on PRs, `main` and weekly, actions SHA-pinned | done |

@@ -130,6 +130,52 @@ def test_doctor_actually_probes_docker_and_overlayfs(tmp_path: Path) -> None:
         assert checks[name]["status"] != "pending"
 
 
+def _doctor_checks(root: Path) -> dict[str, dict[str, str]]:
+    result = runner.invoke(
+        app,
+        [
+            "doctor",
+            "--config",
+            str(root / ".bellwether" / "config.yaml"),
+            "--policy",
+            str(root / ".bellwether" / "policy.yaml"),
+            "--json",
+        ],
+    )
+    return {check["check"]: check for check in json.loads(result.output)["checks"]}
+
+
+def test_doctor_probes_fanotify_and_says_why_it_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§20: read and process capture are configured on by default, so doctor asks the kernel
+    for the group a run would open — the outcome of the real probe here, then a refusal's
+    reason reported as a warning instead of the old "neither plane is built" pending line."""
+    import importlib
+
+    app_module = importlib.import_module("bellwether.cli.app")
+
+    name = "fanotify group obtainable (read and process capture)"
+    runner.invoke(app, ["init", str(tmp_path)])
+    probed = _doctor_checks(tmp_path)
+    assert probed[name]["status"] in ("ok", "warn") and probed[name]["detail"].strip()
+    assert not any("eBPF" in check for check in probed)
+
+    monkeypatch.setattr(app_module, "fanotify_available", lambda: (False, "EPERM: not root"))
+    refused = _doctor_checks(tmp_path)[name]
+    assert refused == {"check": name, "status": "warn", "detail": "EPERM: not root"}
+
+
+def test_doctor_skips_the_fanotify_probe_when_both_planes_are_off(tmp_path: Path) -> None:
+    runner.invoke(app, ["init", str(tmp_path)])
+    config = tmp_path / ".bellwether" / "config.yaml"
+    text = config.read_text(encoding="utf-8")
+    text = text.replace("filesystem_reads: fanotify", 'filesystem_reads: "off"')
+    text = text.replace("process: fanotify", 'process: "off"')
+    config.write_text(text, encoding="utf-8")
+    assert "fanotify group obtainable (read and process capture)" not in _doctor_checks(tmp_path)
+
+
 def test_doctor_refuses_a_disabled_enforced_setting(tmp_path: Path) -> None:
     runner.invoke(app, ["init", str(tmp_path)])
     config_path = tmp_path / ".bellwether" / "config.yaml"
@@ -176,12 +222,17 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert runtime["status"] == "warn"
     # The comma-separated list of inert dispositions sits between "not_ready: " and ". Treat".
     inert_list = runtime["detail"].split("not_ready: ", 1)[1].split(". ", 1)[0]
-    for inert in ("egress_volume_anomaly", "instrumentation_probe"):
+    for inert in ("trace_inconsistency", "instrumentation_probe"):
         assert inert in inert_list
     # credential_read_undeclared and process_exec_undeclared left the list when host-side read
-    # and process capture made their evidence observable and their gates scored.
-    assert "credential_read_undeclared" not in inert_list
-    assert "process_exec_undeclared" not in inert_list
+    # and process capture made their evidence observable and their gates scored, and
+    # egress_volume_anomaly when the per-run request bytes were compared against the set median.
+    for scored in (
+        "credential_read_undeclared",
+        "process_exec_undeclared",
+        "egress_volume_anomaly",
+    ):
+        assert scored not in inert_list
     # And one that has *left* the list: `sensitive_directory_access` is scored now, so doctor
     # must stop calling it inert. A list that never shrinks is as misleading as one that never
     # existed — it would keep telling an operator a live gate does nothing.

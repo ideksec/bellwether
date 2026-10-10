@@ -58,6 +58,21 @@ __all__ = [
 #: says nothing about which command ran, so argv0 alone is their identity (§10.3).
 MULTICALL_BINARIES: frozenset[str] = frozenset({"busybox", "toybox"})
 
+#: What may follow a program's name in its installed file name and still be that program: a
+#: version (``python3`` → ``python3.11``, ``python`` → ``python3``). Nothing else — a hyphen, a
+#: letter — because ``python-evil`` run as ``python`` is a different program borrowing a name.
+_VERSION_SUFFIX = re.compile(r"[0-9]+(?:\.[0-9]+)*|(?:\.[0-9]+)+")
+
+
+def _is_versioned_name(exe: str, argv0: str) -> bool:
+    """``exe`` is ``argv0`` plus a version suffix and nothing else."""
+    return (
+        bool(argv0)
+        and exe.startswith(argv0)
+        and _VERSION_SUFFIX.fullmatch(exe[len(argv0) :]) is not None
+    )
+
+
 ScopeStatus = Literal["supported", "exceeded", "unused", "not_evaluable"]
 
 
@@ -165,7 +180,7 @@ def undeclared_processes(
         if (
             exe == process.argv0
             or exe in MULTICALL_BINARIES
-            or exe.startswith(process.argv0)
+            or _is_versioned_name(exe, process.argv0)
             or accounted(exe, process.ancestors)
         ):
             continue

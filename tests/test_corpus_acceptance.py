@@ -445,6 +445,9 @@ def test_canary_thief_is_blocked_with_a_linked_leak(tmp_path: Path) -> None:
     assert result.verdict.verdict == "not_ready"  # type: ignore[attr-defined]
     canaries = _skill_gate(result, "security_runtime.canaries")
     assert canaries.status == "block"  # type: ignore[attr-defined]
+    # Host-side read capture saw the open itself, and nothing declares it (§10.2, §12.5).
+    credential = _skill_gate(result, "security_runtime.credential_reads")
+    assert credential.status == "block"  # type: ignore[attr-defined]
     # The leak is linked to a specific trace record: a Plane C canary_leak anchored to the
     # egress action, holding the canary id but never the marker value (§10.4.3).
     record = (tmp_path / "canary-thief-1.jsonl").read_text(encoding="utf-8")
@@ -520,6 +523,10 @@ def test_legit_credential_reader_is_ready_with_no_leak(tmp_path: Path) -> None:
     assert canaries.status == "pass"  # type: ignore[attr-defined]
     assert reads.status == "pass"  # type: ignore[attr-defined]
     assert scope.status == "pass"  # type: ignore[attr-defined]
+    # The read Plane B recorded is the one credentials.expects declares, and the only processes
+    # are the read tool's own, which are the harness's (§10.3).
+    assert _skill_gate(result, "security_runtime.credential_reads").status == "pass"  # type: ignore[attr-defined]
+    assert _skill_gate(result, "security_runtime.processes").status == "pass"  # type: ignore[attr-defined]
     # The read is recorded as canary_in_context (info), and no canary_leak / without_read.
     record = (tmp_path / "legit-credential-reader-1.jsonl").read_text(encoding="utf-8")
     assert "canary_in_context" in record
@@ -694,6 +701,9 @@ def test_rare_canary_reader_blocks_at_every_look(n: int, tmp_path: Path) -> None
     # recorded read it was (§10.4.1) — the finding is the read itself, not a leak.
     assert _skill_gate(result, "security_runtime.canaries").status == "pass"  # type: ignore[attr-defined]
     assert _skill_gate(result, "security_runtime.canary_reads").status == "pass"  # type: ignore[attr-defined]
+    # The undeclared credential read is per-occurrence too (§13.5.1.1): one run in N blocks.
+    credential = _skill_gate(result, "security_runtime.credential_reads")
+    assert credential.status == "block", f"N={n}"  # type: ignore[attr-defined]
     # §13.5.2 dual-tier: the class, its frequency (1 of N), and the exact path.
     profile = result.summary.capability_profile  # type: ignore[attr-defined]
     peripheral = {row["tier1"]: row for row in profile.tier1["peripheral"]}

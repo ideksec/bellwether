@@ -28,6 +28,7 @@ from typing import Annotated, Any
 import typer
 
 from bellwether import __version__
+from bellwether.capture.fanotify import fanotify_available
 from bellwether.cli.estimate import RunEstimate, render_estimate
 from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS, TargetInfo
 from bellwether.cli.preflight import available_planes, preflight_failures
@@ -505,6 +506,18 @@ def doctor(
         }
     )
 
+    # §10.2/§10.3: read and process capture need a fanotify group. Without one the two planes
+    # are recorded unavailable with this reason and their gates defer — never a clean read.
+    if "fanotify" in (loaded_config.capture.filesystem_reads, loaded_config.capture.process):
+        fanotify_usable, fanotify_reason = fanotify_available()
+        checks.append(
+            {
+                "check": "fanotify group obtainable (read and process capture)",
+                "status": "ok" if fanotify_usable else "warn",
+                "detail": fanotify_reason,
+            }
+        )
+
     for pending, work_package in _PENDING_DOCTOR_CHECKS:
         checks.append({"check": pending, "status": "pending", "detail": work_package})
 
@@ -537,10 +550,6 @@ _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
     (
         "internal bridge blocks direct UDP/53 to a public resolver",
         "the §3.3 invariant-3 live probe is CI-only (WP-15's live half)",
-    ),
-    (
-        "fanotify markable; eBPF loadable by the host agent",
-        "read and process capture are v0.2/v0.3; neither plane is built yet",
     ),
     (
         "provider keys resolve; model aliases map to live model ids",

@@ -1850,8 +1850,8 @@ def test_a_not_built_setting_is_disclosed_in_the_verdict(
     build does not act on is named in the notes, not only by `doctor`."""
     from bellwether.config.models.config import ReportingConfig
 
-    config = _config().model_copy(update={"reporting": ReportingConfig(sarif=True)})
+    config = _config().model_copy(update={"reporting": ReportingConfig(retention_days=7)})
     result = _evaluate_with(package, tmp_path, config=config)
-    assert any("does not act on: reporting.sarif" in note for note in result.verdict.notes), (
-        result.verdict.notes
-    )
+    assert any(
+        "does not act on: reporting.retention_days" in note for note in result.verdict.notes
+    ), result.verdict.notes

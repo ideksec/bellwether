@@ -53,9 +53,19 @@ dns:
   # this is the plane that watches the covert channel routing around it.
   image: bw-resolver-sidecar:live
 
+execution:
+  # One run at a time. Concurrency buys wall clock, never runs or spend (§19.3), and it has not
+  # yet been exercised against a live provider: the smoke stays serial so a rate limit or a
+  # sidecar race in the first parallel live run cannot be mistaken for a skill's behaviour.
+  concurrency: 1
+
 capture:
-  # The overlay write plane and claude-code's hook sink are always on; the read and process
-  # planes are not built. Setting them here would only be listed by `bellwether doctor`.
+  # The overlay write plane and claude-code's hook sink are always on. Reads of the workspace
+  # and the planted credentials, and every process the container starts, are captured
+  # host-side by fanotify (§10.2, §10.3) — the workflow runs `bellwether run` under sudo, which
+  # is the privilege that needs.
+  filesystem_reads: fanotify
+  process: fanotify
   zones:
     workspace: /work
     harness_state: /home/agent/.claude

@@ -134,16 +134,20 @@ def test_rule_ids_are_the_policy_disposition_names_and_sorted() -> None:
     assert [rule.id for rule in SARIF_RULES] == [
         "canary_leak",
         "canary_without_read",
+        "credential_read_undeclared",
         "dns_outside_allowlist",
         "egress_outside_allowlist",
+        "process_exec_undeclared",
         "sensitive_directory_access",
         "unexpected_provider_endpoint",
     ]
     assert {rule.gate for rule in SARIF_RULES} == {
         "security_runtime.canaries",
         "security_runtime.canary_reads",
+        "security_runtime.credential_reads",
         "security_runtime.dns",
         "security_runtime.egress",
+        "security_runtime.processes",
         "security_runtime.sensitive_directories",
         "security_runtime.provider_endpoint",
     }
@@ -157,7 +161,12 @@ def test_the_mirrored_rules_are_the_scored_security_runtime_gates() -> None:
     one list of what the verdict scores, compared with one list of what the SARIF carries."""
     from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS
 
-    assert {rule.id for rule in SARIF_RULES} == ENFORCED_SECURITY_RUNTIME_DISPOSITIONS
+    # §10.5.2 makes volume a warn-level signal rather than a critical/high finding, and §17.3
+    # mirrors only those; it is the one deliberate exclusion.
+    not_mirrored = {"egress_volume_anomaly"}
+    assert {
+        rule.id for rule in SARIF_RULES
+    } == ENFORCED_SECURITY_RUNTIME_DISPOSITIONS - not_mirrored
 
 
 def test_pass_and_unmirrored_gates_are_not_results_and_not_evaluable_is_a_notification() -> None:

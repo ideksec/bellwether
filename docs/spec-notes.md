@@ -3591,9 +3591,10 @@ does demonstrate it somewhere to say so.
 
 ### What this leaves
 
-**Six** dispositions remain inert — seven enforced of thirteen — and the reasons are not
-uniform. `process_exec_undeclared` and `credential_read_undeclared` wait on capture that does not
-exist yet (the §10.3 process plane, the read plane). `instrumentation_probe` waits on the §3.5
+**Four** dispositions remain inert — nine enforced of thirteen — and the reasons are not
+uniform. `process_exec_undeclared` and `credential_read_undeclared` *were* on this list waiting on
+capture that did not exist; host-side read and process capture now decide both (see "§10.2,
+§10.3 — reads and processes from fanotify", below). `instrumentation_probe` waits on the §3.5
 probe suite. `egress_volume_anomaly` *was* on this list for want of a reference volume; it is
 now scored against the repetition set's peer median (`security_runtime.volume_anomaly`).
 `unexpected_provider_endpoint` *was* on this list with no producer at all — the finding kind was
@@ -4701,3 +4702,132 @@ its `base_url` will see them refused — name a second provider for them, or set
 to `warn`. The egress gate's `egress_blocked_present` still counts a *cap* refusal as a block;
 that predates this change and is left as it was.
 
+
+---
+
+## §10.2, §10.3 — reads and processes from fanotify
+
+### fanotify, not eBPF
+
+§10.3 names an eBPF host agent for the process plane and §10.2 leaves the read plane to "kernel
+capture". This build uses **one fanotify group per run**, opened host-side after the container
+exists and before anything runs in it. Two reasons. fanotify needs `CAP_SYS_ADMIN` and nothing
+else — the privilege the host already holds to mount the workspace overlay (§10.0) — whereas an
+eBPF agent needs a loader, BTF or headers matched to the running kernel, and a verifier-clean
+program per kernel version, none of which a hosted CI runner promises. And a fanotify mark is
+**per mount**: marking the container's own mounts (`FAN_MARK_MOUNT` on
+`/proc/<pid>/root/<mount point>`, pseudo filesystems excluded) watches exactly that container, so
+two concurrent runs never see each other and the host's own activity is never recorded. The first
+probe marked the root filesystem and blocked containerd's unmounts; that is why marks are
+per-container and why draining runs on its own thread from the moment the group exists — an
+undrained notification holds a file descriptor, and a held descriptor keeps a mount busy.
+
+What fanotify cannot give, and how each gap is closed:
+
+- **argv.** A notification carries a file descriptor, not a command line. Exec is marked with
+  `FAN_OPEN_EXEC_PERM`, a *permission* event: the kernel holds the `execve` until it is answered,
+  and while it is held the caller's `/proc/<pid>/syscall` names the syscall and its argument
+  pointers, which `/proc/<pid>/mem` resolves to the exact filename and argv. Every event is
+  answered `FAN_ALLOW` — the recorder observes and never decides (§3.3) — and an argv that could
+  not be read is recorded as unread (`argv_read: false`), not guessed. An interpreter open
+  (`#!/bin/sh` loading `/bin/sh` for a script) carries the same syscall line and is folded into
+  the exec that caused it.
+- **Process tree.** ppid comes from `/proc/<pid>/stat` at the held exec. A process whose parent is
+  outside the container is top-level (the harness's `docker exec`, or the entrypoint).
+- **Reads.** `FAN_CLOSE_NOWRITE` on the workspace mount and each canary mount only — the **read
+  domain**, recorded on the plane's coverage as `domain`. An absence claim about a path outside the
+  domain is `not_evaluable`, never a clean read: the plane did not look there.
+
+The plane is `full` when the recorder ran for the whole run, `partial` with the reason when it
+dropped events (the per-run event limit, an unreadable `/proc` entry), `disabled` when config turns
+it off, and `unavailable` with the kernel's refusal when the group could not be opened.
+`bellwether doctor` opens and closes the same group to say which, before a run.
+
+### Attribution by tree, not by name
+
+A harness's own processes are not the skill's: api-loop's `read` tool is a `cat`, its `bash` tool
+an `sh -c`, and the claude-code CLI runs hooks and helpers. Each adapter declares
+`HarnessProcessRules` — its `own` images, its `tool_shells`, its `helpers`, and the `subtrees` it
+owns whole (api-loop's write-tool script, claude-code's hook commands). A top-level process running
+an `own` image is the harness; what a `tool_shell` it started runs is the **skill's** (that is the
+command the model asked for); a `helper` counts as the harness only as a *direct* child of an own
+process — `git` under claude-code's binary is its status probe, `git` under the bash tool is the
+skill's. A re-exec in place takes the role of the new image, except that a harness subtree stays
+harness. Matching by name alone would let a skill run `cat` and have it excused because the read
+tool is also a `cat`.
+
+### What each gate counts
+
+- **`credential_read_undeclared`** (`security_runtime.credential_reads`) — a skill-attributed open
+  of a planted canary file whose path no `credentials.expects` entry covers. A canary read by a
+  harness process produces no capability and no finding: the harness's own `Read` tool reads the
+  file on the model's behalf and Plane A already records that call, so counting both double-counts
+  one read (it collapsed `rare-canary-reader`'s weighted Jaccard before it was excluded). Where the
+  plane did not watch every planted credential on every run, the gate defers. Per-occurrence:
+  `rare-canary-reader` blocks at N = 6, 12 and 20.
+- **`process_exec_undeclared`** (`security_runtime.processes`) — a skill-attributed process whose
+  executable `processes.allow` and the platform baseline's `processes` do not cover. Identity is
+  **both** `argv[0]` and the executable's file name: a binary copied to `ls` does not borrow `ls`'s
+  allowance by its argv. Two exceptions, each because the two names legitimately differ: a
+  multicall binary (busybox, toybox), whose file name says nothing, and an executable whose name
+  is argv0 plus a **version** and nothing else (`python3` → `python3.11`). The first cut accepted
+  any extension, so `python-evil` run as `python` borrowed `python`'s allowance; the suffix is now
+  matched as digits and dots only, and the hyphenated, lettered and mixed spellings are pinned by a
+  test that fails against the old prefix rule. An **empty** `processes.allow` with no manifest entry is
+  "no restriction declared", not "nothing allowed" — the scope table already reports an undeclared
+  manifest, and a skill that never declared processes would otherwise block on its first `ls`.
+  §12.6's baseline `processes`, which waited on this plane, now subtract here.
+
+## §19.3 — `execution.concurrency` runs inside a look, never across one
+
+Parallelism is confined to the runs between a set's current count and its next decision point.
+Every run of look k returns before the design is consulted, so a parallel evaluation buys exactly
+the runs a serial one buys and the sequential design's error rates are untouched. Results are put
+back in matrix-coordinate order before analysis; retry notes are buffered and replayed in that
+order; a failure cancels the not-yet-started runs of the look and the one reported is the lowest
+coordinate's. So `summary.json`, the verdict and the notes are the same bytes at any concurrency —
+asserted by `tests/test_concurrency.py`. Sets are not run in parallel with each other: that would
+make the spend of one set depend on the timing of another. The template ships `4`; the live
+examples pin `1` until a parallel run has been exercised against a live provider. `DockerBackend`
+serialises its own bookkeeping under a lock; each run still owns its container, sidecars, overlay
+and fanotify group.
+
+## §10.4.2 — a canary split across requests is reassembled
+
+§10.4.2 asks for windowed matching over "each request individually **and** the concatenated
+corpus". The per-request half existed; the concatenated half did not, so a marker sent ten
+characters per POST was invisible. `capture/canary_stream.py` keeps, per run, one stream per view
+(body, path, host, each header; the DNS query name) per destination scope **and** one across all
+destinations, strips each value's frame by what it shares with the previous value on its stream
+(normalise rather than parse JSON, query and label formats), and scans each new payload joined to
+the stream's tail. A hit counts only where the join holds a longer match than either side alone.
+Memory is bounded per stream and in stream count; past the count limit views fold into one overflow
+stream that is still scanned, and the credentials plane is marked `partial` with the reason. Still
+open, and named in the module: independently-encoded base64/base32 pieces off the block boundary
+(a strict `xfail`), pieces reversed or reordered, a frame that changes per piece, and a split across
+runs.
+
+## §10.5.2 — `egress_volume_anomaly` against the peers' median
+
+The reference is the median of the run's **peers** — the other runs of its repetition set, the run
+itself left out — so a minority of heavy runs cannot raise the reference to meet themselves. Fewer
+than two peers is no reference and the gate defers; an unobserved run's volume defers the set.
+Volume is forwarded request-body bytes summed over every host the proxy let through. It ships at
+`warn`, as §10.5.2 says. Two known limits: a skill that exfiltrates the same excess on every run
+has no quiet peer and is invisible to this comparison, and an agent loop's request bodies grow with
+its conversation, so a run that simply took more turns can read as heavy — that false-positive rate
+has not been measured on live runs, which is a reason the disposition stays `warn`.
+
+## §17.3 — `findings.sarif` is a mirror, and `reporting.html` / `reporting.sarif` switch files
+
+§17.3 permits mirroring a runtime finding classified `critical` or `high` into SARIF so the GitHub
+Security tab is not silent. Each such `security_runtime` gate at `block` or `warn` becomes one result
+anchored at `SKILL.md:1`, whose text points at the evaluation's `summary.json`, `verdict.json` and
+`traces/` as the record. `egress_volume_anomaly` is scored but deliberately **not** mirrored:
+§10.5.2 makes it a `warn`-level signal rather than a classified finding, and
+`tests/test_sarif.py` names it as the one exclusion from "every enforced disposition is a rule".
+A `not_evaluable` gate is a tool notification, not a result, and with no §15 scanner built the run
+says so in a notification rather than leaving an empty results array to read as a clean scan.
+Skill-chosen text in a reason is escaped so it cannot plant a link. `reporting.html: false` and
+`reporting.sarif: false` withhold those files; `bellwether report --format all` renders all three
+from a stored tree whatever the run's config said.

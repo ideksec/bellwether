@@ -52,6 +52,7 @@ __all__ = [
     "ReadEvent",
     "RecordedActivity",
     "container_mounts",
+    "fanotify_available",
     "parse_mountinfo",
 ]
 
@@ -221,6 +222,30 @@ class _PendingExec:
     #: opens of the same ``execve``, which is how they are folded into it.
     syscall_key: str
     interpreters: list[str] = field(default_factory=list)
+
+
+def fanotify_available() -> tuple[bool, str]:
+    """Whether this host grants the fanotify group a run's recorder needs, and why not if not.
+
+    Opens the same ``FAN_CLASS_CONTENT`` group :meth:`FanotifyRecorder.start` does and closes it
+    at once: the question is answered by the kernel, not inferred from the uid.
+    """
+    try:
+        libc = _libc()
+    except OSError as error:
+        return False, f"libc not loadable: {error}"
+    fd = libc.fanotify_init(
+        _FAN_CLASS_CONTENT | _FAN_CLOEXEC | _FAN_NONBLOCK, os.O_RDONLY | os.O_LARGEFILE
+    )
+    if fd < 0:
+        code = ctypes.get_errno()
+        return False, (
+            f"fanotify_init failed ({errno.errorcode.get(code, code)}): read and process capture "
+            "need the host's CAP_SYS_ADMIN (run under sudo, as the overlay already requires) and "
+            "a kernel with fanotify permission events"
+        )
+    os.close(fd)
+    return True, "a content-class fanotify group can be opened on this host"
 
 
 class FanotifyRecorder:

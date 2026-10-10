@@ -37,8 +37,18 @@
             },
             {
               "associatedRule": {
-                "id": "dns_outside_allowlist",
+                "id": "credential_read_undeclared",
                 "index": 2
+              },
+              "level": "note",
+              "message": {
+                "text": "'security_runtime.credential_reads' was not evaluable in this evaluation, so the absence of any 'credential_read_undeclared' result here is not a clean reading: api-loop-scripted-frontier: read capture did not watch every planted credential on every run in this set, so an undeclared credential read cannot be ruled out (§10.2, §10.7)."
+              }
+            },
+            {
+              "associatedRule": {
+                "id": "dns_outside_allowlist",
+                "index": 3
               },
               "level": "note",
               "message": {
@@ -48,7 +58,7 @@
             {
               "associatedRule": {
                 "id": "egress_outside_allowlist",
-                "index": 3
+                "index": 4
               },
               "level": "note",
               "message": {
@@ -57,8 +67,18 @@
             },
             {
               "associatedRule": {
+                "id": "process_exec_undeclared",
+                "index": 5
+              },
+              "level": "note",
+              "message": {
+                "text": "'security_runtime.processes' was not evaluable in this evaluation, so the absence of any 'process_exec_undeclared' result here is not a clean reading: api-loop-scripted-frontier: process capture did not observe every run in this set, so an undeclared process cannot be ruled out (§10.3, §10.7)."
+              }
+            },
+            {
+              "associatedRule": {
                 "id": "sensitive_directory_access",
-                "index": 4
+                "index": 6
               },
               "level": "note",
               "message": {
@@ -68,7 +88,7 @@
             {
               "associatedRule": {
                 "id": "unexpected_provider_endpoint",
-                "index": 5
+                "index": 7
               },
               "level": "note",
               "message": {
@@ -152,6 +172,33 @@
                 "level": "error"
               },
               "fullDescription": {
+                "text": "The skill opened a planted credential file that its manifest's credentials.expects does not declare; host-side read capture recorded the open by reference (spec §10.2, §12.5)."
+              },
+              "help": {
+                "text": "The skill opened a planted credential file that its manifest's credentials.expects does not declare; host-side read capture recorded the open by reference (spec §10.2, §12.5). This result mirrors the 'security_runtime.credential_reads' gate of a runtime evaluation and is anchored at SKILL.md line 1 only as a pointer; the evidence (run IDs, sequence numbers, the per-run traces) is in the evaluation's artifact tree: summary.json, verdict.json and traces/."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "credential_read_undeclared",
+              "name": "CredentialReadUndeclared",
+              "properties": {
+                "gate": "security_runtime.credential_reads",
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§12.5",
+                "tags": [
+                  "security",
+                  "bellwether-runtime"
+                ]
+              },
+              "shortDescription": {
+                "text": "A read of a planted credential that no manifest entry declares"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
                 "text": "The skill looked up a name outside the DNS allowlist; the controlled resolver refused it (spec §10.6)."
               },
               "help": {
@@ -199,6 +246,33 @@
               },
               "shortDescription": {
                 "text": "Egress to a host outside the allowlist"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A process attributed to the skill (by its process tree, not by its name) ran an executable outside the manifest's processes.allow and the platform baseline; host-side exec capture recorded its argv (spec §10.3, §12.6)."
+              },
+              "help": {
+                "text": "A process attributed to the skill (by its process tree, not by its name) ran an executable outside the manifest's processes.allow and the platform baseline; host-side exec capture recorded its argv (spec §10.3, §12.6). This result mirrors the 'security_runtime.processes' gate of a runtime evaluation and is anchored at SKILL.md line 1 only as a pointer; the evidence (run IDs, sequence numbers, the per-run traces) is in the evaluation's artifact tree: summary.json, verdict.json and traces/."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "process_exec_undeclared",
+              "name": "ProcessExecUndeclared",
+              "properties": {
+                "gate": "security_runtime.processes",
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§10.3",
+                "tags": [
+                  "security",
+                  "bellwether-runtime"
+                ]
+              },
+              "shortDescription": {
+                "text": "A process the skill started that its manifest does not declare"
               }
             },
             {
