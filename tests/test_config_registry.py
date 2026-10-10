@@ -52,6 +52,8 @@ READ = {
     "sandbox.timeout_seconds",
     "sandbox.writable_paths",
     "sandbox.randomize_identifiers",
+    "capture.filesystem_reads",
+    "capture.process",
     "capture.zones.workspace",
     "capture.zones.harness_state",
     "capture.zones.scratch",
@@ -59,6 +61,7 @@ READ = {
     "egress.allowlist",
     "egress.per_run_caps.max_requests",
     "egress.per_run_caps.max_request_bytes",
+    "egress.volume_anomaly_factor",
     "dns.image",
     "dns.allowlist",
     "canaries.enabled",
@@ -69,12 +72,15 @@ READ = {
     "metrics.bci_weights.output",
     "metrics.trajectory_cluster_threshold",
     "metrics.sensitive_directories",
+    "execution.concurrency",
     "execution.retry_on_infra_error",
     "execution.cache",
     "execution.cache_ttl_days",
     "execution.limits.max_turns",
     "execution.limits.max_tool_calls",
     "execution.limits.max_total_tokens",
+    "reporting.html",
+    "reporting.sarif",
 }
 #: Refused when set to anything but the built behaviour: the §21 enforced settings, the sandbox
 #: backend (only Docker is built), and a harness whose declared type is not what would run.
@@ -96,7 +102,6 @@ _ACCESS = {
     "harnesses.*.tools": r"(?<!bellwether)\.harness\w*\.tools\b|entry\.tools\b",
     "judges": r"\.judges\b",
     "embeddings": r"\.embeddings\b",
-    "reporting.html": r"reporting\.html\b",
 }
 
 
@@ -197,24 +202,19 @@ def test_doctor_names_a_not_built_setting_and_why(tmp_path: Path) -> None:
     assert CliRunner().invoke(app, ["init", str(root)]).exit_code == 0
     config = root / ".bellwether" / "config.yaml"
     config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "  retry_on_infra_error:", "  concurrency: 8\n  retry_on_infra_error:"
-        ),
+        config.read_text(encoding="utf-8") + "\nreporting:\n  retention_days: 7\n",
         encoding="utf-8",
     )
     result = CliRunner().invoke(app, ["doctor", "--config", str(config), "--json"])
     assert "settings not built in this version" in result.output
-    assert "execution.concurrency (runs execute one at a time)" in result.output
+    assert "reporting.retention_days (Bellwether never prunes artifacts)" in result.output
 
 
 def test_a_setting_nested_under_a_not_built_block_is_reported_once(tmp_path: Path) -> None:
     config = load_config(
         _write_config(tmp_path, "\nreporting:\n  sarif: true\n  retention_days: 7\n")
     )
-    assert [path for path, _ in config.not_built_settings()] == [
-        "reporting.retention_days",
-        "reporting.sarif",
-    ]
+    assert [path for path, _ in config.not_built_settings()] == ["reporting.retention_days"]
 
 
 def test_a_non_docker_backend_is_refused(tmp_path: Path) -> None:

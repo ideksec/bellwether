@@ -28,6 +28,7 @@ from typing import Annotated, Any
 import typer
 
 from bellwether import __version__
+from bellwether.capture.fanotify import fanotify_available
 from bellwether.cli.estimate import RunEstimate, render_estimate
 from bellwether.cli.orchestrator import ENFORCED_SECURITY_RUNTIME_DISPOSITIONS, TargetInfo
 from bellwether.cli.preflight import available_planes, preflight_failures
@@ -505,6 +506,18 @@ def doctor(
         }
     )
 
+    # §10.2/§10.3: read and process capture need a fanotify group. Without one the two planes
+    # are recorded unavailable with this reason and their gates defer — never a clean read.
+    if "fanotify" in (loaded_config.capture.filesystem_reads, loaded_config.capture.process):
+        fanotify_usable, fanotify_reason = fanotify_available()
+        checks.append(
+            {
+                "check": "fanotify group obtainable (read and process capture)",
+                "status": "ok" if fanotify_usable else "warn",
+                "detail": fanotify_reason,
+            }
+        )
+
     for pending, work_package in _PENDING_DOCTOR_CHECKS:
         checks.append({"check": pending, "status": "pending", "detail": work_package})
 
@@ -537,10 +550,6 @@ _PENDING_DOCTOR_CHECKS: tuple[tuple[str, str], ...] = (
     (
         "internal bridge blocks direct UDP/53 to a public resolver",
         "the §3.3 invariant-3 live probe is CI-only (WP-15's live half)",
-    ),
-    (
-        "fanotify markable; eBPF loadable by the host agent",
-        "read and process capture are v0.2/v0.3; neither plane is built yet",
     ),
     (
         "provider keys resolve; model aliases map to live model ids",
@@ -839,6 +848,9 @@ def run(
                     # Plant canaries and scan the observed planes for them when config enables it
                     # (§10.4); the env-var channel is delivered and scanned host-side today.
                     plant_canaries=loaded_config.canaries.enabled,
+                    # §10.2/§10.3: host-side read and process capture for every run.
+                    capture_reads=loaded_config.capture.filesystem_reads == "fanotify",
+                    capture_processes=loaded_config.capture.process == "fanotify",
                     platform_baseline_version=applied_version,
                     sampling=(
                         SamplingSpec(temperature=0.0, seed=0) if deterministic_sampling else None
@@ -1409,17 +1421,19 @@ def render_report(
     out: Annotated[
         Path, typer.Option("--out", help="The artifact directory eval ids are resolved under.")
     ] = RUN_OUTPUT_DIR,
-    fmt: Annotated[str, typer.Option("--format", help="md, html, or all.")] = "all",
+    fmt: Annotated[str, typer.Option("--format", help="md, html, sarif, or all.")] = "all",
     to: Annotated[
         Path | None,
-        typer.Option("--to", help="Write here instead of the tree's own report/ directory."),
+        typer.Option(
+            "--to", help="Write here instead of the tree's own report/ directory (and root)."
+        ),
     ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Re-render a stored evaluation's report from its artifacts (§17.1, §20).
 
-    Reads ``summary.json`` and ``metrics/figures.json`` and renders the PR comment and the
-    HTML report again — the same renderers ``bellwether run`` used, on the same inputs, so
+    Reads ``summary.json`` and ``metrics/figures.json`` and renders the PR comment, the
+    HTML report and ``findings.sarif`` again — the same renderers ``bellwether run`` used, on the same inputs, so
     the bytes match what the run wrote. A tree written before the figures were persisted
     is refused with the reason, never rendered from a guess.
     """

@@ -25,7 +25,11 @@ from bellwether.capture.canary import (
     redact_canaries,
     scan_for_canaries,
 )
-from bellwether.capture.dns import DnsQuery, scan_query_for_canaries
+from bellwether.capture.dns import (
+    DnsQuery,
+    reassemble_queries_for_canaries,
+    scan_query_for_canaries,
+)
 from bellwether.capture.egress import EgressCanaryHit, EgressFlow
 from bellwether.capture.model_channel import ModelRequestScan
 from bellwether.determinism import canonical_json
@@ -45,6 +49,7 @@ __all__ = [
     "assemble_coverage",
     "canary_actions",
     "dns_actions",
+    "dns_reassembly_actions",
     "egress_actions",
     "egress_body_actions",
     "exit_reason_from_events",
@@ -254,6 +259,8 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
             payload["cap_exceeded"] = flow.cap_exceeded
         if flow.shape_violation:
             payload["shape_violation"] = flow.shape_violation
+        if flow.canary_reassembly_limit:
+            payload["canary_reassembly_limit"] = flow.canary_reassembly_limit
 
         actions.append(
             Action(
@@ -415,6 +422,38 @@ def canary_actions(
             actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
             seq += 1
     return actions
+
+
+def dns_reassembly_actions(
+    plane_e: Sequence[Action], canaries: Sequence[Canary], *, start_seq: int = 0
+) -> tuple[list[Action], str]:
+    """Derive Plane C findings from a marker split *across* DNS queries (§10.4.2, §10.6).
+
+    :func:`canary_actions` scans each query name on its own; this scans them together, in query
+    order (:func:`~bellwether.capture.dns.reassemble_queries_for_canaries`), and anchors each
+    finding to the ``dns_query``/``dns_blocked`` action that completed the marker. A canary that
+    query already carried on its own is not reported again. Returns the actions and the
+    reassembly's limit reason (``""`` unless its stream bound was reached), which the caller
+    records on the credentials plane's coverage so a degraded scan never reads as a full one.
+
+    Deterministic: queries are consumed in order and each one's findings come back sorted (§24).
+    """
+    queries = [
+        action
+        for action in plane_e
+        if action.kind in ("dns_query", "dns_blocked")
+        and isinstance(action.action.get("name"), str)
+    ]
+    found, limit = reassemble_queries_for_canaries(
+        [str(action.action["name"]) for action in queries], canaries
+    )
+    actions: list[Action] = []
+    for offset, (index, finding) in enumerate(found):
+        source = queries[index]
+        actions.append(
+            _plane_c_action(finding, seq=start_seq + offset, ts=source.ts, anchor_seq=source.seq)
+        )
+    return actions, limit
 
 
 def _plane_c_action(
@@ -630,6 +669,8 @@ def assemble_coverage(
     egress: PlaneStatus | None = None,
     dns: PlaneStatus | None = None,
     credentials: PlaneStatus | None = None,
+    filesystem_reads: PlaneStatus | None = None,
+    process: PlaneStatus | None = None,
 ) -> Coverage:
     """Build the §10.7 coverage block from what WP-5 can actually capture.
 
@@ -652,14 +693,14 @@ def assemble_coverage(
         filesystem_writes=_from_status(
             filesystem_writes, absent="no zone overlay was mounted for this run"
         ),
-        filesystem_reads=PlaneCoverage(
-            fidelity="unavailable",
-            reason="read capture is the v0.2 fanotify mechanism; overlay diff records writes only",
+        filesystem_reads=_from_status(
+            filesystem_reads,
+            absent="read capture (fanotify) was not run for this run; overlay diff records writes only",
         ),
         credentials=_from_status(credentials, absent="no canaries were planted for this run"),
         egress=_from_status(egress, absent="the recording proxy was not wired into this run"),
         dns=_from_status(dns, absent="the controlled resolver was not wired into this run"),
-        process=PlaneCoverage(fidelity="unavailable", reason="process capture lands in WP-18"),
+        process=_from_status(process, absent="process capture (fanotify) was not run for this run"),
         server_side_tools=PlaneCoverage(
             fidelity="unavailable", reason="proxy-side body parsing lands in WP-13"
         ),
@@ -669,4 +710,8 @@ def assemble_coverage(
 def _from_status(status: PlaneStatus | None, *, absent: str) -> PlaneCoverage:
     if status is None:
         return PlaneCoverage(fidelity="unavailable", reason=absent)
-    return PlaneCoverage(fidelity=status.fidelity, reason=status.reason)
+    return PlaneCoverage(
+        fidelity=status.fidelity,
+        reason=status.reason,
+        domain=list(status.domain) if status.domain is not None else None,
+    )

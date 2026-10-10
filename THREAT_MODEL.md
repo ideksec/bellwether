@@ -25,7 +25,7 @@ documentation as much as in the verdict.
 | Evaluation-aware behaviour | Skill detects that it is under test and behaves only while observed | Test machinery excluded from the container by allowlist; markers, paths, hostnames, workspace roots randomised per evaluation | Held-out probe set (§7.6); the `instrumentation_probe` detector; the eval-aware corpus skill |
 | Silent regression | An update degrades behaviour or widens capability unnoticed | Nothing yet | Baseline diffing with component-level invalidation (§17.5, v0.2) |
 | Model-specific failure | Works on one model, behaves dangerously on another | The matrix runs every configured target and each gate takes the worst per-target result — a skill passing on one model and failing on another does not average into a pass | Cross-model divergence report (§14); providers beyond Anthropic |
-| Destructive action | Deletion, overwrite, or repo-wide modification | Filesystem plane (host-side overlay diff, whiteout-aware) + assertions | Read capture via fanotify (v0.2) |
+| Destructive action | Deletion, overwrite, or repo-wide modification | Filesystem plane (host-side overlay diff, whiteout-aware) + assertions; reads of the workspace and planted credentials, and every process the skill starts, captured host-side by fanotify and scored (`credential_read_undeclared`, `process_exec_undeclared`) | Reads outside the workspace and canary mounts (the read domain is recorded, and an absence claim outside it is `not_evaluable`) |
 
 ## What Bellwether does not defend against
 
@@ -104,7 +104,11 @@ of the specification violated this, and the violation invalidated the ground-tru
 This also makes hardening *easier*, not harder: because no capture code runs inside the
 container, `--cap-drop=ALL` is genuinely achievable. In-container `fanotify` and eBPF
 would have required `CAP_SYS_ADMIN` or `CAP_BPF`, silently negating the isolation profile
-they were meant to observe.
+they were meant to observe. The read and process planes keep this invariant: the
+fanotify group is opened by the **host** process and marks the container's mounts from
+outside (through `/proc/<pid>/root`); nothing in the container can see or answer it, and a
+skill that floods it past the per-run event limit leaves the plane `partial` with the reason,
+not clean.
 
 ### Critical invariant 3 — no unmediated route out, on any protocol
 

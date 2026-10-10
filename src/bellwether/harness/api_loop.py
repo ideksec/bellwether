@@ -30,7 +30,12 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 from bellwether.determinism import stable_hash
-from bellwether.harness.protocol import HarnessCapabilities, RawHarnessEvent, RunLimits
+from bellwether.harness.protocol import (
+    HarnessCapabilities,
+    HarnessProcessRules,
+    RawHarnessEvent,
+    RunLimits,
+)
 from bellwether.harness.provider import (
     ModelClient,
     ModelRequest,
@@ -38,7 +43,7 @@ from bellwether.harness.provider import (
     SamplingSpec,
     ToolSpec,
 )
-from bellwether.harness.tools import SandboxToolset
+from bellwether.harness.tools import WRITE_TOOL_SCRIPT, SandboxToolset
 
 __all__ = ["ApiLoopAdapter", "OfferedSkill"]
 
@@ -111,6 +116,20 @@ class ApiLoopAdapter:
             controls_skill_presentation=True,
             # api-loop phones nothing home on its own behalf.
             infrastructure_endpoints=(),
+        )
+
+    @staticmethod
+    def process_rules() -> HarnessProcessRules:
+        """The processes this adapter's tools start in the sandbox (§10.3).
+
+        Every tool call is one top-level ``docker exec``: ``read`` runs ``cat -- <path>``,
+        ``bash`` runs ``sh -c <command>`` — whose own image is the tool and whose children are
+        the command the model wrote — and ``write`` runs one fixed script whose whole subtree is
+        the tool's (:data:`~bellwether.harness.tools.WRITE_TOOL_SCRIPT`).
+        """
+        return HarnessProcessRules(
+            own=frozenset({"cat", "sh"}),
+            subtrees=frozenset({WRITE_TOOL_SCRIPT}),
         )
 
     # -- the loop -----------------------------------------------------------

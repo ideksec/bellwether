@@ -381,6 +381,11 @@ class EgressFlow:
     #: finding from the flow, and so the refusal is never mistaken for an allowlist denial: the
     #: host *was* permitted, the request to it was not a model call.
     shape_violation: str = ""
+    #: Set when the cross-request canary reassembly (§10.4.2) reached its stream bound while
+    #: scanning this request, so some of its views were folded into a shared stream rather than
+    #: reassembled on their own; the reason says so. Empty otherwise. Recorded so a run that hit
+    #: the bound reads as degraded coverage, never as fully observed.
+    canary_reassembly_limit: str = ""
 
     @property
     def counts_as_egress(self) -> bool:

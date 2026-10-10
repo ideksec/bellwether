@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 
 from bellwether.config.models.common import Document, StrictModel, YamlWord
 from bellwether.config.models.provider import ProviderConfig
-from bellwether.constants import SENSITIVE_DIRECTORIES
+from bellwether.constants import DEFAULT_VOLUME_ANOMALY_FACTOR, SENSITIVE_DIRECTORIES
 
 __all__ = [
     "NOT_BUILT_SETTINGS",
@@ -85,7 +85,10 @@ class CaptureConfig(StrictModel):
 
     filesystem_writes: Annotated[Literal["overlay", "off"], YamlWord] = "overlay"
     filesystem_reads: Annotated[Literal["fanotify", "off"], YamlWord] = "fanotify"
-    process: Annotated[Literal["ebpf", "ptrace", "off"], YamlWord] = "ebpf"
+    #: Process execution (§10.3). The spec names eBPF with a ptrace fallback; this build captures
+    #: it with fanotify permission events, the same host-side group read capture uses — see
+    #: docs/spec-notes.md. ``ebpf`` and ``ptrace`` are refused rather than accepted and ignored.
+    process: Annotated[Literal["fanotify", "off"], YamlWord] = "fanotify"
     harness_hooks: bool = True
     #: A writable file in a mount is not acceptable: the sink must be owned by the host,
     #: outside the sandbox's ability to edit its own evidence (§10.1).
@@ -118,7 +121,9 @@ class EgressConfig(StrictModel):
     max_body_bytes: Annotated[int, Field(ge=0)] = 65_536
     scan_model_api_bodies: bool = True
     parse_server_side_tools: bool = True
-    volume_anomaly_factor: Annotated[float, Field(gt=0)] = 5.0
+    #: §10.5.2: a run whose forwarded request body bytes exceed this multiple of the median of
+    #: its repetition-set peers raises ``egress_volume_anomaly`` (the ``volume_anomaly`` gate).
+    volume_anomaly_factor: Annotated[float, Field(gt=0)] = DEFAULT_VOLUME_ANOMALY_FACTOR
     per_run_caps: PerRunCaps = Field(default_factory=PerRunCaps)
 
 
@@ -289,6 +294,10 @@ class RunLimitsConfig(StrictModel):
 
 
 class ExecutionConfig(StrictModel):
+    #: How many runs of one look execute at once (§19.3). Parallel only within a look of the
+    #: sequential design (§13.1) and re-ordered by matrix coordinate, so it changes elapsed time
+    #: and nothing else: the runs bought, the traces, and the verdict are the same at any value
+    #: (§24). 1 runs one repetition at a time.
     concurrency: Annotated[int, Field(ge=1)] = 4
     #: Infrastructure causes only. A skill that OOMs is data, not a flake (§13.2).
     retry_on_infra_error: Annotated[int, Field(ge=0)] = 2
@@ -301,6 +310,10 @@ class ExecutionConfig(StrictModel):
 
 
 class ReportingConfig(StrictModel):
+    """§21 ``reporting``. ``html`` writes ``report/report.html``; ``sarif`` writes
+    ``findings.sarif`` (§17.3). Off means the file is not written at all. ``retention_days`` is
+    not built (``NOT_BUILT_SETTINGS``)."""
+
     html: bool = True
     sarif: bool = True
     retention_days: Annotated[int, Field(ge=0)] = 30
@@ -473,6 +486,11 @@ class Config(Document):
                     f"providers.{name}.models still holds placeholders for: "
                     f"{', '.join(unfilled)} — fill in current model ids for your provider"
                 )
+        if self.capture.filesystem_reads == "off":
+            notes.append(
+                "capture.filesystem_reads is off; credential-read and file-read evidence will "
+                "be reported as not_evaluable rather than passing (§10.7)"
+            )
         if self.capture.process == "off":
             notes.append(
                 "capture.process is off; process-execution evidence will be reported as "
@@ -491,14 +509,11 @@ NOT_BUILT_SETTINGS: dict[str, str] = {
     "harnesses.*.install": "Bellwether installs no harness; the sandbox image carries it",
     "harnesses.*.tools": "api-loop always offers its built-in tool set",
     "capture.filesystem_writes": "the overlay write plane is always mounted; 'off' is ignored",
-    "capture.filesystem_reads": "the fanotify read plane is not built (v0.2)",
-    "capture.process": "the eBPF/ptrace process plane is not built (v0.3)",
     "capture.harness_hooks": "claude-code's hooks are always installed",
     "capture.harness_event_sink": "the hook sink is always a host-owned FIFO",
     "egress.record_response_bodies": "the proxy records requests; response bodies are not kept",
     "egress.max_body_bytes": "the proxy records requests; response bodies are not kept",
     "egress.parse_server_side_tools": "server-side tool calls are not parsed (plane unavailable)",
-    "egress.volume_anomaly_factor": "the egress_volume_anomaly disposition is not scored",
     "dns.log_all_queries": "the controlled resolver always records every query",
     "canaries.canary_set": "the default canary set is always planted",
     "canaries.custom_path": "the default canary set is always planted",
@@ -507,9 +522,6 @@ NOT_BUILT_SETTINGS: dict[str, str] = {
     "judges": "the judge subsystem is not built; judged gates are not composed",
     "embeddings": "no embedding provider is used; the BCI output component is excluded",
     "baselines.storage": "baselines are read from the --baselines directory",
-    "execution.concurrency": "runs execute one at a time",
-    "reporting.html": "the HTML report is always written",
-    "reporting.sarif": "no SARIF report is produced",
     "reporting.retention_days": "Bellwether never prunes artifacts",
 }
 

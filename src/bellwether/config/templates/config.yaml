@@ -70,12 +70,15 @@ sandbox:
 # produces evidence may execute inside the container it observes (§10.0).
 # ---------------------------------------------------------------------------
 capture:
+  # Reads (of the workspace and the planted credentials) and every process the container
+  # execs are captured host-side with fanotify; the host must run as root, which mounting the
+  # workspace overlay already requires. `off` disables a plane and its gate defers.
+  filesystem_reads: fanotify   # enforced (§10.2): credential_read_undeclared reads it
+  process: fanotify            # enforced (§10.3): process_exec_undeclared reads it
   # The write plane (host-side overlay), claude-code's hooks and their host-owned FIFO sink
-  # are always on; the read (fanotify, v0.2) and process (eBPF, v0.3) planes are not built.
+  # are always on.
   # # not built in this version — `bellwether doctor` lists any of these you set:
   # filesystem_writes: overlay
-  # filesystem_reads: fanotify
-  # process: ebpf
   # harness_hooks: true
   # harness_event_sink: fifo
   zones:
@@ -97,7 +100,8 @@ egress:
                                # residual exfiltration path and it is not closed by a
                                # proxy that must let model traffic through (§3.3)
   # parse_server_side_tools: true  # not built in this version — `bellwether doctor` lists any of these you set
-  # volume_anomaly_factor: 5.0
+  volume_anomaly_factor: 5.0   # a run sending more than this × its peers' median request
+                               # body bytes raises egress_volume_anomaly (§10.5.2)
   per_run_caps:
     max_requests: 400
     max_request_bytes: 33554432
@@ -156,7 +160,12 @@ metrics:
 #   storage: git
 
 execution:
-  # concurrency: 4             # not built in this version — `bellwether doctor` lists any of these you set (runs execute one at a time)
+  # How many runs of one look execute at once (§19.3). Parallel only inside a look of the
+  # sequential design (§13.1): every run of a look finishes before the stopping decision, so
+  # the runs bought — and the spend — are the same as at 1; results are ordered by matrix
+  # coordinate, so traces and verdict are too (§24). Each run keeps its own per-run token cap.
+  # 1 runs one repetition at a time.
+  concurrency: 4
   retry_on_infra_error: 2      # infrastructure causes only; an OOM is data (§13.2)
   cache: true
   cache_ttl_days: 14
@@ -171,7 +180,7 @@ execution:
     max_tool_calls: 128
     max_total_tokens: 1000000
 
-# reporting:                   # not built in this version — `bellwether doctor` lists any of these you set
-#   html: true                 (the HTML report is always written)
-#   sarif: true
-#   retention_days: 30
+reporting:
+  html: true                   # report/report.html — the static HTML report (§17.4)
+  sarif: true                  # findings.sarif — runtime security findings mirrored for code scanning (§17.3)
+  # retention_days: 30         # not built in this version: Bellwether never prunes artifacts

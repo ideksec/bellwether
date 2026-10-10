@@ -49,7 +49,7 @@ measurement, including the rows that come back unproved and why.** The matcher w
 to **normalise rather than enumerate**: three of the four rounds' headline findings were
 regressions from the previous round's fix in the same predicate, which is what a blacklist does —
 every reject-clause has an unenumerated spelling. Reduce an input to what it certainly means, then
-compare; do not list the ways it can be wrong. Six of thirteen `security_runtime` dispositions are enforced, seven remain
+compare; do not list the ways it can be wrong. Nine of thirteen `security_runtime` dispositions are enforced, four remain
 inert, and `tests/test_docs_accuracy.py` fails the build if the docs say otherwise. The sixth,
 `unexpected_provider_endpoint`, holds every request to a provider host to §10.5.2's shape at the
 proxy — the expected shape was *observed* from the pinned CLI binary, not inferred from its path list.
@@ -60,8 +60,18 @@ allowlist-shaped preventions — the control registry, the containment corpus, t
 and a completeness check on the proxy's test fake. Read the STATUS section and the spec-notes
 entry before touching the proxy, the scope table, the policy gates, or either content digest. A `harness_state_write` gate was attempted and
 **withdrawn**: §10.2 attributes such a write by a Plane A anchor and Plane B carries no correlation,
-so it could never fire — see spec-notes. §12.6's `tools` are applied as well as parsed; its
-`processes` still wait on the §10.3 process plane.
+so it could never fire — see spec-notes. §12.6's `tools` and `processes` are both applied.
+**Reads and processes are captured host-side** by a per-run fanotify group on the container's own
+mounts (fanotify, not the spec's eBPF — see spec-notes): every exec's argv is read from `/proc`
+while the kernel holds it, attributed to the harness or the skill **by process tree**
+(`HarnessProcessRules` per adapter), never by name. That made `credential_read_undeclared`
+(`security_runtime.credential_reads`) and `process_exec_undeclared` (`security_runtime.processes`)
+scorable; `egress_volume_anomaly` (`security_runtime.volume_anomaly`, peer median, `warn`) landed
+alongside, with `execution.concurrency`, `findings.sarif` and cross-request canary reassembly
+(PR #101). CI's real-CLI container test disclosed three capture defects in that work before it
+merged — an exec from a secondary thread, an interpreter open reported `running`, and the CLI's
+own `sh -c` housekeeping attributed to the skill. **Neither kernel plane has yet run under a live
+paid evaluation.**
 What
 remains is *proof breadth*: every v0.1 work package is built, including the **`claude-code`
 adapter** (WP-17 — the real CLI headless inside the sandbox, stream-json → Plane A, its hooks →
@@ -70,8 +80,8 @@ CLI 2.1.257 session, in-container proof CI-only; **run live on a labelled PR and
 on PR #65). The acceptance
 corpus is complete — eleven skills incl. the §10.4.1 false-positive guard, the §13.5 tier-model
 regression, and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at
-N = 6/12/20 alike) are CI-asserted — and the `credential_read_undeclared` disposition waits on
-the read-capture plane. The noise floor is calibrated (WP-19):
+N = 6/12/20 alike) are CI-asserted, including the undeclared credential read on the read plane.
+The noise floor is calibrated (WP-19):
 Plane-A dispersion is proven exactly 0 on real containers and the residual is published in every
 `summary.json`. The §10.8 precedence matrix is implemented (WP-18): `trace_inconsistency` is
 raised only where two planes are in-domain at supporting fidelity, and a benign overlay-diff run

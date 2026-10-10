@@ -21,6 +21,7 @@ from bellwether.trace.build import (
     assemble_coverage,
     canary_actions,
     dns_actions,
+    dns_reassembly_actions,
     egress_actions,
     egress_body_actions,
     exit_reason_from_events,
@@ -44,6 +45,11 @@ from bellwether.trace.canonical import (
     sensitive_directory_of,
 )
 from bellwether.trace.epochs import PLANE_PRIORITY, anchor_events
+from bellwether.trace.kernel_planes import (
+    kernel_plane_actions,
+    kernel_plane_coverage,
+    process_name,
+)
 from bellwether.trace.models import (
     ARF_VERSION,
     Action,
@@ -106,6 +112,7 @@ __all__ = [
     "canonicalize",
     "capability_for",
     "dns_actions",
+    "dns_reassembly_actions",
     "egress_actions",
     "egress_body_actions",
     "exit_reason_from_events",
@@ -113,8 +120,11 @@ __all__ = [
     "filesystem_actions",
     "harness_actions",
     "iter_actions",
+    "kernel_plane_actions",
+    "kernel_plane_coverage",
     "model_channel_actions",
     "parse_trace",
+    "process_name",
     "provider_endpoint_actions",
     "provider_rejection_from_events",
     "read_trace",
