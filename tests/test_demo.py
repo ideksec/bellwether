@@ -58,6 +58,8 @@ def test_benign_is_conditional_and_consistent(tmp_path: Path) -> None:
         # No host-side recorder on this scripted path: read and process capture defer.
         "security_runtime.credential_reads",
         "security_runtime.processes",
+        # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
+        "security_runtime.volume_anomaly",
     ]
 
 

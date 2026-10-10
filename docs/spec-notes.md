@@ -3591,10 +3591,11 @@ does demonstrate it somewhere to say so.
 
 ### What this leaves
 
-**Seven** dispositions remain inert — six enforced of thirteen — and the reasons are not
+**Six** dispositions remain inert — seven enforced of thirteen — and the reasons are not
 uniform. `process_exec_undeclared` and `credential_read_undeclared` wait on capture that does not
 exist yet (the §10.3 process plane, the read plane). `instrumentation_probe` waits on the §3.5
-probe suite. `egress_volume_anomaly` needs a volume baseline to be anomalous against.
+probe suite. `egress_volume_anomaly` *was* on this list for want of a reference volume; it is
+now scored against the repetition set's peer median (`security_runtime.volume_anomaly`).
 `unexpected_provider_endpoint` *was* on this list with no producer at all — the finding kind was
 defined in §11.3 and in `RUNTIME_FINDING_KINDS` and nothing emitted it; it is now produced at the
 proxy and scored (see "§10.5.2 — a request to the provider must be a model call", below).

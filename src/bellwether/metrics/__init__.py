@@ -57,11 +57,13 @@ from bellwether.metrics.trajectory import (
     summarise_trajectory,
 )
 from bellwether.metrics.trigger import trigger_consistency, trigger_entropy
+from bellwether.metrics.volume import MIN_VOLUME_PEERS, VolumeAnomaly, volume_anomalies
 
 __all__ = [
     "BCI",
     "DEFAULT_BCI_WEIGHTS",
     "DEFAULT_LOOKS",
+    "MIN_VOLUME_PEERS",
     "NOMINAL_Z",
     "BCIComponent",
     "CapabilityMetrics",
@@ -73,6 +75,7 @@ __all__ = [
     "SequentialDecision",
     "TrajectoryCluster",
     "TrajectoryMetrics",
+    "VolumeAnomaly",
     "WilsonInterval",
     "capability_weight",
     "compute_bci",
@@ -88,6 +91,7 @@ __all__ = [
     "summarise_trajectory",
     "trigger_consistency",
     "trigger_entropy",
+    "volume_anomalies",
     "weighted_jaccard_pair",
     "weights_digest",
     "wilson_interval",
