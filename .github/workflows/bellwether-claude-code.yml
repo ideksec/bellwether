@@ -141,7 +141,11 @@ jobs:
           fi
           bw="$(pwd)/.venv/bin/bellwether"
           status=0
-          while IFS= read -r skill; do
+          # The list is read on fd 3, never stdin: anything in the loop that reads stdin (a
+          # `docker exec --interactive` with nothing to send did, PR #102) would otherwise
+          # swallow the remaining skill names, and every skill after the first would go
+          # unevaluated behind a step that looks finished.
+          while IFS= read -r skill <&3; do
             [ -z "${skill}" ] && continue
             echo "::group::Evaluating ${skill} (claude-code)"
             out=".bellwether-out/$(echo "${skill}" | tr '/' '-')"
@@ -150,7 +154,7 @@ jobs:
             # scoped token and never reaches the sandbox.
             if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" run "${skill}" \
                  --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
-                 --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}"; then
+                 --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}" < /dev/null; then
               verdict_status=0
             else
               verdict_status=$?
@@ -196,7 +200,7 @@ jobs:
             # but a not_ready is the skill's result, not a broken job.
             [ "${verdict_status}" -ne 0 ] && status="${verdict_status}"
             echo "::endgroup::"
-          done < changed-skills.txt
+          done 3< changed-skills.txt
           exit "${status}"
 
       - name: Upload the evidence

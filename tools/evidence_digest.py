@@ -53,6 +53,15 @@ def _run_lines(path: Path) -> list[str]:
         if a["kind"] == "canary_read"
     ]
     tools = [a["action"].get("tool") for a in actions if a["kind"] == "tool_call"]
+    refused = [
+        {
+            key: a["action"].get(key)
+            for key in ("method", "host", "path", "block_reason", "shape_violation")
+            if a["action"].get(key)
+        }
+        for a in actions
+        if a["kind"] == "egress_blocked"
+    ]
     return [
         f"  run {_q(path.name)}",
         f"    exit_reason {_q(footer.get('exit_reason'))} tokens {_q(footer.get('tokens'))}",
@@ -63,6 +72,7 @@ def _run_lines(path: Path) -> list[str]:
         f"    skill processes {_q(skill_processes)}",
         f"    harness processes {_q(harness_processes)}",
         f"    canary reads {_q(credential_reads)}",
+        f"    refused egress {_q(refused)}",
     ]
 
 

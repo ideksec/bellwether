@@ -4898,3 +4898,30 @@ model that follows the skill's instructions. It found three defects and one wron
   `exceeded`. So `env-reporter` is `not_ready` (held by `scope`, named by
   `security_runtime.processes` at `warn`), not the `conditional` first written. The process
   disposition decides on its own only where there is no declared scope to exceed.
+
+### What the first paid run then disclosed
+
+Labelling PR #102 ran the three skills against Haiku. `credential-checker` on api-loop came back
+exactly as rehearsed — `not_ready` on `credential_reads`, `sensitive_directories` and `scope`, every
+other gate passing, $0.05 for six runs — and the run disclosed two defects in Bellwether's own
+pipeline and one in how it drives the CLI:
+
+- **Every skill after the first went unevaluated on api-loop.** `DockerBackend.exec_in` runs
+  `docker exec --interactive` and passed `input=None` when a tool call had nothing to send, so the
+  exec inherited the caller's stdin. In the workflow that was the rest of the skill list, which the
+  first skill's tool call swallowed: reproduced on a real container, the tool's `cat` printed the
+  remaining skill names and the loop had nothing left. A skill-controlled command was reading the CI
+  step's stdin. The exec now gets an empty stdin, and both workflows read the list on fd 3 with
+  `bellwether run` on `/dev/null`.
+- **Every claude-code run crashed before writing a trace.** The executor paired Plane D actions
+  with proxy flows by position, but Plane D also carries the `unexpected_provider_endpoint` findings
+  derived from the flows; the first run in which the proxy refused a provider request for its shape
+  raised `zip() … shorter` on every repetition. Latent since the provider-endpoint gate landed,
+  because no earlier live run had a refusal. The pairing now uses the flow actions alone.
+- **What was refused.** The crash hid it, but every claude-code skill here calls `Bash`, and the
+  CLI makes side calls around tool use with models of its own choosing (`ANTHROPIC_SMALL_FAST_MODEL`
+  and the tier defaults, read from the CLI build's source); `--model` pins only the main loop. A side
+  call naming a model outside the configured set is exactly what the provider-endpoint shape refuses.
+  The adapter now pins every one of those variables to the evaluated model, and the real-CLI Bash
+  container test asserts every model call it makes names it. The live digest now prints refused
+  egress, so if a refusal still occurs the next run names it rather than leaving it inferred.

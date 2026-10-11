@@ -588,7 +588,12 @@ def test_the_executor_derives_the_finding_from_plane_d_before_the_header_is_buil
     source = (
         Path(__file__).resolve().parents[1] / "src" / "bellwether" / "cli" / "execution.py"
     ).read_text(encoding="utf-8")
-    plane_d = source.index("plane_d = egress_actions(egress_flows")
-    finding = source.index("plane_d += provider_endpoint_actions(")
+    flow_actions = source.index("flow_actions = egress_actions(egress_flows")
+    finding = source.index("plane_d = flow_actions + provider_endpoint_actions(")
+    pairing = source.index("_body_hit_sources(flow_actions, egress_flows)")
     header = source.index("header = RunHeader(")
-    assert plane_d < finding < header
+    assert flow_actions < finding < pairing < header
+    # The body-scan pairing reads the flow actions, never Plane D: Plane D also holds the findings
+    # derived here, and pairing it with the flows crashed every claude-code run on PR #102's live
+    # run the first time the proxy refused a request (tests/test_live_run_regressions.py).
+    assert "zip(plane_d," not in source

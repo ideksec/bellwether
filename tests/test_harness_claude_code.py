@@ -640,3 +640,16 @@ def test_the_real_cli_qualifies_a_bundled_skill_by_its_plugin(tmp_path: Path) ->
     # The CLI names the bundle it loaded, with the path it was given.
     plugins = {entry.get("name") for entry in (init.get("plugins") or [])}
     assert "demo-bundle" in plugins, init.get("plugins")
+
+
+def test_the_environment_pins_every_model_the_cli_could_pick_for_itself() -> None:
+    """`--model` sets the main loop only. The first paid claude-code run of the live-test skills
+    (PR #102) had the proxy refuse a request on every Bash-using run; the CLI's side calls are
+    made with its small/fast and tier-default models, so each is pinned to the evaluated model."""
+    from bellwether.harness.claude_code import CLAUDE_CODE_MODEL_ENV
+
+    env = claude_code_environment(api_token="t", model_id="claude-haiku-4-5-20251001")
+    assert "ANTHROPIC_SMALL_FAST_MODEL" in CLAUDE_CODE_MODEL_ENV
+    assert {env[name] for name in CLAUDE_CODE_MODEL_ENV} == {"claude-haiku-4-5-20251001"}
+    unpinned = claude_code_environment(api_token="t")
+    assert not set(CLAUDE_CODE_MODEL_ENV) & set(unpinned)

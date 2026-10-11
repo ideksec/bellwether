@@ -24,6 +24,15 @@ def _write_trace(path: Path, argv: list[str]) -> None:
             "kind": "canary_read",
             "action": {"role": "skill", "canary_id": "c1", "path": "/home/a/.aws/credentials"},
         },
+        {
+            "kind": "egress_blocked",
+            "action": {
+                "method": "POST",
+                "host": "api.anthropic.com",
+                "path": "/v1/x",
+                "shape_violation": "not a model endpoint",
+            },
+        },
         {"exit_reason": "completed", "tokens": {"input": 10, "output": 2}},
     ]
     path.write_text("\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8")
@@ -43,6 +52,7 @@ def test_a_skill_command_line_cannot_start_a_workflow_command(tmp_path: Path) ->
     assert any("skill processes" in line and "::error::" in line for line in lines)
     assert any('verdict "ready"' in line for line in lines)
     assert any("skill:c1:" in line for line in lines)
+    assert any("refused egress" in line and "not a model endpoint" in line for line in lines)
 
 
 def test_a_missing_tree_says_so_rather_than_printing_nothing(tmp_path: Path) -> None:

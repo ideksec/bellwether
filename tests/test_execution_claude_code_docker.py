@@ -22,6 +22,7 @@ trace. The assertions are the things that could silently go wrong:
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -459,12 +460,18 @@ def test_the_real_clis_bash_tool_runs_only_the_skills_commands_as_the_skill(
     asked for — so CI names any extra before a labelled run pays to find it.
     """
     sandbox_image, sidecar_image = images
+    request_log = tmp_path / "requests.jsonl"
     host_ip = _host_ip_for_containers()
     port = _free_port()
     base_url = f"http://{host_ip}:{port}"
     server = subprocess.Popen(
         [sys.executable, str(_FAKE_API), str(port), "0.0.0.0"],
-        env={**os.environ, "FAKE_WS": _WORKSPACE_ROOT, "FAKE_SCRIPT": "bash"},
+        env={
+            **os.environ,
+            "FAKE_WS": _WORKSPACE_ROOT,
+            "FAKE_SCRIPT": "bash",
+            "FAKE_REQ_LOG": str(request_log),
+        },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -515,6 +522,23 @@ def test_the_real_clis_bash_tool_runs_only_the_skills_commands_as_the_skill(
         server.kill()
         server.wait()
         os.environ.pop(_FAKE_KEY_ENV, None)
+
+    # Every model call the CLI made names the configured model. `--model` sets only the main loop;
+    # the live run on PR #102 had the proxy refuse a side call on every Bash-using run, which is
+    # what the model pinning in `claude_code_environment` closes.
+    calls: list[tuple[str, object]] = []
+    path = ""
+    for line in request_log.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and set(record) == {"path", "headers"}:
+            path = str(record["path"])
+        elif isinstance(record, dict) and path.split("?")[0].endswith("/messages"):
+            calls.append((path, record.get("model")))
+    assert calls, "the CLI made no model call the fake API saw"
+    assert {model for _, model in calls} == {"fake-model-v1"}, calls
 
     trace = executed.trace
     assert trace.exit_reason == "completed", trace.footer

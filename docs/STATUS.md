@@ -235,6 +235,16 @@ its argv carries one of the run's `Bash` commands; if any command matches no she
 falls back to the skill (spec-notes). The live configs are priced (Haiku 4.5), so every report states its spend, and
 both live workflows print a per-run evidence digest (`tools/evidence_digest.py`) into the job log.
 
+**The first paid run of them (PR #102) disclosed three more.** `credential-checker` on api-loop was
+exactly as rehearsed (`not_ready` on `credential_reads`, `sensitive_directories`, `scope`; $0.05 for
+six runs). But `docker exec --interactive` inherited the caller's stdin when a tool call had none to
+send, so the first skill's tool call swallowed the workflow's remaining skill list (every skill after
+the first went unevaluated — and a skill's command could read the CI step's stdin); every claude-code
+run crashed pairing Plane D with proxy flows once the proxy refused a request for its shape (latent
+since the provider-endpoint gate); and the refused request was, on the evidence available, a CLI side
+call on a model `--model` does not pin. All three are fixed and pinned by tests; spec-notes has the
+detail. The label was taken off while they were fixed, so the fixes cost nothing to verify.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -1070,7 +1080,7 @@ commands exhaustively instead of counting them.
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2109 tests: 2037 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2112 tests: 2040 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
