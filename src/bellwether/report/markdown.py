@@ -98,6 +98,12 @@ class Figures:
     #: comment said the first on PR #91 when the truth was the second. ``None`` where the
     #: composition did not report it, which is worded as neither.
     scope_declared: bool | None = None
+    #: The evaluated skill's directory, repository-relative and POSIX (``skills/foo``), which
+    #: ``findings.sarif`` anchors its results under (§17.3). ``None`` where it was not known
+    #: relative to the repository; the SARIF then says so and anchors at a bare ``SKILL.md``.
+    #: Not rendered by the comment or the HTML report — carried here because the figures are
+    #: the persisted rendering inputs a stored tree is re-rendered from.
+    skill_root: str | None = None
 
 
 def _yesno(value: bool) -> str:

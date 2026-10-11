@@ -230,6 +230,12 @@ class PlaneCoverage(ArfModel):
 
     fidelity: Fidelity
     reason: str | None = None
+    #: Where the plane looked, for a plane whose domain is a subset of its kind: read capture
+    #: watches the workspace and the planted credentials, never the image's own files. An
+    #: absence claim about a path outside the domain is not one this plane can support,
+    #: whatever its fidelity. ``None`` (and omitted from the wire) for a plane whose domain is
+    #: the whole of what it names.
+    domain: list[str] | None = None
 
     def is_usable(self) -> bool:
         """Usable for a *presence* claim: the plane observed at least part of its domain,

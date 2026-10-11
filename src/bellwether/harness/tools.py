@@ -29,6 +29,7 @@ from bellwether.determinism import stable_hash
 from bellwether.sandbox import DockerBackend, PreparedSandbox
 
 __all__ = [
+    "WRITE_TOOL_SCRIPT",
     "ExecResult",
     "SandboxExec",
     "SandboxToolset",
@@ -174,13 +175,7 @@ class SandboxToolset:
         if path is None or not isinstance(content, str):
             return _error("write requires 'path' and 'content' strings")
         result = self._exec(
-            [
-                "sh",
-                "-c",
-                'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"',
-                "sh",
-                path,
-            ],
+            ["sh", "-c", WRITE_TOOL_SCRIPT, "sh", path],
             stdin=content,
             timeout=self._timeout,
         )
@@ -226,6 +221,11 @@ class SandboxToolset:
             error=f"exit code {result.exit_code}",
             truncated=truncated,
         )
+
+
+#: The script the ``write`` tool runs. A named constant because the process plane attributes
+#: its whole subtree to the harness by this exact string (``HarnessProcessRules.subtrees``).
+WRITE_TOOL_SCRIPT = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"'
 
 
 def _failure_text(result: ExecResult) -> str:

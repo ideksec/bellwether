@@ -28,12 +28,50 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from bellwether.assertions.baseline import BaselineApplication, glob_to_regex
-from bellwether.assertions.evidence import EvidenceIndex, tool_name_matches
+from bellwether.assertions.baseline import (
+    BaselineApplication,
+    ObservedProcess,
+    attribute_process,
+    glob_to_regex,
+)
+from bellwether.assertions.evidence import (
+    CredentialReadEvidence,
+    EvidenceIndex,
+    ProcessEvidence,
+    tool_name_matches,
+)
+from bellwether.config.models.baseline import PlatformBaseline
 from bellwether.config.models.manifest import DeclaredScope
 from bellwether.config.models.scenarios import AssertionSpec
 
-__all__ = ["ScopeEntry", "ScopeTable", "derive_assertions", "evaluate_scope"]
+__all__ = [
+    "MULTICALL_BINARIES",
+    "ScopeEntry",
+    "ScopeTable",
+    "derive_assertions",
+    "evaluate_scope",
+    "undeclared_credential_reads",
+    "undeclared_processes",
+]
+
+#: Executables that stand for many commands, chosen by argv0 (busybox applets): their file name
+#: says nothing about which command ran, so argv0 alone is their identity (§10.3).
+MULTICALL_BINARIES: frozenset[str] = frozenset({"busybox", "toybox"})
+
+#: What may follow a program's name in its installed file name and still be that program: a
+#: version (``python3`` → ``python3.11``, ``python`` → ``python3``). Nothing else — a hyphen, a
+#: letter — because ``python-evil`` run as ``python`` is a different program borrowing a name.
+_VERSION_SUFFIX = re.compile(r"[0-9]+(?:\.[0-9]+)*|(?:\.[0-9]+)+")
+
+
+def _is_versioned_name(exe: str, argv0: str) -> bool:
+    """``exe`` is ``argv0`` plus a version suffix and nothing else."""
+    return (
+        bool(argv0)
+        and exe.startswith(argv0)
+        and _VERSION_SUFFIX.fullmatch(exe[len(argv0) :]) is not None
+    )
+
 
 ScopeStatus = Literal["supported", "exceeded", "unused", "not_evaluable"]
 
@@ -88,11 +126,80 @@ def derive_assertions(scope: DeclaredScope) -> list[AssertionSpec]:
     return specs
 
 
+def undeclared_credential_reads(
+    scope: DeclaredScope | None, index: EvidenceIndex
+) -> tuple[CredentialReadEvidence, ...]:
+    """Every planted-credential read no ``credentials.expects`` entry covers (§12.5, §16.1).
+
+    ``credential_read_undeclared`` and the Declared-vs-Observed table read this one function, so
+    the gate and the table cannot disagree about the same read. No manifest declares nothing,
+    so every credential read stands.
+    """
+    expects = [glob_to_regex(entry) for entry in scope.credentials.expects] if scope else []
+    return tuple(
+        read
+        for read in index.credential_reads
+        if not any(pattern.fullmatch(read.path) for pattern in expects)
+    )
+
+
+def undeclared_processes(
+    scope: DeclaredScope | None,
+    index: EvidenceIndex,
+    *,
+    baseline: PlatformBaseline | None = None,
+) -> tuple[tuple[ProcessEvidence, str], ...]:
+    """Every skill process neither declared nor accounted for by the baseline, with why (§10.3).
+
+    Judged by tree (§12.6's ``helpers_of``) and by **both** names a process carries: the argv0 it
+    asked for and the file the kernel executed. They differ legitimately — ``sh`` is ``dash``,
+    ``python3`` is ``python3.11``, every busybox applet is ``busybox`` — and deliberately:
+    ``execve("/usr/bin/curl", ["git"])`` names a declared tool and runs an undeclared one. So the
+    executed file must be accounted for too, unless it is a multi-call binary or the argv0 it was
+    asked for is its own name's prefix (a versioned interpreter).
+
+    ``baseline`` is applied only where the caller has established it applies to this run's image;
+    pass ``None`` otherwise, and only declared names are accounted for.
+    """
+    declared = frozenset(scope.processes.allow) if scope is not None else frozenset()
+
+    def accounted(name: str, ancestors: tuple[str, ...]) -> bool:
+        if baseline is None:
+            return name in declared
+        observed = ObservedProcess(argv0=name, ancestors=ancestors)
+        return attribute_process(observed, baseline, declared=declared).accounted_for
+
+    out: list[tuple[ProcessEvidence, str]] = []
+    for process in index.processes:
+        if process.role == "harness":
+            continue
+        if not accounted(process.argv0, process.ancestors):
+            out.append((process, f"{process.argv0} is not declared in processes.allow"))
+            continue
+        exe = process.exe_name
+        if (
+            exe == process.argv0
+            or exe in MULTICALL_BINARIES
+            or _is_versioned_name(exe, process.argv0)
+            or accounted(exe, process.ancestors)
+        ):
+            continue
+        out.append(
+            (
+                process,
+                f"{process.argv0} ran the undeclared executable {exe} (argv0 names a different "
+                "program than the one the kernel executed)",
+            )
+        )
+    return tuple(out)
+
+
 def evaluate_scope(
     scope: DeclaredScope,
     index: EvidenceIndex,
     *,
     baseline: BaselineApplication | None = None,
+    process_baseline: PlatformBaseline | None = None,
 ) -> ScopeTable:
     """Evaluate the allowlist half of §12.5 and assemble the table.
 
@@ -107,7 +214,7 @@ def evaluate_scope(
     entries.extend(_filesystem_read_rows(scope, index, absorbed))
     entries.extend(_filesystem_write_rows(scope, index, absorbed))
     entries.extend(_network_rows(scope, index))
-    entries.extend(_process_rows(scope, index))
+    entries.extend(_process_rows(scope, index, process_baseline))
     entries.extend(_credential_rows(scope, index))
 
     return ScopeTable(entries=tuple(entries))
@@ -214,7 +321,16 @@ def _filesystem_read_rows(
     # unreachable in exactly the case it exists for. It used to be unreachable in *every* case
     # on the live path, which passes `scope=None` and judges only by this table.
     denied = [(glob, glob_to_regex(glob)) for glob in scope.filesystem.deny_read]
+    # Plane A's reported reads, and Plane B's observed reads by a *skill* process — the reads a
+    # script or a `bash` command made that no tool call named (§10.2). A harness read is the
+    # tool call Plane A already reported, so it is not counted twice.
     observed = [(seq, path) for seq, path in index.reported_reads if path not in absorbed]
+    reported = {path for _, path in observed}
+    observed += [
+        (read.seq, read.path)
+        for read in index.observed_reads
+        if read.role != "harness" and read.path not in absorbed and read.path not in reported
+    ]
 
     rows: list[ScopeEntry] = []
     used: set[str] = set()
@@ -400,37 +516,99 @@ def _host_within(host: str, declared: str) -> bool:
     return host == declared or host.endswith("." + declared)
 
 
-def _process_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
+def _process_rows(
+    scope: DeclaredScope, index: EvidenceIndex, baseline: PlatformBaseline | None
+) -> list[ScopeEntry]:
+    """``processes.allow`` against Plane D′ (§12.5).
+
+    Like ``tools.allow``, an empty allow-list states no restriction here: undeclared processes
+    then surface through ``process_exec_undeclared`` at its own disposition rather than through
+    the scope gate. A non-empty list is a restriction, and a process outside it is exceeded.
+    """
     if not scope.processes.allow:
         return []
     reason = index.plane_reason("process")
-    rows: list[ScopeEntry] = []
-    for declared in scope.processes.allow:
-        rows.append(
-            ScopeEntry(
-                area="processes",
-                subject=declared,
-                status="not_evaluable" if reason else "unused",
-                reason=reason or "declared, no process observed",
-            )
+    if reason:
+        return [
+            ScopeEntry(area="processes", subject=declared, status="not_evaluable", reason=reason)
+            for declared in scope.processes.allow
+        ]
+    rows: list[ScopeEntry] = [
+        ScopeEntry(
+            area="processes",
+            subject=" ".join(process.argv) if process.argv else process.argv0,
+            status="exceeded",
+            reason=why,
+            evidence=(process.seq,),
         )
+        for process, why in undeclared_processes(scope, index, baseline=baseline)
+    ]
+    absence = index.plane_reason("process", for_absence=True)
+    for declared in scope.processes.allow:
+        uses = [p.seq for p in index.processes if p.role != "harness" and p.argv0 == declared]
+        if uses:
+            rows.append(
+                ScopeEntry(
+                    area="processes",
+                    subject=declared,
+                    status="supported",
+                    reason="declared and used",
+                    evidence=tuple(uses),
+                )
+            )
+        else:
+            rows.append(
+                ScopeEntry(
+                    area="processes",
+                    subject=declared,
+                    status="not_evaluable" if absence else "unused",
+                    reason=absence or "declared, no process observed",
+                )
+            )
     return rows
 
 
 def _credential_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
-    if not scope.credentials.expects:
-        return []
-    reason = index.plane_reason("credentials")
-    rows: list[ScopeEntry] = []
-    for declared in scope.credentials.expects:
-        rows.append(
-            ScopeEntry(
-                area="credentials",
-                subject=declared,
-                status="not_evaluable" if reason else "unused",
-                reason=reason or "declared, no canary read observed",
-            )
+    """``credentials.expects`` against the observed credential reads (§12.5).
+
+    A read no entry covers is exceeded whether or not the list is empty: ``expects: []`` is a
+    statement that the skill needs no credential, which is the statement a read contradicts.
+    """
+    rows: list[ScopeEntry] = [
+        ScopeEntry(
+            area="credentials",
+            subject=read.path,
+            status="exceeded",
+            reason=f"read the planted credential {read.canary_id} without declaring it",
+            evidence=(read.seq,),
         )
+        for read in undeclared_credential_reads(scope, index)
+    ]
+    if not scope.credentials.expects:
+        return rows
+    absence = index.plane_reason("filesystem_reads", for_absence=True)
+    for declared in scope.credentials.expects:
+        pattern = glob_to_regex(declared)
+        uses = [read.seq for read in index.credential_reads if pattern.fullmatch(read.path)]
+        if uses:
+            rows.append(
+                ScopeEntry(
+                    area="credentials",
+                    subject=declared,
+                    status="supported",
+                    reason="declared and read",
+                    evidence=tuple(uses),
+                )
+            )
+        else:
+            rows.append(
+                ScopeEntry(
+                    area="credentials",
+                    subject=declared,
+                    status="not_evaluable" if absence else "unused",
+                    reason=absence or "declared, no credential read observed",
+                )
+            )
     return rows
 
 

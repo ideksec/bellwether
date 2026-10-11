@@ -42,12 +42,17 @@ def available_planes(config: Config) -> frozenset[str]:
 
     Availability means "the component that captures this plane is wired", never "the run
     will go well": harness events and the overlay diff are the executor's own mechanisms;
-    canaries, the proxy, and the resolver exist exactly when config turns them on. The
-    read and process planes are not built in this version (fanotify is v0.2, eBPF v0.3),
-    so they are never available — which is what makes the ``high`` profile's
-    ``requires.capture_planes`` refuse today, exactly as §16.4 intends.
+    canaries, the proxy, and the resolver exist exactly when config turns them on, and so do
+    read and process capture (``capture.filesystem_reads`` / ``capture.process``), the host-side
+    fanotify recorder. Whether the *host* grants fanotify is a run-time fact, not a
+    composition one: a run whose recorder could not start records both planes unavailable with
+    the kernel's reason, and ``doctor`` probes it ahead of time.
     """
     planes = {"harness_events", "filesystem_writes"}
+    if config.capture.filesystem_reads == "fanotify":
+        planes.add("filesystem_reads")
+    if config.capture.process == "fanotify":
+        planes.add("process")
     if config.canaries.enabled:
         planes.add("credentials")
     if config.egress.image:

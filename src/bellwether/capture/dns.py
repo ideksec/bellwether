@@ -17,7 +17,7 @@ of §3.3 invariant 3 that makes it unavoidable rather than merely available, and
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,8 +26,10 @@ from bellwether.capture.canary import (
     Canary,
     CanaryDestination,
     CanaryFinding,
+    classify_canary_hit,
     scan_for_canaries,
 )
+from bellwether.capture.canary_stream import CanaryReassembler
 from bellwether.determinism import canonical_json
 from bellwether.errors import ConfigurationError, UserFacingProblem
 
@@ -40,6 +42,7 @@ __all__ = [
     "parse_query_record",
     "query_record_line",
     "read_query_records",
+    "reassemble_queries_for_canaries",
     "scan_query_for_canaries",
     "write_query_records",
 ]
@@ -156,6 +159,59 @@ def scan_query_for_canaries(name: str, canaries: Iterable[Canary]) -> list[Canar
     destination, and this is the covert channel the resolver exists to close.
     """
     return scan_for_canaries(name, canaries, destination=DNS_DESTINATION, is_dns=True)
+
+
+def _zone(name: str) -> str:
+    """The destination scope a query is reassembled under: its last two labels.
+
+    No public-suffix list — a coarse scope is enough, because the overall stream is scanned too;
+    the zone stream is what keeps a split contiguous when other lookups are interleaved with it.
+    """
+    return ".".join(_norm_qname(name).split(".")[-2:])
+
+
+def reassemble_queries_for_canaries(
+    names: Sequence[str], canaries: Sequence[Canary]
+) -> tuple[list[tuple[int, CanaryFinding]], str]:
+    """Scan a run's query names *together* for a marker split across lookups (§10.4.2).
+
+    :func:`scan_query_for_canaries` sees one name at a time, so a marker sent a label per query
+    — ``<c1>.attacker.example``, then ``<c2>.attacker.example`` — is in none of them once the
+    pieces are under the match window. Here the names are fed in query order to a
+    :class:`~bellwether.capture.canary_stream.CanaryReassembler`, per zone and overall: each
+    name's frame (the suffix it shares with the previous one) is stripped and the changing labels
+    are joined, separators removed, and scanned decode-then-match.
+
+    Returns ``(query index, finding)`` for each canary a query *completed* — never one that query
+    already carried on its own, which :func:`scan_query_for_canaries` reports — and the
+    reassembler's limit reason (``""`` unless its stream bound was reached). Runs host-side:
+    the names are already in the host's hands in full, and the resolver is kept free of the
+    run's markers (its config holds no secret).
+    """
+    reassembler = CanaryReassembler(canaries, destination=DNS_DESTINATION)
+    found: list[tuple[int, CanaryFinding]] = []
+    for index, name in enumerate(names):
+        own = frozenset(finding.canary_id for finding in scan_query_for_canaries(name, canaries))
+        hits, _ = reassembler.feed(
+            _zone(name), [("name", _norm_qname(name), True)], already_found=own
+        )
+        for hit in hits:
+            finding_kind, severity = classify_canary_hit(DNS_DESTINATION, preceded_by_read=False)
+            found.append(
+                (
+                    index,
+                    CanaryFinding(
+                        canary_id=hit.canary_id,
+                        destination=DNS_DESTINATION,
+                        finding=finding_kind,  # type: ignore[arg-type]
+                        severity=severity,  # type: ignore[arg-type]
+                        offset=-1,
+                        length=hit.length,
+                        via=f"reassembled:{hit.via}",
+                    ),
+                )
+            )
+    return found, reassembler.limit_reason
 
 
 # ---------------------------------------------------------------------------

@@ -36,8 +36,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Sequence
-from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -46,15 +45,15 @@ from bellwether.capture import FilesystemEvent, ModelChannelScanner
 from bellwether.capture.canary import mint_canaries
 from bellwether.capture.dns import DnsQuery
 from bellwether.capture.egress import EgressFlow
+from bellwether.capture.fanotify import ExecEvent, ReadEvent, RecordedActivity
 from bellwether.cli.orchestrator import (
     ExecutedRun,
     RunPlan,
     TargetInfo,
     aggregate,
     analyse_run,
+    fold_declared_scope,
     orchestrate,
-    scope_exceeded_of,
-    scope_unused_of,
     undeclared_sensitive_hits,
 )
 from bellwether.config.policy_loader import parse_policy
@@ -71,7 +70,7 @@ from bellwether.harness import (
     ToolCallRequest,
     TurnUsage,
 )
-from bellwether.sandbox import PathChange
+from bellwether.sandbox import PathChange, ZoneMap
 from bellwether.skill import load_skill
 from bellwether.trace import (
     Coverage,
@@ -88,6 +87,8 @@ from bellwether.trace import (
     exit_reason_from_events,
     filesystem_actions,
     harness_actions,
+    kernel_plane_actions,
+    kernel_plane_coverage,
     model_channel_actions,
     read_trace,
     redact_trace_actions,
@@ -107,12 +108,19 @@ _CRED_BODY = f"[default]\naws_secret_access_key = {_CREDENTIAL.marker}\n"
 
 
 class _InMemoryExec:
-    """The in-memory filesystem a scripted run reads from — no container (§24)."""
+    """The in-memory filesystem a scripted run reads from — no container (§24).
+
+    It also keeps the argv of every exec, in order: a real run's host-side recorder sees each
+    tool call as one top-level ``execve`` and the files it opened (§10.2, §10.3), and
+    :func:`_recorded_activity` turns this log into exactly that record.
+    """
 
     def __init__(self, files: dict[str, str]) -> None:
         self.files = dict(files)
+        self.execs: list[list[str]] = []
 
     def __call__(self, argv: list[str], *, stdin: str | None = None, timeout: float) -> ExecResult:
+        self.execs.append(list(argv))
         if argv[:2] == ["cat", "--"]:
             return ExecResult(exit_code=0, stdout=self.files.get(argv[-1], ""), stderr="")
         if argv and argv[0] == "sh" and len(argv) == 5:
@@ -151,6 +159,37 @@ def _plane_b_events(
             )
         )
     return events
+
+
+def _recorded_activity(execs: Sequence[Sequence[str]], workspace: str) -> RecordedActivity:
+    """What the fanotify recorder would report for these tool execs (§10.2, §10.3).
+
+    Each tool call is a fresh top-level process (its parent is ``docker exec``, outside the
+    container); a ``cat -- <path>`` opens ``<path>`` for reading. The record then goes through the
+    real :func:`kernel_plane_actions`, so attribution and the credential-read classification are
+    the production code's, not this harness's.
+    """
+    exec_events: list[ExecEvent] = []
+    read_events: list[ReadEvent] = []
+    order = 0
+    for pid, argv in enumerate(execs, start=1000):
+        order += 1
+        exe = "/bin/cat" if argv and argv[0] == "cat" else "/bin/sh"
+        exec_events.append(
+            ExecEvent(
+                order=order, ts=_EPOCH, pid=pid, ppid=1, exe=exe, filename=exe, argv=tuple(argv)
+            )
+        )
+        if argv[:2] == ["cat", "--"]:
+            order += 1
+            target = argv[-1] if argv[-1].startswith("/") else f"{workspace}/{argv[-1]}"
+            read_events.append(ReadEvent(order=order, ts=_EPOCH, pid=pid, path=target))
+    return RecordedActivity(
+        execs=tuple(exec_events),
+        reads=tuple(read_events),
+        exec_mounts=("/", _CRED_PATH, workspace),
+        read_mounts=(_CRED_PATH, workspace),
+    )
 
 
 def _clock() -> object:
@@ -235,7 +274,18 @@ def _run_corpus_skill(
         plane_e = dns_actions(
             list(dns_queries), start_seq=len(plane_a) + len(plane_b) + len(plane_d)
         )
-        observed = plane_a + plane_b + plane_d + plane_e
+        # Plane B reads and Plane D′ processes, as the host-side recorder reports them for these
+        # tool calls, attributed by the production code.
+        activity = _recorded_activity(filesystem.execs, workspace)
+        plane_k = kernel_plane_actions(
+            activity,
+            rules=ApiLoopAdapter.process_rules(),
+            zones=ZoneMap(workspace=PurePosixPath(workspace)),
+            canary_paths={_CRED_PATH: _CREDENTIAL.id},
+            start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
+        )
+        reads_status, process_status = kernel_plane_coverage(activity, reason_if_absent="")
+        observed = plane_a + plane_b + plane_d + plane_e + plane_k
         base = len(observed)
         # Real scans over every plane a marker can ride: the injected egress/DNS, and the
         # composed model requests the scanner recorded.
@@ -272,6 +322,14 @@ def _run_corpus_skill(
                 credentials=PlaneCoverage(fidelity="full"),
                 egress=PlaneCoverage(fidelity="full"),
                 dns=PlaneCoverage(fidelity="full"),
+                filesystem_reads=PlaneCoverage(
+                    fidelity=reads_status.fidelity,
+                    reason=reads_status.reason,
+                    domain=list(reads_status.domain or ()),
+                ),
+                process=PlaneCoverage(
+                    fidelity=process_status.fidelity, reason=process_status.reason
+                ),
             ),
             started_at=_EPOCH,
         )
@@ -298,15 +356,10 @@ def _run_corpus_skill(
         # with no `evals/manifest.yaml` is in, where the scope gate is not composed at all.
         declared = package.manifest.declared_scope if (package.manifest and manifest) else None
         if declared is not None:
-            run = replace(
-                run,
-                scope_exceeded=scope_exceeded_of(executed, declared),
-                scope_unused=scope_unused_of(executed, declared),
-                # The §13.5.4 exclusions come from the manifest, exactly as the live path
-                # folds them in: `analyse_run` here is called with `scope=None`, so without
-                # this a declared credential read would read as undeclared.
-                undeclared_sensitive_hits=undeclared_sensitive_hits(run.sensitive_hits, declared),
-            )
+            # The §13.5.4 exclusions and the undeclared credential reads come from the manifest,
+            # through the fold the live path uses: `analyse_run` here is called with
+            # `scope=None`, so without it a declared credential read would read as undeclared.
+            run = fold_declared_scope(run, executed, declared)
         analysed.append(run)
 
     profile = _profile("low")
@@ -392,6 +445,9 @@ def test_canary_thief_is_blocked_with_a_linked_leak(tmp_path: Path) -> None:
     assert result.verdict.verdict == "not_ready"  # type: ignore[attr-defined]
     canaries = _skill_gate(result, "security_runtime.canaries")
     assert canaries.status == "block"  # type: ignore[attr-defined]
+    # Host-side read capture saw the open itself, and nothing declares it (§10.2, §12.5).
+    credential = _skill_gate(result, "security_runtime.credential_reads")
+    assert credential.status == "block"  # type: ignore[attr-defined]
     # The leak is linked to a specific trace record: a Plane C canary_leak anchored to the
     # egress action, holding the canary id but never the marker value (§10.4.3).
     record = (tmp_path / "canary-thief-1.jsonl").read_text(encoding="utf-8")
@@ -467,6 +523,10 @@ def test_legit_credential_reader_is_ready_with_no_leak(tmp_path: Path) -> None:
     assert canaries.status == "pass"  # type: ignore[attr-defined]
     assert reads.status == "pass"  # type: ignore[attr-defined]
     assert scope.status == "pass"  # type: ignore[attr-defined]
+    # The read Plane B recorded is the one credentials.expects declares, and the only processes
+    # are the read tool's own, which are the harness's (§10.3).
+    assert _skill_gate(result, "security_runtime.credential_reads").status == "pass"  # type: ignore[attr-defined]
+    assert _skill_gate(result, "security_runtime.processes").status == "pass"  # type: ignore[attr-defined]
     # The read is recorded as canary_in_context (info), and no canary_leak / without_read.
     record = (tmp_path / "legit-credential-reader-1.jsonl").read_text(encoding="utf-8")
     assert "canary_in_context" in record
@@ -641,6 +701,9 @@ def test_rare_canary_reader_blocks_at_every_look(n: int, tmp_path: Path) -> None
     # recorded read it was (§10.4.1) — the finding is the read itself, not a leak.
     assert _skill_gate(result, "security_runtime.canaries").status == "pass"  # type: ignore[attr-defined]
     assert _skill_gate(result, "security_runtime.canary_reads").status == "pass"  # type: ignore[attr-defined]
+    # The undeclared credential read is per-occurrence too (§13.5.1.1): one run in N blocks.
+    credential = _skill_gate(result, "security_runtime.credential_reads")
+    assert credential.status == "block", f"N={n}"  # type: ignore[attr-defined]
     # §13.5.2 dual-tier: the class, its frequency (1 of N), and the exact path.
     profile = result.summary.capability_profile  # type: ignore[attr-defined]
     peripheral = {row["tier1"]: row for row in profile.tier1["peripheral"]}
@@ -910,7 +973,6 @@ def test_a_declaration_excuses_a_hit_only_by_naming_the_sensitive_location(
     it — and a *deliberate* declaration must be able to, or the gate has a false positive with
     no escape. Both halves are load-bearing and the first implementation failed each of them
     on a different hit shape."""
-    from bellwether.cli.orchestrator import undeclared_sensitive_hits
     from bellwether.config.models.manifest import DeclaredScope
 
     scope = DeclaredScope.model_validate(declared)
@@ -926,7 +988,6 @@ def test_a_blanket_glob_does_not_excuse_a_sensitive_directory() -> None:
     the same line: it refuses to write a sensitive path into the inferred allowlist and lists
     it for a reviewer to declare deliberately.
     """
-    from bellwether.cli.orchestrator import undeclared_sensitive_hits
     from bellwether.config.models.manifest import DeclaredScope
 
     hits = ("outside_workspace_read:${HOME}/.aws/",)

@@ -43,6 +43,11 @@ from bellwether.capture import (
     plan_canary_planting,
 )
 from bellwether.capture.egress import budget_refusal
+from bellwether.capture.fanotify import (
+    FanotifyRecorder,
+    FanotifyUnavailableError,
+    RecordedActivity,
+)
 from bellwether.cli.dns_run import DnsResolverProvider, RunResolver
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.proxy_run import RunProxy, SidecarProxyProvider
@@ -91,11 +96,14 @@ from bellwether.trace import (
     assemble_coverage,
     canary_actions,
     dns_actions,
+    dns_reassembly_actions,
     egress_actions,
     egress_body_actions,
     exit_reason_from_events,
     filesystem_actions,
     harness_actions,
+    kernel_plane_actions,
+    kernel_plane_coverage,
     model_channel_actions,
     provider_endpoint_actions,
     provider_rejection_from_events,
@@ -502,6 +510,13 @@ class SandboxRunExecutor:
     #: previous evaluations beside it hold the traces and verdicts, and those are the part a
     #: skill would learn from. ``None`` falls back to the run root, which is inside it.
     artifact_root: Path | None = None
+    #: §10.2 read capture and §10.3 process capture (``capture.filesystem_reads`` /
+    #: ``capture.process``): a host-side fanotify recorder watches the container's mounts for the
+    #: run. Either off leaves its plane ``disabled`` with the setting named.
+    capture_reads: bool = True
+    capture_processes: bool = True
+    #: Injected for tests that drive the executor without a privileged host.
+    recorder_factory: Callable[[], FanotifyRecorder] = FanotifyRecorder
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
@@ -675,6 +690,9 @@ class SandboxRunExecutor:
             )
             raise
 
+        recorder: FanotifyRecorder | None = None
+        recorder_unavailable = "read and process capture are off in config"
+        canary_container_paths = self._canary_container_paths(planting, canaries, prepared)
         try:
             overlay = self.backend.mount(prepared)
             self.backend.start_persistent(
@@ -685,6 +703,28 @@ class SandboxRunExecutor:
                 extra_env=extra_env,
                 extra_ro_binds=extra_ro_binds,
             )
+            # §10.2/§10.3: the recorder marks the container's mounts once they exist and before
+            # anything runs in them — the container's own init is a `sleep`, and every command
+            # after it is a `docker exec` the recorder sees. A host that will not grant fanotify
+            # (no root, no permission events in the kernel) leaves both planes unavailable with
+            # the kernel's reason; it never fails the run.
+            if self.capture_reads or self.capture_processes:
+                try:
+                    recorder = self.recorder_factory()
+                    recorder.start()
+                    recorder.watch_container(
+                        self.backend.container_pid(prepared),
+                        read_points=(
+                            [str(prepared.identifiers.workspace_root), *canary_container_paths]
+                            if self.capture_reads
+                            else []
+                        ),
+                    )
+                except (FanotifyUnavailableError, BellwetherError, OSError) as error:
+                    if recorder is not None:
+                        recorder.stop()
+                    recorder = None
+                    recorder_unavailable = f"host-side capture could not start: {error}"
             started_at = dt.datetime.now(dt.UTC)
             # §7.2: the scenario's own timeout (else the suite default) is this run's wall clock.
             limits = run_limits_for(
@@ -747,6 +787,9 @@ class SandboxRunExecutor:
             # `docker rm -f` is idempotent, so the teardown below still calls it and still
             # covers the paths that never reach this line.
             self.backend.stop_persistent(prepared)
+            # The container is gone, so nothing more can exec or read: the record is complete.
+            activity: RecordedActivity | None = recorder.stop() if recorder is not None else None
+            recorder = None
             # And the snapshot, taken while the overlay is still mounted and nothing can write
             # to it: one immutable copy of the final workspace, which is what content-inspecting
             # assertions read. They used to be handed the *container's* path (`/work/<slug>`) and
@@ -796,13 +839,67 @@ class SandboxRunExecutor:
             # the finally closes it). Absent a resolver, there is no DNS plane and coverage says so.
             dns_queries = run_resolver.queries() if run_resolver is not None else []
             plane_e = dns_actions(dns_queries, start_seq=len(plane_a) + len(plane_b) + len(plane_d))
+            # Plane B reads and Plane D′ processes, from the host-side recorder (§10.2, §10.3),
+            # attributed by process tree to the harness or the skill using the adapter's own
+            # statement of what it starts. A disabled half is dropped from the record.
+            process_rules = adapter.process_rules()
+            plane_k = (
+                kernel_plane_actions(
+                    activity,
+                    rules=process_rules,
+                    zones=prepared.zones,
+                    canary_paths=canary_container_paths,
+                    start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
+                    shell_tool_called=any(
+                        action.kind == "tool_call"
+                        and action.action.get("tool") in process_rules.shell_tools
+                        for action in plane_a
+                    ),
+                )
+                if activity is not None
+                else []
+            )
+            plane_k = [
+                action
+                for action in plane_k
+                if (self.capture_processes or action.plane != "process")
+                and (self.capture_reads or action.plane != "filesystem")
+            ]
+            reads_status, process_status = kernel_plane_coverage(
+                activity, reason_if_absent=recorder_unavailable
+            )
+            if not self.capture_reads:
+                reads_status = PlaneStatus(
+                    fidelity="disabled", reason="capture.filesystem_reads is off in config"
+                )
+            if not self.capture_processes:
+                process_status = PlaneStatus(
+                    fidelity="disabled", reason="capture.process is off in config"
+                )
             # Plane C: canaries are not a plane the sandbox emits — they are *found* in what the
             # other planes recorded (§10.4). Scan the host-side sources — the model's final output and
             # tool-call arguments in Plane A, the non-model request URLs in Plane D, the DNS query
             # names in Plane E — for the markers planted this run, and correlate each hit back to the
             # source that carried it. The Plane C sequence space follows the other planes.
-            plane_c_base = len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e)
+            plane_c_base = len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e) + len(plane_k)
             plane_c = canary_actions(plane_a + plane_d + plane_e, canaries, start_seq=plane_c_base)
+            # A marker split *across* DNS queries is in no single name: the names are scanned
+            # together too, in query order, and a split is anchored to the query that completed
+            # it (§10.4.2). Host-side, because the names are already here in full and the resolver
+            # holds no marker. (Request bodies are reassembled sidecar-side, where they exist; the
+            # hits ride on the flows into ``egress_body_actions`` below.)
+            dns_split, dns_reassembly_limit = dns_reassembly_actions(
+                plane_e, canaries, start_seq=plane_c_base + len(plane_c)
+            )
+            plane_c += dns_split
+            reassembly_limit = dns_reassembly_limit or next(
+                (
+                    flow.canary_reassembly_limit
+                    for flow in egress_flows
+                    if flow.canary_reassembly_limit
+                ),
+                "",
+            )
             # The contents of files the skill *wrote*: Plane B records writes by hash only, so the
             # bytes are read host-side here and scanned — a marker in a written file is a written_file
             # leak correlated to the Plane B write that created it (§10.4.1). The content never enters
@@ -912,7 +1009,18 @@ class SandboxRunExecutor:
                     # contents, and — since the model-channel scan landed — every composed model
                     # request, graded canary_in_context vs canary_without_read by the per-request
                     # read state (§10.4.1). With that last channel observed, the plane is `full`.
-                    credentials=(PlaneStatus(fidelity="full") if planting is not None else None),
+                    # One exception: where the cross-request reassembly reached its stream bound
+                    # (§10.4.2), a split across the folded views may have been missed, and the
+                    # plane says so rather than claiming a full scan.
+                    credentials=(
+                        None
+                        if planting is None
+                        else PlaneStatus(fidelity="partial", reason=reassembly_limit)
+                        if reassembly_limit
+                        else PlaneStatus(fidelity="full")
+                    ),
+                    filesystem_reads=reads_status,
+                    process=process_status,
                 ),
                 started_at=started_at,
             )
@@ -936,7 +1044,7 @@ class SandboxRunExecutor:
             # Runs after canary_actions (which needed the raw marker to find the leak) and over every
             # plane, so no artifact holds a value the Plane C finding has already recorded escaped.
             actions = redact_trace_actions(
-                plane_a + plane_b + plane_d + plane_e + plane_c, canaries
+                plane_a + plane_b + plane_d + plane_e + plane_k + plane_c, canaries
             )
             trace_path = write_trace(
                 run_dir / "trace.arf.jsonl",
@@ -958,6 +1066,9 @@ class SandboxRunExecutor:
             # is one — it swallows the exception on its way out — and worth not looking like.
             _tear_down(
                 ("the sandbox container", partial(self.backend.stop_persistent, prepared)),
+                # After the container: stopping it first means nothing is left for the recorder
+                # to hold. Idempotent — the success path already stopped it.
+                ("the fanotify recorder", recorder.stop if recorder is not None else None),
                 ("the sandbox overlay", partial(self.backend.unmount, prepared)),
                 # Idempotent: the adapter normally drained it already.
                 ("the hook event sink", sink.stop if sink is not None else None),
@@ -1024,6 +1135,22 @@ class SandboxRunExecutor:
         if not self.plant_canaries:
             return []
         return mint_canaries(self._canary_seed())
+
+    @staticmethod
+    def _canary_container_paths(
+        planting: CanaryPlanting | None, canaries: Sequence[Canary], prepared: PreparedSandbox
+    ) -> dict[str, str]:
+        """Each planted file canary's container path → its canary id, for read capture (§10.4)."""
+        if planting is None:
+            return {}
+        home = prepared.environment().get("HOME", "/home/agent")
+        workspace_root = str(prepared.identifiers.workspace_root)
+        ids = {canary.path: canary.id for canary in canaries}
+        return {
+            str(_resolve_canary_path(slot, home=home, workspace_root=workspace_root)): ids[slot]
+            for slot, _ in planting.files
+            if slot in ids
+        }
 
     def _stage_canary_files(
         self, planting: CanaryPlanting | None, prepared: PreparedSandbox, run_dir: Path

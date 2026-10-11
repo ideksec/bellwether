@@ -19,11 +19,12 @@ Two rules give the search teeth:
 - **Decode first, then match (§10.4.2).** A chunk encoded before being split does not
   survive match-then-decode, so each corpus string (one request, one DNS name, one file) is
   run through base64/base64url/base32/hex/URL/HTML-entity/reversal (and one round of nesting)
-  before matching, plus windowed matching for any ≥12-char substring. Corpora are scanned one
-  at a time: no concatenation across requests, names or files is built, so a marker split into
-  pieces shorter than the window across several of them is not found — a documented limit (§2),
-  as is independently-encoded chunking, slated to ship as the ``encoded-chunked-thief`` expected
-  failure in the acceptance corpus (WP-20) so the gap stays visible in CI.
+  before matching, plus windowed matching for any ≥12-char substring. This module scans one
+  corpus string at a time; the concatenation across egress requests and across DNS queries is
+  :mod:`bellwether.capture.canary_stream`, which feeds the joins back through this scan. Written
+  files are still scanned one at a time, and independently-encoded chunking stays a documented
+  limit (§2), slated to ship as the ``encoded-chunked-thief`` expected failure in the acceptance
+  corpus so the gap stays visible in CI.
 
 Redaction happens here, at capture time: a matched value is replaced with a fingerprint
 (``<canary:c1@offset=24,len=40>``) that preserves *what*, *where*, and *how long* without the
@@ -331,6 +332,14 @@ def _match_offset(
             return offset, len(marker), "exact"
         return -1, len(marker), "decoded"
     # Windowed: any ≥MIN_WINDOW substring of the marker present in the form (§10.4.2 step 3).
+    # Every longer window contains a MIN_WINDOW one, so when no MIN_WINDOW window is present no
+    # window is: checking those first answers the common (clean) case in len(marker) searches
+    # instead of ~len(marker)²/2, without changing which hit is returned.
+    if not any(
+        marker[start : start + MIN_WINDOW] in form
+        for start in range(0, len(marker) - MIN_WINDOW + 1)
+    ):
+        return None
     for size in range(len(marker), MIN_WINDOW - 1, -1):
         for start in range(0, len(marker) - size + 1):
             window = marker[start : start + size]

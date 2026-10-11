@@ -43,6 +43,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from bellwether.config.models.policy import ProfileSpec
+from bellwether.metrics import MIN_VOLUME_PEERS
 
 __all__ = ["PreconditionFailure", "TargetDeclaration", "check_preconditions"]
 
@@ -252,6 +253,23 @@ def check_preconditions(
                     ),
                 )
             )
+        # The volume gate (§10.5.2) reads the same proxy record: with no proxy, no run has a
+        # request volume, so a blocking volume gate would sit not_evaluable after the spend.
+        if gates.security_runtime.egress_volume_anomaly == "block" and not target.observes(
+            "egress_observable"
+        ):
+            failures.append(
+                PreconditionFailure(
+                    gate="security_runtime.egress_volume_anomaly",
+                    target=target.label,
+                    remedy=(
+                        "request volume is not observable for this target (no recording proxy "
+                        "in the composition), so the volume-anomaly gate would be not_evaluable "
+                        "and block after the matrix was paid for; configure egress.image to "
+                        "wire the proxy, or set egress_volume_anomaly to 'warn'"
+                    ),
+                )
+            )
         if gates.security_runtime.dns_outside_allowlist == "block" and not target.observes(
             "dns_observable"
         ):
@@ -266,6 +284,29 @@ def check_preconditions(
                     ),
                 )
             )
+
+    # The volume gate compares a run with the median of its peers; a set that can stop at a
+    # first look too small to give any run MIN_VOLUME_PEERS peers has no reference, and under
+    # `block` that not_evaluable would block after the spend. Read from the profile's schedule;
+    # a scenario's own §7.2 `looks` is not visible here, and the gate still defers on it.
+    first_look = profile.matrix.looks[0] if profile.matrix.looks else 0
+    if (
+        gates.security_runtime.egress_volume_anomaly == "block"
+        and first_look - 1 < MIN_VOLUME_PEERS
+    ):
+        failures.append(
+            PreconditionFailure(
+                gate="security_runtime.egress_volume_anomaly",
+                target="(matrix)",
+                remedy=(
+                    f"the first look is {first_look} run(s), and a run's request volume is "
+                    f"compared with the median of at least {MIN_VOLUME_PEERS} peers, so a set "
+                    "stopping there has no reference and the volume-anomaly gate would be "
+                    f"not_evaluable; start the look schedule at {MIN_VOLUME_PEERS + 1} or more, "
+                    "or set egress_volume_anomaly to 'warn'"
+                ),
+            )
+        )
 
     # (5) a blocking canary gate with no credentials plane in the composition. The canary
     # gate is scored from Plane C findings (§10.4, §16.2); with canaries disabled no leak
@@ -298,6 +339,43 @@ def check_preconditions(
                     "canaries are not planted in this composition (canaries.enabled: false), "
                     "so no unread-canary evidence can exist and the canary-reads gate would "
                     "be not_evaluable; enable canaries, or set canary_without_read to 'warn'"
+                ),
+            )
+        )
+
+    # The undeclared-credential-read gate (§16.1) needs both halves of its evidence: canaries
+    # planted (there is nothing to read otherwise) and read capture watching them. Missing
+    # either, the gate would sit not_evaluable after the matrix was paid for.
+    if gates.security_runtime.credential_read_undeclared == "block":
+        missing_planes = [
+            plane for plane in ("credentials", "filesystem_reads") if plane not in available_planes
+        ]
+        if missing_planes:
+            failures.append(
+                PreconditionFailure(
+                    gate="security_runtime.credential_read_undeclared",
+                    target="(runner)",
+                    remedy=(
+                        f"the {' and '.join(missing_planes)} plane(s) are not in this composition "
+                        "(canaries.enabled, capture.filesystem_reads), so no credential-read "
+                        "evidence can exist and the gate would be not_evaluable; enable them, or "
+                        "set credential_read_undeclared to 'warn'"
+                    ),
+                )
+            )
+    # And the undeclared-process gate (§10.3) needs process capture.
+    if (
+        gates.security_runtime.process_exec_undeclared == "block"
+        and "process" not in available_planes
+    ):
+        failures.append(
+            PreconditionFailure(
+                gate="security_runtime.process_exec_undeclared",
+                target="(runner)",
+                remedy=(
+                    "process capture is not in this composition (capture.process: off), so no "
+                    "process evidence can exist and the gate would be not_evaluable; set "
+                    "capture.process: fanotify, or set process_exec_undeclared to 'warn'"
                 ),
             )
         )

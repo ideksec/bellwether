@@ -55,6 +55,11 @@ def test_benign_is_conditional_and_consistent(tmp_path: Path) -> None:
         "security_runtime.canary_reads",
         # No proxy, so no request to a provider host was ever decided (§10.5.2).
         "security_runtime.provider_endpoint",
+        # No host-side recorder on this scripted path: read and process capture defer.
+        "security_runtime.credential_reads",
+        "security_runtime.processes",
+        # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
+        "security_runtime.volume_anomaly",
     ]
 
 
@@ -112,11 +117,23 @@ def test_reports_are_byte_identical_across_runs(tmp_path: Path) -> None:
         assert output.result.artifacts.report_html.read_text(encoding="utf-8") == (
             other.report_html.read_text(encoding="utf-8")
         )
+        assert output.result.artifacts.findings_sarif is not None
+        assert other.findings_sarif is not None
+        assert output.result.artifacts.findings_sarif.read_bytes() == (
+            other.findings_sarif.read_bytes()
+        )
 
 
 @pytest.mark.parametrize("eval_id", [case.eval_id for case in default_cases()])
 @pytest.mark.parametrize(
-    "relative", ["summary.json", "verdict.json", "report/report.html", "metrics/figures.json"]
+    "relative",
+    [
+        "summary.json",
+        "verdict.json",
+        "report/report.html",
+        "metrics/figures.json",
+        "findings.sarif",
+    ],
 )
 def test_committed_reports_match_a_fresh_regeneration(
     tmp_path: Path, eval_id: str, relative: str

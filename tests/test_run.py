@@ -9,6 +9,8 @@ one seam short of a real container.
 from __future__ import annotations
 
 import datetime as dt
+import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -17,7 +19,7 @@ import pytest
 from bellwether.cli.orchestrator import ExecutedRun, RunPlan
 from bellwether.cli.run import policy_digest, run_evaluation
 from bellwether.config.models.common import Target
-from bellwether.config.models.config import Config, SandboxConfig
+from bellwether.config.models.config import Config, ReportingConfig, SandboxConfig
 from bellwether.config.models.policy import Policy, Selection
 from bellwether.config.models.provider import ProviderConfig
 from bellwether.errors import BellwetherError
@@ -49,6 +51,7 @@ from bellwether.trace import (
     token_totals_from_events,
     write_trace,
 )
+from tests.test_sarif import assert_valid_sarif
 
 _API = {"apiVersion": "bellwether/v1"}
 _KEY_ENV = "ANTHROPIC_API_KEY"
@@ -132,6 +135,8 @@ def _policy() -> Policy:
             "canary_leak": "warn",
             "canary_without_read": "warn",
             "unexpected_provider_endpoint": "warn",
+            "credential_read_undeclared": "warn",
+            "process_exec_undeclared": "warn",
         }
     )
     gates = low.gates.model_copy(update={"security_runtime": security})
@@ -176,9 +181,14 @@ class _ScriptedExecutor:
         self.tmp_path = tmp_path
         self.client_factory = client_factory
         self.calls = 0
+        # `execution.concurrency` defaults to 4, so `run_evaluation` calls this from worker
+        # threads: the count is locked and each trace file is named by its coordinate, never by
+        # the call count, or two runs in flight could write and read each other's file.
+        self._lock = threading.Lock()
 
     def execute(self, plan: RunPlan) -> ExecutedRun:
-        self.calls += 1
+        with self._lock:
+            self.calls += 1
         _client, model_id = self.client_factory(plan)  # exercises build_model_client + key lookup
         adapter = ApiLoopAdapter(
             ScriptedClient(_TRANSCRIPT, model_id_reported="model-as-served"),
@@ -221,7 +231,11 @@ class _ScriptedExecutor:
             tokens=token_totals_from_events(events),
         )
         path = write_trace(
-            self.tmp_path / f"run-{self.calls}.jsonl", header, harness_actions(events), footer
+            self.tmp_path
+            / f"run-{plan.scenario.id}-{plan.target.slug}-{plan.repetition}-{plan.attempt}.jsonl",
+            header,
+            harness_actions(events),
+            footer,
         )
         return ExecutedRun(
             trace=read_trace(path),
@@ -230,7 +244,7 @@ class _ScriptedExecutor:
         )
 
 
-def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON):  # type: ignore[no-untyped-def]
+def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON, config=None):  # type: ignore[no-untyped-def]
     holder: dict[str, _ScriptedExecutor] = {}
 
     def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
@@ -238,7 +252,7 @@ def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON):  # ty
         return holder["exec"]
 
     result = run_evaluation(
-        config=_config(),
+        config=config if config is not None else _config(),
         policy=_policy(),
         package=package,
         fixture=tmp_path / "fixture",
@@ -379,7 +393,8 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
     package: SkillPackage, tmp_path: Path
 ) -> None:
     """§16.4 combo 2 on the real path: the high profile requires the process and read planes,
-    which are not built in this version — refuse up front, naming each missing plane."""
+    and a composition that turns them off (``capture.process: off``) cannot provide them —
+    refuse up front, naming each missing plane."""
     import yaml
 
     from bellwether.config import template_path
@@ -406,6 +421,8 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
             "canary_leak": "warn",
             "canary_without_read": "warn",
             "unexpected_provider_endpoint": "warn",
+            "credential_read_undeclared": "warn",
+            "process_exec_undeclared": "warn",
         }
     )
     gates = high.gates.model_copy(update={"security_runtime": security})
@@ -415,9 +432,17 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
     def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
         raise AssertionError("the executor must never be built for an unsatisfiable profile")
 
+    config = _config()
+    without_kernel_planes = config.model_copy(
+        update={
+            "capture": config.capture.model_copy(
+                update={"process": "off", "filesystem_reads": "off"}
+            )
+        }
+    )
     with pytest.raises(BellwetherError, match=r"capture_planes\[process\]"):
         run_evaluation(
-            config=_config(),
+            config=without_kernel_planes,
             policy=policy,
             package=package,
             fixture=tmp_path / "fixture",
@@ -482,6 +507,63 @@ def test_run_evaluation_produces_a_verdict_and_an_artifact_tree(
     assert executor.calls == looks[0]
     assert executor.calls < _policy().profile("low").matrix.n_max
     assert result.artifacts.summary_json.exists()
+
+
+# ---------------------------------------------------------------------------
+# §21 `reporting`: the switches decide which reports `run` writes
+# ---------------------------------------------------------------------------
+
+
+def _reporting(**switches: bool) -> Config:
+    return _config().model_copy(update={"reporting": ReportingConfig(**switches)})
+
+
+def test_run_writes_the_html_report_and_the_sarif_by_default(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    result, _ = _evaluate(package, tmp_path)
+    tree = result.artifacts.root
+    assert result.artifacts.report_html == tree / "report" / "report.html"
+    assert result.artifacts.report_html.is_file()
+    assert result.artifacts.findings_sarif == tree / "findings.sarif"
+    document = assert_valid_sarif(result.artifacts.findings_sarif.read_text(encoding="utf-8"))
+    run = document["runs"][0]
+    assert run["properties"]["eval_id"] == "firstlight"
+    rules = {rule["id"] for rule in run["tool"]["driver"]["rules"]}
+    assert "canary_leak" in rules
+    assert run["automationDetails"]["id"].startswith("bellwether/security-review/")
+    assert not any("reporting." in note for note in result.verdict.notes)
+
+
+def test_reporting_html_false_writes_no_html_report(package: SkillPackage, tmp_path: Path) -> None:
+    result, _ = _evaluate(package, tmp_path, config=_reporting(html=False))
+    assert result.artifacts.report_html is None
+    assert not (result.artifacts.root / "report" / "report.html").exists()
+    # Only the HTML is off: the comment, the SARIF and the persisted figures are still written,
+    # so `bellwether report --format html` can render it later on request.
+    assert result.artifacts.pr_comment.is_file()
+    assert result.artifacts.findings_sarif is not None
+    assert result.artifacts.findings_sarif.is_file()
+    assert (result.artifacts.root / "metrics" / "figures.json").is_file()
+    assert not any("reporting." in note for note in result.verdict.notes)
+
+
+def test_reporting_sarif_false_writes_no_sarif(package: SkillPackage, tmp_path: Path) -> None:
+    result, _ = _evaluate(package, tmp_path, config=_reporting(sarif=False))
+    assert result.artifacts.findings_sarif is None
+    assert not (result.artifacts.root / "findings.sarif").exists()
+    assert result.artifacts.report_html is not None
+    assert result.artifacts.report_html.is_file()
+
+
+def test_the_sarif_anchor_follows_the_repository_root(
+    package: SkillPackage, tmp_path: Path
+) -> None:
+    (tmp_path / ".git").mkdir()
+    result, _ = _evaluate(package, tmp_path, config=_reporting(html=False))
+    assert result.artifacts.findings_sarif is not None
+    figures = json.loads((result.artifacts.root / "metrics" / "figures.json").read_text("utf-8"))
+    assert figures["skill_root"] == "security-review"
 
 
 def test_run_evaluation_refuses_a_missing_api_key(package: SkillPackage, tmp_path: Path) -> None:
@@ -1721,15 +1803,55 @@ def test_run_evaluation_hands_the_configured_metrics_block_to_the_driver(
     assert captured["trajectory_cluster_threshold"] == 0.35
 
 
+def test_run_evaluation_hands_the_configured_volume_factor_to_the_driver(
+    package: SkillPackage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The outer hop for `egress.volume_anomaly_factor` (§10.5.2), listed as not built until the
+    volume gate read it. The driver-to-comparison hop is pinned in
+    `tests/test_volume_anomaly_gate.py`; this pins the value `run_evaluation` hands down."""
+    from bellwether.cli import run as run_module
+
+    config = _config()
+    config = config.model_copy(
+        update={"egress": config.egress.model_copy(update={"volume_anomaly_factor": 3.5})}
+    )
+    captured: dict[str, object] = {}
+    real = run_module.drive_evaluation
+
+    def spy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(run_module, "drive_evaluation", spy)
+
+    def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
+        return _ScriptedExecutor(pkg, tmp_path, client_factory)
+
+    run_evaluation(
+        config=config,
+        policy=_policy(),
+        package=package,
+        fixture=tmp_path / "fixture",
+        environ=_ENVIRON,
+        make_executor=make_executor,
+        out_dir=tmp_path / "out",
+        eval_id="firstlight",
+        created_at="2026-08-05T12:00:00Z",
+        bellwether_version="0.1.0",
+    )
+
+    assert captured["volume_anomaly_factor"] == 3.5
+
+
 def test_a_not_built_setting_is_disclosed_in_the_verdict(
     package: SkillPackage, tmp_path: Path
 ) -> None:
     """Whoever reads the verdict did not necessarily read config.yaml: a setting it sets that this
     build does not act on is named in the notes, not only by `doctor`."""
-    from bellwether.config.models.config import ExecutionConfig
+    from bellwether.config.models.config import ReportingConfig
 
-    config = _config().model_copy(update={"execution": ExecutionConfig(concurrency=8)})
+    config = _config().model_copy(update={"reporting": ReportingConfig(retention_days=7)})
     result = _evaluate_with(package, tmp_path, config=config)
-    assert any("does not act on: execution.concurrency" in note for note in result.verdict.notes), (
-        result.verdict.notes
-    )
+    assert any(
+        "does not act on: reporting.retention_days" in note for note in result.verdict.notes
+    ), result.verdict.notes

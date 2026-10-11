@@ -48,6 +48,7 @@ from bellwether.harness.live_client import (
 from bellwether.harness.protocol import (
     HarnessAdapter,
     HarnessCapabilities,
+    HarnessProcessRules,
     RawHarnessEvent,
     RunLimits,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "ExecResult",
     "HarnessAdapter",
     "HarnessCapabilities",
+    "HarnessProcessRules",
     "HookReconciliation",
     "HttpResponse",
     "HttpTransport",

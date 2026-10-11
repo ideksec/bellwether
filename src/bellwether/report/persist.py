@@ -71,6 +71,7 @@ def render_figures_json(figures: Figures) -> str:
             for row in figures.declared_vs_observed
         ],
         "scope_declared": figures.scope_declared,
+        "skill_root": figures.skill_root,
     }
     return canonical_json(payload, indent=2) + "\n"
 
@@ -78,6 +79,11 @@ def render_figures_json(figures: Figures) -> str:
 def _optional_bool(value: object) -> bool | None:
     """``scope_declared`` as written, or None for an artifact that predates it."""
     return value if isinstance(value, bool) else None
+
+
+def _optional_str(value: object) -> str | None:
+    """``skill_root`` as written, or None for an artifact that predates it."""
+    return value if isinstance(value, str) else None
 
 
 def figures_from_json(text: str, *, where: str = "figures.json") -> Figures:
@@ -138,6 +144,7 @@ def figures_from_json(text: str, *, where: str = "figures.json") -> Figures:
                 for row in payload.get("declared_vs_observed", [])
             ),
             scope_declared=_optional_bool(payload.get("scope_declared")),
+            skill_root=_optional_str(payload.get("skill_root")),
         )
     except (KeyError, TypeError, ValueError, ValidationError) as error:
         raise BellwetherError(f"{where}: malformed figures record: {error!r}") from None

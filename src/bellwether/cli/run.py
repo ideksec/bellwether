@@ -84,6 +84,7 @@ __all__ = [
     "claude_code_providers",
     "depth_options",
     "policy_digest",
+    "repository_relative_root",
     "run_evaluation",
     "select_scenarios",
 ]
@@ -474,7 +475,15 @@ def run_evaluation(
         # §13.7 / §13.4: the metrics block, validated by doctor and — until this — never used.
         bci_weights=config.metrics.bci_weights.model_dump(),
         trajectory_cluster_threshold=config.metrics.trajectory_cluster_threshold,
+        # §10.5.2: the multiple of its peers' median a run's request volume may reach before it
+        # is an `egress_volume_anomaly`. Listed as not built until the volume gate read it.
+        volume_anomaly_factor=config.egress.volume_anomaly_factor,
         on_retry=baseline_notes.append,
+        # §19.3/§21: how many runs of one look execute at once. Parallel only *within* a look
+        # (§13.1), re-ordered by matrix coordinate (§24): the same runs are bought and the same
+        # bytes come out as at 1; each run still owns its sandbox, proxy and resolver, and is
+        # bounded by its own per-run token cap and proxy caps.
+        concurrency=config.execution.concurrency,
     )
     if caching is not None and caching.bypassed:
         # §19.2: disclosed, not silent — the operator turned the cache on and part of the
@@ -528,7 +537,29 @@ def run_evaluation(
         manifest_present=package.manifest is not None,
         review_state=package.review_state(),
         review_age_days=package.review_age_days(_evaluation_date(created_at)),
+        # §21 `reporting`: each report is written only where the config asks for it.
+        write_html=config.reporting.html,
+        write_sarif=config.reporting.sarif,
+        skill_root=repository_relative_root(package.root),
     )
+
+
+def repository_relative_root(root: Path) -> str | None:
+    """The skill directory relative to the git repository holding it, as POSIX, or ``None``.
+
+    ``findings.sarif`` anchors its results at ``<skill>/SKILL.md`` (§17.3), and GitHub code
+    scanning resolves a result's ``uri`` against the repository root — so the anchor is the
+    path from the nearest ancestor holding a ``.git`` entry (a directory, or the file a
+    worktree or submodule has), not from wherever the command happened to be started. Outside
+    any repository there is no root to be relative to, and ``None`` says so rather than
+    guessing; the SARIF then names the gap. ``""`` is a skill at the repository root.
+    """
+    resolved = root.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            relative = resolved.relative_to(candidate).as_posix()
+            return "" if relative == "." else relative
+    return None
 
 
 #: §19.1's tiered depth: (target aliases to keep, look schedule, fixed repetitions).
@@ -690,6 +721,8 @@ def sandbox_executor_factory(
     platform_baseline_version: str | None = None,
     sampling: SamplingSpec | None = None,
     artifact_root: Path | None = None,
+    capture_reads: bool = True,
+    capture_processes: bool = True,
 ) -> ExecutorFactory:
     """The production executor factory: a :class:`SandboxRunExecutor` around a Docker backend.
 
@@ -710,6 +743,9 @@ def sandbox_executor_factory(
 
     ``plant_canaries`` turns on canary planting and the host-side Plane C scan (§10.4); the lead
     passes ``config.canaries.enabled``. Omitted, the credentials plane stays ``not_evaluable``.
+
+    ``capture_reads`` / ``capture_processes`` are ``capture.filesystem_reads`` /
+    ``capture.process`` (§10.2, §10.3): the host-side fanotify recorder for each run.
     """
     run_limits = limits if limits is not None else RunLimits()
 
@@ -740,6 +776,8 @@ def sandbox_executor_factory(
             artifact_root=artifact_root,
             platform_baseline_version=platform_baseline_version,
             sampling=sampling,
+            capture_reads=capture_reads,
+            capture_processes=capture_processes,
         )
 
     return make

@@ -33,6 +33,8 @@ from bellwether.assertions.derive import (
     ScopeTable,
     derive_assertions,
     evaluate_scope,
+    undeclared_credential_reads,
+    undeclared_processes,
 )
 from bellwether.assertions.engine import evaluate, evaluate_all
 from bellwether.assertions.evidence import (
@@ -76,4 +78,6 @@ __all__ = [
     "glob_to_regex",
     "run_outcome",
     "trace_inconsistencies",
+    "undeclared_credential_reads",
+    "undeclared_processes",
 ]

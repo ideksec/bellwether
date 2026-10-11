@@ -69,10 +69,26 @@ def test_rerender_reproduces_the_committed_report_bytes(tmp_path: Path, eval_id:
     """The committed demo trees carry metrics/figures.json; re-rendering into a scratch
     directory yields exactly the committed pr_comment.md and report.html."""
     written = rerender_tree(eval_id, out_dir=_REPORTS, to=tmp_path)
-    assert [path.name for path in written] == ["pr_comment.md", "report.html"]
+    assert [path.name for path in written] == ["pr_comment.md", "report.html", "findings.sarif"]
     for path in written:
-        committed = _REPORTS / eval_id / "report" / path.name
-        assert path.read_text(encoding="utf-8") == committed.read_text(encoding="utf-8")
+        where = "" if path.name == "findings.sarif" else "report"
+        committed = _REPORTS / eval_id / where / path.name
+        assert path.read_bytes() == committed.read_bytes()
+
+
+def test_rerender_writes_sarif_at_the_tree_root(tmp_path: Path) -> None:
+    """Without ``--to`` each file goes back where the run put it: ``findings.sarif`` at the
+    root (§17.1), not under ``report/``. A copy of a committed tree with its SARIF removed
+    gets the same bytes back."""
+    import shutil
+
+    tree = tmp_path / _SNEAKY
+    shutil.copytree(_REPORTS / _SNEAKY, tree)
+    (tree / "findings.sarif").unlink()
+    written = rerender_tree(_SNEAKY, out_dir=tmp_path, fmt="sarif")
+    assert written == [tree / "findings.sarif"]
+    assert written[0].read_bytes() == (_REPORTS / _SNEAKY / "findings.sarif").read_bytes()
+    assert not (tree / "report" / "findings.sarif").exists()
 
 
 def test_rerender_writes_only_the_requested_format(tmp_path: Path) -> None:
@@ -101,6 +117,6 @@ def test_report_command_end_to_end(tmp_path: Path) -> None:
     )
     assert result.exit_code == ExitCode.OK, result.output
     written = json.loads(result.output)["written"]
-    assert len(written) == 2 and all(Path(p).is_file() for p in written)
+    assert len(written) == 3 and all(Path(p).is_file() for p in written)
     missing = runner.invoke(app, ["report", "nope", "--out", str(_REPORTS)])
     assert missing.exit_code == ExitCode.INFRASTRUCTURE

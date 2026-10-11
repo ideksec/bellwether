@@ -46,8 +46,11 @@ class PlaneStatus:
     importing trace models would invert it.
     """
 
-    fidelity: Literal["full", "partial", "overlay_diff", "unavailable", "none_offered"]
+    fidelity: Literal["full", "partial", "overlay_diff", "unavailable", "none_offered", "disabled"]
     reason: str | None = None
+    #: The plane's watched domain, where it is narrower than the plane's name (see
+    #: ``PlaneCoverage.domain``).
+    domain: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

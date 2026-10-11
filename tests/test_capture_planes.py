@@ -336,7 +336,8 @@ def test_every_plane_is_stated_including_the_unbuilt_ones() -> None:
     assert "recording proxy" in unavailable["egress"]
     assert "controlled resolver" in unavailable["dns"]
     assert "canaries" in unavailable["credentials"]
-    assert "WP-18" in unavailable["process"]
+    assert "process capture" in unavailable["process"]
+    assert "read capture" in unavailable["filesystem_reads"]
 
 
 def test_active_planes_reach_the_coverage_block(tmp_path: Path) -> None:

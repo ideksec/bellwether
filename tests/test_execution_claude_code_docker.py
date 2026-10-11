@@ -262,6 +262,25 @@ def test_the_real_cli_runs_in_the_sandbox_behind_the_proxy(
         and writes[f"{_WORKSPACE_ROOT}/notes.md"] == "workspace"
     )
 
+    # Plane D′ and Plane B's reads, host-side (§10.2, §10.3). The real CLI's own processes — its
+    # binary, the hook commands it runs, the helpers it shells out to — are all the harness's,
+    # so a benign skill that only used Read and Write started nothing of its own. The list is
+    # printed so a CI log carries the evidence an attribution rule is adjusted from.
+    assert trace.header.coverage.process is not None
+    assert trace.header.coverage.process.fidelity == "full", trace.header.coverage.process
+    processes = [
+        (a.action["argv0"], a.action["role"], a.action.get("attribution"))
+        for a in trace.actions_of_kind("process_exec")
+    ]
+    print("claude-code processes:", processes)
+    assert processes, "the CLI's own exec must be captured"
+    assert all(role == "harness" for _, role, _ in processes), processes
+    reads_plane = trace.header.coverage.filesystem_reads
+    assert reads_plane is not None and reads_plane.fidelity == "full", reads_plane
+    reads = {(a.action["path"], a.action["role"]) for a in trace.actions_of_kind("file_read")}
+    print("claude-code reads:", sorted(reads))
+    assert (f"{_WORKSPACE_ROOT}/README.md", "harness") in reads, reads
+
     # The real key never reached an artifact: neither the trace nor the run directory.
     assert "sk-real-fake-provider-key" not in executed.trace_jsonl
     for path in (tmp_path / "runs").rglob("*"):

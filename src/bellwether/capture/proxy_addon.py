@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from bellwether.capture.canary import Canary
+from bellwether.capture.canary_stream import STREAM_TAIL_CHARS, CanaryReassembler
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import (
     CapLedger,
@@ -143,6 +144,14 @@ class ProxyAddon:
     #: ``decide_request`` refuses a request to a provider host that is not a model call.
     provider_shapes: Mapping[str, ProviderRequestShape] = field(default_factory=dict)
     _flows: list[EgressFlow] = field(default_factory=list, repr=False)
+    #: The run's cross-request canary scan (§10.4.2): a marker split across several requests is
+    #: in no single body, so each non-model request's views are also fed, in order, to a bounded
+    #: per-run stream scan. It lives here, beside the caps, because it is per-run state the
+    #: sidecar holds, and because the bodies and unredacted headers it reads never leave the proxy.
+    _reassembler: CanaryReassembler = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._reassembler = CanaryReassembler(self.canaries, destination="other_host")
 
     def on_request(self, request: RequestLike, *, sni: str = "") -> BlockResponse | None:
         """Decide one request, record its flow, and either inject or block.
@@ -156,6 +165,8 @@ class ProxyAddon:
         read it off the client connection; it is a third asserted identity and is checked against
         the real destination exactly as the ``Host`` header is.
         """
+        headers = dict(request.headers)
+        body = request.content or b""
         decision = decide_request(
             ts=self.clock(),
             method=request.method,
@@ -163,8 +174,8 @@ class ProxyAddon:
             host=request.host,
             port=request.port,
             path=request.path,
-            headers=dict(request.headers),
-            body=request.content or b"",
+            headers=headers,
+            body=body,
             allowlist=self.allowlist,
             provider_endpoints=self.provider_endpoints,
             infrastructure_endpoints=self.infrastructure_endpoints,
@@ -176,7 +187,7 @@ class ProxyAddon:
             sni=sni,
             provider_shapes=self.provider_shapes,
         )
-        self._flows.append(_recorded(decision))
+        self._flows.append(self._reassembled(_recorded(decision), headers, body))
 
         if decision.action == "block":
             if decision.cap_exceeded is not None:
@@ -258,7 +269,7 @@ class ProxyAddon:
             sni=sni,
             provider_shapes=self.provider_shapes,
         )
-        self._flows.append(_recorded(decision))
+        self._flows.append(self._reassembled(_recorded(decision), {}, content))
         if decision.action == "forward":
             return None
         if decision.cap_exceeded is not None:
@@ -316,6 +327,56 @@ class ProxyAddon:
             claimed_host=claimed_host,
         )
 
+    def _reassembled(self, flow: EgressFlow, headers: Mapping[str, str], body: bytes) -> EgressFlow:
+        """Feed one request to the run's cross-request canary scan and record what it completed.
+
+        A marker split across requests in pieces under the match window is in no single body, so
+        the request's views — body, path, host, each header value — are appended to their
+        streams and the joins scanned (:class:`CanaryReassembler`). A hit is recorded on the
+        request that completed it, by reference like any other (``offset`` is ``-1``: the match
+        spans requests; ``via`` says ``reassembled:``; ``channel`` names the view and whether it
+        was the destination's stream or the overall one). A canary this request's own scan
+        already found is not recorded twice.
+
+        Model-API requests are left out, as they are from the per-request scan here: their
+        grading needs the host's read state, and the model channel is scanned host-side.
+        """
+        if flow.egress_class == "model_api" or not self.canaries:
+            return flow
+        # Only a body's ends can join a stream; decode those, not a gigabyte (4 bytes per char at
+        # most, so twice the stream's clip in bytes from each end still covers it).
+        clip = 4 * 2 * STREAM_TAIL_CHARS
+        ends = body if len(body) <= 2 * clip else body[:clip] + body[-clip:]
+        views = [
+            ("body", ends.decode("utf-8", "replace"), False),
+            ("path", flow.path, False),
+            ("host", flow.host, True),
+            *((f"header:{name.lower()}", value, False) for name, value in headers.items()),
+        ]
+        hits, folded = self._reassembler.feed(
+            flow.host,
+            views,
+            already_found=frozenset(hit.canary_id for hit in flow.canary_hits),
+        )
+        if not hits and not folded:
+            return flow
+        return replace(
+            flow,
+            canary_hits=flow.canary_hits
+            + tuple(
+                EgressCanaryHit(
+                    canary_id=hit.canary_id,
+                    destination="other_host",
+                    offset=-1,
+                    length=hit.length,
+                    via=f"reassembled:{hit.via}",
+                    channel=f"reassembled:{hit.view}@{hit.scope}",
+                )
+                for hit in hits
+            ),
+            canary_reassembly_limit=self._reassembler.limit_reason if folded else "",
+        )
+
     def _refuse(self, flow: EgressFlow, reason: str, status: int) -> BlockResponse:
         self._flows.append(replace(flow, blocked=True, block_reason=reason))
         return BlockResponse(status=status, reason=reason)
@@ -367,6 +428,7 @@ def _flow_to_dict(flow: EgressFlow) -> dict[str, Any]:
         "block_reason": flow.block_reason,
         "cap_exceeded": flow.cap_exceeded,
         "shape_violation": flow.shape_violation,
+        "canary_reassembly_limit": flow.canary_reassembly_limit,
         "canary_hits": [
             {
                 "canary_id": hit.canary_id,
@@ -413,6 +475,7 @@ def _flow_from_dict(payload: Mapping[str, Any]) -> EgressFlow:
         block_reason=payload["block_reason"],
         cap_exceeded=payload.get("cap_exceeded", ""),
         shape_violation=payload.get("shape_violation", ""),
+        canary_reassembly_limit=payload.get("canary_reassembly_limit", ""),
     )
 
 

@@ -146,6 +146,7 @@
     "r20"
   ],
   "scope_declared": true,
+  "skill_root": "examples/skills/flaky-formatter",
   "strip": [
     {
       "cells": [
