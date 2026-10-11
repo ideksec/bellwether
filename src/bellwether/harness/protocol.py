@@ -141,8 +141,9 @@ class HarnessProcessRules:
       CLI also runs ``/bin/sh -c`` for its own housekeeping (observed on CI: ``ps … | grep …``
       in a run whose only tools were ``Skill``, ``Read`` and ``Write``), and in a run with no
       shell-tool call the model never had a command run, so such a shell and its subtree are
-      the harness's. In a run *with* one, every tool shell stays the skill's — the
-      over-attributing direction, named in spec-notes rather than guessed away.
+      the harness's. In a run *with* one, a tool shell is the skill's when its argv carries one
+      of those calls' commands — the CLI starts shells of its own there too — and if any command
+      matches no shell, every tool shell is the skill's (see ``kernel_plane_actions``).
 
     A process that re-execs in place keeps its pid but not its role: an ``own`` shell that execs
     the command it was given becomes that command, which is the skill's.

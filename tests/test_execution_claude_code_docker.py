@@ -526,6 +526,12 @@ def test_the_real_clis_bash_tool_runs_only_the_skills_commands_as_the_skill(
         (a.action["argv0"], a.action["role"], a.action.get("attribution"), a.action.get("argv"))
         for a in trace.actions_of_kind("process_exec")
     ]
+    tree = "\n".join(
+        f"{a.action.get('ppid')}>{a.correlation.pid if a.correlation else '?'} "
+        f"{a.action['role']}/{a.action.get('attribution')} {a.action.get('argv')!r}"
+        for a in trace.actions_of_kind("process_exec")
+    )
     skill = sorted({argv0 for argv0, role, _, _ in processes if role == "skill"})
-    # Exactly the commands the model asked `Bash` to run — nothing of the CLI's own.
-    assert skill == ["ls", "sort", "wc"], processes
+    # Exactly the commands the model asked `Bash` to run — nothing of the CLI's own. The whole
+    # tree goes into the message, so a CI failure shows the wrapper's real shape.
+    assert skill == ["ls", "sort", "wc"], f"skill processes {skill}; tree:\n{tree}"

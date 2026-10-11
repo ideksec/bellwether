@@ -23,7 +23,8 @@ known multi-call binary.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping, Sequence
+import shlex
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -79,7 +80,7 @@ def _attribute(
     processes: Mapping[int, _Process],
     rules: HarnessProcessRules,
     *,
-    shell_tool_called: bool,
+    tool_shell_is_skills: Callable[[ExecEvent], bool],
 ) -> _Process:
     argv0 = process_name(event.argv, event.exe)
     existing = processes.get(event.pid)
@@ -106,16 +107,55 @@ def _attribute(
         if _is_subtree_script(event.argv, rules):
             return _Process(event.pid, argv0, "harness", "subtree", own_image=False)
         if parent.origin == "own" and argv0 in rules.tool_shells:
-            if shell_tool_called:
+            if tool_shell_is_skills(event):
                 return _Process(event.pid, argv0, "harness", "tool_shell", own_image=True)
-            # No shell-tool call in the run: the model never had a command run, so this is the
-            # harness's own shell (HarnessProcessRules.shell_tools), and so is all it runs.
+            # A shell the harness started that ran none of the model's commands: its own
+            # housekeeping (HarnessProcessRules.shell_tools), and so is all it runs.
             return _Process(event.pid, argv0, "harness", "housekeeping", own_image=False)
         # A helper is the harness's only as the harness's own direct child: `git` under the
         # CLI is its repository probe, `git` under the Bash tool's shell is the skill's command.
         if parent.origin == "own" and argv0 in rules.helpers:
             return _Process(event.pid, argv0, "harness", "helper", own_image=False)
     return _Process(event.pid, argv0, "skill", "skill", own_image=False)
+
+
+def _quoted_forms(command: str) -> tuple[str, ...]:
+    """The spellings a shell wrapper embeds a command in: as written, and single-quoted."""
+    return (
+        command,
+        command.replace("'", "'\\''"),
+        command.replace("'", "'\"'\"'"),
+        shlex.quote(command),
+    )
+
+
+def _mentions(argv: Sequence[str] | None, command: str) -> bool:
+    if not argv or not command.strip():
+        return False
+    text = "\0".join(argv)
+    return any(form in text for form in _quoted_forms(command))
+
+
+def _tool_shell_rule(
+    activity: RecordedActivity,
+    rules: HarnessProcessRules,
+    shell_commands: Sequence[str] | None,
+) -> Callable[[ExecEvent], bool]:
+    """Which of the harness's tool shells are the skill's (see :func:`kernel_plane_actions`)."""
+    if shell_commands is None:
+        return lambda _event: True
+    if not shell_commands:
+        return lambda _event: False
+    commands = list(shell_commands)
+    candidates = [
+        event
+        for event in activity.execs
+        if process_name(event.argv, event.exe) in rules.tool_shells
+    ]
+    # A blank command (a call whose input could not be read) matches nothing, so it lands here.
+    if not all(any(_mentions(event.argv, command) for event in candidates) for command in commands):
+        return lambda _event: True
+    return lambda event: any(_mentions(event.argv, command) for command in commands)
 
 
 def kernel_plane_actions(
@@ -125,19 +165,31 @@ def kernel_plane_actions(
     zones: ZoneMap,
     canary_paths: Mapping[str, str],
     start_seq: int = 0,
-    shell_tool_called: bool = True,
+    shell_commands: Sequence[str] | None = None,
 ) -> list[Action]:
     """Every recorded exec and read as an action, in the order the kernel reported them.
 
-    ``shell_tool_called`` is whether Plane A recorded a call to one of ``rules.shell_tools``;
-    without one, a tool shell is the harness's housekeeping (see :class:`HarnessProcessRules`).
-    It defaults to ``True`` — the direction that attributes more to the skill, never less.
+    ``shell_commands`` are the commands Plane A recorded the model asking a shell tool
+    (``rules.shell_tools``) to run, and decide which of the harness's tool shells are the skill's:
+
+    - ``None`` — not known: every tool shell is the skill's, the direction that attributes more
+      to the skill, never less;
+    - empty — no shell-tool call: the model never had a command run, so every tool shell is
+      the harness's housekeeping;
+    - otherwise — a tool shell is the skill's when its argv carries one of the commands (as
+      written, or shell-quoted the way a wrapper embeds it). The real CLI also starts shells of
+      its own in a run that calls ``Bash`` (CI recorded ``cat``, ``env``, ``grep``, ``id`` and
+      ``ps`` beside the model's command), and only the command text tells them apart. If any
+      command matches no tool shell, matching is not trusted for the run and every tool shell is
+      the skill's again — a wrapper that encodes commands some other way must over-attribute,
+      never hide the command it ran.
 
     ``canary_paths`` maps each planted canary's container path to its canary id: a read of one
     is recorded as ``canary_read`` (§10.4, §11.3) — by reference, never by value — whatever
     process performed it, because a credential read is the evidence whether the harness's
     ``Read`` tool or a skill's subprocess did it.
     """
+    tool_shell_is_skills = _tool_shell_rule(activity, rules, shell_commands)
     processes: dict[int, _Process] = {}
     ancestry: dict[int, tuple[str, ...]] = {}
     events: list[tuple[int, dt.datetime, ExecEvent | ReadEvent]] = sorted(
@@ -149,7 +201,7 @@ def kernel_plane_actions(
     for offset, (_, ts, event) in enumerate(events):
         seq = start_seq + offset
         if isinstance(event, ExecEvent):
-            process = _attribute(event, processes, rules, shell_tool_called=shell_tool_called)
+            process = _attribute(event, processes, rules, tool_shell_is_skills=tool_shell_is_skills)
             parent = processes.get(event.ppid) if event.ppid is not None else None
             ancestors: tuple[str, ...] = (
                 (parent.argv0, *ancestry.get(parent.pid, ())) if parent is not None else ()

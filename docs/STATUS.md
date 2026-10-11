@@ -229,7 +229,10 @@ read-before-sleep race in the recorder (`running` syscall lines on pipeline chil
 the likely cause of PR #101's unexplained `benign-stable` failure — whose earlier "interpreter" fold
 could have hidden a real re-exec. Each is fixed and revert-checked; spec-notes has the detail. A CI
 container test now also drives the real CLI's `Bash` tool and asserts its skill processes are exactly
-the commands asked for. The live configs are priced (Haiku 4.5), so every report states its spend, and
+the commands asked for — and on its first CI run it found that in a Bash-using run the CLI's own
+shells put `cat`, `env`, `grep`, `id` and `ps` on the skill. A tool shell is now the skill's only when
+its argv carries one of the run's `Bash` commands; if any command matches no shell, every tool shell
+falls back to the skill (spec-notes). The live configs are priced (Haiku 4.5), so every report states its spend, and
 both live workflows print a per-run evidence digest (`tools/evidence_digest.py`) into the job log.
 
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
@@ -1067,7 +1070,7 @@ commands exhaustively instead of counting them.
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2104 tests: 2032 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2109 tests: 2037 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

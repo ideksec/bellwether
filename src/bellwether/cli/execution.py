@@ -850,11 +850,7 @@ class SandboxRunExecutor:
                     zones=prepared.zones,
                     canary_paths=canary_container_paths,
                     start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
-                    shell_tool_called=any(
-                        action.kind == "tool_call"
-                        and action.action.get("tool") in process_rules.shell_tools
-                        for action in plane_a
-                    ),
+                    shell_commands=_shell_commands(plane_a, process_rules.shell_tools),
                 )
                 if activity is not None
                 else []
@@ -1339,3 +1335,20 @@ class SandboxRunExecutor:
             network=network,
             extra_allowed=extra_allowed,
         )
+
+
+def _shell_commands(plane_a: Sequence[Action], shell_tools: frozenset[str]) -> list[str]:
+    """The commands Plane A recorded the model asking a shell tool to run, in order (§10.3).
+
+    A call with no readable ``command`` is kept as an empty string: the run did call a shell
+    tool, so its shells cannot all be housekeeping, and an empty command matches no shell, which
+    makes the attribution fall back to the skill for every tool shell.
+    """
+    commands: list[str] = []
+    for action in plane_a:
+        if action.kind != "tool_call" or action.action.get("tool") not in shell_tools:
+            continue
+        tool_input = action.action.get("input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        commands.append(command if isinstance(command, str) else "")
+    return commands
