@@ -170,6 +170,13 @@ jobs:
             # Surface the evidence inline: the rendered report (verdict, per-repetition outcome
             # grid, capability heatmap) goes into the job log, so *why* a run landed where it did
             # is visible here without opening the PR. The full ARF traces are uploaded below.
+            # The per-run evidence digest: the processes the process plane put on the skill, the
+            # planted credentials opened, each plane's coverage, and what the evaluation spent.
+            # Values are JSON-encoded and indented, so nothing a skill ran can start a `::`
+            # workflow-command line.
+            echo "::group::Bellwether evidence digest — ${skill}"
+            uv run python tools/evidence_digest.py "${eval_dir}" || true
+            echo "::endgroup::"
             echo "::group::Bellwether report — ${skill}"
             cat "${eval_dir}/report/pr_comment.md" 2>/dev/null || echo "(no report was rendered)"
             echo "::endgroup::"

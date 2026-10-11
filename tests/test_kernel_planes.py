@@ -476,27 +476,68 @@ def test_an_exec_from_a_secondary_thread_is_read_from_that_thread(tmp_path: Path
     assert recorder._exec_syscall_line(70) == "202 0x1 0x0"
 
 
-def test_an_interpreter_open_reported_as_running_folds_into_its_exec(tmp_path: Path) -> None:
-    """CI's second disclosure: the real CLI's ELF interpreter open arrived with the caller's
-    syscall line reading `running`, not the execve, so it was recorded as a new exec with an
-    unread argv. An exec-open with no execve on any thread is the last exec's interpreter."""
+def test_an_interpreter_open_from_a_settled_non_exec_caller_folds_into_its_exec(
+    tmp_path: Path,
+) -> None:
+    """An exec-open whose caller is asleep in a syscall that is not an exec, on every thread,
+    cannot start a new exec: it is the last exec's interpreter, kept in the record."""
     from bellwether.capture.fanotify import FanotifyRecorder
 
     (tmp_path / "80" / "task" / "80").mkdir(parents=True)
     (tmp_path / "80" / "syscall").write_text("59 0x0 0x0 0x0", encoding="ascii")
     (tmp_path / "80" / "mem").write_bytes(b"")  # null filename and argv pointers: nothing to read
-    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64")
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64", sleep=lambda _s: None)
     recorder._record_exec(80, "/usr/bin/node")
-    for line in ("running", "202 0x1 0x0"):
-        (tmp_path / "80" / "syscall").write_text(line, encoding="ascii")
-        (tmp_path / "80" / "task" / "80" / "syscall").write_text(line, encoding="ascii")
-        recorder._record_exec(80, "/lib64/ld-linux-x86-64.so.2")
+    for path in (tmp_path / "80" / "syscall", tmp_path / "80" / "task" / "80" / "syscall"):
+        path.write_text("202 0x1 0x0", encoding="ascii")
+    recorder._record_exec(80, "/lib64/ld-linux-x86-64.so.2")
     [only] = recorder._execs
     assert only.exe == "/usr/bin/node"
-    assert only.interpreters == ["/lib64/ld-linux-x86-64.so.2"] * 2
+    assert only.interpreters == ["/lib64/ld-linux-x86-64.so.2"]
     assert not recorder._gaps
-    # With no exec of that pid on record, an unreadable exec-open is still a gap, not a fold.
-    recorder._record_exec(81, "/usr/bin/mystery")
+
+
+def test_a_caller_still_running_is_re_read_until_it_settles(tmp_path: Path) -> None:
+    """The kernel queues the event before the caller sleeps, so the first read can find it
+    `running`. Reproduced on a real container (a shell's two pipeline children exec'ing at once,
+    about one run in twenty): the recorder re-reads until the caller is asleep in its exec."""
+    from bellwether.capture.fanotify import FanotifyRecorder
+
+    (tmp_path / "90" / "task" / "90").mkdir(parents=True)
+    syscall = tmp_path / "90" / "syscall"
+    syscall.write_text("running", encoding="ascii")
+    (tmp_path / "90" / "task" / "90" / "syscall").write_text("running", encoding="ascii")
+    (tmp_path / "90" / "mem").write_bytes(b"")
+    reads: list[float] = []
+
+    def settle(seconds: float) -> None:
+        reads.append(seconds)
+        if len(reads) == 3:
+            syscall.write_text("59 0x0 0x0 0x0", encoding="ascii")
+
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64", sleep=settle)
+    recorder._record_exec(90, "/bin/busybox")
+    [only] = recorder._execs
+    assert only.argv == () and not recorder._gaps
+    assert len(reads) == 3
+
+
+def test_a_caller_that_never_settles_is_a_gap_and_never_a_fold(tmp_path: Path) -> None:
+    """A `running` line is not evidence of anything. Folding on it once turned a real re-exec
+    into an "interpreter" of the process's previous image, hiding what it became; now it is
+    recorded as an exec with an unread argv, and the plane says so."""
+    from bellwether.capture.fanotify import FanotifyRecorder
+
+    (tmp_path / "95" / "task" / "95").mkdir(parents=True)
+    (tmp_path / "95" / "syscall").write_text("59 0x0 0x0 0x0", encoding="ascii")
+    (tmp_path / "95" / "mem").write_bytes(b"")
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64", sleep=lambda _s: None)
+    recorder._record_exec(95, "/bin/sh")
+    for path in (tmp_path / "95" / "syscall", tmp_path / "95" / "task" / "95" / "syscall"):
+        path.write_text("running", encoding="ascii")
+    recorder._record_exec(95, "/usr/bin/curl")
+    assert [e.exe for e in recorder._execs] == ["/bin/sh", "/usr/bin/curl"]
+    assert recorder._execs[1].argv is None
     assert any(gap.startswith("the argv of at least one exec") for gap in recorder._gaps)
 
 
@@ -536,3 +577,26 @@ def test_a_tool_shell_is_the_skills_only_in_a_run_that_called_a_shell_tool(
 
 def test_claude_codes_bash_tool_is_its_shell_tool() -> None:
     assert _CLAUDE.shell_tools == frozenset({"Bash"})
+
+
+def test_a_skill_process_reading_a_credential_is_a_sensitive_directory_hit() -> None:
+    """Found by rehearsing the credential-checker live-test skill: `wc -c ~/.aws/credentials`
+    through the shell blocked the credential gate but *passed* the sensitive-directory gate,
+    because a skill's `canary_read` carries no directory class and §13.5.4's list was built from
+    filesystem classes alone. The harness's own read of the same file is Plane A's to class."""
+    from bellwether.trace import canonicalize
+
+    def hits(role: str) -> tuple[str, ...]:
+        recorder = _skill_runs((["wc", "-c", _CRED], "/bin/wc")).read(12, _CRED)
+        actions = [
+            a.model_copy(update={"action": {**a.action, "role": role}})
+            if a.kind == "canary_read"
+            else a
+            for a in _actions(recorder, _API_LOOP)
+        ]
+        canon = canonicalize(actions, _CTX)
+        assert ("canary_read" in canon.caps_t1) is (role == "skill")
+        return canon.sensitive_hits
+
+    assert hits("skill") == ("outside_workspace_read:${HOME}/.aws/",)
+    assert hits("harness") == ()

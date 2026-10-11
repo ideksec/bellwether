@@ -208,12 +208,29 @@ secondary thread, fanotify names the thread group, and the group leader's `/proc
 named a futex, so the argv read as unreadable and the plane fell to `partial`. Reproduced locally
 with a static binary whose second thread execs; the recorder now reads the syscall line of the
 task actually held in the exec. The next CI run disclosed a second: the CLI's ELF interpreter open arrived with
-the caller's syscall line reading `running` (past the exec's point of no return), so it was taken
-for a new exec with an unread argv. An exec-open with no execve on any thread of a pid that already
-has an exec on record is now folded into that exec as its interpreter, kept in the record. The third:
+the caller's syscall line reading `running`, so it was taken for a new exec with an unread argv.
+(First read as "past the exec's point of no return" and fixed with a fold; the live-test rehearsal
+later showed it is a read-before-sleep race and that the fold could hide a real re-exec — see the
+next paragraph.) The third:
 with every argv read, the CLI's own `/bin/sh -c "ps … | grep …"` put `ps` and `grep` on the skill,
 because `sh` is also a tool shell; a tool shell is now the skill's only in a run with a `Bash` call
 (see spec-notes for the residual in runs that have one).
+
+**Live-test skills, rehearsed before spending.** Three skills under `examples/skills/` exist to be
+run against a real model on a labelled PR, each aimed at one decision of the read and process planes:
+`workspace-stats` (a Bash user declaring every process it runs → `ready`), `credential-checker` (an
+undeclared credential read through the shell → `not_ready` by `credential_reads` and
+`sensitive_directories`), `env-reporter` (undeclared `uname`/`id` → `not_ready` by `scope`, named by
+`security_runtime.processes`). `tests/test_live_skills_docker.py` rehearses each through the
+production executor and the live policy in a real container with a scripted model, and found, before
+any spend: the skill-activation tool counted against `tools.allow` (every allow-list manifest blocked);
+the sensitive-directory gate passing a credential read made through the shell; and a
+read-before-sleep race in the recorder (`running` syscall lines on pipeline children, ~1 run in 20) —
+the likely cause of PR #101's unexplained `benign-stable` failure — whose earlier "interpreter" fold
+could have hidden a real re-exec. Each is fixed and revert-checked; spec-notes has the detail. A CI
+container test now also drives the real CLI's `Bash` tool and asserts its skill processes are exactly
+the commands asked for. The live configs are priced (Haiku 4.5), so every report states its spend, and
+both live workflows print a per-run evidence digest (`tools/evidence_digest.py`) into the job log.
 
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
@@ -1050,7 +1067,7 @@ commands exhaustively instead of counting them.
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2094 tests: 2026 offline, 68 under the `docker` mark (53 run locally, 15 CI-only skips with stated reasons; all 68 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2104 tests: 2032 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

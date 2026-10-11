@@ -25,6 +25,16 @@ providers:
     models:
       # The cheapest model, to prove the pipeline. Bump deliberately once it is green.
       haiku: "claude-haiku-4-5-20251001"
+    # Priced so every live report states what it spent (`summary.cost.usd`) and the budget gate is
+    # composed against the policy's max_cost_usd. The first-party Haiku 4.5 rates, USD per million
+    # tokens; cache writes at 1.25x and reads at 0.1x input. Prices are configuration, not code —
+    # update them here when the provider does.
+    pricing:
+      haiku:
+        input_usd_per_mtok: 1.00
+        output_usd_per_mtok: 5.00
+        cache_write_usd_per_mtok: 1.25
+        cache_read_usd_per_mtok: 0.10
 
 harnesses:
   claude-code:

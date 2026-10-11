@@ -4736,10 +4736,18 @@ What fanotify cannot give, and how each gap is closed:
   (the real claude-code CLI does this) leaves the leader in another syscall, so the recorder reads
   the syscall line of whichever task in `/proc/<pid>/task/` is held in `execve`/`execveat`.
   Reading only the leader's line, as the first cut did, turned every such exec into an unread argv.
-  And an interpreter open can arrive after the exec's point of no return, when the kernel reports
-  the caller `running` rather than repeating the execve line. An exec-open while no thread of the
-  pid is in an exec syscall cannot start a new exec, so where that pid already has an exec on
-  record it is folded in as its interpreter; with none on record it stays a recorded gap.
+- **When to read.** The kernel queues a permission event *before* the caller goes to sleep
+  waiting for the answer, and `/proc/<pid>/syscall` of a task still on its CPU reads `running`. The
+  recorder can get there first. This was first misread as an interpreter open arriving "past the
+  exec's point of no return", and folded into the previous exec on that basis. Rehearsing the
+  live-test skills reproduced it on a shell pipeline (two children exec'ing at once, about one run
+  in twenty) and the instrumented record showed the truth: state `R`, the shell's own command line,
+  no exec yet. The fold was worse than the gap it closed — a real re-exec of the same pid that hit
+  the race would have been filed as an "interpreter" of the image before it, hiding what the
+  process became. The recorder now re-reads until the caller settles (up to ~25 ms); a caller
+  *settled* in a syscall that is not an exec on every thread is an interpreter open and folds; one
+  still `running` is recorded as an exec with an unread argv, and the plane says `partial`. 300
+  pipelines afterwards: 900 execs, every argv read, no gap.
 - **Process tree.** ppid comes from `/proc/<pid>/stat` at the held exec. A process whose parent is
   outside the container is top-level (the harness's `docker exec`, or the entrypoint).
 - **Reads.** `FAN_CLOSE_NOWRITE` on the workspace mount and each canary mount only — the **read
@@ -4850,3 +4858,35 @@ says so in a notification rather than leaving an empty results array to read as 
 Skill-chosen text in a reason is escaped so it cannot plant a link. `reporting.html: false` and
 `reporting.sarif: false` withhold those files; `bellwether report --format all` renders all three
 from a stored tree whatever the run's config said.
+
+
+---
+
+## §12.5, §13.5.4, §10.3 — what rehearsing the live-test skills found before a paid run
+
+Three skills were added under `examples/skills/` to be run against a real model, each targeting
+one decision the read and process planes make (`workspace-stats`: a Bash user that declares every
+process it runs; `credential-checker`: an undeclared credential read through the shell;
+`env-reporter`: undeclared processes). Before spending, `tests/test_live_skills_docker.py` drives
+each through the production executor and the live policy in a real container, with a scripted
+model that follows the skill's instructions. It found three defects and one wrong expectation.
+
+- **The skill-activation tool counted against `tools.allow`.** Calling `skill` (api-loop) or
+  `Skill` (the Claude Code CLI) is how the skill under test comes to be running; an allow-list that
+  did not name it put the activation on the scope gate as `exceeded`. Every manifest with an
+  allow-list — the shipped `security-review` example's included — could never reach `ready`. The
+  activation tool is now exempt from the allow-list's undeclared sweep (`SKILL_ACTIVATION_TOOLS`);
+  an explicit `deny` of it still applies.
+- **The sensitive-directory gate ignored a skill process's credential read.** `wc -c
+  ~/.aws/credentials` through the shell blocked `credential_reads` and *passed*
+  `sensitive_directories`: a skill's `canary_read` is its own tier-1 class with no directory, and
+  the §13.5.4 list was built from filesystem classes only. The read's location now joins the hit
+  list (and only the hit list — the capability sets, and so the Jaccard figures, are unchanged).
+  A harness's read of the same file is Plane A's to class, as before.
+- **The `running` race** above, which is also the most likely cause of the intermittent
+  `benign-stable` `not_ready` on PR #101's CI that could not be reproduced at the time.
+- **The expectation, not the code:** with a manifest, an undeclared process is a §12.5 scope
+  violation as well as a `process_exec_undeclared` finding, and the `scope` gate blocks on
+  `exceeded`. So `env-reporter` is `not_ready` (held by `scope`, named by
+  `security_runtime.processes` at `warn`), not the `conditional` first written. The process
+  disposition decides on its own only where there is no declared scope to exceed.

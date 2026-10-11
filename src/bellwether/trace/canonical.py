@@ -169,6 +169,12 @@ def canonicalize(
     t1: set[str] = set()
     t2: set[str] = set()
     t3: set[str] = set()
+    # §13.5.4 locations of reads that are not classed by location: a skill process opening a
+    # planted credential is a `canary_read` (its own, heavier tier-1 class, §13.5), but it is
+    # also a read *under* `~/.aws/` or `~/.ssh/`. Without this the sensitive-directory gate saw
+    # only reads the harness reported as tool calls, and `cat ~/.ssh/id_ed25519` through a shell
+    # passed it. Kept out of the capability sets so the read is weighed once.
+    located: set[str] = set()
 
     for action in ordered:
         capability = capability_for(action, context)
@@ -195,11 +201,23 @@ def canonicalize(
             t2.add(capability.tier2)
         if capability.tier3 is not None:
             t3.add(capability.tier3)
+        if capability.tier1 == "canary_read":
+            zone, path = action.action.get("zone"), action.action.get("path")
+            if isinstance(zone, str) and isinstance(path, str):
+                relative = action.action.get("zone_relative")
+                location = _filesystem_capability(
+                    (zone, path, relative if isinstance(relative, str) else None),
+                    write=False,
+                    deleted=False,
+                    context=context,
+                )
+                if location.tier2 is not None:
+                    located.add(location.tier2)
 
     hits = tuple(
         sorted(
             entry
-            for entry in t2
+            for entry in t2 | located
             if entry.partition(":")[0] in FILESYSTEM_ZONES
             and sensitive_directory_of(entry) in sensitive_directories
         )

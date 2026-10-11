@@ -181,6 +181,13 @@ jobs:
             # runs/**. No evidence the artifact keeps lives there (the ARF traces are at
             # <eval_dir>/traces/), so remove it.
             sudo rm -rf "${eval_dir}/runs" 2>/dev/null || true
+            # The per-run evidence digest: the processes the process plane put on the skill, the
+            # planted credentials opened, each plane's coverage, and what the evaluation spent.
+            # Values are JSON-encoded and indented, so nothing a skill ran can start a `::`
+            # workflow-command line.
+            echo "::group::Bellwether evidence digest — ${skill} (claude-code)"
+            uv run python tools/evidence_digest.py "${eval_dir}" || true
+            echo "::endgroup::"
             echo "::group::Bellwether report — ${skill} (claude-code)"
             cat "${eval_dir}/report/pr_comment.md" 2>/dev/null || echo "(no report was rendered)"
             echo "::endgroup::"

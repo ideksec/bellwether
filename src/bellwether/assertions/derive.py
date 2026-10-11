@@ -46,6 +46,7 @@ from bellwether.config.models.scenarios import AssertionSpec
 
 __all__ = [
     "MULTICALL_BINARIES",
+    "SKILL_ACTIVATION_TOOLS",
     "ScopeEntry",
     "ScopeTable",
     "derive_assertions",
@@ -57,6 +58,14 @@ __all__ = [
 #: Executables that stand for many commands, chosen by argv0 (busybox applets): their file name
 #: says nothing about which command ran, so argv0 alone is their identity (§10.3).
 MULTICALL_BINARIES: frozenset[str] = frozenset({"busybox", "toybox"})
+
+#: The tool a harness loads a skill with — api-loop's ``skill``, the Claude Code CLI's ``Skill``
+#: (compared case-folded, like every tool name, §12.1). Calling it is how the skill under test
+#: comes to be running at all, so a ``tools.allow`` list is not asked to name it: before this, any
+#: manifest with an allow-list (the shipped ``security-review`` example's included) put its own
+#: activation on the scope gate as an undeclared tool and could never reach ``ready``. An explicit
+#: ``deny`` still applies.
+SKILL_ACTIVATION_TOOLS: frozenset[str] = frozenset({"skill"})
 
 #: What may follow a program's name in its installed file name and still be that program: a
 #: version (``python3`` → ``python3.11``, ``python`` → ``python3``). Nothing else — a hyphen, a
@@ -155,8 +164,8 @@ def undeclared_processes(
     asked for and the file the kernel executed. They differ legitimately — ``sh`` is ``dash``,
     ``python3`` is ``python3.11``, every busybox applet is ``busybox`` — and deliberately:
     ``execve("/usr/bin/curl", ["git"])`` names a declared tool and runs an undeclared one. So the
-    executed file must be accounted for too, unless it is a multi-call binary or the argv0 it was
-    asked for is its own name's prefix (a versioned interpreter).
+    executed file must be accounted for too, unless it is a multi-call binary or its name is the
+    argv0 plus a version suffix (a versioned interpreter).
 
     ``baseline`` is applied only where the caller has established it applies to this run's image;
     pass ``None`` otherwise, and only declared names are accounted for.
@@ -297,6 +306,8 @@ def _tool_rows(scope: DeclaredScope, index: EvidenceIndex) -> list[ScopeEntry]:
         # calls is unstated, not exceeded — and saying otherwise would turn a `deny`-only
         # manifest into a guaranteed block on its first tool call.
         for name, undeclared in sorted(observed.items()):
+            if name.casefold() in SKILL_ACTIVATION_TOOLS:
+                continue
             rows.append(
                 ScopeEntry(
                     area="tools",

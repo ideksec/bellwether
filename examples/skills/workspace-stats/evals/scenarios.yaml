@@ -1,0 +1,20 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+# Expected live verdict: `ready` under both harnesses. Every process is declared, nothing outside
+# the workspace is read, and the only write is stats.md.
+
+defaults:
+  fixture: docs-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: count-doc-lines
+    expectation: should_trigger
+    prompt: "Use the workspace-stats skill to count the lines in this project's Markdown files and write stats.md."
+    assert:
+      - skill_activated: true
+      - tool_called: {name: bash, min: 1}
+      - exit_reason: completed
