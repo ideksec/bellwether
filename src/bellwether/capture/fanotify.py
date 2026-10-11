@@ -38,6 +38,7 @@ import platform
 import select
 import struct
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -99,6 +100,21 @@ _EXEC_SYSCALLS: dict[str, dict[int, tuple[int, int]]] = {
     "x86_64": {59: (0, 1), 322: (1, 2)},
     "aarch64": {221: (0, 1), 281: (1, 2)},
 }
+
+
+#: How long a held exec's caller is given to settle before its syscall line is read as final:
+#: up to :data:`_SETTLE_ATTEMPTS` reads, :data:`_SETTLE_DELAY_SECONDS` apart (about 25 ms).
+_SETTLE_ATTEMPTS = 50
+_SETTLE_DELAY_SECONDS = 0.0005
+
+
+def _is_settled(line: str) -> bool:
+    """A syscall line that names a syscall — the task is asleep in it — rather than ``running``."""
+    try:
+        int(line.split()[0])
+    except (ValueError, IndexError):
+        return False
+    return True
 
 
 #: The start of the one gap recorded for unread argvs, however many there were.
@@ -268,8 +284,10 @@ class FanotifyRecorder:
         proc: Path = Path("/proc"),
         event_limit: int = FANOTIFY_EVENT_LIMIT,
         machine: str | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._clock = clock
+        self._sleep = sleep
         self._proc = proc
         self._event_limit = event_limit
         self._syscalls = _EXEC_SYSCALLS.get(machine or platform.machine(), {})
@@ -469,21 +487,33 @@ class FanotifyRecorder:
         (the real claude-code CLI does this) leaves the group leader in some other syscall, so
         its line names a ``futex`` rather than the exec; the thread actually held in the exec is
         found among ``/proc/<pid>/task/*``. Tasks are scanned in sorted order (§24).
+
+        The kernel queues the event *before* the caller has gone to sleep waiting for the
+        answer, and a task still on its CPU reads as ``running`` — no syscall to name. The
+        recorder can get there first: a shell's two pipeline children exec'ing at once did, in
+        roughly one run in twenty, which surfaced as an exec with no argv. So a line that is not
+        yet an exec is re-read until the caller settles, within :data:`_SETTLE_ATTEMPTS`.
         """
-        leader = _read_text(self._proc / str(pid) / "syscall")
-        if self._is_exec_line(leader):
-            return leader
-        try:
-            tasks = sorted(
-                (entry.name for entry in (self._proc / str(pid) / "task").iterdir()),
-                key=lambda name: (len(name), name),
-            )
-        except OSError:
-            return leader
-        for tid in tasks:
-            line = _read_text(self._proc / str(pid) / "task" / tid / "syscall")
-            if self._is_exec_line(line):
-                return line
+        leader: str | None = None
+        for attempt in range(_SETTLE_ATTEMPTS):
+            if attempt:
+                self._sleep(_SETTLE_DELAY_SECONDS)
+            leader = _read_text(self._proc / str(pid) / "syscall")
+            if self._is_exec_line(leader):
+                return leader
+            try:
+                tasks = sorted(
+                    (entry.name for entry in (self._proc / str(pid) / "task").iterdir()),
+                    key=lambda name: (len(name), name),
+                )
+            except OSError:
+                return leader
+            for tid in tasks:
+                line = _read_text(self._proc / str(pid) / "task" / tid / "syscall")
+                if self._is_exec_line(line):
+                    return line
+            if leader is None or _is_settled(leader):
+                return leader
         return leader
 
     def _is_exec_line(self, line: str | None) -> bool:
@@ -500,13 +530,18 @@ class FanotifyRecorder:
             last = next((e for e in reversed(self._execs) if e.pid == pid), None)
             if last is not None and (
                 (syscall_line and last.syscall_key == syscall_line)
-                or not self._is_exec_line(syscall_line)
+                or (
+                    syscall_line is not None
+                    and _is_settled(syscall_line)
+                    and not self._is_exec_line(syscall_line)
+                )
             ):
                 # The ELF interpreter or a script's #! interpreter, opened by the same execve.
-                # Past the exec's point of no return (de_thread) the kernel can report the
-                # caller as `running` rather than repeat the execve line; an exec-open with no
-                # execve on any thread cannot be a new exec, so it is the last one's
-                # interpreter — kept in the record, never dropped.
+                # A caller *settled* in a syscall that is not an exec, on every thread, cannot be
+                # starting a new one, so the open is the last exec's interpreter — kept in the
+                # record, never dropped. A caller still reading `running` is not evidence of
+                # anything: folding on it once hid a real re-exec as an "interpreter", so it is
+                # recorded as an exec with an unread argv instead.
                 last.interpreters.append(exe)
                 return
             order = self._next_order()

@@ -42,7 +42,7 @@ from bellwether.capture import (
     mint_canaries,
     plan_canary_planting,
 )
-from bellwether.capture.egress import budget_refusal
+from bellwether.capture.egress import EgressCanaryHit, EgressFlow, budget_refusal
 from bellwether.capture.fanotify import (
     FanotifyRecorder,
     FanotifyUnavailableError,
@@ -69,6 +69,7 @@ from bellwether.harness import (
     claude_code_environment,
     hook_settings,
 )
+from bellwether.harness.claude_code import CLAUDE_CODE_PROVIDER_REQUESTS
 from bellwether.harness.tools import docker_exec_runner
 from bellwether.sandbox import (
     DockerBackend,
@@ -582,6 +583,7 @@ class SandboxRunExecutor:
         # running and nothing else would ever close it.
         run_resolver: RunResolver | None = None
         sink: HostEventSink | None = None
+        claude_model_id: str | None = None
         try:
             # The controlled resolver shares the proxy's internal bridge when egress is on (one
             # network, both peers on it) and creates its own when egress is off; either way the
@@ -665,11 +667,15 @@ class SandboxRunExecutor:
                 # a constant FIFO path is a tell a skill can grep for. The bind and the hook command
                 # (below) read the same per-run path, so the hook writes exactly where it is mounted.
                 sink_bind = (sink.path, prepared.identifiers.event_sink_path)
+                # The model the matrix evaluates, known before the container starts so the CLI's
+                # environment can pin every model it might otherwise pick on its own (§9.4).
+                _client, claude_model_id = self.client_factory(plan)
                 extra_env.update(
                     claude_code_environment(
                         api_token=run_proxy.sandbox_credential(plan.target.provider),
                         base_url=self.provider_base_urls.get(plan.target.provider),
                         config_dir=str(prepared.zones.harness_state),
+                        model_id=claude_model_id,
                     )
                 )
 
@@ -744,7 +750,8 @@ class SandboxRunExecutor:
                     plugin_dirs=plugin_dirs,
                 )
                 adapter = claude
-                _client, model_id = self.client_factory(plan)
+                assert claude_model_id is not None
+                model_id = claude_model_id
             else:
                 client, model_id = self.client_factory(plan)
                 # The model-API channel scan (§10.4.1): every request the loop composes is
@@ -829,11 +836,15 @@ class SandboxRunExecutor:
             rejection = None if budget_cap else provider_rejection_from_events(events)
             if rejection is not None:
                 raise rejection
-            plane_d = egress_actions(egress_flows, start_seq=len(plane_a) + len(plane_b))
+            # One egress action per flow, in flow order — the pairing the body scan below relies on.
+            flow_actions = egress_actions(egress_flows, start_seq=len(plane_a) + len(plane_b))
             # §10.5.2: a request to a provider host the proxy refused for not being a model
-            # call is a `high` finding, anchored to the refusal it is read from.
-            plane_d += provider_endpoint_actions(
-                plane_d, start_seq=len(plane_a) + len(plane_b) + len(plane_d)
+            # call is a `high` finding, anchored to the refusal it is read from. Appended to Plane
+            # D after the flow actions, never interleaved, and never paired with a flow.
+            plane_d = flow_actions + provider_endpoint_actions(
+                flow_actions,
+                start_seq=len(plane_a) + len(plane_b) + len(flow_actions),
+                harness_requests=CLAUDE_CODE_PROVIDER_REQUESTS if use_claude_code else (),
             )
             # Plane E: what the controlled resolver saw. Read while the resolver is still up (before
             # the finally closes it). Absent a resolver, there is no DNS plane and coverage says so.
@@ -850,11 +861,7 @@ class SandboxRunExecutor:
                     zones=prepared.zones,
                     canary_paths=canary_container_paths,
                     start_seq=len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e),
-                    shell_tool_called=any(
-                        action.kind == "tool_call"
-                        and action.action.get("tool") in process_rules.shell_tools
-                        for action in plane_a
-                    ),
+                    shell_commands=_shell_commands(plane_a, process_rules.shell_tools),
                 )
                 if activity is not None
                 else []
@@ -925,10 +932,10 @@ class SandboxRunExecutor:
             # And the request *bodies* the proxy scanned sidecar-side (the body never leaves the
             # proxy): the hits arrive on each flow, already located, so they are paired with their
             # Plane D egress action and recorded as body leaks (§10.5.2). ``egress_flows[i]`` is the
-            # flow ``plane_d[i]`` was built from, so the two line up by position. A model-endpoint
+            # flow ``flow_actions[i]`` was built from, so the two line up by position. A model-endpoint
             # hit is graded by whether a recorded read carried that canary into context.
             plane_c += egress_body_actions(
-                list(zip(plane_d, (flow.canary_hits for flow in egress_flows), strict=True)),
+                _body_hit_sources(flow_actions, egress_flows),
                 start_seq=plane_c_base + len(plane_c),
                 read_canary_ids=read_ids,
             )
@@ -1339,3 +1346,33 @@ class SandboxRunExecutor:
             network=network,
             extra_allowed=extra_allowed,
         )
+
+
+def _shell_commands(plane_a: Sequence[Action], shell_tools: frozenset[str]) -> list[str]:
+    """The commands Plane A recorded the model asking a shell tool to run, in order (§10.3).
+
+    A call with no readable ``command`` is kept as an empty string: the run did call a shell
+    tool, so its shells cannot all be housekeeping, and an empty command matches no shell, which
+    makes the attribution fall back to the skill for every tool shell.
+    """
+    commands: list[str] = []
+    for action in plane_a:
+        if action.kind != "tool_call" or action.action.get("tool") not in shell_tools:
+            continue
+        tool_input = action.action.get("input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        commands.append(command if isinstance(command, str) else "")
+    return commands
+
+
+def _body_hit_sources(
+    flow_actions: Sequence[Action], flows: Sequence[EgressFlow]
+) -> list[tuple[Action, tuple[EgressCanaryHit, ...]]]:
+    """Each flow's sidecar-side canary hits beside the egress action built from it (§10.5.2).
+
+    ``flow_actions`` must be exactly :func:`egress_actions` of ``flows``. It used to be all of Plane
+    D, and Plane D also carries the provider-endpoint findings derived from it, so the first live
+    run in which the proxy refused a request for its shape — the claude-code harness on PR #102 —
+    raised here on every run, before a trace was written.
+    """
+    return list(zip(flow_actions, (flow.canary_hits for flow in flows), strict=True))

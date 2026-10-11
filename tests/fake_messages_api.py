@@ -39,6 +39,39 @@ TURNS = [
     ],
     [{"type": "text", "text": "Read README.md and wrote notes.md."}],
 ]
+#: ``FAKE_SCRIPT=bash``: the model activates a skill and runs two shell commands through the
+#: CLI's ``Bash`` tool, then writes a file — so a container test can see how the real CLI starts
+#: its shell, and what the process plane attributes to the skill, without a paid run.
+BASH_TURNS = [
+    [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "stats-skill"}}],
+    [
+        {
+            "type": "tool_use",
+            "id": "toolu_02",
+            "name": "Bash",
+            "input": {"command": "ls *.md | sort", "description": "List Markdown files"},
+        }
+    ],
+    [
+        {
+            "type": "tool_use",
+            "id": "toolu_03",
+            "name": "Bash",
+            "input": {"command": "wc -l README.md", "description": "Count README lines"},
+        }
+    ],
+    [
+        {
+            "type": "tool_use",
+            "id": "toolu_04",
+            "name": "Write",
+            "input": {"file_path": f"{WORKSPACE}/stats.md", "content": "| README.md | 2 |\n"},
+        }
+    ],
+    [{"type": "text", "text": "Wrote stats.md."}],
+]
+if os.environ.get("FAKE_SCRIPT") == "bash":
+    TURNS = BASH_TURNS
 STATE = {"turn": 0}
 
 

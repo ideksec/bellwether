@@ -54,6 +54,8 @@ from bellwether.sandbox import STABLE_SINK_CONTAINER_PATH
 __all__ = [
     "CLAUDE_CODE_HELPER_PROCESSES",
     "CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS",
+    "CLAUDE_CODE_MODEL_ENV",
+    "CLAUDE_CODE_PROVIDER_REQUESTS",
     "CLAUDE_CODE_TELEMETRY_ENV",
     "CLAUDE_CODE_TOOL_SHELLS",
     "ClaudeCodeAdapter",
@@ -100,6 +102,24 @@ CLAUDE_CODE_HELPER_PROCESSES: tuple[str, ...] = ("git", "rg")
 #: The shells the CLI starts as a direct child to run a ``Bash`` tool call: the shell is the tool,
 #: and the command inside it is the skill's (§10.3).
 CLAUDE_CODE_TOOL_SHELLS: tuple[str, ...] = ("bash", "dash", "sh", "zsh")
+
+#: Requests the CLI sends the provider host on its own account rather than as a model call: its
+#: remote managed settings and policy limits, fetched at start-up for an API-key session. Observed
+#: on every run of PR #102's live evaluation; the proxy refuses them (they are not model calls) and
+#: they are not the skill's ``unexpected_provider_endpoint`` (§10.5.2).
+CLAUDE_CODE_PROVIDER_REQUESTS: frozenset[tuple[str, str]] = frozenset(
+    {("GET", "/api/claude_code/settings"), ("GET", "/api/claude_code/policy_limits")}
+)
+
+#: The environment variables through which the CLI picks a model other than ``--model``. Read from
+#: the pinned CLI build's own source, not guessed.
+CLAUDE_CODE_MODEL_ENV: tuple[str, ...] = (
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
 
 CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS: tuple[str, ...] = (
     "datadoghq.com",
@@ -197,6 +217,7 @@ def claude_code_environment(
     api_token: str | None,
     base_url: str | None = None,
     config_dir: str = "/home/agent/.claude",
+    model_id: str | None = None,
 ) -> dict[str, str]:
     """The environment the CLI runs under inside the sandbox.
 
@@ -206,6 +227,12 @@ def claude_code_environment(
     provider's ``api_key_env`` uses on the host. ``base_url`` overrides the API endpoint only
     where the provider configures one. ``config_dir`` pins the CLI's state directory to the
     harness-state zone so its session writes are captured there (§10.2).
+
+    ``model_id`` pins every model the CLI may choose for itself — its small/fast model (used for
+    side calls around tool use), each tier's default and its sub-agent model — to the one the
+    matrix evaluates. ``--model`` sets only the main loop; left unpinned, the CLI's side calls
+    named a model outside the configured set, which the proxy rightly refuses as an unexpected
+    provider endpoint (§10.5.2) and which the evaluation neither measured nor priced.
     """
     env: dict[str, str] = dict(CLAUDE_CODE_TELEMETRY_ENV)
     env["CLAUDE_CONFIG_DIR"] = config_dir
@@ -213,6 +240,9 @@ def claude_code_environment(
         env["ANTHROPIC_API_KEY"] = api_token
     if base_url:
         env["ANTHROPIC_BASE_URL"] = base_url
+    if model_id:
+        for name in CLAUDE_CODE_MODEL_ENV:
+            env[name] = model_id
     return env
 
 
@@ -409,6 +439,8 @@ class ClaudeCodeAdapter:
             own=frozenset({PurePosixPath(self._binary).name}),
             tool_shells=frozenset(CLAUDE_CODE_TOOL_SHELLS),
             shell_tools=frozenset({"Bash"}),
+            # Observed on the live run (PR #102): `… && eval 'date -u' < /dev/null && …`.
+            shell_command_prefix="eval ",
             helpers=frozenset(CLAUDE_CODE_HELPER_PROCESSES),
             subtrees=frozenset(commands),
         )

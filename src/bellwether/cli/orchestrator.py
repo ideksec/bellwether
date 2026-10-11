@@ -2419,10 +2419,11 @@ def _sensitive_directory_result(reading: SetReading, profile: ProfileSpec) -> Ta
     both readings.
 
     The bound on the pass is stated rather than implied: the hit list is read off the tier-2
-    capability set, which comes from what the harness reported. A read performed inside a
-    subprocess the harness saw as a single ``bash`` call is not resolved to a path, so a pass
-    means "nothing sensitive in the reported activity", not "nothing sensitive was read". The
-    §10.3 process plane is what would close that, and it is v0.3.
+    capability set — what the harness reported, plus what host-side read capture saw a skill
+    process open. That capture watches the workspace and the planted credentials (its recorded
+    read domain, §10.2), so a subprocess reading some other file under ``~/.ssh/`` is still not
+    resolved to a path, and a pass means "nothing sensitive in the observed activity", not
+    "nothing sensitive was read".
     """
     disposition = profile.gates.security_runtime.sensitive_directory_access
     if reading.undeclared_sensitive_hits:
@@ -2468,8 +2469,9 @@ def _sensitive_directory_result(reading: SetReading, profile: ProfileSpec) -> Ta
         "pass",
         "no undeclared sensitive directory in the reported activity",
         disposition,
-        f"{touched}; the claim is bounded by what the harness reported, since a read inside a "
-        "subprocess is not resolved to a path until the §10.3 process plane exists",
+        f"{touched}; the claim is bounded by what the harness reported and by host-side read "
+        "capture, which resolves a subprocess's reads only within the workspace and the planted "
+        "credentials (§10.2)",
     )
 
 

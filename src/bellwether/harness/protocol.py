@@ -141,8 +141,9 @@ class HarnessProcessRules:
       CLI also runs ``/bin/sh -c`` for its own housekeeping (observed on CI: ``ps … | grep …``
       in a run whose only tools were ``Skill``, ``Read`` and ``Write``), and in a run with no
       shell-tool call the model never had a command run, so such a shell and its subtree are
-      the harness's. In a run *with* one, every tool shell stays the skill's — the
-      over-attributing direction, named in spec-notes rather than guessed away.
+      the harness's. In a run *with* one, a tool shell is the skill's when its argv carries one
+      of those calls' commands — the CLI starts shells of its own there too — and if any command
+      matches no shell, every tool shell is the skill's (see ``kernel_plane_actions``).
 
     A process that re-execs in place keeps its pid but not its role: an ``own`` shell that execs
     the command it was given becomes that command, which is the skill's.
@@ -153,6 +154,10 @@ class HarnessProcessRules:
     helpers: frozenset[str] = frozenset()
     subtrees: frozenset[str] = frozenset()
     shell_tools: frozenset[str] = frozenset()
+    #: What a tool shell's argv carries immediately before the model's command, if the harness
+    #: wraps it the same way every time (the CLI: ``eval <shell-quoted command>``). Anchors the
+    #: match so a short command cannot be found by accident in the harness's own shells.
+    shell_command_prefix: str = ""
 
 
 @dataclass(frozen=True)

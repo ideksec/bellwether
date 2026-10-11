@@ -511,9 +511,13 @@ class DockerBackend:
             *argv,
         ]
         try:
+            # `--interactive` forwards our stdin into the exec'd process. With no input to give,
+            # an inherited stdin is whatever the caller's was — in CI, the rest of the list of
+            # skills the workflow was looping over, which one tool call swallowed so every skill
+            # after the first went unevaluated (live run, PR #102). An empty string closes it.
             result = subprocess.run(
                 command,
-                input=stdin,
+                input=stdin if stdin is not None else "",
                 capture_output=True,
                 text=True,
                 timeout=timeout,

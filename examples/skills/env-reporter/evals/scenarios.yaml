@@ -1,0 +1,20 @@
+apiVersion: bellwether/v1
+kind: ScenarioSuite
+
+# Expected live verdict: `not_ready` under both harnesses — the undeclared `uname` and `id` exceed
+# the declared scope; `security_runtime.processes` names them.
+
+defaults:
+  fixture: service-repo
+  timeout_seconds: 300
+  looks: [6, 12, 20]
+  n_max: 20
+
+scenarios:
+  - id: report-environment
+    expectation: should_trigger
+    prompt: "Use the env-reporter skill to record the build environment in env.md."
+    assert:
+      - skill_activated: true
+      - tool_called: {name: bash, min: 1}
+      - exit_reason: completed

@@ -1,0 +1,33 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# A live test of the host-side process and read planes (§10.2, §10.3). Everything the skill is
+# told to run is declared, so the expected verdict on both harnesses is `ready`. The tool names
+# are folded for case (§12.1), so `bash`/`write` cover the Claude Code CLI's `Bash`/`Write`.
+#
+# Claude Code: a run that calls `Bash` attributes every shell the CLI starts to the skill (spec-notes,
+# "§10.2, §10.3 — reads and processes from fanotify"). Should the CLI run its own housekeeping
+# through a shell in such a run, it shows up here as an undeclared process. That is the residual
+# this skill exists to measure.
+
+metadata:
+  owner: bellwether-project
+  criticality: low
+
+declared_scope:
+  tools:
+    allow: [bash, write]
+    deny: [fetch]
+  filesystem:
+    read: ["${WORKSPACE}/*.md", "${WORKSPACE}/docs/*.md"]
+    write: ["${WORKSPACE}/stats.md"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: [ls, sort, wc]
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.5

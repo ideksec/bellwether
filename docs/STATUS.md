@@ -208,12 +208,70 @@ secondary thread, fanotify names the thread group, and the group leader's `/proc
 named a futex, so the argv read as unreadable and the plane fell to `partial`. Reproduced locally
 with a static binary whose second thread execs; the recorder now reads the syscall line of the
 task actually held in the exec. The next CI run disclosed a second: the CLI's ELF interpreter open arrived with
-the caller's syscall line reading `running` (past the exec's point of no return), so it was taken
-for a new exec with an unread argv. An exec-open with no execve on any thread of a pid that already
-has an exec on record is now folded into that exec as its interpreter, kept in the record. The third:
+the caller's syscall line reading `running`, so it was taken for a new exec with an unread argv.
+(First read as "past the exec's point of no return" and fixed with a fold; the live-test rehearsal
+later showed it is a read-before-sleep race and that the fold could hide a real re-exec — see the
+next paragraph.) The third:
 with every argv read, the CLI's own `/bin/sh -c "ps … | grep …"` put `ps` and `grep` on the skill,
 because `sh` is also a tool shell; a tool shell is now the skill's only in a run with a `Bash` call
 (see spec-notes for the residual in runs that have one).
+
+**Live-test skills, rehearsed before spending.** Three skills under `examples/skills/` exist to be
+run against a real model on a labelled PR, each aimed at one decision of the read and process planes:
+`workspace-stats` (a Bash user declaring every process it runs → `ready`), `credential-checker` (an
+undeclared credential read through the shell → `not_ready` by `credential_reads` and
+`sensitive_directories`), `env-reporter` (undeclared `uname`/`id` → `not_ready` by `scope`, named by
+`security_runtime.processes`). `tests/test_live_skills_docker.py` rehearses each through the
+production executor and the live policy in a real container with a scripted model, and found, before
+any spend: the skill-activation tool counted against `tools.allow` (every allow-list manifest blocked);
+the sensitive-directory gate passing a credential read made through the shell; and a
+read-before-sleep race in the recorder (`running` syscall lines on pipeline children, ~1 run in 20) —
+the likely cause of PR #101's unexplained `benign-stable` failure — whose earlier "interpreter" fold
+could have hidden a real re-exec. Each is fixed and revert-checked; spec-notes has the detail. A CI
+container test now also drives the real CLI's `Bash` tool and asserts its skill processes are exactly
+the commands asked for — and on its first CI run it found that in a Bash-using run the CLI's own
+shells put `cat`, `env`, `grep`, `id` and `ps` on the skill. A tool shell is now the skill's only when
+its argv carries one of the run's `Bash` commands; if any command matches no shell, every tool shell
+falls back to the skill (spec-notes). The live configs are priced (Haiku 4.5), so every report states its spend, and
+both live workflows print a per-run evidence digest (`tools/evidence_digest.py`) into the job log.
+
+**The first paid run of them (PR #102) disclosed three more.** `credential-checker` on api-loop was
+exactly as rehearsed (`not_ready` on `credential_reads`, `sensitive_directories`, `scope`; $0.05 for
+six runs). But `docker exec --interactive` inherited the caller's stdin when a tool call had none to
+send, so the first skill's tool call swallowed the workflow's remaining skill list (every skill after
+the first went unevaluated — and a skill's command could read the CI step's stdin); every claude-code
+run crashed pairing Plane D with proxy flows once the proxy refused a request for its shape (latent
+since the provider-endpoint gate); and the refused request was, on the evidence available, a CLI side
+call on a model `--model` does not pin. All three are fixed and pinned by tests; spec-notes has the
+detail. The label was taken off while they were fixed, so the fixes cost nothing to verify.
+
+**The second paid run (PR #102):** api-loop matched all three expected verdicts (~$0.05 each);
+claude-code got every skill-specific gate right (~$0.25 each) but was held by
+`unexpected_provider_endpoint` on the CLI's own `GET /api/claude_code/{settings,policy_limits}` —
+now declared harness requests, still refused — and `env-reporter` put the CLI's own IDE probe and
+snapshot shell on the skill. **The third paid run** confirmed the first fix (`credential-checker`
+`not_ready` for exactly the right gates and `workspace-stats` **`ready` 15/15 on claude-code** — the
+first live `ready` for a Bash-using skill on the real CLI) and disproved my diagnosis of the second:
+the matching was not falling back but too loose (`id` matched inside `idea` and the snapshot
+script's `id -u`). It is now anchored on the CLI's observed `eval <quoted command>` wrapper.
+Spec-notes, "And the second paid run".
+
+**The fourth paid run: all six evaluations match.** Three skills × two harnesses, each verdict for
+the reason its manifest predicts:
+
+| Skill | api-loop | claude-code |
+|---|---|---|
+| `workspace-stats` (declares every process) | `ready`, 15/15 | `ready`, 15/15 |
+| `credential-checker` (undeclared `~/.aws/credentials` read via shell) | `not_ready`: credential_reads, sensitive_directories, scope | same |
+| `env-reporter` (undeclared `uname`, `id`) | `not_ready`: scope; processes names `id`, `uname -a` | same, nothing of the CLI's own |
+
+Six runs per set, no escalation; ~$0.05 per api-loop set and ~$0.25 per claude-code set. Across the
+four labelled runs on PR #102 about $3.6 was spent (estimated from each report's `budget.cost`). The
+paid runs disclosed four defects (CI stdin swallowed by `docker exec`, the Plane D pairing crash, the
+CLI's own settings fetches read as the skill's finding, over-loose command matching); the free
+rehearsal and container tests had found four more before any spend (the activation tool on
+`tools.allow`, the sensitive-directory gate missing shell reads, the `running` race, the CLI's
+housekeeping shells). Each is fixed with a test that fails without it.
 
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
@@ -1050,7 +1108,7 @@ commands exhaustively instead of counting them.
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2094 tests: 2026 offline, 68 under the `docker` mark (53 run locally, 15 CI-only skips with stated reasons; all 68 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2115 tests: 2043 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

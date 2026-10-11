@@ -827,6 +827,26 @@ def test_an_explicitly_denied_tool_is_exceeded_even_with_no_allow_list() -> None
     assert exceeded.evidence == (5,)
 
 
+def test_the_skill_activation_tool_need_not_be_on_an_allow_list() -> None:
+    """Calling ``skill`` (api-loop) or ``Skill`` (the Claude Code CLI) is how the skill under test
+    comes to be running. Found by rehearsing a live-test skill whose ``tools.allow`` listed every
+    tool it used: its own activation was ``exceeded``, so the scope gate blocked a clean skill —
+    as it would have for any manifest with an allow-list. A ``deny`` still applies."""
+    scope = make_scope(
+        tools={"allow": ["read", "write", "bash"], "deny": []},
+        filesystem={"read": [], "write": [], "deny_read": []},
+    )
+    table = evaluate_scope(scope, index_of(make_trace(session_actions())))
+    assert table.exceeded() == ()
+
+    denied = make_scope(
+        tools={"allow": ["read", "write", "bash"], "deny": ["Skill"]},
+        filesystem={"read": [], "write": [], "deny_read": []},
+    )
+    (exceeded,) = evaluate_scope(denied, index_of(make_trace(session_actions()))).exceeded()
+    assert (exceeded.area, exceeded.subject) == ("tools", "Skill")
+
+
 def test_a_deny_only_manifest_does_not_make_every_other_tool_exceeded() -> None:
     """The other half of the same rule. A manifest that states prohibitions and no allow-list has
     not claimed to enumerate what it uses, so the tools it does not mention are unstated, not

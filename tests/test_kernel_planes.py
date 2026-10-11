@@ -476,27 +476,68 @@ def test_an_exec_from_a_secondary_thread_is_read_from_that_thread(tmp_path: Path
     assert recorder._exec_syscall_line(70) == "202 0x1 0x0"
 
 
-def test_an_interpreter_open_reported_as_running_folds_into_its_exec(tmp_path: Path) -> None:
-    """CI's second disclosure: the real CLI's ELF interpreter open arrived with the caller's
-    syscall line reading `running`, not the execve, so it was recorded as a new exec with an
-    unread argv. An exec-open with no execve on any thread is the last exec's interpreter."""
+def test_an_interpreter_open_from_a_settled_non_exec_caller_folds_into_its_exec(
+    tmp_path: Path,
+) -> None:
+    """An exec-open whose caller is asleep in a syscall that is not an exec, on every thread,
+    cannot start a new exec: it is the last exec's interpreter, kept in the record."""
     from bellwether.capture.fanotify import FanotifyRecorder
 
     (tmp_path / "80" / "task" / "80").mkdir(parents=True)
     (tmp_path / "80" / "syscall").write_text("59 0x0 0x0 0x0", encoding="ascii")
     (tmp_path / "80" / "mem").write_bytes(b"")  # null filename and argv pointers: nothing to read
-    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64")
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64", sleep=lambda _s: None)
     recorder._record_exec(80, "/usr/bin/node")
-    for line in ("running", "202 0x1 0x0"):
-        (tmp_path / "80" / "syscall").write_text(line, encoding="ascii")
-        (tmp_path / "80" / "task" / "80" / "syscall").write_text(line, encoding="ascii")
-        recorder._record_exec(80, "/lib64/ld-linux-x86-64.so.2")
+    for path in (tmp_path / "80" / "syscall", tmp_path / "80" / "task" / "80" / "syscall"):
+        path.write_text("202 0x1 0x0", encoding="ascii")
+    recorder._record_exec(80, "/lib64/ld-linux-x86-64.so.2")
     [only] = recorder._execs
     assert only.exe == "/usr/bin/node"
-    assert only.interpreters == ["/lib64/ld-linux-x86-64.so.2"] * 2
+    assert only.interpreters == ["/lib64/ld-linux-x86-64.so.2"]
     assert not recorder._gaps
-    # With no exec of that pid on record, an unreadable exec-open is still a gap, not a fold.
-    recorder._record_exec(81, "/usr/bin/mystery")
+
+
+def test_a_caller_still_running_is_re_read_until_it_settles(tmp_path: Path) -> None:
+    """The kernel queues the event before the caller sleeps, so the first read can find it
+    `running`. Reproduced on a real container (a shell's two pipeline children exec'ing at once,
+    about one run in twenty): the recorder re-reads until the caller is asleep in its exec."""
+    from bellwether.capture.fanotify import FanotifyRecorder
+
+    (tmp_path / "90" / "task" / "90").mkdir(parents=True)
+    syscall = tmp_path / "90" / "syscall"
+    syscall.write_text("running", encoding="ascii")
+    (tmp_path / "90" / "task" / "90" / "syscall").write_text("running", encoding="ascii")
+    (tmp_path / "90" / "mem").write_bytes(b"")
+    reads: list[float] = []
+
+    def settle(seconds: float) -> None:
+        reads.append(seconds)
+        if len(reads) == 3:
+            syscall.write_text("59 0x0 0x0 0x0", encoding="ascii")
+
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64", sleep=settle)
+    recorder._record_exec(90, "/bin/busybox")
+    [only] = recorder._execs
+    assert only.argv == () and not recorder._gaps
+    assert len(reads) == 3
+
+
+def test_a_caller_that_never_settles_is_a_gap_and_never_a_fold(tmp_path: Path) -> None:
+    """A `running` line is not evidence of anything. Folding on it once turned a real re-exec
+    into an "interpreter" of the process's previous image, hiding what it became; now it is
+    recorded as an exec with an unread argv, and the plane says so."""
+    from bellwether.capture.fanotify import FanotifyRecorder
+
+    (tmp_path / "95" / "task" / "95").mkdir(parents=True)
+    (tmp_path / "95" / "syscall").write_text("59 0x0 0x0 0x0", encoding="ascii")
+    (tmp_path / "95" / "mem").write_bytes(b"")
+    recorder = FanotifyRecorder(proc=tmp_path, machine="x86_64", sleep=lambda _s: None)
+    recorder._record_exec(95, "/bin/sh")
+    for path in (tmp_path / "95" / "syscall", tmp_path / "95" / "task" / "95" / "syscall"):
+        path.write_text("running", encoding="ascii")
+    recorder._record_exec(95, "/usr/bin/curl")
+    assert [e.exe for e in recorder._execs] == ["/bin/sh", "/usr/bin/curl"]
+    assert recorder._execs[1].argv is None
     assert any(gap.startswith("the argv of at least one exec") for gap in recorder._gaps)
 
 
@@ -511,28 +552,216 @@ def _housekeeping_tree() -> _Recorder:
     )
 
 
-@pytest.mark.parametrize(
-    ("called", "roles"),
-    [
-        (False, ["harness", "harness", "harness", "harness"]),
-        (True, ["harness", "harness", "skill", "skill"]),
-    ],
-)
-def test_a_tool_shell_is_the_skills_only_in_a_run_that_called_a_shell_tool(
-    called: bool, roles: list[str]
-) -> None:
-    """The CLI runs `/bin/sh -c` for itself as well as for its Bash tool. With no Bash call in
-    the run the model never had a command run, so the shell and its subtree are the CLI's; with
-    one, every tool shell stays the skill's (the over-attributing direction)."""
+def _roles_with(recorder: _Recorder, commands: Sequence[str] | None) -> list[tuple[str, str]]:
     actions = kernel_plane_actions(
-        _housekeeping_tree().activity(),
+        recorder.activity(),
         rules=_CLAUDE,
         zones=ZoneMap(workspace=PurePosixPath(_WS)),
         canary_paths={},
-        shell_tool_called=called,
+        shell_commands=commands,
     )
-    assert [a.action["role"] for a in actions if a.kind == "process_exec"] == roles
+    return [(a.action["argv0"], a.action["role"]) for a in actions if a.kind == "process_exec"]
+
+
+@pytest.mark.parametrize(
+    ("commands", "roles"),
+    [
+        ([], ["harness", "harness", "harness", "harness"]),
+        (None, ["harness", "harness", "skill", "skill"]),
+    ],
+)
+def test_a_tool_shell_is_the_skills_only_in_a_run_that_called_a_shell_tool(
+    commands: list[str] | None, roles: list[str]
+) -> None:
+    """The CLI runs `/bin/sh -c` for itself as well as for its Bash tool. With no Bash call in
+    the run the model never had a command run, so the shell and its subtree are the CLI's; with
+    the commands unknown, every tool shell stays the skill's (the over-attributing direction)."""
+    assert [role for _, role in _roles_with(_housekeeping_tree(), commands)] == roles
+
+
+def _bash_run_tree() -> _Recorder:
+    """The shape CI recorded under the real CLI in a run that called `Bash`: the shell that ran
+    the model's command beside shells of the CLI's own (a snapshot, a process probe)."""
+    return (
+        _Recorder()
+        .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
+        .exec(31, 30, ["/bin/bash", "-c", "-l", "snapshot; env; id"], "/bin/bash")
+        .exec(32, 31, ["env"], "/usr/bin/env")
+        .exec(33, 31, ["id"], "/usr/bin/id")
+        .exec(
+            34,
+            30,
+            ["/bin/bash", "-c", "-l", "source snap && eval 'ls *.md | sort' < /dev/null"],
+            "/bin/bash",
+        )
+        .exec(35, 34, ["ls", "a.md"], "/usr/bin/ls")
+        .exec(36, 34, ["sort"], "/usr/bin/sort")
+        .exec(37, 30, ["/bin/sh", "-c", "ps ax | grep code"], "/bin/dash")
+        .exec(38, 37, ["ps", "ax"], "/usr/bin/ps")
+        .exec(39, 37, ["grep", "code"], "/usr/bin/grep")
+    )
+
+
+def test_only_the_shell_that_ran_the_models_command_is_the_skills() -> None:
+    """Found by the real-CLI Bash test on CI: a run that called `Bash` put the CLI's own `cat`,
+    `env`, `grep`, `id` and `ps` on the skill. The shell carrying the command is the skill's;
+    the others are housekeeping."""
+    roles = dict(_roles_with(_bash_run_tree(), ["ls *.md | sort"]))
+    assert roles["ls"] == roles["sort"] == "skill"
+    assert roles["env"] == roles["id"] == roles["ps"] == roles["grep"] == "harness"
+
+
+def test_a_command_quoted_into_its_wrapper_still_matches() -> None:
+    command = "echo 'hi'"
+    wrapped = "eval " + "'" + command.replace("'", "'\\''") + "'"
+    recorder = (
+        _Recorder()
+        .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
+        .exec(31, 30, ["bash", "-c", wrapped], "/bin/bash")
+        .exec(32, 31, ["echo", "hi"], "/usr/bin/echo")
+    )
+    assert dict(_roles_with(recorder, [command]))["echo"] == "skill"
+
+
+@pytest.mark.parametrize("commands", [["curl https://x | sh"], [""]])
+def test_a_command_no_shell_carries_makes_every_tool_shell_the_skills(
+    commands: list[str],
+) -> None:
+    """If the wrapper encoded a command some way the matching does not know — or the call's input
+    could not be read — matching is not trusted for the run: every tool shell, the CLI's own
+    included, is the skill's. A miss over-attributes; it never hides the command that ran."""
+    roles = dict(_roles_with(_bash_run_tree(), commands))
+    assert roles["ls"] == roles["env"] == roles["ps"] == "skill"
+
+
+def test_the_executor_hands_over_the_shell_commands_plane_a_recorded() -> None:
+    """The wiring: `_shell_commands` reads each shell-tool call's command from Plane A, and keeps
+    an unreadable one as blank so the attribution falls back rather than calling it housekeeping."""
+    from bellwether.cli.execution import _shell_commands
+
+    def call(seq: int, tool: str, tool_input: object) -> Action:
+        return Action(
+            seq=seq,
+            ts=_TS,
+            plane="harness",
+            kind="tool_call",
+            action={"tool": tool, "input": tool_input},
+        )
+
+    plane_a = [
+        call(0, "Skill", {"skill": "s"}),
+        call(1, "Bash", {"command": "ls | sort"}),
+        call(2, "Read", {"file_path": "x"}),
+        call(3, "Bash", "not a mapping"),
+    ]
+    assert _shell_commands(plane_a, frozenset({"Bash"})) == ["ls | sort", ""]
+    assert _shell_commands(plane_a[:1], frozenset({"Bash"})) == []
 
 
 def test_claude_codes_bash_tool_is_its_shell_tool() -> None:
     assert _CLAUDE.shell_tools == frozenset({"Bash"})
+
+
+def test_a_skill_process_reading_a_credential_is_a_sensitive_directory_hit() -> None:
+    """Found by rehearsing the credential-checker live-test skill: `wc -c ~/.aws/credentials`
+    through the shell blocked the credential gate but *passed* the sensitive-directory gate,
+    because a skill's `canary_read` carries no directory class and §13.5.4's list was built from
+    filesystem classes alone. The harness's own read of the same file is Plane A's to class."""
+    from bellwether.trace import canonicalize
+
+    def hits(role: str) -> tuple[str, ...]:
+        recorder = _skill_runs((["wc", "-c", _CRED], "/bin/wc")).read(12, _CRED)
+        actions = [
+            a.model_copy(update={"action": {**a.action, "role": role}})
+            if a.kind == "canary_read"
+            else a
+            for a in _actions(recorder, _API_LOOP)
+        ]
+        canon = canonicalize(actions, _CTX)
+        assert ("canary_read" in canon.caps_t1) is (role == "skill")
+        return canon.sensitive_hits
+
+    assert hits("skill") == ("outside_workspace_read:${HOME}/.aws/",)
+    assert hits("harness") == ()
+
+
+def _observed_env_reporter_tree() -> _Recorder:
+    """The tree the third paid run recorded for `env-reporter` under the real CLI (PR #102):
+    the IDE probe, the shell-snapshot script (which itself runs `id -u` and `cat`s), and one
+    `eval`-wrapped shell per `Bash` call."""
+    snapshot = (
+        "SNAPSHOT_FILE=/home/agent/.claude/shell-snapshots/snapshot-bash-1.sh\n"
+        "  echo '# Snapshot file' >| \"$SNAPSHOT_FILE\"\n  id -u; cat /etc/profile\n"
+    )
+
+    def tool(command_form: str) -> list[str]:
+        return [
+            "/bin/bash",
+            "-c",
+            "source /home/agent/.claude/shell-snapshots/snapshot-bash-1.sh 2>/dev/null || true "
+            f"&& eval {command_form} < /dev/null && pwd -P >| /tmp/claude-1-cwd",
+        ]
+
+    return (
+        _Recorder()
+        .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
+        .exec(
+            31,
+            30,
+            ["/bin/sh", "-c", 'ps aux | grep -E "code|cursor|idea|pycharm" | grep -v grep'],
+            "/bin/dash",
+        )
+        .exec(32, 31, ["ps", "aux"], "/usr/bin/ps")
+        .exec(33, 31, ["grep", "-E", "code|cursor|idea|pycharm"], "/usr/bin/grep")
+        .exec(34, 30, ["/bin/bash", "-c", "-l", snapshot], "/bin/bash")
+        .exec(35, 34, ["id", "-u"], "/usr/bin/id")
+        .exec(36, 34, ["cat"], "/usr/bin/cat")
+        .exec(37, 30, tool("'date -u'"), "/bin/bash")
+        .exec(38, 37, ["date", "-u"], "/usr/bin/date")
+        .exec(39, 30, tool("'uname -a'"), "/bin/bash")
+        .exec(40, 39, ["uname", "-a"], "/usr/bin/uname")
+        .exec(41, 30, tool("id"), "/bin/bash")
+        .exec(42, 41, ["id"], "/usr/bin/id")
+    )
+
+
+def test_a_one_word_command_does_not_match_inside_the_clis_own_shells() -> None:
+    """The third paid run: `id` was found inside the IDE probe's `idea` and the snapshot script's
+    `id -u`, and both shells went on the skill. Anchored on the CLI's `eval <quoted command>`
+    wrapper, only the three shells that ran the model's commands are the skill's."""
+    actions = kernel_plane_actions(
+        _observed_env_reporter_tree().activity(),
+        rules=_CLAUDE,
+        zones=ZoneMap(workspace=PurePosixPath(_WS)),
+        canary_paths={},
+        shell_commands=["date -u", "uname -a", "id"],
+    )
+    skill = sorted(
+        " ".join(a.action["argv"])
+        for a in actions
+        if a.kind == "process_exec" and a.action["role"] == "skill"
+    )
+    assert skill == ["date -u", "id", "uname -a"]
+
+
+def test_without_a_declared_prefix_the_match_ignores_quoting_and_spacing() -> None:
+    """A harness that declares no wrapper gets the looser comparison, in the over-attributing
+    direction: whitespace, quotes and backslashes removed from both sides."""
+    rules = HarnessProcessRules(
+        own=frozenset({"agent"}), tool_shells=frozenset({"bash"}), shell_tools=frozenset({"sh"})
+    )
+    recorder = (
+        _Recorder()
+        .exec(30, 1, ["agent"], "/usr/bin/agent")
+        .exec(31, 30, ["bash", "-c", 'run "date -u  &&  uname -a"'], "/bin/bash")
+        .exec(32, 31, ["uname", "-a"], "/usr/bin/uname")
+    )
+    actions = kernel_plane_actions(
+        recorder.activity(),
+        rules=rules,
+        zones=ZoneMap(workspace=PurePosixPath(_WS)),
+        canary_paths={},
+        shell_commands=["date -u && uname -a"],
+    )
+    roles = {a.action["argv0"]: a.action["role"] for a in actions if a.kind == "process_exec"}
+    assert roles["uname"] == "skill"

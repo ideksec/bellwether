@@ -22,6 +22,7 @@ trace. The assertions are the things that could silently go wrong:
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -429,3 +430,132 @@ def test_a_proxy_cap_ends_a_claude_code_run_as_budget_exceeded(
     assert executed.trace.exit_reason == "budget_exceeded", executed.trace.footer
     capped = [a for a in executed.trace.actions_on_plane("egress") if a.action.get("cap_exceeded")]
     assert capped and capped[0].action["cap_exceeded"] == "max_requests"
+
+
+@pytest.fixture
+def stats_skill_dir(tmp_path: Path) -> Path:
+    root = tmp_path / "stats-skill"
+    (root / "evals").mkdir(parents=True)
+    (root / "SKILL.md").write_text(
+        "---\nname: stats-skill\ndescription: Counts Markdown lines with ls, sort and wc.\n"
+        "---\nRun `ls *.md | sort` and `wc -l README.md`, then write stats.md.\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_the_real_clis_bash_tool_runs_only_the_skills_commands_as_the_skill(
+    images: tuple[str, str],
+    stats_skill_dir: Path,
+    fixture_source: Path,
+    tmp_path: Path,
+) -> None:
+    """The process plane under the real CLI's ``Bash`` tool (§10.3), before any paid run.
+
+    The live ``workspace-stats`` skill declares exactly the commands it runs and is expected to
+    reach ``ready``. In a run that calls ``Bash`` every shell the CLI starts is the skill's
+    (``HarnessProcessRules.shell_tools``), so whatever the CLI's own Bash wrapper or housekeeping
+    execs would land on the skill as an undeclared process. This scripts the same shape against
+    the real CLI 2.1.257 and asserts the skill's processes are exactly the commands the model
+    asked for — so CI names any extra before a labelled run pays to find it.
+    """
+    sandbox_image, sidecar_image = images
+    request_log = tmp_path / "requests.jsonl"
+    host_ip = _host_ip_for_containers()
+    port = _free_port()
+    base_url = f"http://{host_ip}:{port}"
+    server = subprocess.Popen(
+        [sys.executable, str(_FAKE_API), str(port), "0.0.0.0"],
+        env={
+            **os.environ,
+            "FAKE_WS": _WORKSPACE_ROOT,
+            "FAKE_SCRIPT": "bash",
+            "FAKE_REQ_LOG": str(request_log),
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(1)
+    os.environ[_FAKE_KEY_ENV] = "sk-real-fake-provider-key"
+    try:
+        broker = CredentialBroker.for_run(
+            {"anthropic": _FAKE_KEY_ENV}, os.environ, rng=SeededRng(1, "claude-code-bash-test")
+        )
+        proxy = SidecarProxyProvider(
+            backend=DockerBackend(image=sandbox_image),
+            image=sidecar_image,
+            allowlist=EgressAllowlist(
+                provider_endpoints=provider_authorities([base_url]),
+                infrastructure_endpoints=frozenset(CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS),
+            ),
+            max_requests=50,
+            max_request_bytes=1 << 20,
+            broker=broker,
+            provider_of_host=dict.fromkeys(provider_hosts([base_url]), "anthropic"),
+        )
+        executor = SandboxRunExecutor(
+            backend=DockerBackend(image=sandbox_image),
+            package=load_skill(stats_skill_dir),
+            fixture=fixture_source,
+            client_factory=lambda _plan: (ScriptedClient([]), "fake-model-v1"),
+            eval_id="wp17-bash",
+            run_root=tmp_path / "runs",
+            proxy=proxy,
+            randomize_identifiers=False,
+            provider_base_urls={"anthropic": base_url},
+        )
+        executed = executor.execute(
+            RunPlan(
+                scenario=Scenario(
+                    id="count-lines",
+                    expectation="should_trigger",
+                    prompt="Use the stats-skill to count lines.",
+                    assertions=[AssertionSpec(name="skill_activated", params=True)],
+                ),
+                target=TargetInfo(
+                    harness="claude-code", provider="anthropic", model_alias="frontier"
+                ),
+                repetition=1,
+            )
+        )
+    finally:
+        server.kill()
+        server.wait()
+        os.environ.pop(_FAKE_KEY_ENV, None)
+
+    # Every model call the CLI made names the configured model. `--model` sets only the main loop;
+    # the live run on PR #102 had the proxy refuse a side call on every Bash-using run, which is
+    # what the model pinning in `claude_code_environment` closes.
+    calls: list[tuple[str, object]] = []
+    path = ""
+    for line in request_log.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and set(record) == {"path", "headers"}:
+            path = str(record["path"])
+        elif isinstance(record, dict) and path.split("?")[0].endswith("/messages"):
+            calls.append((path, record.get("model")))
+    assert calls, "the CLI made no model call the fake API saw"
+    assert {model for _, model in calls} == {"fake-model-v1"}, calls
+
+    trace = executed.trace
+    assert trace.exit_reason == "completed", trace.footer
+    tools = [a.action["tool"] for a in trace.actions_of_kind("tool_call")]
+    assert tools == ["Skill", "Bash", "Bash", "Write"], tools
+    assert trace.header.coverage.process is not None
+    assert trace.header.coverage.process.fidelity == "full", trace.header.coverage.process
+    processes = [
+        (a.action["argv0"], a.action["role"], a.action.get("attribution"), a.action.get("argv"))
+        for a in trace.actions_of_kind("process_exec")
+    ]
+    tree = "\n".join(
+        f"{a.action.get('ppid')}>{a.correlation.pid if a.correlation else '?'} "
+        f"{a.action['role']}/{a.action.get('attribution')} {a.action.get('argv')!r}"
+        for a in trace.actions_of_kind("process_exec")
+    )
+    skill = sorted({argv0 for argv0, role, _, _ in processes if role == "skill"})
+    # Exactly the commands the model asked `Bash` to run — nothing of the CLI's own. The whole
+    # tree goes into the message, so a CI failure shows the wrapper's real shape.
+    assert skill == ["ls", "sort", "wc"], f"skill processes {skill}; tree:\n{tree}"
