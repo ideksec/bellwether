@@ -685,22 +685,83 @@ def test_a_skill_process_reading_a_credential_is_a_sensitive_directory_hit() -> 
     assert hits("harness") == ()
 
 
-@pytest.mark.parametrize(
-    "wrapped",
-    [
-        'eval "date -u && uname   -a"',
-        "cat > env.md <<'EOF'\n# env\nEOF",
-    ],
-)
-def test_the_match_survives_a_wrappers_quoting_and_spacing(wrapped: str) -> None:
-    command = "date -u && uname -a" if "date" in wrapped else "cat > env.md << 'EOF'\n# env\nEOF"
-    recorder = (
+def _observed_env_reporter_tree() -> _Recorder:
+    """The tree the third paid run recorded for `env-reporter` under the real CLI (PR #102):
+    the IDE probe, the shell-snapshot script (which itself runs `id -u` and `cat`s), and one
+    `eval`-wrapped shell per `Bash` call."""
+    snapshot = (
+        "SNAPSHOT_FILE=/home/agent/.claude/shell-snapshots/snapshot-bash-1.sh\n"
+        "  echo '# Snapshot file' >| \"$SNAPSHOT_FILE\"\n  id -u; cat /etc/profile\n"
+    )
+
+    def tool(command_form: str) -> list[str]:
+        return [
+            "/bin/bash",
+            "-c",
+            "source /home/agent/.claude/shell-snapshots/snapshot-bash-1.sh 2>/dev/null || true "
+            f"&& eval {command_form} < /dev/null && pwd -P >| /tmp/claude-1-cwd",
+        ]
+
+    return (
         _Recorder()
         .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
-        .exec(31, 30, ["bash", "-c", "-l", wrapped], "/bin/bash")
-        .exec(32, 31, ["uname", "-a"], "/usr/bin/uname")
-        .exec(33, 30, ["/bin/sh", "-c", "ps aux | grep code"], "/bin/dash")
-        .exec(34, 33, ["ps", "aux"], "/usr/bin/ps")
+        .exec(
+            31,
+            30,
+            ["/bin/sh", "-c", 'ps aux | grep -E "code|cursor|idea|pycharm" | grep -v grep'],
+            "/bin/dash",
+        )
+        .exec(32, 31, ["ps", "aux"], "/usr/bin/ps")
+        .exec(33, 31, ["grep", "-E", "code|cursor|idea|pycharm"], "/usr/bin/grep")
+        .exec(34, 30, ["/bin/bash", "-c", "-l", snapshot], "/bin/bash")
+        .exec(35, 34, ["id", "-u"], "/usr/bin/id")
+        .exec(36, 34, ["cat"], "/usr/bin/cat")
+        .exec(37, 30, tool("'date -u'"), "/bin/bash")
+        .exec(38, 37, ["date", "-u"], "/usr/bin/date")
+        .exec(39, 30, tool("'uname -a'"), "/bin/bash")
+        .exec(40, 39, ["uname", "-a"], "/usr/bin/uname")
+        .exec(41, 30, tool("id"), "/bin/bash")
+        .exec(42, 41, ["id"], "/usr/bin/id")
     )
-    roles = dict(_roles_with(recorder, [command]))
-    assert roles["uname"] == "skill" and roles["ps"] == "harness"
+
+
+def test_a_one_word_command_does_not_match_inside_the_clis_own_shells() -> None:
+    """The third paid run: `id` was found inside the IDE probe's `idea` and the snapshot script's
+    `id -u`, and both shells went on the skill. Anchored on the CLI's `eval <quoted command>`
+    wrapper, only the three shells that ran the model's commands are the skill's."""
+    actions = kernel_plane_actions(
+        _observed_env_reporter_tree().activity(),
+        rules=_CLAUDE,
+        zones=ZoneMap(workspace=PurePosixPath(_WS)),
+        canary_paths={},
+        shell_commands=["date -u", "uname -a", "id"],
+    )
+    skill = sorted(
+        " ".join(a.action["argv"])
+        for a in actions
+        if a.kind == "process_exec" and a.action["role"] == "skill"
+    )
+    assert skill == ["date -u", "id", "uname -a"]
+
+
+def test_without_a_declared_prefix_the_match_ignores_quoting_and_spacing() -> None:
+    """A harness that declares no wrapper gets the looser comparison, in the over-attributing
+    direction: whitespace, quotes and backslashes removed from both sides."""
+    rules = HarnessProcessRules(
+        own=frozenset({"agent"}), tool_shells=frozenset({"bash"}), shell_tools=frozenset({"sh"})
+    )
+    recorder = (
+        _Recorder()
+        .exec(30, 1, ["agent"], "/usr/bin/agent")
+        .exec(31, 30, ["bash", "-c", 'run "date -u  &&  uname -a"'], "/bin/bash")
+        .exec(32, 31, ["uname", "-a"], "/usr/bin/uname")
+    )
+    actions = kernel_plane_actions(
+        recorder.activity(),
+        rules=rules,
+        zones=ZoneMap(workspace=PurePosixPath(_WS)),
+        canary_paths={},
+        shell_commands=["date -u && uname -a"],
+    )
+    roles = {a.action["argv0"]: a.action["role"] for a in actions if a.kind == "process_exec"}
+    assert roles["uname"] == "skill"

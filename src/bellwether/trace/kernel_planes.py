@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -123,25 +124,51 @@ def _attribute(
 #: newlines, a wrapper's spacing) and the quoting and escaping characters it re-quotes with.
 _UNQUOTED = re.compile(r"[\s'\"\\]+")
 
+#: What may follow an embedded command in a wrapper: the end, or a shell delimiter.
+_AFTER_COMMAND = re.compile(r"(?:$|[\s;&|<>)])")
+
 
 def _bare(text: str) -> str:
     return _UNQUOTED.sub("", text)
 
 
-def _mentions(argv: Sequence[str] | None, command: str) -> bool:
-    """Whether ``argv`` carries ``command``, however the wrapper quoted and spaced it.
+def _quoted_forms(command: str) -> tuple[str, ...]:
+    """The spellings a wrapper embeds a command in: as written, and the usual single-quotings."""
+    return (
+        shlex.quote(command),
+        "'" + command.replace("'", "'\\''") + "'",
+        "'" + command.replace("'", "'\"'\"'") + "'",
+        command,
+    )
 
-    Compared with whitespace, quotes and backslashes removed from both sides. On PR #102's live run
-    every ``env-reporter`` run on claude-code fell back to "every tool shell is the skill's": some
-    ``Bash`` command matched no shell under the exact and shell-quoted spellings. The cause is not
-    yet confirmed (the evidence digest now prints each run's commands and tool-shell argvs to settle
-    it); this removes the spellings a wrapper's quoting and spacing can change. A looser match can
-    only make a shell the skill's that was not — the direction the rule already accepts.
+
+def _mentions(argv: Sequence[str] | None, command: str, prefix: str) -> bool:
+    """Whether ``argv`` is the shell that ran ``command``.
+
+    With a ``prefix`` (``HarnessProcessRules.shell_command_prefix``) the command must appear right
+    after it, quoted as a shell quotes an argument, and be followed by a delimiter: the CLI runs a
+    ``Bash`` call as ``… && eval 'date -u' < /dev/null && …`` (``eval id`` for a bare word),
+    observed on PR #102's live run. That run is why the match is anchored. Matched anywhere, the
+    one-word command ``id`` was found inside the CLI's own IDE probe
+    (``grep -E "…|idea|…"``) and its shell-snapshot script, and both shells — with their ``ps``,
+    ``grep``, ``cat`` and ``id -u`` — were put on the skill.
+
+    Without a prefix, the command is looked for anywhere, compared with whitespace, quotes and
+    backslashes removed — looser, and only ever in the over-attributing direction.
     """
-    bare = _bare(command)
-    if not argv or not bare:
+    if not argv or not command.strip():
         return False
-    return bare in _bare("".join(argv))
+    text = "\0".join(argv)
+    if prefix:
+        for form in _quoted_forms(command):
+            needle = prefix + form
+            start = text.find(needle)
+            while start != -1:
+                if _AFTER_COMMAND.match(text, start + len(needle)):
+                    return True
+                start = text.find(needle, start + 1)
+        return False
+    return _bare(command) in _bare("".join(argv))
 
 
 def _tool_shell_rule(
@@ -161,9 +188,12 @@ def _tool_shell_rule(
         if process_name(event.argv, event.exe) in rules.tool_shells
     ]
     # A blank command (a call whose input could not be read) matches nothing, so it lands here.
-    if not all(any(_mentions(event.argv, command) for event in candidates) for command in commands):
+    prefix = rules.shell_command_prefix
+    if not all(
+        any(_mentions(event.argv, command, prefix) for event in candidates) for command in commands
+    ):
         return lambda _event: True
-    return lambda event: any(_mentions(event.argv, command) for command in commands)
+    return lambda event: any(_mentions(event.argv, command, prefix) for command in commands)
 
 
 def kernel_plane_actions(

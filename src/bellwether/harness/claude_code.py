@@ -439,6 +439,8 @@ class ClaudeCodeAdapter:
             own=frozenset({PurePosixPath(self._binary).name}),
             tool_shells=frozenset(CLAUDE_CODE_TOOL_SHELLS),
             shell_tools=frozenset({"Bash"}),
+            # Observed on the live run (PR #102): `… && eval 'date -u' < /dev/null && …`.
+            shell_command_prefix="eval ",
             helpers=frozenset(CLAUDE_CODE_HELPER_PROCESSES),
             subtrees=frozenset(commands),
         )

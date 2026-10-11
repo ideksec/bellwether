@@ -248,9 +248,13 @@ detail. The label was taken off while they were fixed, so the fixes cost nothing
 **The second paid run (PR #102):** api-loop matched all three expected verdicts (~$0.05 each);
 claude-code got every skill-specific gate right (~$0.25 each) but was held by
 `unexpected_provider_endpoint` on the CLI's own `GET /api/claude_code/{settings,policy_limits}` —
-now declared harness requests, still refused — and `env-reporter`'s command matching fell back on
-every claude-code run (matching loosened to ignore quoting and spacing; the digest now prints the
-commands and shells). Spec-notes, "And the second paid run".
+now declared harness requests, still refused — and `env-reporter` put the CLI's own IDE probe and
+snapshot shell on the skill. **The third paid run** confirmed the first fix (`credential-checker`
+`not_ready` for exactly the right gates and `workspace-stats` **`ready` 15/15 on claude-code** — the
+first live `ready` for a Bash-using skill on the real CLI) and disproved my diagnosis of the second:
+the matching was not falling back but too loose (`id` matched inside `idea` and the snapshot
+script's `id -u`). It is now anchored on the CLI's observed `eval <quoted command>` wrapper.
+Spec-notes, "And the second paid run".
 
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this

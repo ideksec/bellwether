@@ -4943,7 +4943,15 @@ $0.25 each, and disclosed two more things, now named by the evidence digest rath
   proxy and recorded in Plane D; `CLAUDE_CODE_PROVIDER_REQUESTS` stops them being read as the skill's
   `unexpected_provider_endpoint`, matched on exact method and path, so a skill sending one gains only
   a refused, keyless request.
-- **`env-reporter`'s command matching fell back on every claude-code run**, putting the CLI's IDE
-  probe (`ps aux | grep -E code|cursor|…`) and `cat`s on the skill. Matching now compares with
-  whitespace, quotes and backslashes removed from both sides; the digest prints each run's `Bash`
-  commands and harness shell argvs so the next run confirms or refutes the cause.
+- **`env-reporter` put the CLI's IDE probe (`ps aux | grep -E code|cursor|…`) and `cat`s on the
+  skill on every claude-code run.** First read as the matching *falling back* (no shell carried some
+  command), and "fixed" by loosening it — which a third paid run showed to be the wrong diagnosis,
+  at the price of a 20-run escalation (~$0.85, the rare capability held the set open). The digest's
+  new command and shell lines settled it: the model's third command is `id`, and an unanchored
+  substring match found `id` inside the IDE probe's `idea` and inside the CLI's shell-snapshot script
+  (which itself runs `id -u` and several `cat`s). The match was too loose, not missing. The same
+  evidence shows how the CLI embeds a command: `… && eval 'date -u' < /dev/null && …`, `eval id`
+  for a bare word — shell-quoting after `eval `. `HarnessProcessRules.shell_command_prefix` now
+  anchors the match there (claude-code: `eval `), followed by a delimiter; a harness that declares
+  no prefix keeps the looser comparison. Lesson recorded: the loosening was committed and paid for
+  on an unconfirmed cause; the digest that disproved it should have come first.

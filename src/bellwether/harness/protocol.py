@@ -154,6 +154,10 @@ class HarnessProcessRules:
     helpers: frozenset[str] = frozenset()
     subtrees: frozenset[str] = frozenset()
     shell_tools: frozenset[str] = frozenset()
+    #: What a tool shell's argv carries immediately before the model's command, if the harness
+    #: wraps it the same way every time (the CLI: ``eval <shell-quoted command>``). Anchors the
+    #: match so a short command cannot be found by accident in the harness's own shells.
+    shell_command_prefix: str = ""
 
 
 @dataclass(frozen=True)
