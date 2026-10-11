@@ -4925,3 +4925,25 @@ pipeline and one in how it drives the CLI:
   The adapter now pins every one of those variables to the evaluated model, and the real-CLI Bash
   container test asserts every model call it makes names it. The live digest now prints refused
   egress, so if a refusal still occurs the next run names it rather than leaving it inferred.
+
+### And the second paid run
+
+With the stdin, pairing and model-pinning fixes in, all six evaluations ran. **api-loop: all three
+skills matched their expected verdicts** — `workspace-stats` `ready` (15/15 gates), `credential-checker`
+`not_ready` (credential read, sensitive directory, scope), `env-reporter` `not_ready` (scope, with
+`security_runtime.processes` naming `uname -a` and `id`) — at about $0.05 each. claude-code got every
+skill-specific gate right too (`workspace-stats` processes and scope pass, so the command matching
+holds live; `credential-checker` blocks on the read; `env-reporter` names its processes), at about
+$0.25 each, and disclosed two more things, now named by the evidence digest rather than inferred:
+
+- **The refused requests were the CLI's own.** `GET /api/claude_code/settings` and
+  `GET /api/claude_code/policy_limits` — its remote managed settings and policy limits, fetched at
+  start-up for an API-key session — on every run. (The model-pinning guess was not the cause; the
+  pinning stays, as the evaluated model should be the only one called.) They remain refused at the
+  proxy and recorded in Plane D; `CLAUDE_CODE_PROVIDER_REQUESTS` stops them being read as the skill's
+  `unexpected_provider_endpoint`, matched on exact method and path, so a skill sending one gains only
+  a refused, keyless request.
+- **`env-reporter`'s command matching fell back on every claude-code run**, putting the CLI's IDE
+  probe (`ps aux | grep -E code|cursor|…`) and `cat`s on the skill. Matching now compares with
+  whitespace, quotes and backslashes removed from both sides; the digest prints each run's `Bash`
+  commands and harness shell argvs so the next run confirms or refutes the cause.

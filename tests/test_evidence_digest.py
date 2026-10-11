@@ -18,7 +18,16 @@ def _write_trace(path: Path, argv: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     records = [
         {"arf_version": "1.0", "coverage": {"process": {"fidelity": "full"}}},
-        {"kind": "tool_call", "action": {"tool": "bash"}},
+        {"kind": "tool_call", "action": {"tool": "Bash", "input": {"command": "uname -a"}}},
+        {
+            "kind": "process_exec",
+            "action": {
+                "argv0": "bash",
+                "argv": ["bash", "-c", "eval 'uname -a'"],
+                "role": "harness",
+                "attribution": "tool_shell",
+            },
+        },
         {"kind": "process_exec", "action": {"argv0": argv[0], "argv": argv, "role": "skill"}},
         {
             "kind": "canary_read",
@@ -53,6 +62,8 @@ def test_a_skill_command_line_cannot_start_a_workflow_command(tmp_path: Path) ->
     assert any('verdict "ready"' in line for line in lines)
     assert any("skill:c1:" in line for line in lines)
     assert any("refused egress" in line and "not a model endpoint" in line for line in lines)
+    assert any("bash commands" in line and "uname -a" in line for line in lines)
+    assert any("harness shells" in line and "tool_shell" in line for line in lines)
 
 
 def test_a_missing_tree_says_so_rather_than_printing_nothing(tmp_path: Path) -> None:

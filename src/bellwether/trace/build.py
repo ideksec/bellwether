@@ -14,7 +14,7 @@ normalizer (WP-7) — a record built here carries what was *observed*, not what 
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from typing import Any
 
 from bellwether.capture import FilesystemEvent, PlaneStatus
@@ -274,7 +274,12 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
     return actions
 
 
-def provider_endpoint_actions(plane_d: Iterable[Action], *, start_seq: int = 0) -> list[Action]:
+def provider_endpoint_actions(
+    plane_d: Iterable[Action],
+    *,
+    start_seq: int = 0,
+    harness_requests: Collection[tuple[str, str]] = (),
+) -> list[Action]:
     """Derive the §10.5.2 ``unexpected_provider_endpoint`` findings from Plane D (§11.3).
 
     The proxy refuses a request to a provider host that is not a model call and records the
@@ -284,13 +289,25 @@ def provider_endpoint_actions(plane_d: Iterable[Action], *, start_seq: int = 0) 
     The finding is a reading of the blocked record, not a second event: it is excluded from
     the trajectory (``canonical._NON_STEP_KINDS``), so one refused request is one step.
 
+    ``harness_requests`` are ``(method, path)`` pairs the *harness* sends a provider host on its
+    own account — the Claude Code CLI fetches its remote managed settings and policy limits
+    (``GET /api/claude_code/settings``, ``…/policy_limits``) at start-up, observed on PR #102's
+    live run. The proxy still refuses them (no key is attached) and Plane D still records the
+    refusal; they are simply not the skill's finding. Matched on the exact method and path, query
+    ignored, so a skill sending one gains only a refused, keyless request.
+
     Deterministic: findings follow Plane D's order (§24).
     """
+    exempt = {(method.upper(), path) for method, path in harness_requests}
     actions: list[Action] = []
     seq = start_seq
     for source in plane_d:
         violation = source.action.get("shape_violation")
         if source.kind != "egress_blocked" or not isinstance(violation, str) or not violation:
+            continue
+        method = str(source.action.get("method") or "").upper()
+        path = str(source.action.get("path") or "").split("?", 1)[0]
+        if (method, path) in exempt:
             continue
         actions.append(
             Action(

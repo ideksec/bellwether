@@ -69,6 +69,7 @@ from bellwether.harness import (
     claude_code_environment,
     hook_settings,
 )
+from bellwether.harness.claude_code import CLAUDE_CODE_PROVIDER_REQUESTS
 from bellwether.harness.tools import docker_exec_runner
 from bellwether.sandbox import (
     DockerBackend,
@@ -841,7 +842,9 @@ class SandboxRunExecutor:
             # call is a `high` finding, anchored to the refusal it is read from. Appended to Plane
             # D after the flow actions, never interleaved, and never paired with a flow.
             plane_d = flow_actions + provider_endpoint_actions(
-                flow_actions, start_seq=len(plane_a) + len(plane_b) + len(flow_actions)
+                flow_actions,
+                start_seq=len(plane_a) + len(plane_b) + len(flow_actions),
+                harness_requests=CLAUDE_CODE_PROVIDER_REQUESTS if use_claude_code else (),
             )
             # Plane E: what the controlled resolver saw. Read while the resolver is still up (before
             # the finally closes it). Absent a resolver, there is no DNS plane and coverage says so.

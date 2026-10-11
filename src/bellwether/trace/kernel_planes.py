@@ -23,7 +23,7 @@ known multi-call binary.
 from __future__ import annotations
 
 import datetime as dt
-import shlex
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -119,21 +119,29 @@ def _attribute(
     return _Process(event.pid, argv0, "skill", "skill", own_image=False)
 
 
-def _quoted_forms(command: str) -> tuple[str, ...]:
-    """The spellings a shell wrapper embeds a command in: as written, and single-quoted."""
-    return (
-        command,
-        command.replace("'", "'\\''"),
-        command.replace("'", "'\"'\"'"),
-        shlex.quote(command),
-    )
+#: What a shell wrapper may add to, or take from, a command it embeds: whitespace (a heredoc's
+#: newlines, a wrapper's spacing) and the quoting and escaping characters it re-quotes with.
+_UNQUOTED = re.compile(r"[\s'\"\\]+")
+
+
+def _bare(text: str) -> str:
+    return _UNQUOTED.sub("", text)
 
 
 def _mentions(argv: Sequence[str] | None, command: str) -> bool:
-    if not argv or not command.strip():
+    """Whether ``argv`` carries ``command``, however the wrapper quoted and spaced it.
+
+    Compared with whitespace, quotes and backslashes removed from both sides. On PR #102's live run
+    every ``env-reporter`` run on claude-code fell back to "every tool shell is the skill's": some
+    ``Bash`` command matched no shell under the exact and shell-quoted spellings. The cause is not
+    yet confirmed (the evidence digest now prints each run's commands and tool-shell argvs to settle
+    it); this removes the spellings a wrapper's quoting and spacing can change. A looser match can
+    only make a shell the skill's that was not — the direction the rule already accepts.
+    """
+    bare = _bare(command)
+    if not argv or not bare:
         return False
-    text = "\0".join(argv)
-    return any(form in text for form in _quoted_forms(command))
+    return bare in _bare("".join(argv))
 
 
 def _tool_shell_rule(

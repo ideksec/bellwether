@@ -245,6 +245,13 @@ since the provider-endpoint gate); and the refused request was, on the evidence 
 call on a model `--model` does not pin. All three are fixed and pinned by tests; spec-notes has the
 detail. The label was taken off while they were fixed, so the fixes cost nothing to verify.
 
+**The second paid run (PR #102):** api-loop matched all three expected verdicts (~$0.05 each);
+claude-code got every skill-specific gate right (~$0.25 each) but was held by
+`unexpected_provider_endpoint` on the CLI's own `GET /api/claude_code/{settings,policy_limits}` —
+now declared harness requests, still refused — and `env-reporter`'s command matching fell back on
+every claude-code run (matching loosened to ignore quoting and spacing; the digest now prints the
+commands and shells). Spec-notes, "And the second paid run".
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
@@ -1080,7 +1087,7 @@ commands exhaustively instead of counting them.
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2112 tests: 2040 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2115 tests: 2043 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 

@@ -87,3 +87,39 @@ def test_exec_in_never_hands_the_callers_stdin_to_the_container(
     assert "--interactive" in seen["command"] and seen["input"] == ""
     backend.exec_in(prepared, ["cat"], stdin="given")  # type: ignore[arg-type]
     assert seen["input"] == "given"
+
+
+def test_the_clis_own_settings_fetches_are_not_the_skills_provider_endpoint_finding() -> None:
+    """The second paid run's digest named what the proxy refused on every claude-code run: the
+    CLI's `GET /api/claude_code/settings` and `…/policy_limits`. They stay refused and recorded;
+    they are not the skill's finding. Any other refused provider request still is."""
+    from bellwether.harness.claude_code import CLAUDE_CODE_PROVIDER_REQUESTS
+
+    def refused(method: str, path: str) -> EgressFlow:
+        return EgressFlow(
+            ts=_TS,
+            method=method,
+            scheme="https",
+            host="api.anthropic.com",
+            port=443,
+            path=path,
+            egress_class="model_api",
+            blocked=True,
+            block_reason="not a model call",
+            shape_violation="not a model call",
+        )
+
+    flows = [
+        refused("GET", "/api/claude_code/settings"),
+        refused("GET", "/api/claude_code/policy_limits?x=1"),
+        refused("POST", "/v1/files"),
+        refused("POST", "/api/claude_code/settings"),
+    ]
+    flow_actions = egress_actions(flows)
+    findings = provider_endpoint_actions(
+        flow_actions, harness_requests=CLAUDE_CODE_PROVIDER_REQUESTS
+    )
+    assert [f.action["path"] for f in findings] == ["/v1/files", "/api/claude_code/settings"]
+    assert [f.action["method"] for f in findings] == ["POST", "POST"]
+    # Without the declaration — api-loop, which makes no such call — every refusal is a finding.
+    assert len(provider_endpoint_actions(flow_actions)) == 4

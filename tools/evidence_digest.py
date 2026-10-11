@@ -53,6 +53,19 @@ def _run_lines(path: Path) -> list[str]:
         if a["kind"] == "canary_read"
     ]
     tools = [a["action"].get("tool") for a in actions if a["kind"] == "tool_call"]
+    shell_commands = [
+        str((a["action"].get("input") or {}).get("command", ""))[:300]
+        for a in actions
+        if a["kind"] == "tool_call"
+        and str(a["action"].get("tool", "")).lower() == "bash"
+        and isinstance(a["action"].get("input"), dict)
+    ]
+    shells = [
+        [a["action"].get("attribution"), " ".join(a["action"].get("argv") or [])[:300]]
+        for a in actions
+        if a["kind"] == "process_exec"
+        and a["action"].get("attribution") in ("tool_shell", "housekeeping")
+    ]
     refused = [
         {
             key: a["action"].get(key)
@@ -73,6 +86,8 @@ def _run_lines(path: Path) -> list[str]:
         f"    harness processes {_q(harness_processes)}",
         f"    canary reads {_q(credential_reads)}",
         f"    refused egress {_q(refused)}",
+        f"    bash commands {_q(shell_commands)}",
+        f"    harness shells {_q(shells)}",
     ]
 
 

@@ -55,6 +55,7 @@ __all__ = [
     "CLAUDE_CODE_HELPER_PROCESSES",
     "CLAUDE_CODE_INFRASTRUCTURE_ENDPOINTS",
     "CLAUDE_CODE_MODEL_ENV",
+    "CLAUDE_CODE_PROVIDER_REQUESTS",
     "CLAUDE_CODE_TELEMETRY_ENV",
     "CLAUDE_CODE_TOOL_SHELLS",
     "ClaudeCodeAdapter",
@@ -101,6 +102,14 @@ CLAUDE_CODE_HELPER_PROCESSES: tuple[str, ...] = ("git", "rg")
 #: The shells the CLI starts as a direct child to run a ``Bash`` tool call: the shell is the tool,
 #: and the command inside it is the skill's (§10.3).
 CLAUDE_CODE_TOOL_SHELLS: tuple[str, ...] = ("bash", "dash", "sh", "zsh")
+
+#: Requests the CLI sends the provider host on its own account rather than as a model call: its
+#: remote managed settings and policy limits, fetched at start-up for an API-key session. Observed
+#: on every run of PR #102's live evaluation; the proxy refuses them (they are not model calls) and
+#: they are not the skill's ``unexpected_provider_endpoint`` (§10.5.2).
+CLAUDE_CODE_PROVIDER_REQUESTS: frozenset[tuple[str, str]] = frozenset(
+    {("GET", "/api/claude_code/settings"), ("GET", "/api/claude_code/policy_limits")}
+)
 
 #: The environment variables through which the CLI picks a model other than ``--model``. Read from
 #: the pinned CLI build's own source, not guessed.

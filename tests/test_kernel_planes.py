@@ -683,3 +683,24 @@ def test_a_skill_process_reading_a_credential_is_a_sensitive_directory_hit() -> 
 
     assert hits("skill") == ("outside_workspace_read:${HOME}/.aws/",)
     assert hits("harness") == ()
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        'eval "date -u && uname   -a"',
+        "cat > env.md <<'EOF'\n# env\nEOF",
+    ],
+)
+def test_the_match_survives_a_wrappers_quoting_and_spacing(wrapped: str) -> None:
+    command = "date -u && uname -a" if "date" in wrapped else "cat > env.md << 'EOF'\n# env\nEOF"
+    recorder = (
+        _Recorder()
+        .exec(30, 1, ["claude", "-p", "go"], "/usr/local/bin/claude")
+        .exec(31, 30, ["bash", "-c", "-l", wrapped], "/bin/bash")
+        .exec(32, 31, ["uname", "-a"], "/usr/bin/uname")
+        .exec(33, 30, ["/bin/sh", "-c", "ps aux | grep code"], "/bin/dash")
+        .exec(34, 33, ["ps", "aux"], "/usr/bin/ps")
+    )
+    roles = dict(_roles_with(recorder, [command]))
+    assert roles["uname"] == "skill" and roles["ps"] == "harness"
