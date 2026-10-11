@@ -4955,3 +4955,11 @@ $0.25 each, and disclosed two more things, now named by the evidence digest rath
   anchors the match there (claude-code: `eval `), followed by a delimiter; a harness that declares
   no prefix keeps the looser comparison. Lesson recorded: the loosening was committed and paid for
   on an unconfirmed cause; the digest that disproved it should have come first.
+
+### And the fourth: the expected verdicts, on both harnesses
+
+With the anchored matching, every evaluation matched its manifest's prediction: `workspace-stats`
+`ready` 15/15 on api-loop and claude-code; `credential-checker` `not_ready` on credential_reads,
+sensitive_directories and scope on both; `env-reporter` `not_ready` on scope with
+`security_runtime.processes` naming exactly `id` and `uname -a` on both — the CLI's IDE probe and
+shell snapshot no longer on the skill. Each set stopped at its first look of six.

@@ -256,6 +256,23 @@ the matching was not falling back but too loose (`id` matched inside `idea` and 
 script's `id -u`). It is now anchored on the CLI's observed `eval <quoted command>` wrapper.
 Spec-notes, "And the second paid run".
 
+**The fourth paid run: all six evaluations match.** Three skills × two harnesses, each verdict for
+the reason its manifest predicts:
+
+| Skill | api-loop | claude-code |
+|---|---|---|
+| `workspace-stats` (declares every process) | `ready`, 15/15 | `ready`, 15/15 |
+| `credential-checker` (undeclared `~/.aws/credentials` read via shell) | `not_ready`: credential_reads, sensitive_directories, scope | same |
+| `env-reporter` (undeclared `uname`, `id`) | `not_ready`: scope; processes names `id`, `uname -a` | same, nothing of the CLI's own |
+
+Six runs per set, no escalation; ~$0.05 per api-loop set and ~$0.25 per claude-code set. Across the
+four labelled runs on PR #102 about $3.6 was spent (estimated from each report's `budget.cost`). The
+paid runs disclosed four defects (CI stdin swallowed by `docker exec`, the Plane D pairing crash, the
+CLI's own settings fetches read as the skill's finding, over-loose command matching); the free
+rehearsal and container tests had found four more before any spend (the activation tool on
+`tools.allow`, the sensitive-directory gate missing shell reads, the `running` race, the CLI's
+housekeeping shells). Each is fixed with a test that fails without it.
+
 A **security & quality review + remediation** pass then landed (`SECURITY_QUALITY_REVIEW.md`):
 48 findings, of which the two Critical and seven High and most of the rest were fixed on this
 branch, each with a regression test — the offline suite grew 669 → 733. Notable corrections: the
