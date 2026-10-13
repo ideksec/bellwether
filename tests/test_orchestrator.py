@@ -40,6 +40,7 @@ from bellwether.harness import (
     TurnUsage,
 )
 from bellwether.report import Summary
+from bellwether.scan import BUILTIN_RULES, ScanReport
 from bellwether.trace import (
     Action,
     Correlation,
@@ -332,6 +333,12 @@ def _scenario() -> Scenario:
     )
 
 
+#: What `bellwether run` hands the composition for a package whose scan found nothing: the
+#: shipped profiles require a scan (§15), so a pipeline test that composed none would block on
+#: the static gate instead of exercising the gate it is about.
+_CLEAN_SCAN = ScanReport(findings=(), files_scanned=("SKILL.md",), rule_count=len(BUILTIN_RULES))
+
+
 def _run_pipeline(  # type: ignore[no-untyped-def]
     tmp_path: Path,
     out_dir: Path,
@@ -344,6 +351,7 @@ def _run_pipeline(  # type: ignore[no-untyped-def]
     manifest_present: bool | None = None,
     review_state: str | None = None,
     review_age_days: int | None = None,
+    static_scan: ScanReport | None = _CLEAN_SCAN,
     **report_options: object,
 ):
     profile = profile if profile is not None else _firstlight_profile()
@@ -373,6 +381,7 @@ def _run_pipeline(  # type: ignore[no-untyped-def]
         manifest_present=manifest_present,
         review_state=review_state,
         review_age_days=review_age_days,
+        static_scan=static_scan,
         **report_options,  # type: ignore[arg-type]
     )
 
@@ -848,6 +857,7 @@ def test_require_scan_stops_the_verdict_instead_of_being_printed(tmp_path: Path)
         tmp_path,
         tmp_path / "out",
         profile=_profile_with(static=StaticGate(require_scan=True)),
+        static_scan=None,
     )
 
     static = next(gate for gate in result.verdict.gates if gate.name == "static")
@@ -859,7 +869,14 @@ def test_a_profile_that_does_not_require_a_scan_composes_no_static_gate(tmp_path
     """The other side: an absent scan is only a finding where the policy asked for one.
     Composing an advisory unobserved row unconditionally would demote every clean run to
     ``conditional`` on evidence nobody requested."""
-    result = _run_pipeline(tmp_path, tmp_path / "out")
+    from bellwether.config.models.policy import StaticGate
+
+    result = _run_pipeline(
+        tmp_path,
+        tmp_path / "out",
+        profile=_profile_with(static=StaticGate(require_scan=False)),
+        static_scan=None,
+    )
 
     assert not any(gate.name == "static" for gate in result.verdict.gates)
 

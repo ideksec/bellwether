@@ -59,6 +59,7 @@ from bellwether.harness import (
     ToolCallRequest,
     TurnUsage,
 )
+from bellwether.scan import scan_package
 from bellwether.skill import SkillPackage, load_skill
 from bellwether.trace import (
     Coverage,
@@ -460,6 +461,9 @@ def run_demo_case(
         # Fixed, like the trace header's `source`: the committed demo trees must not depend on
         # where the checkout lives or which directory the demo was started from.
         skill_root=f"examples/skills/{case.skill_dir}",
+        # §15: the demo scans its package like `bellwether run` does, so the committed trees
+        # show the static gate and its SARIF results as a real evaluation produces them.
+        static_scan=scan_package(package),
     )
     return DemoOutput(case=case, result=result)
 

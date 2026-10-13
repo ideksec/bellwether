@@ -26,6 +26,12 @@
       "status": "block"
     },
     {
+      "name": "static",
+      "reason": "(package): 1 static finding(s) above low (bellwether-builtin/1): BW402 medium at SKILL.md:14 — References a credential file path: matched '~/.aws/credentials'",
+      "required": true,
+      "status": "block"
+    },
+    {
       "name": "scope.manifest",
       "reason": "(package): the package declares its scope, so the declared-vs-observed table is real",
       "required": true,

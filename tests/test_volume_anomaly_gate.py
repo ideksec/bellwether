@@ -40,7 +40,7 @@ from bellwether.trace import Action
 from bellwether.trace.canonical import NormalizationContext
 from bellwether.verdict.precondition import TargetDeclaration, check_preconditions
 from tests.factories import make_footer, make_header
-from tests.test_orchestrator import _executed_run, _firstlight_profile, _scenario
+from tests.test_orchestrator import _CLEAN_SCAN, _executed_run, _firstlight_profile, _scenario
 
 _TARGET = TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
 
@@ -225,6 +225,7 @@ def _evaluate(  # type: ignore[no-untyped-def]
         created_at="2026-08-05T12:00:00Z",
         bellwether_version="0.1.0",
         out_dir=tmp_path / "out",
+        static_scan=_CLEAN_SCAN,
     )
     gate = next(g for g in result.verdict.gates if g.name == "security_runtime.volume_anomaly")
     return result, gate, readings
@@ -328,18 +329,34 @@ def _declaration(*, egress: bool) -> TargetDeclaration:
     )
 
 
+#: The §15 scanner ships with every build; these cases are about the volume gate alone.
+_SCANNER = frozenset({"static_scan"})
+
+
 def test_a_blocking_volume_gate_with_no_proxy_is_refused_up_front() -> None:
-    failures = check_preconditions(_profile("block"), [_declaration(egress=False)])
+    failures = check_preconditions(
+        _profile("block"), [_declaration(egress=False)], available_planes=_SCANNER
+    )
     assert [f.gate for f in failures] == ["security_runtime.egress_volume_anomaly"]
     assert "egress.image" in failures[0].remedy
-    assert check_preconditions(_profile("block"), [_declaration(egress=True)]) == []
-    assert check_preconditions(_profile("warn"), [_declaration(egress=False)]) == []
+    assert (
+        check_preconditions(
+            _profile("block"), [_declaration(egress=True)], available_planes=_SCANNER
+        )
+        == []
+    )
+    assert (
+        check_preconditions(
+            _profile("warn"), [_declaration(egress=False)], available_planes=_SCANNER
+        )
+        == []
+    )
 
 
 def test_a_blocking_volume_gate_whose_first_look_has_no_reference_is_refused() -> None:
     profile = _profile("block")
     matrix = profile.matrix.model_copy(update={"looks": [2, 12, 20]})
     profile = profile.model_copy(update={"matrix": matrix})
-    failures = check_preconditions(profile, [_declaration(egress=True)])
+    failures = check_preconditions(profile, [_declaration(egress=True)], available_planes=_SCANNER)
     assert [f.gate for f in failures] == ["security_runtime.egress_volume_anomaly"]
     assert "first look is 2" in failures[0].remedy

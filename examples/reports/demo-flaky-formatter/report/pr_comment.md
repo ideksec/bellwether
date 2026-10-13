@@ -10,7 +10,7 @@ _failed one or more blocking gates._ · profile **medium** · skill **flaky-form
 > budget.cost not composed: no pricing configured for scripted/frontier (providers.\<name\>.pricing), so max\_cost\_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost
 > regression not composed: no baseline is stored for skill 'flaky-formatter' (set one with \`bellwether baseline set\` from a reviewed evaluation, §17.5)
 
-**Gates:** 🔴 1 block · 🟡 1 warn · ⚪ 9 not_evaluable · 🟢 3 pass
+**Gates:** 🔴 1 block · 🟡 1 warn · ⚪ 9 not_evaluable · 🟢 4 pass
 
 ### Gates
 
@@ -20,6 +20,7 @@ _failed one or more blocking gates._ · profile **medium** · skill **flaky-form
 | functional | 🔴 `block` | 0.128638 | 0.6 | api-loop-scripted-frontier: pass-rate lower bound 0.128638 vs 0.6 (fail) |
 | consistency | 🟡 `warn` | 61.15788 | 80.0 | api-loop-scripted-frontier: BCI 61.15788 \< 80.0; weighted Jaccard 0.778947 \< 0.8 |
 | scope | 🟢 `pass` | within scope | declared scope | api-loop-scripted-frontier: declared vs observed |
+| static | 🟢 `pass` | worst none; findings: none | max severity medium | (package): 1 file(s) scanned with bellwether-builtin/1; nothing above medium |
 | security\_runtime.egress | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: the recording proxy was not wired into this run, so egress is not observed and the gate cannot be decided (§10.7) |
 | security\_runtime.sensitive\_directories | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: 'no sensitive directory was touched' is not an earned absence here: scripted demo: no sandbox overlay (§10.7, §10.8) |
 | security\_runtime.canaries | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: canaries were not planted and scanned for every run in this set, so exfiltration is not observed and the gate cannot be decided (§10.4, §10.7) |

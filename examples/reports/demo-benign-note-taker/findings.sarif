@@ -10,12 +10,6 @@
           "executionSuccessful": true,
           "toolExecutionNotifications": [
             {
-              "level": "note",
-              "message": {
-                "text": "No static scan (§15) is built in this version: this file carries no static results, only the runtime findings §17.3 permits mirroring."
-              }
-            },
-            {
               "associatedRule": {
                 "id": "canary_leak",
                 "index": 0
@@ -94,6 +88,18 @@
               "message": {
                 "text": "'security_runtime.provider_endpoint' was not evaluable in this evaluation, so the absence of any 'unexpected_provider_endpoint' result here is not a clean reading: api-loop-scripted-frontier: the recording proxy did not decide every request in this set, so requests to the provider are not observed and the gate cannot be decided (§10.5.2, §10.7)."
               }
+            },
+            {
+              "level": "note",
+              "message": {
+                "text": "evals/manifest.yaml was not scanned: evaluation machinery (evals/); never installed with the skill."
+              }
+            },
+            {
+              "level": "note",
+              "message": {
+                "text": "evals/scenarios.yaml was not scanned: evaluation machinery (evals/); never installed with the skill."
+              }
             }
           ]
         }
@@ -104,7 +110,7 @@
         "policy_profile": "low",
         "record": "summary.json",
         "skill": "benign-note-taker",
-        "static_scan": "not built in this version",
+        "static_scan": "bellwether-builtin/1",
         "verdict": "conditional"
       },
       "results": [],
@@ -327,6 +333,924 @@
               },
               "shortDescription": {
                 "text": "A request to a provider host that was not an expected model call"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Directs the model to ignore or replace its prior instructions (§15 check: instruction_manipulation)."
+              },
+              "help": {
+                "text": "Directs the model to ignore or replace its prior instructions. Remove the override; a skill adds instructions, it does not revoke the user's."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW101",
+              "name": "OverrideInstructions",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "instruction_manipulation"
+                ]
+              },
+              "shortDescription": {
+                "text": "Directs the model to ignore or replace its prior instructions"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Directs the model to hide an action or its output from the user (§15 check: instruction_manipulation)."
+              },
+              "help": {
+                "text": "Directs the model to hide an action or its output from the user. Remove the concealment; every action a skill takes should be visible to the user."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW102",
+              "name": "ConcealFromUser",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "instruction_manipulation"
+                ]
+              },
+              "shortDescription": {
+                "text": "Directs the model to hide an action or its output from the user"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Text formatted as a system or developer message (§15 check: instruction_manipulation)."
+              },
+              "help": {
+                "text": "Text formatted as a system or developer message. Remove the system-message framing; skill text is user-level content."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW103",
+              "name": "ImpersonateSystem",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "instruction_manipulation"
+                ]
+              },
+              "shortDescription": {
+                "text": "Text formatted as a system or developer message"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Disables logging, shell history, auditing or telemetry (§15 check: instruction_manipulation)."
+              },
+              "help": {
+                "text": "Disables logging, shell history, auditing or telemetry. Remove the suppression, or document why the skill needs it."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW104",
+              "name": "SuppressLogging",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "instruction_manipulation"
+                ]
+              },
+              "shortDescription": {
+                "text": "Disables logging, shell history, auditing or telemetry"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Changes behaviour when a specific phrase appears (§15 check: instruction_manipulation)."
+              },
+              "help": {
+                "text": "Changes behaviour when a specific phrase appears. Remove the conditional trigger; a skill's behaviour should not depend on a passphrase."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW105",
+              "name": "TriggerPhrase",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "instruction_manipulation"
+                ]
+              },
+              "shortDescription": {
+                "text": "Changes behaviour when a specific phrase appears"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A base64 or hex block that decodes to readable text (§15 check: obfuscation)."
+              },
+              "help": {
+                "text": "A base64 or hex block that decodes to readable text. Write the content in plain text; encoded instructions cannot be reviewed."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW201",
+              "name": "EncodedText",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "obfuscation"
+                ]
+              },
+              "shortDescription": {
+                "text": "A base64 or hex block that decodes to readable text"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A base64 or hex block that decodes to an executable (§15 check: obfuscation)."
+              },
+              "help": {
+                "text": "A base64 or hex block that decodes to an executable. Ship the program as a reviewable source file, not an encoded binary."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW202",
+              "name": "EncodedExecutable",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "obfuscation"
+                ]
+              },
+              "shortDescription": {
+                "text": "A base64 or hex block that decodes to an executable"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Zero-width or bidirectional-control characters (§15 check: obfuscation)."
+              },
+              "help": {
+                "text": "Zero-width or bidirectional-control characters. Remove them; they make the text a reviewer reads differ from the text the model reads."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW203",
+              "name": "InvisibleCharacters",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "obfuscation"
+                ]
+              },
+              "shortDescription": {
+                "text": "Zero-width or bidirectional-control characters"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A word mixing Latin letters with look-alike Cyrillic or Greek ones (§15 check: obfuscation)."
+              },
+              "help": {
+                "text": "A word mixing Latin letters with look-alike Cyrillic or Greek ones. Use one script per word; mixed-script words are a homoglyph technique."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW204",
+              "name": "MixedScriptWord",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "obfuscation"
+                ]
+              },
+              "shortDescription": {
+                "text": "A word mixing Latin letters with look-alike Cyrillic or Greek ones"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A line longer than 1000 characters (§15 check: obfuscation)."
+              },
+              "help": {
+                "text": "A line longer than 1000 characters. Wrap or move the content to a file a reviewer can read."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW205",
+              "name": "LongLine",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "obfuscation"
+                ]
+              },
+              "shortDescription": {
+                "text": "A line longer than 1000 characters"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An HTML comment containing instruction-like text (§15 check: obfuscation)."
+              },
+              "help": {
+                "text": "An HTML comment containing instruction-like text. Move instructions into visible text; a comment is hidden from the rendered view."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW206",
+              "name": "InstructionInComment",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "obfuscation"
+                ]
+              },
+              "shortDescription": {
+                "text": "An HTML comment containing instruction-like text"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Downloads content and executes it (§15 check: network)."
+              },
+              "help": {
+                "text": "Downloads content and executes it. Vendor the script into the skill so the reviewed artifact is the executed artifact."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW301",
+              "name": "FetchAndExecute",
+              "properties": {
+                "security-severity": "9.5",
+                "severity": "critical",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "network"
+                ]
+              },
+              "shortDescription": {
+                "text": "Downloads content and executes it"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "References a URL (§15 check: network)."
+              },
+              "help": {
+                "text": "References a URL. Declare the host in evals/manifest.yaml so egress can be checked against it."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW302",
+              "name": "UrlReference",
+              "properties": {
+                "security-severity": "0.0",
+                "severity": "info",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "network"
+                ]
+              },
+              "shortDescription": {
+                "text": "References a URL"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Invokes a network client or library (§15 check: network)."
+              },
+              "help": {
+                "text": "Invokes a network client or library. Declare the destination in evals/manifest.yaml."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW303",
+              "name": "NetworkTool",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "network"
+                ]
+              },
+              "shortDescription": {
+                "text": "Invokes a network client or library"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A literal that matches a known credential format (§15 check: credentials)."
+              },
+              "help": {
+                "text": "A literal that matches a known credential format. Remove the secret, rotate it, and read credentials from the environment instead."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW401",
+              "name": "HardcodedSecret",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "credentials"
+                ]
+              },
+              "shortDescription": {
+                "text": "A literal that matches a known credential format"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "References a credential file path (§15 check: credentials)."
+              },
+              "help": {
+                "text": "References a credential file path. Declare the read under credentials.expects in evals/manifest.yaml, or remove it."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW402",
+              "name": "CredentialPath",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "credentials"
+                ]
+              },
+              "shortDescription": {
+                "text": "References a credential file path"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Reads the whole process environment (§15 check: credentials)."
+              },
+              "help": {
+                "text": "Reads the whole process environment. Read the specific variables the skill needs, by name."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW403",
+              "name": "EnvironmentHarvest",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "credentials"
+                ]
+              },
+              "shortDescription": {
+                "text": "Reads the whole process environment"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A relative path that climbs out of its directory (§15 check: filesystem_scope)."
+              },
+              "help": {
+                "text": "A relative path that climbs out of its directory. Use paths inside the workspace."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW501",
+              "name": "PathTraversal",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "filesystem_scope"
+                ]
+              },
+              "shortDescription": {
+                "text": "A relative path that climbs out of its directory"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "References a sensitive system path (§15 check: filesystem_scope)."
+              },
+              "help": {
+                "text": "References a sensitive system path. Remove the reference, or declare it and say why the skill needs it."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW502",
+              "name": "SystemPath",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "filesystem_scope"
+                ]
+              },
+              "shortDescription": {
+                "text": "References a sensitive system path"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Recursively deletes a root or home directory, or reaches the container runtime socket (§15 check: filesystem_scope)."
+              },
+              "help": {
+                "text": "Recursively deletes a root or home directory, or reaches the container runtime socket. Remove the command."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW503",
+              "name": "DestructiveCommand",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "filesystem_scope"
+                ]
+              },
+              "shortDescription": {
+                "text": "Recursively deletes a root or home directory, or reaches the container runtime socket"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A recursive glob over the home or root directory (§15 check: filesystem_scope)."
+              },
+              "help": {
+                "text": "A recursive glob over the home or root directory. Narrow the glob to the workspace."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW504",
+              "name": "BroadGlob",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "filesystem_scope"
+                ]
+              },
+              "shortDescription": {
+                "text": "A recursive glob over the home or root directory"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "allowed-tools grants an unrestricted shell (§15 check: tool_surface)."
+              },
+              "help": {
+                "text": "allowed-tools grants an unrestricted shell. Scope the shell grant to the commands the skill runs, e.g. Bash(wc:*)."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW601",
+              "name": "UnrestrictedShell",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "tool_surface"
+                ]
+              },
+              "shortDescription": {
+                "text": "allowed-tools grants an unrestricted shell"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "allowed-tools grants every tool (§15 check: tool_surface)."
+              },
+              "help": {
+                "text": "allowed-tools grants every tool. List the tools the skill uses."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW602",
+              "name": "WildcardTools",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "tool_surface"
+                ]
+              },
+              "shortDescription": {
+                "text": "allowed-tools grants every tool"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "References an MCP server tool (§15 check: tool_surface)."
+              },
+              "help": {
+                "text": "References an MCP server tool. Declare the tool in allowed-tools and evals/manifest.yaml."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW603",
+              "name": "McpReference",
+              "properties": {
+                "security-severity": "0.0",
+                "severity": "info",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "tool_surface"
+                ]
+              },
+              "shortDescription": {
+                "text": "References an MCP server tool"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Ships a sub-agent definition (§15 check: tool_surface)."
+              },
+              "help": {
+                "text": "Ships a sub-agent definition. Review the sub-agent's own instructions and tool grants as part of this skill."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW604",
+              "name": "SubAgentDefinition",
+              "properties": {
+                "security-severity": "0.0",
+                "severity": "info",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "tool_surface"
+                ]
+              },
+              "shortDescription": {
+                "text": "Ships a sub-agent definition"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "A bundled script that will be installed with the skill (§15 check: script_inventory)."
+              },
+              "help": {
+                "text": "A bundled script that will be installed with the skill. Review it; it runs with the skill's permissions."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW701",
+              "name": "BundledScript",
+              "properties": {
+                "security-severity": "0.0",
+                "severity": "info",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "script_inventory"
+                ]
+              },
+              "shortDescription": {
+                "text": "A bundled script that will be installed with the skill"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "An executable file whose interpreter could not be determined (§15 check: script_inventory)."
+              },
+              "help": {
+                "text": "An executable file whose interpreter could not be determined. Add a shebang or a recognised extension, or remove the execute bit."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW702",
+              "name": "UnknownInterpreter",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "script_inventory"
+                ]
+              },
+              "shortDescription": {
+                "text": "An executable file whose interpreter could not be determined"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "A symbolic link in the skill payload (§15 check: script_inventory)."
+              },
+              "help": {
+                "text": "A symbolic link in the skill payload. Replace the link with the file; links are not followed by the scan."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW703",
+              "name": "PayloadSymlink",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "script_inventory"
+                ]
+              },
+              "shortDescription": {
+                "text": "A symbolic link in the skill payload"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "SKILL.md has no frontmatter or no description (§15 check: frontmatter)."
+              },
+              "help": {
+                "text": "SKILL.md has no frontmatter or no description. Add a description; it is what the model matches to decide when to activate the skill."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW801",
+              "name": "MissingDescription",
+              "properties": {
+                "security-severity": "5.0",
+                "severity": "medium",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "frontmatter"
+                ]
+              },
+              "shortDescription": {
+                "text": "SKILL.md has no frontmatter or no description"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "The description is very short or very long (§15 check: frontmatter)."
+              },
+              "help": {
+                "text": "The description is very short or very long. Write a description of 20 to 1024 characters naming when to use the skill."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW802",
+              "name": "DescriptionLength",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "frontmatter"
+                ]
+              },
+              "shortDescription": {
+                "text": "The description is very short or very long"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "The description claims to apply to everything (§15 check: frontmatter)."
+              },
+              "help": {
+                "text": "The description claims to apply to everything. Name the specific situations the skill is for; broad descriptions collide."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW803",
+              "name": "BroadDescription",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "frontmatter"
+                ]
+              },
+              "shortDescription": {
+                "text": "The description claims to apply to everything"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "The skill pins a model (§15 check: frontmatter)."
+              },
+              "help": {
+                "text": "The skill pins a model. Check that the evaluation matrix includes the pinned model."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW804",
+              "name": "PinnedModel",
+              "properties": {
+                "security-severity": "0.0",
+                "severity": "info",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "frontmatter"
+                ]
+              },
+              "shortDescription": {
+                "text": "The skill pins a model"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Frontmatter carries a field Bellwether does not recognise or cannot read (§15 check: frontmatter)."
+              },
+              "help": {
+                "text": "Frontmatter carries a field Bellwether does not recognise or cannot read. Remove the field or correct its type."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW805",
+              "name": "UnexpectedField",
+              "properties": {
+                "security-severity": "2.0",
+                "severity": "low",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "frontmatter"
+                ]
+              },
+              "shortDescription": {
+                "text": "Frontmatter carries a field Bellwether does not recognise or cannot read"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "Looks for signs of being observed: sandbox, container, tracer or canary markers (§15 check: instrumentation_awareness)."
+              },
+              "help": {
+                "text": "Looks for signs of being observed: sandbox, container, tracer or canary markers. Remove the probe; a skill that changes behaviour under observation defeats evaluation."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "BW901",
+              "name": "InstrumentationProbe",
+              "properties": {
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§15",
+                "tags": [
+                  "security",
+                  "bellwether-static",
+                  "instrumentation_awareness"
+                ]
+              },
+              "shortDescription": {
+                "text": "Looks for signs of being observed: sandbox, container, tracer or canary markers"
               }
             }
           ],

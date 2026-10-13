@@ -35,7 +35,13 @@ from bellwether.report.figures import (
 from bellwether.report.html import render_html_report
 from bellwether.report.markdown import Figures, ScopeRow, render_pr_comment
 from bellwether.report.persist import FIGURES_VERSION, figures_from_json, render_figures_json
-from bellwether.report.sarif import SARIF_RULES, SARIF_VERSION, SarifRule, render_sarif
+from bellwether.report.sarif import (
+    SARIF_RULES,
+    SARIF_VERSION,
+    SarifRule,
+    render_sarif,
+    render_scan_sarif,
+)
 from bellwether.report.summary import (
     SCHEMA_VERSION,
     CapabilityProfileSummary,
@@ -95,6 +101,7 @@ __all__ = [
     "render_html_report",
     "render_pr_comment",
     "render_sarif",
+    "render_scan_sarif",
     "render_strip_chart",
     "render_summary_json",
     "render_trajectory_clusters",

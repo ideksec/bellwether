@@ -71,6 +71,7 @@ from bellwether.harness import (
     build_model_client,
 )
 from bellwether.sandbox import fixture_digest, plugin_bundle_digest
+from bellwether.scan import scan_package
 from bellwether.skill import PluginBundle, SkillPackage
 from bellwether.verdict import validate_capability_weights
 
@@ -267,6 +268,11 @@ def run_evaluation(
     # about no evidence at all.
     scenarios = select_scenarios(suite.scenarios, scenario_ids=scenario_ids, tags=tags)
     targets = [rt.target for rt in resolved.targets]
+
+    # §15 Gate 0: the static scan runs on every package, before anything is spent. It does not
+    # stop the matrix (§18.4 runs the behavioural evaluation after it either way, and a skill
+    # whose text looks hostile is exactly one worth watching run); it decides the `static` gate.
+    static_scan = scan_package(package)
 
     # §16.4 / BW-51: refuse an unsatisfiable policy/target/composition combination *now*,
     # before the executor is built and a container is paid for. Observability is read from
@@ -541,6 +547,7 @@ def run_evaluation(
         write_html=config.reporting.html,
         write_sarif=config.reporting.sarif,
         skill_root=repository_relative_root(package.root),
+        static_scan=static_scan,
     )
 
 

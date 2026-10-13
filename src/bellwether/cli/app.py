@@ -267,23 +267,24 @@ def doctor(
             }
         )
 
-    # §15 static scan is not built yet (v0.2). A policy that requires it used to be a silent
-    # no-op — a required check that reads as passed — and is now a §16.4 refusal: say which,
-    # because "it will not run" and "the run will not start" are different things to plan around.
+    # §15: the built-in ruleset ships with every build. Say which one, and what the policy
+    # does with it, so "a scan runs" and "a scan can block" are not confused.
+    from bellwether.scan import BUILTIN_RULES, RULESET_ID
+
     _static_profiles = [loaded_policy.defaults, *loaded_policy.profiles.values()]
-    if any(profile.gates.static.require_scan for profile in _static_profiles):
-        checks.append(
-            {
-                "check": "static scan (§15)",
-                "status": "warn",
-                "detail": (
-                    "policy sets gates.static.require_scan, but the static scanner is not built "
-                    "in this version (v0.2 work package); a run under such a profile is refused "
-                    "by the §16.4 precondition check rather than producing a verdict that "
-                    "skipped the scan — set require_scan: false until it lands"
-                ),
-            }
-        )
+    _thresholds = sorted({p.gates.static.max_severity_allowed for p in _static_profiles})
+    checks.append(
+        {
+            "check": "static scan (§15)",
+            "status": "ok",
+            "detail": (
+                f"built-in ruleset {RULESET_ID} ({len(BUILTIN_RULES)} rules) scans every package "
+                "before the matrix; findings above max_severity_allowed "
+                f"({', '.join(_thresholds)}) block. Dedicated scanners are better at this "
+                "specific job (§26.2) — run one beside it for serious use"
+            ),
+        }
+    )
 
     # §16.2: only the dispositions in ENFORCED_SECURITY_RUNTIME_DISPOSITIONS are turned into
     # scored gates in this version. A policy that sets any other security_runtime disposition to
@@ -1290,13 +1291,87 @@ def _run_fixture(skill_dir: Path) -> Path:
 
 @app.command()
 def scan(
-    skills: Annotated[list[str] | None, typer.Argument(help="Skills to scan.")] = None,
+    # Optional at the parser so a bare `bellwether scan` is refused with exit 3 below: click's
+    # own usage error is exit 2, which is this command's "a finding failed the threshold".
+    skills: Annotated[list[Path] | None, typer.Argument(help="Skill directories to scan.")] = None,
+    max_severity: Annotated[
+        str,
+        typer.Option(
+            "--max-severity",
+            help="Highest severity that does not fail the scan (low|medium|high|critical).",
+        ),
+    ] = "medium",
+    sarif: Annotated[
+        Path | None, typer.Option("--sarif", help="Also write SARIF 2.1.0 to this file.")
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
-    """Static pre-flight scan only, no execution."""
-    # v0.2, matching what `doctor` says about require_scan — these two must agree, or a user
-    # reading both is told the scanner lands in two different places.
-    _not_yet("scan", "v0.2 (the §15 static scanner)", "static analysis has not landed")
+    """Static pre-flight scan only (§15): nothing is executed.
+
+    Exits 2 when any finding is more severe than --max-severity, 3 when a skill cannot be
+    loaded, 0 otherwise. Findings are reported by file and line; excerpts are reduced (invisible
+    characters spelled out, matched secrets cut to their prefix) so posting the report does not
+    carry the hidden text or the secret onward.
+    """
+    from bellwether.cli.run import repository_relative_root
+    from bellwether.report import render_scan_sarif
+    from bellwether.scan import SEVERITIES, ScanReport, scan_package
+    from bellwether.skill import load_skill
+
+    if not skills:
+        typer.echo("error: name at least one skill directory to scan", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+    if max_severity not in SEVERITIES[1:]:
+        typer.echo(
+            f"--max-severity must be one of {', '.join(SEVERITIES[1:])}, not {max_severity!r}",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+    reports: list[tuple[str, str | None, ScanReport]] = []
+    for skill in skills:
+        try:
+            package = load_skill(skill, load_evals=False)
+        except BellwetherError as error:
+            typer.echo(f"error: cannot load {skill}: {error}", err=True)
+            raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+        reports.append(
+            (package.name, repository_relative_root(package.root), scan_package(package))
+        )
+
+    failing = sum(len(report.above(max_severity)) for _, _, report in reports)
+    lines: list[str] = []
+    for name, root, report in reports:
+        lines.append(
+            f"{name} ({root or '.'}): {len(report.files_scanned)} file(s), worst "
+            f"{report.worst or 'none'} [{report.ruleset}]"
+        )
+        for finding in report.findings:
+            lines.append(
+                f"  {finding.severity:<8} {finding.rule_id} {finding.path}:{finding.line} "
+                f"{finding.message}"
+            )
+            if finding.excerpt:
+                lines.append(f"           {finding.excerpt}")
+        for unscanned in report.files_not_scanned:
+            lines.append(f"  not scanned: {unscanned.path} ({unscanned.reason})")
+    lines.append(
+        f"{failing} finding(s) above {max_severity}" if failing else f"nothing above {max_severity}"
+    )
+    if sarif is not None:
+        sarif.write_text(render_scan_sarif(reports, version=__version__), encoding="utf-8")
+    _emit(
+        {
+            "max_severity": max_severity,
+            "failing": failing,
+            "skills": [
+                {"name": name, "root": root, **report.as_record()} for name, root, report in reports
+            ],
+        },
+        as_json=json_output,
+        lines=lines,
+    )
+    if failing:
+        raise typer.Exit(ExitCode.NOT_READY)
 
 
 @app.command()

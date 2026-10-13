@@ -1474,6 +1474,9 @@ is. CLAUDE.md lists the enforced set explicitly.
 
 ## §15, §21 — `require_scan` is surfaced honestly; the §21 refusal now runs in `run`
 
+> **Superseded for §15** by "§15 — the built-in static scanner" at the end of this file: the
+> scanner now ships, every package is scanned, and `require_scan` defaults to `true` again.
+
 The static scanner (§15) is a v0.2 work package and this build has none. A policy `require_scan: true`
 was a silent no-op; `doctor` now warns that the required scan cannot run (a blocking static gate lands
 with the scanner). Separately, the §21 enforced-settings refusal (which the threat model advertises as
@@ -3692,7 +3695,8 @@ must be modelled before any behaviour that reads it can be tested.
 
 ### Three judgements worth recording
 
-**`require_scan` now defaults to `false`.** The shipped default was `true` in a build with no
+**`require_scan` now defaults to `false`.** *(Reversed when §15 landed — see "§15 — the
+built-in static scanner".)* The shipped default was `true` in a build with no
 static scanner. Making the control real meant choosing between a tool that refuses every run out
 of the box and a document that states what the build can do; the document was wrong, so it
 changed. The §16.4 refusal and the required `not_evaluable` gate are what make the `true` case
@@ -4963,3 +4967,100 @@ With the anchored matching, every evaluation matched its manifest's prediction: 
 sensitive_directories and scope on both; `env-reporter` `not_ready` on scope with
 `security_runtime.processes` naming exactly `id` and `uname -a` on both — the CLI's IDE probe and
 shell snapshot no longer on the skill. Each set stopped at its first look of six.
+
+## §15 — the built-in static scanner
+
+`bellwether.scan` ships a built-in ruleset, `bellwether-builtin/1`: 34 rules (`BW101`–`BW901`) over
+the nine §15 checks. `bellwether run` scans every package before the matrix; the result decides
+the `static` gate, is recorded as `summary.json` `security.static`, and becomes results in
+`findings.sarif` at the finding's real file and line. `bellwether scan` runs it alone. `require_scan`
+defaults to `true` again in the model, the template and both live policies. Where this diverges
+from the letter of §15, and why:
+
+**What is scanned is wider than the payload.** Every file except `evals/` is scanned, including
+the files no payload pattern matched. Those are not staged into the sandbox, but they are in the
+reviewed artifact, and a harness that installs the whole directory loads them. A scan limited to
+the payload let `notes.txt` carry the instructions while the package read as clean. A test pins
+this, and it was revert-proved. `evals/` is machinery (§6.2), and its fixtures routinely hold the
+credential-shaped bait the rules fire on. It is listed in `files_not_scanned` with that reason,
+never dropped silently. The same holds for a binary file, a symlink (reported as `BW703`, never
+followed) and anything else not read.
+
+**A scan always decides the gate; `require_scan` decides what its absence means.** With a scan,
+the gate blocks on any finding strictly above `max_severity_allowed`, whatever `require_scan`
+says. A critical finding is never waved through because the policy didn't *require* looking.
+Without a scan (a composition path that was not handed one), the gate is composed only when
+`require_scan` is set, and it is then a required `not_evaluable`. The §16.4 refusal stays for a
+composition that offers no `static_scan`, but every shipped composition now offers one.
+
+**The scan does not stop the matrix.** §18.4 runs the behavioural evaluation after Gate 0 either
+way. A skill whose text looks hostile is one worth watching run, and the sandbox is what makes
+that acceptable. The verdict carries both.
+
+**`info` sits below the policy scale.** §15 grades findings `info`…`critical`, while the policy's
+`Severity` starts at `low`. `info` findings are inventory (a URL, a bundled script, a pinned model)
+and can never block. They are recorded and rendered as SARIF `note`s.
+
+**No inline suppression.** A skill is attacker-authored, so a `# bellwether: ignore` comment would
+be a switch the attacker holds. Tuning lives in `policy.yaml` (`max_severity_allowed`), which the
+skill does not control.
+
+**Excerpts are reduced before they are stored.** An excerpt is skill-authored text that reaches
+the PR comment, the HTML report and the Security tab. Whitespace is collapsed and length capped.
+Every format, control and unassigned character is spelled as `<U+XXXX>`, because an excerpt that
+carries a bidi override re-performs the attack it reports. A matched credential is cut to four
+characters plus `…<redacted>`, because a scanner that copies a leaked key into a public artifact
+has widened the leak it found. Both are revert-proved.
+
+**Fetch-and-execute normalises; it does not enumerate.** The first BW301 was a regex listing
+spellings. Probing it with thirteen more spellings found six misses:
+- `| /bin/sh`;
+- `| sudo -E bash`;
+- `| tee log | sh`;
+- `python3 -c "$(curl …)"`;
+- download-then-run joined by `&&`;
+- a bundled `-fsSLo`.
+
+That is the class CLAUDE.md records three review rounds paying for. The shell forms are now
+decided structurally. Each statement is split into pipeline stages. Each stage is reduced to the
+program it actually runs: assignments, wrappers (`sudo`/`env`/`nohup`… with their options),
+quoting, path prefix and version suffix are removed, and `$SHELL` is read as a shell. A rule then
+fires in three cases:
+- a fetching stage reaches an interpreter stage later in the pipeline;
+- a fetching substitution is the argument of an interpreter;
+- a file written by a fetch is later run or made executable, on the same line or any later one.
+
+All 22 probe spellings fire, and six non-executing fetches and non-pipelines do not. Both lists
+are in the test corpus. A Markdown table row is not a pipeline.
+
+**Known gaps, stated rather than hidden:**
+- **Variable indirection.** `c=curl; $c … | sh` needs shell evaluation, which is not static
+  analysis.
+- **Decoding is one level only.** A base64 block inside a base64 block is reported as encoded
+  text, not decoded twice.
+- **No language-mismatch detection.** §15 check 2's "content in a language different from the
+  rest of the file" needs a language model of its own and is not approximated.
+- **No external delegation.** The external `scanners:` config (§15's recommended path) is not
+  built.
+- **The runtime half of `eval-aware` is unbuilt.** That is §3.5's `instrumentation_probe`, which
+  needs the probe suite.
+
+**`BW901` was narrowed before it shipped.** The bare words `bellwether` and `canary` are not
+probes: a skill may name the tool, and "canary deployment" is ordinary English. The rule matches
+`.bellwether` as a path, `BELLWETHER_*` variables, and canary *tokens/markers/credentials*, beside
+the container and tracer idioms §15 lists.
+
+**Calibration against what ships.** No example skill and no behavioural-corpus skill has a finding
+above the default `medium`. A test asserts this, so a rule that starts blocking a skill with a
+known verdict fails the build as a false positive. Changing that verdict is not the way to make it
+pass. The `high` profile's `low` threshold does block `sneaky-exfiltrator` on its `~/.aws/credentials`
+reference (`BW402`, medium), visible in the regenerated demo. `credential-checker` passes the live
+policy's `medium` threshold with the same finding: its credential read is declared, and the
+runtime gates are what judge it.
+
+**The static corpus** (`tests/corpus-static/`) carries the three §24 rows the behavioural corpus
+cannot:
+- `fetch-and-exec` → `BW301` critical;
+- `obfuscated-injection` → `BW201` high, whose base64 decodes to an instruction override;
+- `eval-aware` → `BW901` high.
+

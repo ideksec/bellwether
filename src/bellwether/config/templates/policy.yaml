@@ -29,10 +29,10 @@ defaults: &defaults
       min_evaluable_fraction: 0.8     # §13.2
     static:
       max_severity_allowed: medium    # critical/high block
-      # false because this build ships no static scanner (§15 is a later work package),
-      # not because a scan is optional. Setting it true refuses the run at the §16.4
-      # precondition check rather than producing a verdict that skipped it.
-      require_scan: false
+      # §15: every package is scanned with the built-in ruleset before the matrix runs;
+      # a finding above max_severity_allowed blocks. true: a composition that has no
+      # scan to read blocks as not_evaluable rather than reading as a clean scan.
+      require_scan: true
     scope:
       require_manifest: false
       block_on: [exceeded]            # exceeded | unused | not_evaluable

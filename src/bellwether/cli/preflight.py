@@ -48,7 +48,9 @@ def available_planes(config: Config) -> frozenset[str]:
     composition one: a run whose recorder could not start records both planes unavailable with
     the kernel's reason, and ``doctor`` probes it ahead of time.
     """
-    planes = {"harness_events", "filesystem_writes"}
+    # `static_scan` is not a capture plane, but it is evidence the §16.4 check asks after: the
+    # built-in §15 ruleset ships with every build and needs nothing from the runner.
+    planes = {"harness_events", "filesystem_writes", "static_scan"}
     if config.capture.filesystem_reads == "fanotify":
         planes.add("filesystem_reads")
     if config.capture.process == "fanotify":

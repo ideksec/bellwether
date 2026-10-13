@@ -73,19 +73,18 @@ class EvidenceGate(StrictModel):
 
 
 class StaticGate(StrictModel):
-    """§15. ``require_scan`` is a real control again, which is why its default moved.
+    """§15. The static gate: a finding more severe than ``max_severity_allowed`` blocks.
 
-    The scanner is a later work package (``bellwether.scan`` is a placeholder), and the default
-    used to be ``True`` while nothing enforced it: every shipped profile declared a mandatory
-    scan, no scan ran, and the verdict said ``ready``. Now a profile that requires a scan is
-    refused by the §16.4 precondition check before the matrix is paid for, and composes a
-    required ``not_evaluable`` gate if it reaches composition anyway — so the default has to
-    state what this build can actually do. Flip it back when §15 lands.
+    ``bellwether run`` scans every package with the built-in ruleset, so a scan, when present,
+    always decides the gate. ``require_scan`` says what its *absence* means: required (the
+    default, as §16.1 ships it), a composition with no scan is a blocking ``not_evaluable``;
+    not required, no gate is composed. The default was ``False`` while no scanner existed —
+    a required check that nothing could run read as passed — and returned to ``True`` when §15
+    landed.
     """
 
     max_severity_allowed: Severity = "medium"
-    #: Default ``False`` **because this build has no scanner**, not because a scan is optional.
-    require_scan: bool = False
+    require_scan: bool = True
 
 
 ScopeOutcome = Literal["exceeded", "unused", "not_evaluable"]

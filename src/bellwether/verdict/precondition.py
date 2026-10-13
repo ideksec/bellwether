@@ -391,10 +391,10 @@ def check_preconditions(
                 gate="static.require_scan",
                 target="(runner)",
                 remedy=(
-                    "the policy requires a static scan but this build ships no static scanner "
-                    "(§15 is a later work package), so no scan evidence can exist and the static "
-                    "gate would be not_evaluable; set static.require_scan: false to state that a "
-                    "scan is not required, or run a build that ships the scanner"
+                    "the policy requires a static scan but no static scan is available to this "
+                    "composition (§15), so no scan evidence can exist and the static gate would "
+                    "be not_evaluable; set static.require_scan: false to state that a scan is "
+                    "not required, or run through a path that scans the package"
                 ),
             )
         )

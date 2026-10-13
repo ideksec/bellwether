@@ -71,6 +71,7 @@ from bellwether.harness import (
     TurnUsage,
 )
 from bellwether.sandbox import PathChange, ZoneMap
+from bellwether.scan import scan_package
 from bellwether.skill import load_skill
 from bellwether.trace import (
     Coverage,
@@ -377,6 +378,8 @@ def _run_corpus_skill(
         created_at="2026-08-20T12:00:00Z",
         bellwether_version="0.1.0",
         out_dir=tmp_path / "out",
+        # §15: scanned as `bellwether run` scans it; the shipped profile requires the scan.
+        static_scan=scan_package(package),
     )
 
 
