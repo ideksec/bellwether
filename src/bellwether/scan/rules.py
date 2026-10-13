@@ -795,7 +795,3 @@ def scan_text(text: str, *, markdown: bool) -> list[LineHit]:
     hits.extend(_comment_hits(text, markdown=markdown))
     hits.extend(_fetch_exec_hits(lines))
     return hits
-
-
-#: Exposed for the tests that pin every rule to at least one corpus line.
-LINE_RULE_IDS: frozenset[str] = frozenset(rule_id for rule_id, _, _ in _LINE_PATTERNS)
