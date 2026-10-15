@@ -56,8 +56,17 @@ def assert_valid_sarif(text: str) -> dict[str, Any]:
     return document
 
 
-def _summary() -> Summary:
+def _scanned_summary() -> Summary:
+    """The committed sneaky-exfiltrator summary as written, static scan included."""
     return Summary.model_validate_json((_SNEAKY / "summary.json").read_text(encoding="utf-8"))
+
+
+def _summary() -> Summary:
+    """The same summary with no static scan recorded: the runtime-mirror cases below count
+    results, and the demo's real static finding would be one more."""
+    summary = _scanned_summary()
+    security = summary.security.model_copy(update={"static": {}})
+    return summary.model_copy(update={"security": security})
 
 
 def _with_gates(summary: Summary, *gates: GateSummary) -> Summary:

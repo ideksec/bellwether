@@ -11,7 +11,22 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: a second independent review (2026-09) — remediation in progress, one brick per PR.**
+**Latest: the §15 static scanner (Gate 0) ships.** `bellwether.scan` is no longer a placeholder.
+A built-in ruleset (`bellwether-builtin/1`, 34 rules over the nine §15 checks) scans every package
+before the matrix, and the result decides the `static` gate. A finding above
+`max_severity_allowed` blocks, and `require_scan` is `true` again everywhere. Findings land in
+`summary.json` (`security.static`) and as `findings.sarif` results at their real file and line, and
+`bellwether scan` runs the scan alone. The scan covers every file except `evals/`, including files
+outside the payload allowlist. Excerpts spell invisible characters and cut matched secrets.
+Fetch-and-execute **normalises** pipelines rather than enumerating spellings: probing the first,
+enumerating version found six misses, and all 22 probe spellings now fire. The corpus test fails
+the build if a rule loses coverage, and another test fails it if any shipped skill blocks at the
+default threshold. Nine wiring and behaviour changes were each revert-proved, and every one
+turned its test red. Known gaps are in spec-notes ("§15 — the built-in static scanner"): variable
+indirection, one decoding level, no language-mismatch detection, no external `scanners:`
+delegation.
+
+**Earlier: a second independent review (2026-09) — remediation in progress, one brick per PR.**
 Its headline was that the recording proxy relayed traffic it never decided: mitmproxy answers any
 `CONNECT` before a `request` hook runs and passes non-HTTP bytes through as raw TCP, and it forwards
 a flow whose addon raised. Both were reproduced against the pinned mitmproxy 12.2.3 (a canary
@@ -1106,9 +1121,10 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **Read and process capture** (§10.2, §10.3) — host-side fanotify on the run's own mounts, argv at the held exec, tree attribution, read domain; `credential_read_undeclared` and `process_exec_undeclared` scored | **done** — real containers locally and on CI; not yet under a live paid run |
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
+| **§15 static scanner** — built-in ruleset (34 rules, nine checks), the `static` gate decided from it, `security.static` in the summary, SARIF results at file and line, `bellwether scan`; the static corpus (`fetch-and-exec`, `obfuscated-injection`, `eval-aware`) asserted | **done** — external `scanners:` delegation not built |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2115 tests: 2043 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2279 tests: 2207 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1249,17 +1265,17 @@ Phase A and the recording-proxy spine of Phase B are done, and the live loop rea
 coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acceptance corpus
 (WP-20) is complete, and so is the second harness (WP-17).
 
-**Current state (top of the list):** every v0.1 work package is built, and the change that added
-read and process capture closed the last declared-but-unbuilt v0.1 controls (see the paragraph near
-the top). What remains is **outside v0.1 or unproven live**:
-1. **A labelled live run with the kernel planes on**, under both harnesses — needs explicit approval
-   to spend. Expect to adjust `CLAUDE_CODE_HELPER_PROCESSES` from what the real CLI execs; the CI
-   container test prints the list.
+**Current state (top of the list):** every v0.1 work package is built, the kernel planes have
+run under labelled live evaluations on both harnesses (PR #102), and the §15 static scanner ships.
+What remains is **outside v0.1 or unproven live**:
+1. **§15 follow-ons** (offline, no spend): external `scanners:` delegation with a normaliser per
+   tool (§15's recommended path for serious use), and a fast `bellwether scan --sarif` CI job that
+   uploads static results before a paid run starts (§18.4).
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
-   it from `warn`.
-3. **Later phases:** the §15 static scanner, judges and embeddings (the quality gate and the BCI
-   output component), the §3.5 instrumentation-probe suite, more providers and harnesses, and a
-   stronger isolation runtime (gVisor/Firecracker are refused at parse today).
+   it from `warn` — needs explicit approval to spend.
+3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the
+   §3.5 instrumentation-probe suite (the runtime half of `eval-aware`), more providers and
+   harnesses, and a stronger isolation runtime (gVisor/Firecracker are refused at parse today).
 
 The numbered history below is kept for its record of how each piece landed. The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,

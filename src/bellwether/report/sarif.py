@@ -13,10 +13,15 @@ What is mirrored, and why only that
     scored but §10.5.2 makes it a ``warn``-level signal, not a security finding, so it is not
     mirrored.
     Other gates (functional, consistency, scope, budget) are verdict gates rather than
-    security findings and stay in ``summary.json`` and the reports. The §15 static scanner is
-    not built in this version, so there are no static results; the run's properties and a
-    tool notification say so, because an empty results array would otherwise read as a scan
-    that ran and found nothing.
+    security findings and stay in ``summary.json`` and the reports.
+
+Static results (§15) are the file's native content
+    Every finding of the package's static scan (``summary.json`` ``security.static``) is a
+    result at its real file and line, under its ``BW`` rule id. ``info`` findings are inventory
+    and become ``note``s; the rest map onto ``warning``/``error`` by severity. A scan that did
+    not run says so in a notification, because an empty results array would otherwise read as
+    a scan that ran and found nothing. :func:`render_scan_sarif` renders the same results for
+    ``bellwether scan``, with no evaluation around them.
 
 Pure, like the other renderers
     The input is the :class:`Summary` and the persisted :class:`Figures` (which carry the skill
@@ -32,21 +37,24 @@ The skill's text is untrusted
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from bellwether.determinism import canonical_json, stable_hash
 from bellwether.report.markdown import Figures
 from bellwether.report.summary import GateSummary, Summary
+from bellwether.scan import BUILTIN_RULES, ScanFinding, ScanReport, ScanRule
 
 __all__ = [
     "SARIF_FINGERPRINT_KEY",
     "SARIF_RULES",
     "SARIF_SCHEMA_URI",
+    "SARIF_STATIC_FINGERPRINT_KEY",
     "SARIF_VERSION",
     "SarifRule",
     "render_sarif",
+    "render_scan_sarif",
 ]
 
 SARIF_VERSION = "2.1.0"
@@ -57,6 +65,9 @@ SARIF_SCHEMA_URI = (
 #: The ``partialFingerprints`` key. Versioned so a change to what it hashes is a new key, not
 #: a silent re-identification of every open alert.
 SARIF_FINGERPRINT_KEY = "bellwetherRuntimeFinding/v1"
+#: The static results' key. Hashes rule, file and excerpt — not the line — so an edit above a
+#: finding moves it without re-opening it as a new alert.
+SARIF_STATIC_FINGERPRINT_KEY = "bellwetherStaticFinding/v1"
 
 _INFORMATION_URI = "https://github.com/ideksec/bellwether"
 _SPEC_URI = "https://github.com/ideksec/bellwether/blob/main/docs/spec.md"
@@ -66,7 +77,22 @@ _ANCHOR_FILE = "SKILL.md"
 
 #: GitHub's numeric ``security-severity`` for each spec severity (its own bands: >= 9.0 is
 #: critical, 7.0-8.9 high).
-_SECURITY_SEVERITY: Mapping[str, str] = {"critical": "9.5", "high": "7.5"}
+_SECURITY_SEVERITY: Mapping[str, str] = {
+    "critical": "9.5",
+    "high": "7.5",
+    "medium": "5.0",
+    "low": "2.0",
+    "info": "0.0",
+}
+
+#: §15 severity → SARIF result level for a static finding.
+_STATIC_LEVEL: Mapping[str, str] = {
+    "critical": "error",
+    "high": "error",
+    "medium": "warning",
+    "low": "warning",
+    "info": "note",
+}
 
 #: Gate status → SARIF result level. Only these two statuses are findings: ``pass`` is not one,
 #: and ``not_evaluable`` is the absence of evidence, reported as a notification instead.
@@ -294,6 +320,124 @@ def _notification(text: str, *, rule: tuple[int, SarifRule] | None = None) -> di
     return notification
 
 
+def _static_rule_descriptor(rule: ScanRule) -> dict[str, Any]:
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "shortDescription": {"text": rule.short},
+        "fullDescription": {"text": f"{rule.short} (§15 check: {rule.check})."},
+        "help": {"text": f"{rule.short}. {rule.remediation}"},
+        "helpUri": _SPEC_URI,
+        "defaultConfiguration": {"level": _STATIC_LEVEL[rule.severity]},
+        "properties": {
+            "tags": ["security", "bellwether-static", rule.check],
+            "security-severity": _SECURITY_SEVERITY[rule.severity],
+            "severity": rule.severity,
+            "spec_section": "§15",
+        },
+    }
+
+
+def _static_uri(skill_root: str | None, path: str) -> str:
+    return f"{skill_root.rstrip('/')}/{path}" if skill_root else path
+
+
+def _static_result(
+    finding: ScanFinding, index: int, skill_name: str, skill_root: str | None
+) -> dict[str, Any]:
+    uri = _static_uri(skill_root, finding.path)
+    fingerprint = stable_hash(
+        f"{SARIF_STATIC_FINGERPRINT_KEY}\n{finding.rule_id}\n{skill_name}\n{uri}\n"
+        f"{finding.excerpt}\n{finding.message}"
+    )
+    region: dict[str, Any] = {"startLine": max(finding.line, 1)}
+    if finding.excerpt:
+        region["snippet"] = {"text": finding.excerpt}
+    return {
+        "ruleId": finding.rule_id,
+        "ruleIndex": index,
+        "level": _STATIC_LEVEL[finding.severity],
+        "message": {"text": _sentence(finding.message)},
+        "locations": [
+            {
+                "physicalLocation": {
+                    "artifactLocation": {"uri": uri, "uriBaseId": "%SRCROOT%"},
+                    "region": region,
+                }
+            }
+        ],
+        "partialFingerprints": {SARIF_STATIC_FINGERPRINT_KEY: fingerprint},
+        "properties": {"severity": finding.severity},
+    }
+
+
+def _static_results(
+    scan: ScanReport, *, offset: int, skill_name: str, skill_root: str | None
+) -> list[dict[str, Any]]:
+    index = {rule.id: offset + i for i, rule in enumerate(BUILTIN_RULES)}
+    return [
+        _static_result(finding, index[finding.rule_id], skill_name, skill_root)
+        for finding in scan.findings
+        if finding.rule_id in index
+    ]
+
+
+def _static_notifications(scan: ScanReport) -> list[dict[str, Any]]:
+    notes = [
+        _notification(f"{_plain(u.path)} was not scanned: {_plain(u.reason)}.")
+        for u in scan.files_not_scanned
+    ]
+    notes.extend(_notification(f"{_plain(note)}.") for note in scan.notes)
+    return notes
+
+
+def render_scan_sarif(scans: Sequence[tuple[str, str | None, ScanReport]], *, version: str) -> str:
+    """``bellwether scan --sarif``: static results only, one run per scanned skill.
+
+    Each entry is ``(skill name, repository-relative skill root or None, report)``.
+    """
+    runs: list[dict[str, Any]] = []
+    for skill_name, skill_root, scan in scans:
+        notifications = _static_notifications(scan)
+        if skill_root is None:
+            notifications.append(
+                _notification(
+                    "The skill directory was not known relative to the repository, so results "
+                    "are anchored at paths relative to the skill."
+                )
+            )
+        runs.append(
+            {
+                "tool": {
+                    "driver": {
+                        "name": "Bellwether",
+                        "informationUri": _INFORMATION_URI,
+                        "version": version,
+                        "rules": [_static_rule_descriptor(rule) for rule in BUILTIN_RULES],
+                    }
+                },
+                "automationDetails": {"id": f"bellwether-static/{skill_name}/"},
+                "invocations": [
+                    {"executionSuccessful": True, "toolExecutionNotifications": notifications}
+                ],
+                "results": _static_results(
+                    scan, offset=0, skill_name=skill_name, skill_root=skill_root
+                ),
+                "properties": {
+                    "skill": skill_name,
+                    "ruleset": scan.ruleset,
+                    "worst": scan.worst,
+                },
+            }
+        )
+    return (
+        canonical_json(
+            {"$schema": SARIF_SCHEMA_URI, "version": SARIF_VERSION, "runs": runs}, indent=2
+        )
+        + "\n"
+    )
+
+
 def render_sarif(summary: Summary, figures: Figures) -> str:
     """Render ``findings.sarif`` (SARIF 2.1.0) from a summary and its persisted figures."""
     uri = _anchor_uri(figures.skill_root)
@@ -315,13 +459,26 @@ def render_sarif(summary: Summary, figures: Figures) -> str:
                 )
             )
     results.sort(key=lambda r: (r["ruleIndex"], r["level"]))
-    notifications = [
-        _notification(
-            "No static scan (§15) is built in this version: this file carries no static "
-            "results, only the runtime findings §17.3 permits mirroring."
-        ),
-        *sorted(unobserved, key=lambda n: n["associatedRule"]["index"]),
-    ]
+    static = ScanReport.from_record(summary.security.static) if summary.security.static else None
+    notifications = sorted(unobserved, key=lambda n: n["associatedRule"]["index"])
+    if static is None:
+        notifications.insert(
+            0,
+            _notification(
+                "No static scan (§15) was recorded for this evaluation: this file carries no "
+                "static results, only the runtime findings §17.3 permits mirroring."
+            ),
+        )
+    else:
+        results.extend(
+            _static_results(
+                static,
+                offset=len(SARIF_RULES),
+                skill_name=summary.skill.name,
+                skill_root=figures.skill_root,
+            )
+        )
+        notifications.extend(_static_notifications(static))
     if figures.skill_root is None:
         notifications.append(
             _notification(
@@ -336,7 +493,10 @@ def render_sarif(summary: Summary, figures: Figures) -> str:
                 "name": "Bellwether",
                 "informationUri": _INFORMATION_URI,
                 "version": summary.bellwether_version,
-                "rules": [_rule_descriptor(rule) for rule in SARIF_RULES],
+                "rules": [
+                    *(_rule_descriptor(rule) for rule in SARIF_RULES),
+                    *(_static_rule_descriptor(rule) for rule in BUILTIN_RULES),
+                ],
             }
         },
         # GitHub replaces a category's alerts on each upload; one category per skill and
@@ -350,7 +510,7 @@ def render_sarif(summary: Summary, figures: Figures) -> str:
             "policy_profile": summary.policy.profile,
             "skill": summary.skill.name,
             "payload_digest": summary.skill.payload_digest,
-            "static_scan": "not built in this version",
+            "static_scan": static.ruleset if static is not None else "not recorded",
             "record": "summary.json",
         },
     }

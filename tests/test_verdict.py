@@ -114,6 +114,7 @@ ALL_PLANES = frozenset(
         "egress",
         "dns",
         "process",
+        "static_scan",
     ]
 )
 
@@ -387,12 +388,14 @@ def test_require_scan_is_refused_before_the_matrix_is_paid_for() -> None:
     )
     assert isinstance(strict.gates, Gates)
 
-    failures = check_preconditions(strict, [api_loop_target()], available_planes=ALL_PLANES)
+    # A composition with no scanner to call (the §16.4 check reads it from `available_planes`)
+    # refuses; every build now ships the built-in ruleset, so the shipped composition does not.
+    without = ALL_PLANES - {"static_scan"}
+    failures = check_preconditions(strict, [api_loop_target()], available_planes=without)
 
     assert [f.gate for f in failures if f.gate == "static.require_scan"] == ["static.require_scan"]
-    assert (
-        "no static scanner" in next(f for f in failures if f.gate == "static.require_scan").remedy
-    )
+    assert "no static scan" in next(f for f in failures if f.gate == "static.require_scan").remedy
+    assert check_preconditions(strict, [api_loop_target()], available_planes=ALL_PLANES) == []
 
 
 def test_require_manifest_is_refused_for_a_package_with_no_manifest() -> None:

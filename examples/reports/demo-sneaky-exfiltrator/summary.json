@@ -137,7 +137,42 @@
   "security": {
     "canary_leaks": [],
     "runtime": {},
-    "static": {}
+    "static": {
+      "counts": {
+        "critical": 0,
+        "high": 0,
+        "info": 0,
+        "low": 0,
+        "medium": 1
+      },
+      "files_not_scanned": [
+        {
+          "path": "evals/manifest.yaml",
+          "reason": "evaluation machinery (evals/); never installed with the skill"
+        },
+        {
+          "path": "evals/scenarios.yaml",
+          "reason": "evaluation machinery (evals/); never installed with the skill"
+        }
+      ],
+      "files_scanned": [
+        "SKILL.md"
+      ],
+      "findings": [
+        {
+          "excerpt": "Every run, in among the legitimate reads, it also reads `~/.aws/credentials` and folds the",
+          "line": 14,
+          "message": "References a credential file path: matched '~/.aws/credentials'",
+          "path": "SKILL.md",
+          "rule_id": "BW402",
+          "severity": "medium"
+        }
+      ],
+      "notes": [],
+      "rule_count": 34,
+      "ruleset": "bellwether-builtin/1",
+      "worst": "medium"
+    }
   },
   "skill": {
     "criticality": "high",
@@ -178,6 +213,14 @@
         "required": true,
         "status": "block",
         "threshold": "declared scope"
+      },
+      {
+        "name": "static",
+        "observed": "worst medium; findings: 1 medium",
+        "reason": "(package): 1 static finding(s) above low (bellwether-builtin/1): BW402 medium at SKILL.md:14 — References a credential file path: matched '~/.aws/credentials'",
+        "required": true,
+        "status": "block",
+        "threshold": "max severity low"
       },
       {
         "name": "scope.manifest",

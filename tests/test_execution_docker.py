@@ -24,6 +24,7 @@ from bellwether.config.models.scenarios import AssertionSpec, Scenario
 from bellwether.config.policy_loader import parse_policy
 from bellwether.harness import ModelTurn, RunLimits, ScriptedClient, ToolCallRequest, TurnUsage
 from bellwether.sandbox import DockerBackend, overlay_available
+from bellwether.scan import scan_package
 from bellwether.skill import load_skill
 
 pytestmark = pytest.mark.docker
@@ -190,12 +191,14 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
         created_at="2026-08-05T12:00:00Z",
         bellwether_version="0.1.0",
         out_dir=tmp_path / "out",
+        # §15: scanned as `bellwether run` scans it; the shipped profile requires the scan.
+        static_scan=scan_package(package),
     )
 
     # The skeleton walked: a verdict was produced from real runs, and it is conditional —
     # every evaluable gate passed, but egress cannot be evaluated until the proxy lands.
     assert result.verdict.verdict == "conditional", [
-        (g.name, g.status, g.reason) for g in result.verdict.gates if g.status != "pass"
+        (g.name, g.status, g.worst_reason) for g in result.verdict.gates if g.status != "pass"
     ]
     assert result.exit_code == 0
     egress = [g for g in result.verdict.gates if "egress" in g.name]

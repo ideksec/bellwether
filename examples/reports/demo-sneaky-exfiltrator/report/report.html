@@ -159,6 +159,14 @@ tr:last-child td { border-bottom: none; }
       <td>api-loop-scripted-frontier: capabilities observed outside declared scope: ${HOME}/.aws/credentials</td>
     </tr>
     <tr>
+      <td><code>static</code></td>
+      <td><span class="chip block">✗ block</span></td>
+      <td>worst medium; findings: 1 medium</td>
+      <td>max severity low</td>
+      <td class="muted-text">required</td>
+      <td>(package): 1 static finding(s) above low (bellwether-builtin/1): BW402 medium at SKILL.md:14 — References a credential file path: matched &#x27;~/.aws/credentials&#x27;</td>
+    </tr>
+    <tr>
       <td><code>scope.manifest</code></td>
       <td><span class="chip ok">✓ pass</span></td>
       <td>manifest present</td>

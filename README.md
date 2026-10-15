@@ -61,7 +61,7 @@ credential.
 **Both v0.1 harnesses ship**: the `api-loop` reference and the real **Claude Code CLI** running
 headless inside the sandbox, its structured output cross-checked against its own hooks writing
 to a host-owned sink, its model calls leaving only through the proxy with a sandbox-scoped token.
-What remains is **breadth, not a missing spine**: the static scanner, the judge and embedding
+What remains is **breadth, not a missing spine**: the judge and embedding
 subsystems, further providers and harnesses, and a stronger isolation runtime — the v0.1
 acceptance corpus is complete (eleven skills, three slices,
 every §25 verdict asserted in CI). See
@@ -289,6 +289,7 @@ git clone https://github.com/ideksec/bellwether && cd bellwether
 uv sync --group dev
 uv run bellwether --help
 uv run bellwether demo      # offline: no Docker, no API key — writes examples/reports/
+uv run bellwether scan examples/skills/workspace-stats   # the §15 static scan alone, no execution
 ```
 
 Scaffold Bellwether into a repository that contains skills:
@@ -401,11 +402,12 @@ alone and an unmentioned component would read as one that ran clean.
 | Pre-flight estimate (§19.1): matrix size, best/expected/worst run counts, token cap, cost range where priced (the ceiling prices the token cap at each target's dearest rate, so it bounds the spend); printed before anything is spent; `--yes` skips the prompt, never the estimate | done — a decline exits 4, not the infrastructure code |
 | `--deterministic-sampling` (§9.3, §20): temperature pinned on every api-loop request, recorded on the header and marked in the report; refused on claude-code | done |
 | §7.4 companions on `claude-code`: a scenario's `also_load_skills` are staged beside the skill under test for the CLI to discover (observed in its init record as `skill_offered`); collisions refused before any copy; the api-loop path unchanged | done — plugin-layout staging still open |
-| Static scanner (§15) · probe suite (§7.6) · coexistence matrix (§7.4) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
+| **Static scanner (§15)** — a built-in ruleset (`bellwether-builtin/1`, 34 rules over the nine §15 checks) scans every package before the matrix; a finding above `gates.static.max_severity_allowed` blocks the `static` gate; findings land in `summary.json` and in `findings.sarif` at their real file and line; `bellwether scan` runs it alone (exit 2 above the threshold). Excerpts spell invisible characters and cut matched secrets to their prefix. Deliberately small (§26.2): run a dedicated scanner beside it for serious use | done — external `scanners:` delegation and language-mismatch detection not built |
+| Probe suite (§7.6) · coexistence matrix (§7.4) | **not implemented** — the CLI commands refuse with exit 3 and name the work package, rather than emitting an empty clean-looking result |
 | **Noise-floor calibration** — Plane-A-only dispersion proven exactly 0 on real containers (sequentially and under concurrent load); the cross-plane residual published as `noise_floor` in every `summary.json`; dispersion at or below the floor reported as `at_noise_floor`, never a precise small number | done (WP-19) |
 | **Plane precedence (§10.8)** — `trace_inconsistency` produced only where two planes are in-domain and fidelity supports the absence being read; a benign run at overlay-diff fidelity yields zero findings, proven on a real container | done (WP-18) |
 | **Acceptance corpus** — eleven `tests/corpus/` skills driven through the real pipeline with §25 verdicts asserted in CI: the §10.4.1 false-positive guard (`legit-credential-reader`), the §13.5 tier-model regression (`file-selective`), and the §13.5.1.1 frequency-independence property (`rare-canary-reader` blocks at N = 6, 12 and 20 alike) all proven; the §13.5.2 peripheral report (class + exact path), the timeout state, and the `unused` half of Declared-vs-Observed surface in `summary.json` and both reports | done (WP-20) |
-| **`claude-code` harness adapter** — the real CLI headless in the sandbox; stream-json → Plane A, hooks → the host-owned sink, cross-checked; scoped token through the proxy; telemetry off and declared; `Read`/`Write`/`Edit` mapped onto the shared capability vocabulary; trigger metrics portable | done (WP-17) — offline-proven against a real CLI 2.1.257 session; in-container proof is CI-only; no live-model run yet |
+| **`claude-code` harness adapter** — the real CLI headless in the sandbox; stream-json → Plane A, hooks → the host-owned sink, cross-checked; scoped token through the proxy; telemetry off and declared; `Read`/`Write`/`Edit` mapped onto the shared capability vocabulary; trigger metrics portable | done (WP-17) — offline-proven against a real CLI 2.1.257 session; in-container proof is CI-only; run live on labelled PRs (#65, #102) |
 
 Work packages are defined in [docs/BUILDPLAN.md](docs/BUILDPLAN.md); the specification
 they implement is [docs/spec.md](docs/spec.md). Where the implementation had to resolve

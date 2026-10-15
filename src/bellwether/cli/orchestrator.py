@@ -106,6 +106,7 @@ from bellwether.report import (
     render_summary_json,
 )
 from bellwether.sandbox import tidy_container_spelling
+from bellwether.scan import ScanReport
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
     FILESYSTEM_ZONES,
@@ -1910,13 +1911,13 @@ def _tgr(
     )
 
 
-#: What the §15 static scanner would contribute if it existed. It does not in this version
-#: (``bellwether.scan`` is a placeholder), so a profile that *requires* a scan is requiring
-#: evidence this build cannot produce.
+#: Why a profile that requires a scan has no scan to read: the composition was not handed one.
+#: The production path (``run_evaluation``) always scans; this is reached by a caller that
+#: composes a verdict without the package in hand, and it must not read as a clean scan.
 STATIC_SCAN_UNAVAILABLE = (
-    "the §15 static scanner is not built in this version, so no scan evidence exists for this "
-    "package; set gates.static.require_scan: false to state that a scan is not required, or run "
-    "a build that ships the scanner"
+    "no §15 static scan was run on this composition path, so no scan evidence exists for this "
+    "package; run it through `bellwether run` (which scans every package before the matrix), "
+    "or set gates.static.require_scan: false to state that a scan is not required"
 )
 
 #: §6.3: the separation-of-duties constraint is evaluated against the GitHub API — the reviewer
@@ -1929,25 +1930,61 @@ SEPARATE_REVIEWER_UNCHECKABLE = (
 )
 
 
-def _static_result(profile: ProfileSpec) -> TargetGateResult:
-    """The §15 static gate, composed only where the policy requires a scan.
+def _static_result(profile: ProfileSpec, scan: ScanReport | None) -> TargetGateResult:
+    """The §15 static gate: block on any finding more severe than ``max_severity_allowed``.
 
-    ``require_scan`` was accepted, printed in the resolved policy, and enforced nowhere: the
-    scanner is a later work package, and the only trace of the requirement was a ``doctor``
-    warning that never reached the verdict a reviewer reads. A control named *require* has to
-    either run or stop the result, so this is a required ``not_evaluable``: the policy asked for
-    evidence, the evidence does not exist, and an absent scan is never a clean scan (§10.0).
+    With a scan, the gate is decided by it — ``info`` findings are inventory and never count,
+    and a threshold of ``medium`` blocks on ``high`` and ``critical`` (§16.1). The reason names
+    each blocking finding by file, line and rule, so the reviewer can go straight to it.
 
-    Where the profile does not require a scan, no gate is composed at all — the policy has said
-    it does not need one, and inventing an advisory unobserved row for evidence nobody asked for
-    would demote every clean run to ``conditional``.
+    Without one, the gate is only composed where the profile *requires* a scan, and is then a
+    required ``not_evaluable``: the policy asked for evidence that does not exist, and an absent
+    scan is never a clean scan (§10.0).
     """
+    threshold = profile.gates.static.max_severity_allowed
+    if scan is None:
+        return TargetGateResult(
+            target="(package)",
+            status="not_evaluable",
+            observed="no scan",
+            threshold=f"max severity {threshold}",
+            reason=STATIC_SCAN_UNAVAILABLE,
+        )
+    counts = scan.counts()
+    tally = ", ".join(f"{counts[s]} {s}" for s in reversed(list(counts)) if counts[s]) or "none"
+    blocking = scan.above(threshold)
+    unscanned = [u for u in scan.files_not_scanned if not u.reason.startswith("evaluation")]
+    coverage = (
+        f"; {len(unscanned)} payload file(s) not read: "
+        + ", ".join(f"{u.path} ({u.reason})" for u in unscanned[:3])
+        if unscanned
+        else ""
+    )
+    if blocking:
+        named = "; ".join(
+            f"{f.rule_id} {f.severity} at {f.path}:{f.line} — {f.message}" for f in blocking[:5]
+        )
+        more = f"; and {len(blocking) - 5} more" if len(blocking) > 5 else ""
+        return TargetGateResult(
+            target="(package)",
+            status="block",
+            observed=f"worst {scan.worst}; findings: {tally}",
+            threshold=f"max severity {threshold}",
+            reason=(
+                f"{len(blocking)} static finding(s) above {threshold} ({scan.ruleset}): "
+                f"{named}{more}{coverage}"
+            ),
+        )
+    worst = scan.worst
     return TargetGateResult(
         target="(package)",
-        status="not_evaluable",
-        observed="no scan",
-        threshold=f"max severity {profile.gates.static.max_severity_allowed}",
-        reason=STATIC_SCAN_UNAVAILABLE,
+        status="pass",
+        observed=f"worst {worst or 'none'}; findings: {tally}",
+        threshold=f"max severity {threshold}",
+        reason=(
+            f"{len(scan.files_scanned)} file(s) scanned with {scan.ruleset}; nothing above "
+            f"{threshold}{coverage}"
+        ),
     )
 
 
@@ -3265,6 +3302,9 @@ def orchestrate(
     #: The skill directory, repository-relative POSIX, that ``findings.sarif`` anchors its
     #: results under (§17.3). ``None`` where the caller does not know it.
     skill_root: str | None = None,
+    #: The §15 static scan of the package, when the caller ran one. ``None`` composes no static
+    #: gate unless the profile requires a scan, in which case the gate is ``not_evaluable``.
+    static_scan: ScanReport | None = None,
 ) -> EvalResult:
     """Compose the verdict from the set readings, render, and write the artifact tree.
 
@@ -3306,8 +3346,10 @@ def orchestrate(
     # ignore. Each is composed *only* where its profile asks for it, and each is required when
     # composed — a control named `require_*` either decides the verdict or stops it. Composing
     # them unconditionally would instead demote every clean run on evidence nobody asked for.
-    if profile.gates.static.require_scan:
-        gates.append(_gate("static", [_static_result(profile)], required=True))
+    # §15: a scan, when the caller ran one, always decides the static gate — `require_scan`
+    # says whether its *absence* blocks, never whether a scan that found a critical counts.
+    if static_scan is not None or profile.gates.static.require_scan:
+        gates.append(_gate("static", [_static_result(profile, static_scan)], required=True))
     if profile.gates.scope.require_manifest:
         gates.append(
             _gate(
@@ -3491,6 +3533,7 @@ def orchestrate(
         platform_baseline_version=platform_baseline_version,
         platform_baseline=platform_baseline,
         deterministic_sampling=deterministic_sampling,
+        static_scan=static_scan,
     )
 
     artifacts = write_artifact_tree(
@@ -3602,6 +3645,7 @@ def _build_summary(
     platform_baseline_version: str = "",
     platform_baseline: PlatformBaseline | None = None,
     deterministic_sampling: bool = False,
+    static_scan: ScanReport | None = None,
 ) -> Summary:
     primary = _primary(readings)
     targets = sorted({r.target.slug for r in readings})
@@ -3684,7 +3728,9 @@ def _build_summary(
     absorbed = sorted({path for reading in readings for path in reading.baseline_absorbed})
     if absorbed:
         runtime["baseline_absorbed"] = absorbed
-    security = SecuritySummary(runtime=runtime)
+    security = SecuritySummary(
+        static=static_scan.as_record() if static_scan is not None else {}, runtime=runtime
+    )
     return Summary(
         eval_id=eval_id,
         created_at=created_at,

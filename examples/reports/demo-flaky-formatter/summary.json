@@ -141,7 +141,33 @@
   "security": {
     "canary_leaks": [],
     "runtime": {},
-    "static": {}
+    "static": {
+      "counts": {
+        "critical": 0,
+        "high": 0,
+        "info": 0,
+        "low": 0,
+        "medium": 0
+      },
+      "files_not_scanned": [
+        {
+          "path": "evals/manifest.yaml",
+          "reason": "evaluation machinery (evals/); never installed with the skill"
+        },
+        {
+          "path": "evals/scenarios.yaml",
+          "reason": "evaluation machinery (evals/); never installed with the skill"
+        }
+      ],
+      "files_scanned": [
+        "SKILL.md"
+      ],
+      "findings": [],
+      "notes": [],
+      "rule_count": 34,
+      "ruleset": "bellwether-builtin/1",
+      "worst": null
+    }
   },
   "skill": {
     "criticality": "medium",
@@ -182,6 +208,14 @@
         "required": true,
         "status": "pass",
         "threshold": "declared scope"
+      },
+      {
+        "name": "static",
+        "observed": "worst none; findings: none",
+        "reason": "(package): 1 file(s) scanned with bellwether-builtin/1; nothing above medium",
+        "required": true,
+        "status": "pass",
+        "threshold": "max severity medium"
       },
       {
         "name": "security_runtime.egress",
