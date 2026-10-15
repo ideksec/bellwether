@@ -11,7 +11,18 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: the §15 static scanner (Gate 0) ships.** `bellwether.scan` is no longer a placeholder.
+**Latest: §15 scanner delegation.** Dedicated scanners hand Bellwether their SARIF 2.1.0 with
+`--scanner-sarif` (on `run` and `scan`); Bellwether reads it and **never runs a scanner** — the
+config that would name a command lives in the evaluated checkout, which a PR edits (spec-notes).
+Results inside the skill become `<tool>:<ruleId>` findings, graded by `security-severity` or level,
+and decide the `static` gate like the built-in ones; results elsewhere are counted in a note. A
+tool's snippet is never copied (a secret scanner's snippet is the secret) and its message has the
+credential patterns redacted. `gates.static.required_scanners` makes a tool mandatory: a run
+without its SARIF refuses before the executor is built, and a composition that skips that check
+blocks as `not_evaluable`. A file that is not SARIF 2.1.0 stops the run rather than reading as a
+scanner that found nothing. Nine wiring changes revert-proved, every one red.
+
+**Before that: the §15 static scanner (Gate 0) ships.** `bellwether.scan` is no longer a placeholder.
 A built-in ruleset (`bellwether-builtin/1`, 34 rules over the nine §15 checks) scans every package
 before the matrix, and the result decides the `static` gate. A finding above
 `max_severity_allowed` blocks, and `require_scan` is `true` again everywhere. Findings land in
@@ -1121,10 +1132,11 @@ commands exhaustively instead of counting them.
 | **WP-20 corpus — complete** (eleven skills: `canary-thief`, `dns-thief`, `legit-credential-reader`, `benign-stable`, `file-selective`, `always-fails`, `rare-canary-reader`, `scope-creeper`, `over-declared`, `slow`, `benign-chaotic`): real skills, real pipeline, §25 verdicts asserted in CI — the §10.4.1 false-positive guard, the §13.5 tier-model regression, and the §13.5.1.1 frequency-independence property (blocks at N = 6/12/20 alike) all proven; peripheral report, timeout state, `unused` rows and cluster list surfaced en route | **done** |
 | **Read and process capture** (§10.2, §10.3) — host-side fanotify on the run's own mounts, argv at the held exec, tree attribution, read domain; `credential_read_undeclared` and `process_exec_undeclared` scored | **done** — real containers locally and on CI; not yet under a live paid run |
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
-| **§15 static scanner** — built-in ruleset (34 rules, nine checks), the `static` gate decided from it, `security.static` in the summary, SARIF results at file and line, `bellwether scan`; the static corpus (`fetch-and-exec`, `obfuscated-injection`, `eval-aware`) asserted | **done** — external `scanners:` delegation not built |
+| **§15 static scanner** — built-in ruleset (34 rules, nine checks), the `static` gate decided from it, `security.static` in the summary, SARIF results at file and line, `bellwether scan`; the static corpus (`fetch-and-exec`, `obfuscated-injection`, `eval-aware`) asserted | **done** |
+| **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2279 tests: 2207 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2304 tests: 2232 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1268,9 +1280,9 @@ coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acc
 **Current state (top of the list):** every v0.1 work package is built, the kernel planes have
 run under labelled live evaluations on both harnesses (PR #102), and the §15 static scanner ships.
 What remains is **outside v0.1 or unproven live**:
-1. **§15 follow-ons** (offline, no spend): external `scanners:` delegation with a normaliser per
-   tool (§15's recommended path for serious use), and a fast `bellwether scan --sarif` CI job that
-   uploads static results before a paid run starts (§18.4).
+1. **§15 follow-on** (offline, no spend): a fast `bellwether scan --sarif` CI job that uploads
+   static results before a paid run starts (§18.4), optionally running a pinned dedicated scanner
+   in its own step and passing its SARIF with `--scanner-sarif`.
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
    it from `warn` — needs explicit approval to spend.
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the

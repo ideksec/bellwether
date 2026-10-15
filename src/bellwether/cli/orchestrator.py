@@ -107,6 +107,7 @@ from bellwether.report import (
 )
 from bellwether.sandbox import tidy_container_spelling
 from bellwether.scan import ScanReport
+from bellwether.scan import scanner_name as _scanner_key
 from bellwether.skill import SkillPackage
 from bellwether.trace import (
     FILESYSTEM_ZONES,
@@ -1950,6 +1951,22 @@ def _static_result(profile: ProfileSpec, scan: ScanReport | None) -> TargetGateR
             threshold=f"max severity {threshold}",
             reason=STATIC_SCAN_UNAVAILABLE,
         )
+    missing = sorted(
+        set(map(_scanner_key, profile.gates.static.required_scanners)) - set(scan.scanners)
+    )
+    if missing:
+        return TargetGateResult(
+            target="(package)",
+            status="not_evaluable",
+            observed=f"scanners supplied: {', '.join(scan.scanners) or 'none'}",
+            threshold=f"max severity {threshold}; required scanners {', '.join(missing)}",
+            reason=(
+                f"the policy requires the external scanner(s) {', '.join(missing)} "
+                "(gates.static.required_scanners) and no SARIF from them was supplied "
+                "(--scanner-sarif), so the static gate cannot be decided; a scanner that did not "
+                "run is not a scanner that found nothing (§15)"
+            ),
+        )
     counts = scan.counts()
     tally = ", ".join(f"{counts[s]} {s}" for s in reversed(list(counts)) if counts[s]) or "none"
     blocking = scan.above(threshold)
@@ -2308,6 +2325,7 @@ ENFORCING_GATE_CONTROLS: frozenset[str] = frozenset(
         # static (§15) — required, and refused by the preflight where no scanner ships
         "static.require_scan",
         "static.max_severity_allowed",
+        "static.required_scanners",
         # scope (§12.5)
         "scope.require_manifest",
         "scope.block_on",

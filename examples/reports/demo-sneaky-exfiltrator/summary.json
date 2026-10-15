@@ -171,6 +171,7 @@
       "notes": [],
       "rule_count": 34,
       "ruleset": "bellwether-builtin/1",
+      "scanners": [],
       "worst": "medium"
     }
   },

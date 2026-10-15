@@ -17,6 +17,13 @@ something real to require, with no extra dependencies.
 
 from __future__ import annotations
 
+from bellwether.scan.external import (
+    MAX_SARIF_BYTES,
+    ExternalScan,
+    merge_external,
+    read_scanner_sarif,
+    scanner_name,
+)
 from bellwether.scan.findings import (
     RULESET_ID,
     SEVERITIES,
@@ -33,16 +40,21 @@ from bellwether.scan.scanner import MAX_SCAN_BYTES, scan_package
 
 __all__ = [
     "BUILTIN_RULES",
+    "MAX_SARIF_BYTES",
     "MAX_SCAN_BYTES",
     "RULESET_ID",
     "RULES_BY_ID",
     "SEVERITIES",
+    "ExternalScan",
     "ScanFinding",
     "ScanReport",
     "ScanRule",
     "Severity",
     "UnscannedFile",
+    "merge_external",
+    "read_scanner_sarif",
     "scan_package",
+    "scanner_name",
     "severity_rank",
     "visible_excerpt",
 ]

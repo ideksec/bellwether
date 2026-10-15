@@ -44,7 +44,14 @@ from typing import Any
 from bellwether.determinism import canonical_json, stable_hash
 from bellwether.report.markdown import Figures
 from bellwether.report.summary import GateSummary, Summary
-from bellwether.scan import BUILTIN_RULES, ScanFinding, ScanReport, ScanRule
+from bellwether.scan import (
+    BUILTIN_RULES,
+    RULES_BY_ID,
+    ScanFinding,
+    ScanReport,
+    ScanRule,
+    severity_rank,
+)
 
 __all__ = [
     "SARIF_FINGERPRINT_KEY",
@@ -338,6 +345,53 @@ def _static_rule_descriptor(rule: ScanRule) -> dict[str, Any]:
     }
 
 
+def _delegated_rules(scan: ScanReport | None) -> list[tuple[str, str]]:
+    """``(rule id, worst severity)`` for each external scanner's rule with a finding, sorted.
+
+    A delegated finding's rule id is ``<tool>:<ruleId>`` (§15); the tool's own rule metadata
+    is not carried over — its text is the tool's, not ours — so the descriptor says where the
+    rule came from and how severe its worst result here was.
+    """
+    if scan is None:
+        return []
+    worst: dict[str, str] = {}
+    for finding in scan.findings:
+        if finding.rule_id in RULES_BY_ID:
+            continue
+        current = worst.get(finding.rule_id)
+        if current is None or severity_rank(finding.severity) > severity_rank(current):
+            worst[finding.rule_id] = finding.severity
+    return sorted(worst.items())
+
+
+def _delegated_rule_descriptor(rule_id: str, severity: str) -> dict[str, Any]:
+    tool = rule_id.split(":", 1)[0]
+    short = f"Reported by the external scanner '{tool}' and merged into the static scan"
+    return {
+        "id": rule_id,
+        "name": "Delegated" + "".join(c for c in tool.title() if c.isalnum()),
+        "shortDescription": {"text": short},
+        "fullDescription": {"text": f"{short} (§15 delegation)."},
+        "help": {"text": f"{short}. See {tool}'s own documentation for rule '{rule_id}'."},
+        "helpUri": _SPEC_URI,
+        "defaultConfiguration": {"level": _STATIC_LEVEL[severity]},
+        "properties": {
+            "tags": ["security", "bellwether-delegated", tool],
+            "security-severity": _SECURITY_SEVERITY[severity],
+            "severity": severity,
+            "delegated_from": tool,
+            "spec_section": "§15",
+        },
+    }
+
+
+def _static_rule_descriptors(scan: ScanReport | None) -> list[dict[str, Any]]:
+    return [
+        *(_static_rule_descriptor(rule) for rule in BUILTIN_RULES),
+        *(_delegated_rule_descriptor(rule_id, sev) for rule_id, sev in _delegated_rules(scan)),
+    ]
+
+
 def _static_uri(skill_root: str | None, path: str) -> str:
     return f"{skill_root.rstrip('/')}/{path}" if skill_root else path
 
@@ -374,7 +428,11 @@ def _static_result(
 def _static_results(
     scan: ScanReport, *, offset: int, skill_name: str, skill_root: str | None
 ) -> list[dict[str, Any]]:
-    index = {rule.id: offset + i for i, rule in enumerate(BUILTIN_RULES)}
+    ids = [
+        *(rule.id for rule in BUILTIN_RULES),
+        *(rule_id for rule_id, _ in _delegated_rules(scan)),
+    ]
+    index = {rule_id: offset + i for i, rule_id in enumerate(ids)}
     return [
         _static_result(finding, index[finding.rule_id], skill_name, skill_root)
         for finding in scan.findings
@@ -413,7 +471,7 @@ def render_scan_sarif(scans: Sequence[tuple[str, str | None, ScanReport]], *, ve
                         "name": "Bellwether",
                         "informationUri": _INFORMATION_URI,
                         "version": version,
-                        "rules": [_static_rule_descriptor(rule) for rule in BUILTIN_RULES],
+                        "rules": _static_rule_descriptors(scan),
                     }
                 },
                 "automationDetails": {"id": f"bellwether-static/{skill_name}/"},
@@ -426,6 +484,7 @@ def render_scan_sarif(scans: Sequence[tuple[str, str | None, ScanReport]], *, ve
                 "properties": {
                     "skill": skill_name,
                     "ruleset": scan.ruleset,
+                    "scanners": list(scan.scanners),
                     "worst": scan.worst,
                 },
             }
@@ -495,7 +554,7 @@ def render_sarif(summary: Summary, figures: Figures) -> str:
                 "version": summary.bellwether_version,
                 "rules": [
                     *(_rule_descriptor(rule) for rule in SARIF_RULES),
-                    *(_static_rule_descriptor(rule) for rule in BUILTIN_RULES),
+                    *_static_rule_descriptors(static),
                 ],
             }
         },
