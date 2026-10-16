@@ -1,0 +1,192 @@
+name: Bellwether static scan
+
+# Gate 0 (§15, §18.1): the static scan of every skill, on every pull request, before any paid
+# evaluation. It reads the skills' text and never runs them, so it needs no API key, no sandbox
+# and no label, and it costs nothing — which is why it scans *every* skill under the real skill
+# roots rather than only the changed ones: a pull request's code-scanning analysis that covered
+# only the changed skills would show every other skill's open alerts as "fixed" on that PR.
+#
+# Two scanners, one gate:
+#   * Bellwether's built-in ruleset (`bellwether scan`), and
+#   * Gitleaks, run here in its own digest-pinned container, its SARIF handed to Bellwether with
+#     `--scanner-sarif`. Bellwether reads scanner output and never runs a scanner itself: the
+#     config that would name a command lives in the checkout a pull request edits (§15,
+#     docs/spec-notes.md). Gitleaks grades nothing, so the policy floors its results at `high`
+#     (`gates.static.scanner_min_severity`) — a leaked token blocks.
+#
+# Each skill is held to the static gate of the policy profile its criticality selects — the same
+# one `bellwether run` judges it under. A finding above that threshold fails this check, after
+# the results are uploaded to the Security tab and summarised on the job page.
+#
+# Forks: a fork's pull request gets a read-only token, so the Security-tab upload is skipped there
+# (the scan, the job summary and the uploaded artifact still run). No secret is used anywhere in
+# this workflow, and it never checks out with `pull_request_target`.
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bellwether-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The directories holding real skills (space-separated). This repository also keeps
+  # skill-shaped *test fixtures* — some deliberately hostile, under tests/ — which must never be
+  # scanned as if they were skills, or this check is red forever and the Security tab fills with
+  # alerts about the test suite.
+  BELLWETHER_SKILL_ROOTS: examples/skills
+  BELLWETHER_POLICY: examples/live/policy.yaml
+  # Gitleaks v8.24.3, the multi-arch index digest. To update: `docker buildx imagetools inspect
+  # ghcr.io/gitleaks/gitleaks:<tag>` and replace both the tag and the digest.
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.24.3@sha256:e1b35e12a8c6fa8901f060459cfb6b2fc4c484d3afbe3b029733a3bbfab07055
+  BW_OUT: .bellwether-static
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # The SARIF upload is how findings reach the Security tab; `actions: read` is what the
+      # upload action needs to read the run's own metadata in a private repository.
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Nothing below needs git credentials, and Gitleaks reads the checkout.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Select the skills
+        id: select
+        run: |
+          # pipefail: a failure upstream of the pipe must not read as "no skills".
+          set -euo pipefail
+          mkdir -p "${BW_OUT}"
+          read -ra roots <<< "${BELLWETHER_SKILL_ROOTS}"
+          under=()
+          for root in "${roots[@]}"; do under+=(--under "${root}"); done
+          # Every tracked file under the roots → every skill under them. NUL-separated end to
+          # end, so a skill directory with a non-ASCII name is found, not silently dropped.
+          git ls-files -z -- "${roots[@]}" \
+            | uv run bellwether changed-skills -z "${under[@]}" > "${BW_OUT}/skills.txt"
+          count="$(grep -c . "${BW_OUT}/skills.txt" || true)"
+          echo "Skills to scan (${count}):"; cat "${BW_OUT}/skills.txt"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      - name: Gitleaks
+        if: steps.select.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          docker pull -q "${GITLEAKS_IMAGE}"
+          # Gitleaks names each file the way it was given the path: scanning a *relative* root
+          # from the repository root yields repository-relative URIs, which is how Bellwether
+          # attributes a result to a skill. The checkout is also mounted read-only at its own
+          # absolute path, so an absolute path would resolve on the host too. The failing shape
+          # is a mount elsewhere (say /repo) *and* an absolute path: every URI is then a
+          # container path, every result lands outside every skill — reported in a note, never
+          # attributed — and the leak would not block. Measured both ways in
+          # tests/test_scan_workflow.py and the revert record (spec-notes).
+          # --redact keeps the matched secret out of the SARIF; Bellwether drops snippets anyway.
+          # --exit-code 0: the verdict is Bellwether's, from the graded results, not Gitleaks'.
+          read -ra roots <<< "${BELLWETHER_SKILL_ROOTS}"
+          i=0
+          for root in "${roots[@]}"; do
+            i=$((i + 1))
+            docker run --rm --network none \
+              -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}:ro" -w "${GITHUB_WORKSPACE}" \
+              -v "${GITHUB_WORKSPACE}/${BW_OUT}:/out" \
+              "${GITLEAKS_IMAGE}" dir "${root}" \
+              --report-format sarif --report-path "/out/gitleaks-${i}.sarif" \
+              --no-banner --redact --exit-code 0
+          done
+          ls -l "${BW_OUT}"
+
+      - name: Scan
+        id: scan
+        if: steps.select.outputs.count != '0'
+        run: |
+          set -uo pipefail
+          delegated=()
+          for sarif in "${BW_OUT}"/gitleaks-*.sarif; do
+            if [ -e "${sarif}" ]; then delegated+=(--scanner-sarif "${sarif}"); fi
+          done
+          # The runner runs this script under `bash -e`, which `set -uo pipefail` does not turn
+          # off: a bare `scan …; status=$?` aborts the step on exit 2, before the summary, the
+          # status output and the SARIF flag are written — the job goes red with nothing
+          # uploaded and nothing explained. Found by running these steps (tests/test_scan_workflow).
+          if uv run bellwether scan --skills-from "${BW_OUT}/skills.txt" \
+               --policy "${BELLWETHER_POLICY}" "${delegated[@]}" \
+               --sarif "${BW_OUT}/bellwether-static.sarif" \
+               --markdown "${BW_OUT}/summary.md"; then
+            status=0
+          else
+            status=$?
+          fi
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          # The summary is written before the exit code is acted on, so a failing scan still
+          # explains itself on the job page.
+          if [ -f "${BW_OUT}/summary.md" ]; then
+            cat "${BW_OUT}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f "${BW_OUT}/bellwether-static.sarif" ]; then
+            echo "sarif=true" >> "$GITHUB_OUTPUT"
+          fi
+          # Exit 2 (a finding above threshold) is decided in the last step, after the upload.
+          # Anything else non-zero is the scan failing to run, and stops here.
+          if [ "${status}" -ne 0 ] && [ "${status}" -ne 2 ]; then
+            echo "::error::bellwether scan could not complete (exit ${status})"
+            exit "${status}"
+          fi
+
+      - name: Upload to code scanning
+        # Not from a fork: its token cannot write security events, and a failed upload would turn
+        # a fork's contribution red for a reason that is not its own.
+        if: >-
+          always() &&
+          steps.scan.outputs.sarif == 'true' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: github/codeql-action/upload-sarif@e429ea58a9912cadc53f8132ad35562b54de1b30 # v3.38.1
+        with:
+          sarif_file: .bellwether-static/bellwether-static.sarif
+
+      - name: Upload the scan
+        # The SARIF, the scanner output and the summary, for anyone — fork contributors included
+        # — to read what the scan saw.
+        if: always() && steps.scan.outputs.sarif == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bellwether-static
+          include-hidden-files: true
+          path: .bellwether-static/
+          if-no-files-found: error
+
+      - name: Static gate
+        if: steps.select.outputs.count != '0'
+        run: |
+          status="${{ steps.scan.outputs.status }}"
+          if [ "${status}" = "2" ]; then
+            echo "::error::static findings above the policy threshold; see the job summary"
+            exit 2
+          fi
+          echo "Static scan: nothing above threshold."
+
+      - name: No skills
+        if: steps.select.outputs.count == '0'
+        run: echo "No skills under ${BELLWETHER_SKILL_ROOTS}; nothing to scan."

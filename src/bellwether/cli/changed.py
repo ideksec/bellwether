@@ -28,12 +28,12 @@ deleted — is not returned, because there is nothing left to evaluate.
 from __future__ import annotations
 
 import posixpath
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 
 from bellwether.skill import PLUGIN_MANIFEST, PLUGIN_SKILLS_DIR, plugin_skill_dirs
 
-__all__ = ["changed_skills", "plugin_root_for", "skill_dir_for"]
+__all__ = ["changed_skills", "plugin_root_for", "scope_roots", "skill_dir_for"]
 
 
 def _contained_path(rel_path: str) -> PurePosixPath | None:
@@ -86,7 +86,32 @@ def plugin_root_for(rel_path: str, *, root: Path) -> PurePosixPath | None:
     return None
 
 
-def changed_skills(paths: Iterable[str], *, root: Path | None = None) -> list[PurePosixPath]:
+def _under(skill: PurePosixPath, roots: Sequence[PurePosixPath]) -> bool:
+    return any(
+        root == PurePosixPath(".") or skill == root or root in skill.parents for root in roots
+    )
+
+
+def scope_roots(under: Sequence[str]) -> list[PurePosixPath]:
+    """``--under`` values, normalised; ``ValueError`` for one that names nothing inside the
+    checkout (absolute, or climbing out with ``..``) — a scope that matches no path would
+    print "no skills changed" for every pull request, the false green this command exists to
+    prevent."""
+    roots: list[PurePosixPath] = []
+    for raw in under:
+        root = _contained_path(raw)
+        if root is None:
+            raise ValueError(
+                f"--under {raw!r} does not name a directory inside the repository (an absolute "
+                "path or one that climbs out with '..' matches nothing a diff can contain)"
+            )
+        roots.append(root)
+    return roots
+
+
+def changed_skills(
+    paths: Iterable[str], *, root: Path | None = None, under: Sequence[str] = ()
+) -> list[PurePosixPath]:
     """The skill directories touched by ``paths``, sorted and de-duplicated (§18).
 
     ``paths`` are repository-relative changed files (what ``git diff --name-only`` prints);
@@ -97,8 +122,15 @@ def changed_skills(paths: Iterable[str], *, root: Path | None = None) -> list[Pu
     Attribution is skill-first: a change *inside* a skill counts only as that skill, even
     when the skill sits in a plugin. Only a change with no skill ancestor falls through to
     the plugin rule, which fans out to every skill the plugin currently carries.
+
+    ``under`` limits the answer to skills inside the named directories — the repository's real
+    skill roots. A repository that also keeps test fixtures shaped like skills (this one keeps
+    deliberately hostile ones under ``tests/``) would otherwise hand them to every CI job that
+    evaluates "the changed skills". The filter applies to the *skill* found, after attribution,
+    so a plugin-level change still fans out — to the plugin's skills that are in scope.
     """
     base = root if root is not None else Path.cwd()
+    roots = scope_roots(under)
     found: set[PurePosixPath] = set()
     for raw in paths:
         skill = skill_dir_for(raw, root=base)
@@ -109,4 +141,6 @@ def changed_skills(paths: Iterable[str], *, root: Path | None = None) -> list[Pu
         if plugin is not None:
             for skill_dir in plugin_skill_dirs(base / plugin):
                 found.add(plugin / PLUGIN_SKILLS_DIR / skill_dir.name)
+    if roots:
+        found = {skill for skill in found if _under(skill, roots)}
     return sorted(found, key=str)

@@ -39,6 +39,7 @@ from bellwether.skill.package import (
     SkillPackage,
     contained_path,
     load_skill,
+    load_skill_manifest,
     slugify_name,
 )
 from bellwether.skill.payload import (
@@ -83,6 +84,7 @@ __all__ = [
     "is_plugin_root",
     "load_plugin",
     "load_skill",
+    "load_skill_manifest",
     "merkle_digest",
     "names_machinery_dir",
     "normalize_description",

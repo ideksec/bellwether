@@ -23,7 +23,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 import typer
 
@@ -274,6 +274,13 @@ def doctor(
     _static_profiles = [loaded_policy.defaults, *loaded_policy.profiles.values()]
     _thresholds = sorted({p.gates.static.max_severity_allowed for p in _static_profiles})
     _required = sorted({s for p in _static_profiles for s in p.gates.static.required_scanners})
+    _floors = sorted(
+        {
+            f"{tool}≥{floor}"
+            for p in _static_profiles
+            for tool, floor in p.gates.static.scanner_min_severity.items()
+        }
+    )
     if _required:
         checks.append(
             {
@@ -296,6 +303,7 @@ def doctor(
                 "before the matrix; findings above max_severity_allowed "
                 f"({', '.join(_thresholds)}) block. Dedicated scanners are better at this "
                 "specific job (§26.2) — run one in its own CI step and pass its SARIF with --scanner-sarif"
+                + (f"; scanner severity floors: {', '.join(_floors)}" if _floors else "")
             ),
         }
     )
@@ -996,6 +1004,14 @@ def changed_skills_command(
             help="Read stdin as NUL-separated paths (pair with `git diff --name-only -z`).",
         ),
     ] = False,
+    under: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--under",
+            help="Only report skills inside this repository directory (repeatable) — the real "
+            "skill roots, so skill-shaped test fixtures elsewhere are never evaluated.",
+        ),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Print the skill directories a set of changed files touches (§18).
@@ -1033,7 +1049,12 @@ def changed_skills_command(
                 err=True,
             )
             raise typer.Exit(ExitCode.INFRASTRUCTURE)
-    skills = [str(skill) for skill in changed_skills(candidates, root=root)]
+    try:
+        found = changed_skills(candidates, root=root, under=tuple(under or ()))
+    except ValueError as error:
+        typer.echo(f"bellwether changed-skills: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+    skills = [str(skill) for skill in found]
     # One skill per output line is the contract the CI workflow reads (and writes into
     # $GITHUB_OUTPUT); a directory name holding a line break would forge a second entry there.
     broken = [skill for skill in skills if any(ch in skill for ch in "\n\r\0")]
@@ -1316,16 +1337,50 @@ def _run_fixture(skill_dir: Path) -> Path:
 def scan(
     # Optional at the parser so a bare `bellwether scan` is refused with exit 3 below: click's
     # own usage error is exit 2, which is this command's "a finding failed the threshold".
-    skills: Annotated[list[Path] | None, typer.Argument(help="Skill directories to scan.")] = None,
+    skills: Annotated[
+        list[str] | None,
+        typer.Argument(help="Skill directories (or Agent Plugin roots) to scan."),
+    ] = None,
+    skills_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--skills-from",
+            help="Read skill directories from this file, one per line — the output of "
+            "`bellwether changed-skills`. An empty file is a quiet pass, not an error.",
+        ),
+    ] = None,
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", help="config.yaml; the policy beside it is read (§16.1)."),
+    ] = None,
+    policy_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--policy",
+            help="policy.yaml: each skill is held to its criticality's static gate — threshold, "
+            "required scanners, severity floors (default: beside --config, if given).",
+        ),
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Judge every skill under this profile.")
+    ] = None,
     max_severity: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--max-severity",
-            help="Highest severity that does not fail the scan (low|medium|high|critical).",
+            help="Highest severity that does not fail the scan (low|medium|high|critical); "
+            "overrides the policy. Default: the policy's, else medium.",
         ),
-    ] = "medium",
+    ] = None,
     sarif: Annotated[
         Path | None, typer.Option("--sarif", help="Also write SARIF 2.1.0 to this file.")
+    ] = None,
+    markdown: Annotated[
+        Path | None,
+        typer.Option(
+            "--markdown",
+            help="Also write a Markdown summary (for $GITHUB_STEP_SUMMARY or a PR comment).",
+        ),
     ] = None,
     scanner_sarif: Annotated[
         list[Path] | None,
@@ -1339,45 +1394,131 @@ def scan(
 ) -> None:
     """Static pre-flight scan only (§15): nothing is executed.
 
-    Exits 2 when any finding is more severe than --max-severity, 3 when a skill cannot be
-    loaded, 0 otherwise. Findings are reported by file and line; excerpts are reduced (invisible
-    characters spelled out, matched secrets cut to their prefix) so posting the report does not
-    carry the hidden text or the secret onward.
+    With a policy (``--policy``, or the one beside ``--config``), each skill is held to the
+    static gate of the profile its criticality selects — the same profile ``bellwether run``
+    would judge it under: its threshold, its required external scanners and its severity
+    floors. Without one, the threshold is ``--max-severity`` (default ``medium``).
+
+    Exits 2 when any finding is more severe than its skill's threshold, 3 when a skill, the
+    policy or a scanner file cannot be read (or a required scanner was not supplied), 0
+    otherwise — including for an empty ``--skills-from``, which is a pull request that touched
+    no skill. Excerpts are reduced (invisible characters spelled out, matched secrets cut to
+    their prefix) so posting the output does not carry the hidden text or the secret onward.
     """
+    from dataclasses import replace
+
     from bellwether.cli.run import repository_relative_root, scan_with_delegates
-    from bellwether.report import render_scan_sarif
+    from bellwether.cli.run_plan import select_profile
+    from bellwether.report import ScanSummaryEntry, render_scan_markdown, render_scan_sarif
     from bellwether.scan import SEVERITIES, ScanReport
-    from bellwether.skill import load_skill
+    from bellwether.skill import load_skill, load_skill_manifest
 
-    if not skills:
-        typer.echo("error: name at least one skill directory to scan", err=True)
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"error: {message}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE)
-    if max_severity not in SEVERITIES[1:]:
-        typer.echo(
-            f"--max-severity must be one of {', '.join(SEVERITIES[1:])}, not {max_severity!r}",
-            err=True,
-        )
-        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    if not skills and skills_from is None:
+        refuse("name at least one skill directory to scan, or pass --skills-from")
+    if max_severity is not None and max_severity not in SEVERITIES[1:]:
+        refuse(f"--max-severity must be one of {', '.join(SEVERITIES[1:])}, not {max_severity!r}")
+    names = list(skills or ())
+    if skills_from is not None:
+        try:
+            listed = skills_from.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            refuse(f"cannot read --skills-from {skills_from}: {type(error).__name__}")
+        # Each line is a directory name exactly as `changed-skills` printed it: a name may begin
+        # or end with a space, and stripping it would scan a different (or no) directory.
+        names.extend(line for line in listed if line.strip())
+
+    loaded_policy = None
+    chosen_policy = policy_path or (_policy_beside(config, None) if config is not None else None)
+    if chosen_policy is not None:
+        try:
+            loaded_policy = load_policy(chosen_policy)
+        except (BellwetherError, OSError) as error:
+            refuse(f"cannot load policy {chosen_policy}: {error}")
+    elif profile is not None:
+        refuse("--profile needs a policy to select from (--policy or --config)")
+
+    try:
+        expanded = _expand_skill_args(names)
+    except BellwetherError as error:
+        refuse(str(error))
+    seen: set[Path] = set()
+    entries: list[ScanSummaryEntry] = []
     reports: list[tuple[str, str | None, ScanReport]] = []
-    for skill in skills:
+    for skill_dir, _notes, bundle in expanded:
+        resolved = skill_dir.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
         try:
-            package = load_skill(skill, load_evals=False)
+            package = load_skill(skill_dir, load_evals=False)
         except BellwetherError as error:
-            typer.echo(f"error: cannot load {skill}: {error}", err=True)
-            raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+            refuse(f"cannot load {skill_dir}: {error}")
+        threshold = max_severity or "medium"
+        profile_name: str | None = None
+        required: list[str] = []
+        floors: dict[str, str] = {}
+        if loaded_policy is not None:
+            try:
+                manifest = load_skill_manifest(package.root)
+                profile_name, spec = select_profile(
+                    loaded_policy, manifest, profile_override=profile
+                )
+            except BellwetherError as error:
+                refuse(f"cannot select a policy profile for {skill_dir}: {error}")
+            static = spec.gates.static
+            threshold = max_severity or static.max_severity_allowed
+            required = list(static.required_scanners)
+            floors = dict(static.scanner_min_severity)
         try:
-            report = scan_with_delegates(package, tuple(scanner_sarif or ()))
+            report = scan_with_delegates(
+                package,
+                tuple(scanner_sarif or ()),
+                required=required,
+                severity_floor=floors,
+            )
         except BellwetherError as error:
-            typer.echo(f"error: {error}", err=True)
-            raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
-        reports.append((package.name, repository_relative_root(package.root), report))
+            refuse(str(error))
+        if bundle is not None:
+            # A bundle's own files (plugin.json, mcp.json, client extensions) belong to no
+            # skill; this scan reads skills. Said here so their absence is not read as clean.
+            report = replace(
+                report,
+                notes=tuple(
+                    sorted(
+                        {
+                            *report.notes,
+                            f"plugin '{bundle.name}': bundle-level files outside its skills "
+                            "are not part of a skill's static scan",
+                        }
+                    )
+                ),
+            )
+        root = repository_relative_root(package.root)
+        reports.append((package.name, root, report))
+        entries.append(
+            ScanSummaryEntry(
+                name=package.name,
+                root=root,
+                report=report,
+                threshold=threshold,
+                profile=profile_name,
+            )
+        )
 
-    failing = sum(len(report.above(max_severity)) for _, _, report in reports)
+    failing = sum(len(entry.report.above(entry.threshold)) for entry in entries)
     lines: list[str] = []
-    for name, root, report in reports:
+    if not entries:
+        lines.append("no skills to scan")
+    for entry in entries:
+        report = entry.report
+        held = f", profile {entry.profile}" if entry.profile else ""
         lines.append(
-            f"{name} ({root or '.'}): {len(report.files_scanned)} file(s), worst "
-            f"{report.worst or 'none'} [{report.ruleset}]"
+            f"{entry.name} ({entry.root or '.'}): {len(report.files_scanned)} file(s), worst "
+            f"{report.worst or 'none'}, threshold {entry.threshold}{held} [{report.ruleset}]"
         )
         for finding in report.findings:
             lines.append(
@@ -1386,19 +1527,33 @@ def scan(
             )
             if finding.excerpt:
                 lines.append(f"           {finding.excerpt}")
-        for unscanned in report.files_not_scanned:
+        for unscanned in report.unscanned_outside_machinery():
             lines.append(f"  not scanned: {unscanned.path} ({unscanned.reason})")
-    lines.append(
-        f"{failing} finding(s) above {max_severity}" if failing else f"nothing above {max_severity}"
-    )
+        if report.machinery_unscanned:
+            lines.append(
+                f"  not scanned: {report.machinery_unscanned} file(s) under evals/ "
+                "(evaluation machinery, never installed with the skill)"
+            )
+        for note in report.notes:
+            lines.append(f"  note: {note}")
+    lines.append(f"{failing} finding(s) above threshold" if failing else "nothing above threshold")
     if sarif is not None:
         sarif.write_text(render_scan_sarif(reports, version=__version__), encoding="utf-8")
+    if markdown is not None:
+        markdown.write_text(render_scan_markdown(entries), encoding="utf-8")
     _emit(
         {
-            "max_severity": max_severity,
             "failing": failing,
             "skills": [
-                {"name": name, "root": root, **report.as_record()} for name, root, report in reports
+                {
+                    "name": entry.name,
+                    "root": entry.root,
+                    "profile": entry.profile,
+                    "threshold": entry.threshold,
+                    "above_threshold": len(entry.report.above(entry.threshold)),
+                    **entry.report.as_record(),
+                }
+                for entry in entries
             ],
         },
         as_json=json_output,

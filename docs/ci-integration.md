@@ -6,6 +6,39 @@ comment and gates the merge. The workflow that does this ships in this repositor
 skill repository and adapt it. What is proven and what is still narrow is called out under
 **Status** below.
 
+## Gate 0: the static scan, on every pull request
+
+[`.github/workflows/bellwether-scan.yml`](../.github/workflows/bellwether-scan.yml) runs before
+any paid evaluation, on every pull request and on `main`, with no secret and no label. It reads
+skills and runs none of them, so it costs nothing — which is why it scans **every** skill under
+your skill roots, not only the changed ones: a code-scanning analysis that covered only the
+changed skills would show every other skill's open alerts as "fixed" on that pull request.
+
+1. `git ls-files -z -- <roots> | bellwether changed-skills -z --under <root>` lists the skills.
+2. **Gitleaks** runs in its own digest-pinned container, offline (`--network none`), over the
+   skill roots, and writes SARIF. Bellwether **never runs a scanner itself** — the config that
+   would name a command lives in the checkout a pull request edits (see
+   `docs/spec-notes.md`, "§15 — delegation reads scanner output").
+3. `bellwether scan --skills-from … --policy … --scanner-sarif gitleaks.sarif --sarif … --markdown …`
+   holds each skill to the static gate of the profile its criticality selects — the same profile
+   `bellwether run` judges it under — and merges the Gitleaks results in. Gitleaks grades
+   nothing, so the policy floors it: `gates.static.scanner_min_severity: {gitleaks: high}`.
+4. The summary goes to the job page; the SARIF goes to the **Security tab** (skipped for a fork,
+   whose token cannot write security events) and to an artifact anyone can download.
+5. Last, after both uploads: a finding above a skill's threshold fails the check (exit 2).
+
+To add another scanner (Semgrep, Trivy, Bandit), run it in its own step, write SARIF, and pass
+it with another `--scanner-sarif`. Run it from the repository root over a *relative* path, so
+its SARIF names files the way Bellwether attributes them; a result outside a skill, or under a
+skill's `evals/` machinery, is reported in a note and never attributed. To make a scanner
+mandatory, name it in `gates.static.required_scanners`: a run without its SARIF is refused.
+
+```bash
+bellwether scan examples/skills/workspace-stats                 # one skill, default threshold
+bellwether scan --skills-from skills.txt --policy .bellwether/policy.yaml \
+  --scanner-sarif gitleaks.sarif --sarif static.sarif --markdown summary.md
+```
+
 ## The flow
 
 1. A pull request adds or changes a skill (in a skill repo, or a shared plugin registry).
@@ -41,8 +74,15 @@ attribution for it and mapping it to nothing would read as "no skills changed" o
 rewrote the bundle.
 
 ```bash
-git diff --name-only origin/main...HEAD | bellwether changed-skills
+git diff --name-only -z origin/main...HEAD | bellwether changed-skills -z --under skills
 ```
+
+`--under` (repeatable) keeps only skills inside your real skill roots. Use it whenever the
+repository also holds skill-shaped directories that are not skills — test fixtures, templates.
+This repository keeps deliberately hostile fixtures under `tests/`, and before `--under` a
+labelled pull request touching one would have spent tokens evaluating it. A root that names
+nothing inside the checkout (an absolute path, a `..` escape) is refused, not read as "no
+skills changed".
 
 ## Opt-in per PR, so nothing spends by surprise
 
@@ -84,10 +124,13 @@ same job holds it — which is the property the `sneaky-exfiltrator` example is 
 - **`bellwether run` on a live container** — **proven end to end on CI.** A benign skill has
   reached `ready` on a real labelled pull request against a live model, in a sandbox behind the
   recording proxy with egress observed, and every run's evidence was uploaded as an artifact.
-- **What is still narrow.** The `api-loop` proof covers one skill, one target (`api-loop` +
-  Haiku), at a single look of 6. The `claude-code` live path is now **wired**
-  (`bellwether-claude-code.yml` + `examples/live/config-claude-code.yaml`) and proven against a
-  scripted model (on the host, and in the sandbox behind the proxy on CI); the first *labelled*
-  live run on a `claude-code` target is the deliberate next step. See `docs/STATUS.md` for the
-  current boundary, and the README's "What the live verdict gates today" for which gates are
-  actually scored.
+- **Gate 0** — `bellwether-scan.yml` is executed step by step by
+  `tests/test_scan_workflow.py`: the real Gitleaks image and the real `scan` run against a scratch
+  repository, a clean one passes, a planted token fails the gate after both uploads (and the
+  Security-tab upload is skipped for a fork). Running it found a defect no linter did — the
+  runner's `bash -e` aborted the scan step on exit 2 before the summary and the SARIF flag were
+  written.
+- **What is still narrow.** The live proofs cover a handful of skills on one cheap target per
+  harness (`api-loop` + Haiku; `claude-code` + Haiku), at a single look of 6. Both harnesses have
+  run live on labelled pull requests (#65, #102). See `docs/STATUS.md` for the current boundary,
+  and the README's "What the live verdict gates today" for which gates are actually scored.

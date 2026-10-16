@@ -41,6 +41,10 @@ SEVERITIES: tuple[Severity, ...] = ("info", "low", "medium", "high", "critical")
 #: so two reports are comparable exactly when they carry the same id.
 RULESET_ID = "bellwether-builtin/1"
 
+#: The reason every ``evals/`` file is recorded as not scanned, and the prefix renderers use to
+#: summarise them as one count rather than a list.
+MACHINERY_REASON = "evaluation machinery (evals/)"
+
 #: An excerpt longer than this is cut; the finding's line number is the way back to the rest.
 _EXCERPT_CHARS = 160
 
@@ -110,6 +114,15 @@ class ScanReport:
         if not self.findings:
             return None
         return max((f.severity for f in self.findings), key=severity_rank)
+
+    def unscanned_outside_machinery(self) -> tuple[UnscannedFile, ...]:
+        """The unread files a reviewer needs named: everything but the ``evals/`` machinery,
+        which is excluded by design and summarised as a count instead."""
+        return tuple(u for u in self.files_not_scanned if not u.reason.startswith(MACHINERY_REASON))
+
+    @property
+    def machinery_unscanned(self) -> int:
+        return len(self.files_not_scanned) - len(self.unscanned_outside_machinery())
 
     def counts(self) -> dict[str, int]:
         return {

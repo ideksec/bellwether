@@ -282,7 +282,10 @@ def run_evaluation(
     # §15 delegation: external scanners' SARIF, produced by the workflow, merged in. A required
     # scanner that was not supplied refuses here, before anything is spent.
     static_scan = scan_with_delegates(
-        package, scanner_sarif, required=resolved.profile.gates.static.required_scanners
+        package,
+        scanner_sarif,
+        required=resolved.profile.gates.static.required_scanners,
+        severity_floor=resolved.profile.gates.static.scanner_min_severity,
     )
 
     # §16.4 / BW-51: refuse an unsatisfiable policy/target/composition combination *now*,
@@ -563,7 +566,11 @@ def run_evaluation(
 
 
 def scan_with_delegates(
-    package: SkillPackage, scanner_sarif: Sequence[Path], *, required: Sequence[str] = ()
+    package: SkillPackage,
+    scanner_sarif: Sequence[Path],
+    *,
+    required: Sequence[str] = (),
+    severity_floor: Mapping[str, str] | None = None,
 ) -> ScanReport:
     """The built-in scan of ``package`` with each supplied scanner's SARIF merged in (§15).
 
@@ -577,7 +584,11 @@ def scan_with_delegates(
         return report
     external = [read_scanner_sarif(path) for path in scanner_sarif]
     report = merge_external(
-        report, external, skill_root=package.root, base=repository_root(package.root) or Path.cwd()
+        report,
+        external,
+        skill_root=package.root,
+        base=repository_root(package.root) or Path.cwd(),
+        severity_floor=severity_floor,
     )
     missing = sorted({scanner_name(name) for name in required} - set(report.scanners))
     if missing:

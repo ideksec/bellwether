@@ -82,13 +82,7 @@
             {
               "level": "note",
               "message": {
-                "text": "evals/manifest.yaml was not scanned: evaluation machinery (evals/); never installed with the skill."
-              }
-            },
-            {
-              "level": "note",
-              "message": {
-                "text": "evals/scenarios.yaml was not scanned: evaluation machinery (evals/); never installed with the skill."
+                "text": "2 file(s) under evals/ were not scanned: evaluation machinery, never installed with the skill."
               }
             }
           ]

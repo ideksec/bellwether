@@ -21,6 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from bellwether.scan.findings import (
+    MACHINERY_REASON,
     RULESET_ID,
     ScanFinding,
     ScanReport,
@@ -138,7 +139,7 @@ def scan_package(package: SkillPackage) -> ScanReport:
     findings: set[ScanFinding] = set(_frontmatter_findings(package))
     scanned: list[str] = []
     unscanned: list[UnscannedFile] = [
-        UnscannedFile(path, "evaluation machinery (evals/); never installed with the skill")
+        UnscannedFile(path, f"{MACHINERY_REASON}; never installed with the skill")
         for path in package.payload.excluded_machinery
     ]
     notes: list[str] = []

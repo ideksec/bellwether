@@ -11,7 +11,38 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: §15 scanner delegation.** Dedicated scanners hand Bellwether their SARIF 2.1.0 with
+**Latest: Gate 0 is a CI check (`bellwether-scan.yml`).** Every pull request and `main` now
+run the static scan, with no secret, no label and no spend:
+- every skill under the real skill roots is scanned (`changed-skills --under`);
+- Gitleaks runs in a digest-pinned, offline container and its SARIF is merged in;
+- each skill is held to its own criticality's profile (the profile selection `run` uses, now one
+  shared function);
+- the summary lands on the job page and the SARIF in the Security tab (skipped for forks), and a
+  finding above threshold fails the check *after* both uploads.
+
+`bellwether scan` gained `--policy`/`--config`/`--profile`, `--skills-from`, plugin roots and
+`--markdown`. The policy gained `gates.static.scanner_min_severity`, because recorded Gitleaks
+output (`tests/fixtures/sarif/`) shows it sets no SARIF level, so a leaked token graded `medium`
+and passed. Delegated results under a skill's `evals/` are machinery, as for the built-in scan.
+The paid live workflows now evaluate only skills under `examples/skills`; before, a labelled PR
+touching a hostile test fixture would have spent tokens running it.
+
+**Running the workflow found what no linter did.** `tests/test_scan_workflow.py` lifts each
+step's script out of the YAML and executes it against real repositories, with the real Gitleaks
+image. The scan step aborted under the runner's `bash -e` on exit 2, before the summary and the
+SARIF flag were written. A leaked token would have meant a red job with nothing uploaded and
+nothing explained; actionlint and shellcheck both passed it.
+
+The tests also found an HTML injection in the new summary: a skill's name inside `<summary>`
+went through the Markdown escape, which is not an escape inside an HTML block, so
+`mdsafe.html_text` was added.
+
+Revert-proving found a false claim of my own. The workflow comment said a foreign mount alone
+loses attribution. Measured, it takes a foreign mount *and* an absolute scan path; the comment
+and fixture notes were corrected. Eighteen reverts turn their tests red; one (G18a) stays green
+by design and is recorded as such (spec-notes, "§15, §18 — Gate 0 as a CI check").
+
+**Before that: §15 scanner delegation.** Dedicated scanners hand Bellwether their SARIF 2.1.0 with
 `--scanner-sarif` (on `run` and `scan`); Bellwether reads it and **never runs a scanner** — the
 config that would name a command lives in the evaluated checkout, which a PR edits (spec-notes).
 Results inside the skill become `<tool>:<ruleId>` findings, graded by `security-severity` or level,
@@ -1133,10 +1164,11 @@ commands exhaustively instead of counting them.
 | **Read and process capture** (§10.2, §10.3) — host-side fanotify on the run's own mounts, argv at the held exec, tree attribution, read domain; `credential_read_undeclared` and `process_exec_undeclared` scored | **done** — real containers locally and on CI; not yet under a live paid run |
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **§15 static scanner** — built-in ruleset (34 rules, nine checks), the `static` gate decided from it, `security.static` in the summary, SARIF results at file and line, `bellwether scan`; the static corpus (`fetch-and-exec`, `obfuscated-injection`, `eval-aware`) asserted | **done** |
+| **Gate 0 CI check** — `bellwether-scan.yml`: every skill under the real roots, Gitleaks (digest-pinned, offline) delegated, per-criticality thresholds, Security-tab upload (not from forks), job summary, gate after the uploads; executed step by step against real repositories in `tests/test_scan_workflow.py` | **done** |
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2304 tests: 2232 offline, 72 under the `docker` mark (56 run locally, 16 CI-only skips with stated reasons; all 72 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2450 tests: 2374 offline, 76 under the `docker` mark (60 run locally, 16 CI-only skips with stated reasons; all 76 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1280,9 +1312,10 @@ coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acc
 **Current state (top of the list):** every v0.1 work package is built, the kernel planes have
 run under labelled live evaluations on both harnesses (PR #102), and the §15 static scanner ships.
 What remains is **outside v0.1 or unproven live**:
-1. **§15 follow-on** (offline, no spend): a fast `bellwether scan --sarif` CI job that uploads
-   static results before a paid run starts (§18.4), optionally running a pinned dedicated scanner
-   in its own step and passing its SARIF with `--scanner-sarif`.
+1. **§18.2 follow-ons** (offline, no spend): a commit status per gate group
+   (`bellwether/static`, `bellwether/functional`, …) so branch protection can require them
+   individually, and posting the static summary as an in-place PR comment (the `<!-- bellwether-static -->`
+   marker is already its upsert key).
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
    it from `warn` — needs explicit approval to spend.
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the

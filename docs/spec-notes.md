@@ -5112,3 +5112,90 @@ descriptor per delegated rule (its tool, its worst severity here), placed after 
 rules so every result's `ruleIndex` names its own rule — asserted for every result, not just the
 delegated one.
 
+## §15, §18 — Gate 0 as a CI check
+
+`.github/workflows/bellwether-scan.yml` runs the static scan on every pull request and on `main`.
+Where it diverges from §18.1's sketch, and why:
+
+**Every skill, not the changed ones.** §18.1 evaluates only changed skills, and the paid run still
+does. The static scan costs nothing. A code-scanning analysis covering only the changed skills
+would mark every unchanged skill's open alerts "fixed" on that pull request. So every skill under
+the roots is scanned, and a pre-existing finding above threshold keeps the check red until fixed.
+That is what a gate means.
+
+**One SARIF run, one category.** `scan --sarif` used to write a run per skill. Code scanning keys
+an analysis on tool and category, and the workflow uploads every skill's results together, so one
+run (`automationDetails.id: bellwether-static/`) replaces the previous upload cleanly. Each
+result's URI carries its skill's directory and each fingerprint its skill's name. The upload
+step passes no `category`, which would re-key the run.
+
+**`changed-skills --under`.** This repository holds skill-shaped test fixtures, some deliberately
+hostile (`tests/corpus-static/`). Without a scope, the static check would be red forever and the
+Security tab would fill with alerts about the test suite. Worse, the paid live workflows would
+spend tokens evaluating a fixture a labelled PR touched. Scope is matched on path components:
+`skills` does not admit `skills-extra` (a string-prefix version is pinned failing). A root
+outside the checkout is refused.
+
+**`gates.static.scanner_min_severity`.** Recorded Gitleaks 8.24.3 output
+(`tests/fixtures/sarif/`) has no `level` on any result. SARIF's default is `warning`, graded
+`medium`, so a leaked token passed the default `medium` threshold. A floor per tool fixes that
+without special-casing a tool in code. It is an enforcing control in the registry and never lowers
+a result its tool graded higher. The live policies floor Gitleaks at `high`.
+
+**Delegated results under `evals/` are machinery.** This matches the built-in scan, and a secret
+scanner is exactly the tool that flags a credential fixture. They are counted in a note, never
+attributed. The check is by path component (casefolded), so `evals.md` is not machinery.
+
+**`scan` and `run` share one profile selection** (`run_plan.select_profile`). Two copies of
+"criticality → profile" could hold one skill to two thresholds. A spy test pins `resolve_run` to
+the shared function.
+
+**The summary's HTML context.** A `<summary>` line is an HTML block, and Markdown backslash
+escapes are not escapes there: `mdsafe.text()` turned `<img src=x>` into `\<img src=x\>`, which
+renders a real image. `mdsafe.html_text()` entity-escapes instead. The parsed-Markdown injection
+corpus and a 60-seed metacharacter fuzz cover the renderer.
+
+**Executing the workflow, not just linting it.** `tests/test_scan_workflow.py` runs each step's
+script under the runner's own shell (`bash --noprofile --norc -eo pipefail`). It evaluates each
+`if:` against the outputs earlier steps wrote, and uses the pinned Gitleaks image against real
+repositories. Two substitutions are made, both stated in the module: `uv run bellwether` uses the
+built venv, and `uses:` steps are evaluated for whether they would run, not run.
+
+It found a defect actionlint and shellcheck passed. `set -uo pipefail` does not turn off the
+runner's `-e`, so `scan …; status=$?` aborted the step on exit 2, before the summary, the status
+output and the SARIF flag were written. On CI a finding would have produced a red job with nothing
+uploaded and nothing explained.
+
+**A claim corrected by measurement.** The workflow first said that mounting the checkout anywhere
+but its own path would lose every Gitleaks result. Reverting the mount alone left the test green
+(G18a). A relative scan root from the repository root yields repository-relative URIs whatever the
+mount. What loses attribution is a foreign mount *and* an absolute scan path (G18b, red). The
+comments now say that, the structural test pins a relative root, and the same-path mount stays as
+defence in depth.
+
+**Revert record for this block** (each change undone alone, its test run):
+
+| # | Revert | Result |
+|---|---|---|
+| G1 | CLI ignores `--under` | red |
+| G2 | scope by string prefix | red |
+| G3 | `scan` ignores the policy threshold | red |
+| G4 | `resolve_run` bypasses `select_profile` | red |
+| G5 | delegated machinery attributed | red |
+| G6 | severity floor ignored | red |
+| G7 | `scan` drops the policy floors | red |
+| G8 | `run` drops the policy floor | red |
+| G9 | summary escapes HTML as Markdown | red |
+| G10 | per-skill rule index inside one run | red |
+| G11 | empty `--skills-from` refused | red |
+| G13 | fork guard removed | red |
+| G14 | a live workflow unscoped | red |
+| G15 | `scan --profile` ignored | red |
+| G16 | machinery listed file by file | red |
+| G17 | workflow `bash -e` abort restored | red |
+| G18a | Gitleaks mounted at `/repo`, relative root | **green, by design**: see above |
+| G18b | foreign mount *and* absolute path | red |
+| G19 | `--skills-from` strips each line (a directory ending in a space) | red |
+
+G12 is unused; the numbering is the order the reverts were written in.
+

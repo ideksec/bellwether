@@ -42,6 +42,11 @@ from bellwether.report.sarif import (
     render_sarif,
     render_scan_sarif,
 )
+from bellwether.report.scan_markdown import (
+    SCAN_MARKER,
+    ScanSummaryEntry,
+    render_scan_markdown,
+)
 from bellwether.report.summary import (
     SCHEMA_VERSION,
     CapabilityProfileSummary,
@@ -69,6 +74,7 @@ __all__ = [
     "FIGURES_VERSION",
     "SARIF_RULES",
     "SARIF_VERSION",
+    "SCAN_MARKER",
     "SCHEMA_VERSION",
     "STRIP_GLYPHS",
     "CapabilityProfileSummary",
@@ -86,6 +92,7 @@ __all__ = [
     "PolicyRef",
     "RegressionSummary",
     "SarifRule",
+    "ScanSummaryEntry",
     "ScopeRow",
     "SecuritySummary",
     "SkillRef",
@@ -101,6 +108,7 @@ __all__ = [
     "render_html_report",
     "render_pr_comment",
     "render_sarif",
+    "render_scan_markdown",
     "render_scan_sarif",
     "render_strip_chart",
     "render_summary_json",
