@@ -191,13 +191,13 @@ def test_the_policy_is_read_beside_config_and_overridden_by_flags(tmp_path: Path
 
 def test_scan_and_run_select_the_same_profile(tmp_path: Path) -> None:
     """One rule: `run` and `scan` must not hold a skill to different thresholds."""
-    from bellwether.cli.run_plan import select_profile
+    import bellwether.cli.run_plan as run_plan
     from bellwether.skill import load_skill_manifest
 
     policy = load_policy(_TEMPLATE_POLICY)
     for criticality in ("low", "medium", "high"):
         skill = _skill(tmp_path, f"c/{criticality}", criticality=criticality)
-        name, spec = select_profile(policy, load_skill_manifest(skill))
+        name, spec = run_plan.select_profile(policy, load_skill_manifest(skill))
         payload = _payload(str(skill), "--policy", str(_TEMPLATE_POLICY))
         row = payload["skills"][0]  # type: ignore[index]
         assert row["profile"] == name
