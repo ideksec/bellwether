@@ -85,6 +85,11 @@ class StaticGate(StrictModel):
 
     max_severity_allowed: Severity = "medium"
     require_scan: bool = True
+    #: §15 delegation: external scanners whose SARIF must be supplied (``--scanner-sarif``) for
+    #: the gate to be decided, by tool name as the SARIF names it (lower-cased, e.g. ``semgrep``).
+    #: Bellwether never runs them (spec-notes); a required one that was not supplied refuses the
+    #: run before the matrix, and composes a blocking ``not_evaluable`` if it gets that far.
+    required_scanners: list[str] = Field(default_factory=list)
 
 
 ScopeOutcome = Literal["exceeded", "unused", "not_evaluable"]

@@ -30,6 +30,7 @@ from bellwether.scan.findings import ScanRule
 __all__ = [
     "BUILTIN_RULES",
     "RULES_BY_ID",
+    "SECRET_PATTERNS",
     "LineHit",
     "scan_text",
 ]
@@ -486,7 +487,7 @@ _LINE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
 
 #: §15 check 4: credential literals by their issuers' published prefixes. Each match is
 #: redacted in the excerpt.
-_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b"), "AWS access key id"),
     (re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}"), "Anthropic API key"),
     (re.compile(r"\bsk-(proj-)?[A-Za-z0-9_-]{32,}"), "OpenAI-style API key"),
@@ -588,7 +589,7 @@ def _line_hits(line: str, number: int, *, first_line: bool) -> Iterator[LineHit]
             if len(matched) > 60:
                 matched = matched[:59] + "…"
             yield LineHit(rule_id, number, f"matched {matched!r}")
-    for pattern, label in _SECRET_PATTERNS:
+    for pattern, label in SECRET_PATTERNS:
         spans = tuple(m.span() for m in pattern.finditer(line))
         if spans:
             yield LineHit("BW401", number, label, redact=spans)

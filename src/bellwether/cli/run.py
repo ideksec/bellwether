@@ -71,7 +71,13 @@ from bellwether.harness import (
     build_model_client,
 )
 from bellwether.sandbox import fixture_digest, plugin_bundle_digest
-from bellwether.scan import scan_package
+from bellwether.scan import (
+    ScanReport,
+    merge_external,
+    read_scanner_sarif,
+    scan_package,
+    scanner_name,
+)
 from bellwether.skill import PluginBundle, SkillPackage
 from bellwether.verdict import validate_capability_weights
 
@@ -185,6 +191,7 @@ def run_evaluation(
     deterministic_sampling: bool = False,
     max_tokens_per_run: int = 1_000_000,
     on_estimate: Callable[[RunEstimate], bool] | None = None,
+    scanner_sarif: Sequence[Path] = (),
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -272,7 +279,11 @@ def run_evaluation(
     # §15 Gate 0: the static scan runs on every package, before anything is spent. It does not
     # stop the matrix (§18.4 runs the behavioural evaluation after it either way, and a skill
     # whose text looks hostile is exactly one worth watching run); it decides the `static` gate.
-    static_scan = scan_package(package)
+    # §15 delegation: external scanners' SARIF, produced by the workflow, merged in. A required
+    # scanner that was not supplied refuses here, before anything is spent.
+    static_scan = scan_with_delegates(
+        package, scanner_sarif, required=resolved.profile.gates.static.required_scanners
+    )
 
     # §16.4 / BW-51: refuse an unsatisfiable policy/target/composition combination *now*,
     # before the executor is built and a container is paid for. Observability is read from
@@ -549,6 +560,44 @@ def run_evaluation(
         skill_root=repository_relative_root(package.root),
         static_scan=static_scan,
     )
+
+
+def scan_with_delegates(
+    package: SkillPackage, scanner_sarif: Sequence[Path], *, required: Sequence[str] = ()
+) -> ScanReport:
+    """The built-in scan of ``package`` with each supplied scanner's SARIF merged in (§15).
+
+    Relative result paths resolve against the repository root holding the skill — where a CI
+    step runs its scanners — or, outside any repository, the working directory. A required
+    scanner (``gates.static.required_scanners``) with no supplied SARIF raises, so a policy that
+    names one cannot be satisfied by forgetting to run it.
+    """
+    report = scan_package(package)
+    if not scanner_sarif and not required:
+        return report
+    external = [read_scanner_sarif(path) for path in scanner_sarif]
+    report = merge_external(
+        report, external, skill_root=package.root, base=repository_root(package.root) or Path.cwd()
+    )
+    missing = sorted({scanner_name(name) for name in required} - set(report.scanners))
+    if missing:
+        raise BellwetherError(
+            f"the policy requires external scanner(s) {', '.join(missing)} "
+            "(gates.static.required_scanners) but no SARIF from them was supplied; run them and "
+            "pass each result with --scanner-sarif (supplied: "
+            f"{', '.join(report.scanners) or 'none'}). Bellwether reads scanner output and never "
+            "runs a scanner itself (§15)"
+        )
+    return report
+
+
+def repository_root(root: Path) -> Path | None:
+    """The nearest ancestor of ``root`` holding a ``.git`` entry, resolved, or ``None``."""
+    resolved = root.resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
 
 
 def repository_relative_root(root: Path) -> str | None:

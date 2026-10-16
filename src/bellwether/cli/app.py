@@ -273,6 +273,20 @@ def doctor(
 
     _static_profiles = [loaded_policy.defaults, *loaded_policy.profiles.values()]
     _thresholds = sorted({p.gates.static.max_severity_allowed for p in _static_profiles})
+    _required = sorted({s for p in _static_profiles for s in p.gates.static.required_scanners})
+    if _required:
+        checks.append(
+            {
+                "check": "external scanners (§15)",
+                "status": "warn",
+                "detail": (
+                    f"policy requires SARIF from {', '.join(_required)} "
+                    "(gates.static.required_scanners); `bellwether run` refuses unless each is "
+                    "passed with --scanner-sarif. Bellwether reads scanner output and never runs "
+                    "a scanner itself — run them in their own CI step"
+                ),
+            }
+        )
     checks.append(
         {
             "check": "static scan (§15)",
@@ -281,7 +295,7 @@ def doctor(
                 f"built-in ruleset {RULESET_ID} ({len(BUILTIN_RULES)} rules) scans every package "
                 "before the matrix; findings above max_severity_allowed "
                 f"({', '.join(_thresholds)}) block. Dedicated scanners are better at this "
-                "specific job (§26.2) — run one beside it for serious use"
+                "specific job (§26.2) — run one in its own CI step and pass its SARIF with --scanner-sarif"
             ),
         }
     )
@@ -664,6 +678,14 @@ def run(
             "is composed only where every target alias has providers.<name>.pricing.",
         ),
     ] = None,
+    scanner_sarif: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--scanner-sarif",
+            help="SARIF 2.1.0 written by an external scanner (Semgrep, Gitleaks, …) to merge "
+            "into the static scan (§15); repeatable. Bellwether reads it, never runs the tool.",
+        ),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -801,6 +823,7 @@ def run(
                 deterministic_sampling=deterministic_sampling,
                 max_tokens_per_run=max_tokens,
                 on_estimate=_estimate_gate(yes),
+                scanner_sarif=tuple(scanner_sarif or ()),
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -1304,6 +1327,14 @@ def scan(
     sarif: Annotated[
         Path | None, typer.Option("--sarif", help="Also write SARIF 2.1.0 to this file.")
     ] = None,
+    scanner_sarif: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--scanner-sarif",
+            help="SARIF 2.1.0 written by an external scanner (Semgrep, Gitleaks, …) to merge "
+            "into the static scan (§15); repeatable. Bellwether reads it, never runs the tool.",
+        ),
+    ] = None,
     json_output: JsonFlag = False,
 ) -> None:
     """Static pre-flight scan only (§15): nothing is executed.
@@ -1313,9 +1344,9 @@ def scan(
     characters spelled out, matched secrets cut to their prefix) so posting the report does not
     carry the hidden text or the secret onward.
     """
-    from bellwether.cli.run import repository_relative_root
+    from bellwether.cli.run import repository_relative_root, scan_with_delegates
     from bellwether.report import render_scan_sarif
-    from bellwether.scan import SEVERITIES, ScanReport, scan_package
+    from bellwether.scan import SEVERITIES, ScanReport
     from bellwether.skill import load_skill
 
     if not skills:
@@ -1334,9 +1365,12 @@ def scan(
         except BellwetherError as error:
             typer.echo(f"error: cannot load {skill}: {error}", err=True)
             raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
-        reports.append(
-            (package.name, repository_relative_root(package.root), scan_package(package))
-        )
+        try:
+            report = scan_with_delegates(package, tuple(scanner_sarif or ()))
+        except BellwetherError as error:
+            typer.echo(f"error: {error}", err=True)
+            raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+        reports.append((package.name, repository_relative_root(package.root), report))
 
     failing = sum(len(report.above(max_severity)) for _, _, report in reports)
     lines: list[str] = []

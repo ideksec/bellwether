@@ -5040,8 +5040,8 @@ are in the test corpus. A Markdown table row is not a pipeline.
   text, not decoded twice.
 - **No language-mismatch detection.** §15 check 2's "content in a language different from the
   rest of the file" needs a language model of its own and is not approximated.
-- **No external delegation.** The external `scanners:` config (§15's recommended path) is not
-  built.
+- **No external delegation.** *(Built since — see "§15 — delegation reads scanner output, it
+  never runs a scanner".)*
 - **The runtime half of `eval-aware` is unbuilt.** That is §3.5's `instrumentation_probe`, which
   needs the probe suite.
 
@@ -5063,4 +5063,52 @@ cannot:
 - `fetch-and-exec` → `BW301` critical;
 - `obfuscated-injection` → `BW201` high, whose base64 decodes to an instruction override;
 - `eval-aware` → `BW901` high.
+
+## §15 — delegation reads scanner output, it never runs a scanner
+
+§15 sketches a `scanners:` config "listing external tools with a normalizer per tool". The built
+version takes the tools' **output** — a SARIF 2.1.0 file each, passed with `--scanner-sarif` on
+`run` and `scan` — and never executes a scanner. The divergence is about where the config lives:
+`config.yaml` is in the evaluated checkout, which a pull request edits, and the project already
+refuses to take a trusted model host from it for that reason (§3.3). A command list there is a
+way for a PR author to run anything on the host that holds the API key. The workflow owns the
+scanner step, its pinning and its network; Bellwether reads the result.
+
+**SARIF is the one normaliser.** Semgrep, Gitleaks, Trivy, Bandit and CodeQL all write it, so a
+per-tool normaliser buys nothing a SARIF reader does not. A tool that only writes JSON can be
+converted in its own step.
+
+**Grading:** a rule's or result's `security-severity` where the tool set one (GitHub's bands:
+≥ 9.0 critical, ≥ 7.0 high, ≥ 4.0 medium, > 0 low, 0 info), else the result's `level`, else the
+rule's `defaultConfiguration.level` (`error` high, `warning` medium, `note` low, `none` info),
+else SARIF's default `warning`. `error` maps to `high`, so under the default `medium` threshold a
+tool's error blocks; that is what a tool's own error level means.
+
+**Attribution is by resolved path**, the same containment question as the skill loader: a
+relative URI resolves against the repository root holding the skill (where a CI step runs its
+scanners), a `file://` or absolute path is taken as it is, and a result is the skill's only if
+its resolved path is inside the skill directory. `..` escapes and non-file schemes are outside.
+One scanner run over a whole repository can therefore feed several skills' evaluations; each
+takes its own results and counts the rest in a note.
+
+**What is never copied:** a tool's snippet, because a secret scanner's snippet is the secret and
+an excerpt reaches the PR comment and the Security tab. The tool's message is kept, reduced like
+every excerpt, with the built-in credential patterns redacted — a pattern the built-in set does
+not know survives in a message, which is why the snippet, the field that carries the matched text
+by design, is the one dropped. Revert-proved.
+
+**Refused, not skipped:** a file that is not JSON, not SARIF 2.1.0, has no runs, names no tool,
+or is over 32 MiB stops the run. It was supplied as evidence; a skipped file would read as a
+scanner that found nothing.
+
+**`gates.static.required_scanners`** (registered as an enforcing control) names tools whose
+SARIF is mandatory, compared by normalised name (`Semgrep OSS` → `semgrep-oss`). `run` refuses
+before the executor is built — the test asserts the factory was never called — and the
+composition, for a path that skips that refusal, composes the static gate `not_evaluable`
+(required, so it blocks). `scan` has no policy and does not check it.
+
+**Delegated rule ids** are `<tool>:<ruleId>`. The SARIF Bellwether writes carries a synthesised
+descriptor per delegated rule (its tool, its worst severity here), placed after the built-in
+rules so every result's `ruleIndex` names its own rule — asserted for every result, not just the
+delegated one.
 

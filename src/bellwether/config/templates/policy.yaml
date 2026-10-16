@@ -33,6 +33,10 @@ defaults: &defaults
       # a finding above max_severity_allowed blocks. true: a composition that has no
       # scan to read blocks as not_evaluable rather than reading as a clean scan.
       require_scan: true
+      # §15 delegation: dedicated scanners (Semgrep, Gitleaks, …) run in their own CI step and
+      # hand their SARIF to `bellwether run --scanner-sarif`. Naming one here makes its SARIF
+      # mandatory: a run without it is refused. Bellwether never runs a scanner itself.
+      required_scanners: []
     scope:
       require_manifest: false
       block_on: [exceeded]            # exceeded | unused | not_evaluable

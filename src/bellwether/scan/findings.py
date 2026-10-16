@@ -102,6 +102,8 @@ class ScanReport:
     ruleset: str = RULESET_ID
     rule_count: int = 0
     notes: tuple[str, ...] = field(default_factory=tuple)
+    #: External scanners whose SARIF was merged in (§15 delegation), by normalised tool name.
+    scanners: tuple[str, ...] = ()
 
     @property
     def worst(self) -> Severity | None:
@@ -133,6 +135,7 @@ class ScanReport:
             ],
             "findings": [f.as_record() for f in self.findings],
             "notes": list(self.notes),
+            "scanners": list(self.scanners),
         }
 
     @classmethod
@@ -161,6 +164,7 @@ class ScanReport:
             ruleset=str(record.get("ruleset", RULESET_ID)),
             rule_count=int(record.get("rule_count", 0)),  # type: ignore[call-overload]
             notes=tuple(str(n) for n in record.get("notes", [])),  # type: ignore[attr-defined]
+            scanners=tuple(str(s) for s in record.get("scanners", [])),  # type: ignore[attr-defined]
         )
 
 
