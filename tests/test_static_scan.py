@@ -530,7 +530,7 @@ _runner = CliRunner()
 def test_scan_exits_zero_on_a_clean_skill_and_two_above_the_threshold(tmp_path: Path) -> None:
     clean = _runner.invoke(app, ["scan", str(_ROOT / "examples" / "skills" / "workspace-stats")])
     assert clean.exit_code == ExitCode.OK, clean.output
-    assert "nothing above medium" in clean.output
+    assert "nothing above threshold" in clean.output and "threshold medium" in clean.output
 
     dirty = _runner.invoke(app, ["scan", str(_STATIC_CORPUS / "fetch-and-exec")])
     assert dirty.exit_code == ExitCode.NOT_READY, dirty.output

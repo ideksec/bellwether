@@ -39,6 +39,7 @@ __all__ = [
     "SkillPackage",
     "contained_path",
     "load_skill",
+    "load_skill_manifest",
     "slugify_name",
 ]
 
@@ -356,6 +357,16 @@ def _token_estimates(
         except (OSError, UnicodeDecodeError):
             continue
     return estimates
+
+
+def load_skill_manifest(root: Path) -> SkillManifest | None:
+    """``evals/manifest.yaml`` alone, through the containment rule; ``None`` where absent.
+
+    For a caller that needs a skill's declared criticality and scope but not its scenarios —
+    ``bellwether scan`` selects the policy profile from it, and a static scan must not fail on
+    a scenario file it never reads.
+    """
+    return _load_manifest(root)
 
 
 def _load_manifest(root: Path) -> SkillManifest | None:

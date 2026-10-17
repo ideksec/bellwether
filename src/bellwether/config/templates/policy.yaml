@@ -37,6 +37,9 @@ defaults: &defaults
       # hand their SARIF to `bellwether run --scanner-sarif`. Naming one here makes its SARIF
       # mandatory: a run without it is refused. Bellwether never runs a scanner itself.
       required_scanners: []
+      # The least severity a named scanner's results may carry. For tools that grade nothing —
+      # a Gitleaks result has no SARIF level, so it would read as `medium` — e.g. {gitleaks: high}.
+      scanner_min_severity: {}
     scope:
       require_manifest: false
       block_on: [exceeded]            # exceeded | unused | not_evaluable

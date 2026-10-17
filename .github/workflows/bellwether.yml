@@ -22,6 +22,10 @@ permissions:
 env:
   # For a real skill repository, point these at your own .bellwether/ config. This repo uses
   # its own cheap smoke config (api-loop + Haiku, one look of 6, a hard token cap).
+  # Only skills under this directory are evaluated. The repository also keeps skill-shaped
+  # test fixtures (some deliberately hostile, under tests/); a labelled PR touching one
+  # must not spend tokens running it as if it were a skill.
+  BELLWETHER_SKILL_ROOT: examples/skills
   BELLWETHER_CONFIG: examples/live/config.yaml
   BELLWETHER_POLICY: examples/live/policy.yaml
   BELLWETHER_MAX_TOKENS: "60000"
@@ -68,7 +72,7 @@ jobs:
           # ("caf\303\251/SKILL.md"), and a skill under such a directory was silently never
           # evaluated. `changed-skills` refuses a quoted line rather than drop it.
           git diff --name-only -z "${{ github.event.pull_request.base.sha }}" HEAD \
-            | uv run bellwether changed-skills -z > changed-skills.txt
+            | uv run bellwether changed-skills -z --under "${BELLWETHER_SKILL_ROOT}" > changed-skills.txt
           echo "Changed skills:"; cat changed-skills.txt
           # A random delimiter: a fixed `EOF` ends the value early if a skill directory is named
           # `EOF`, and whatever follows is read as further outputs.

@@ -345,17 +345,15 @@ def _static_rule_descriptor(rule: ScanRule) -> dict[str, Any]:
     }
 
 
-def _delegated_rules(scan: ScanReport | None) -> list[tuple[str, str]]:
+def _delegated_rules(*scans: ScanReport | None) -> list[tuple[str, str]]:
     """``(rule id, worst severity)`` for each external scanner's rule with a finding, sorted.
 
     A delegated finding's rule id is ``<tool>:<ruleId>`` (§15); the tool's own rule metadata
     is not carried over — its text is the tool's, not ours — so the descriptor says where the
     rule came from and how severe its worst result here was.
     """
-    if scan is None:
-        return []
     worst: dict[str, str] = {}
-    for finding in scan.findings:
+    for finding in (f for scan in scans if scan is not None for f in scan.findings):
         if finding.rule_id in RULES_BY_ID:
             continue
         current = worst.get(finding.rule_id)
@@ -385,11 +383,21 @@ def _delegated_rule_descriptor(rule_id: str, severity: str) -> dict[str, Any]:
     }
 
 
-def _static_rule_descriptors(scan: ScanReport | None) -> list[dict[str, Any]]:
+def _static_rule_descriptors(*scans: ScanReport | None) -> list[dict[str, Any]]:
     return [
         *(_static_rule_descriptor(rule) for rule in BUILTIN_RULES),
-        *(_delegated_rule_descriptor(rule_id, sev) for rule_id, sev in _delegated_rules(scan)),
+        *(_delegated_rule_descriptor(rule_id, sev) for rule_id, sev in _delegated_rules(*scans)),
     ]
+
+
+def _static_rule_index(*scans: ScanReport | None, offset: int) -> dict[str, int]:
+    """Rule id → its position in the rules array :func:`_static_rule_descriptors` writes for
+    the same scans, shifted by ``offset`` (the rules written before them)."""
+    ids = [
+        *(rule.id for rule in BUILTIN_RULES),
+        *(rule_id for rule_id, _ in _delegated_rules(*scans)),
+    ]
+    return {rule_id: offset + i for i, rule_id in enumerate(ids)}
 
 
 def _static_uri(skill_root: str | None, path: str) -> str:
@@ -426,13 +434,8 @@ def _static_result(
 
 
 def _static_results(
-    scan: ScanReport, *, offset: int, skill_name: str, skill_root: str | None
+    scan: ScanReport, *, index: Mapping[str, int], skill_name: str, skill_root: str | None
 ) -> list[dict[str, Any]]:
-    ids = [
-        *(rule.id for rule in BUILTIN_RULES),
-        *(rule_id for rule_id, _ in _delegated_rules(scan)),
-    ]
-    index = {rule_id: offset + i for i, rule_id in enumerate(ids)}
     return [
         _static_result(finding, index[finding.rule_id], skill_name, skill_root)
         for finding in scan.findings
@@ -440,58 +443,76 @@ def _static_results(
     ]
 
 
-def _static_notifications(scan: ScanReport) -> list[dict[str, Any]]:
+def _static_notifications(scan: ScanReport, *, prefix: str = "") -> list[dict[str, Any]]:
     notes = [
-        _notification(f"{_plain(u.path)} was not scanned: {_plain(u.reason)}.")
-        for u in scan.files_not_scanned
+        _notification(f"{prefix}{_plain(u.path)} was not scanned: {_plain(u.reason)}.")
+        for u in scan.unscanned_outside_machinery()
     ]
-    notes.extend(_notification(f"{_plain(note)}.") for note in scan.notes)
+    if scan.machinery_unscanned:
+        notes.append(
+            _notification(
+                f"{prefix}{scan.machinery_unscanned} file(s) under evals/ were not scanned: "
+                "evaluation machinery, never installed with the skill."
+            )
+        )
+    notes.extend(_notification(f"{prefix}{_plain(note)}.") for note in scan.notes)
     return notes
 
 
 def render_scan_sarif(scans: Sequence[tuple[str, str | None, ScanReport]], *, version: str) -> str:
-    """``bellwether scan --sarif``: static results only, one run per scanned skill.
+    """``bellwether scan --sarif``: static results only, **one run** for every scanned skill.
 
-    Each entry is ``(skill name, repository-relative skill root or None, report)``.
+    Each entry is ``(skill name, repository-relative skill root or None, report)``. One run with
+    one category, rather than a run per skill: GitHub keys an analysis on tool and category,
+    and the Gate 0 workflow uploads every skill's results together, so one run is the shape
+    that replaces the previous upload cleanly. Each result's URI carries its skill's directory
+    and each fingerprint its skill's name, so two skills' findings never merge.
     """
-    runs: list[dict[str, Any]] = []
+    reports = [scan for _, _, scan in scans]
+    index = _static_rule_index(*reports, offset=0)
+    results: list[dict[str, Any]] = []
+    notifications: list[dict[str, Any]] = []
     for skill_name, skill_root, scan in scans:
-        notifications = _static_notifications(scan)
+        results.extend(
+            _static_results(scan, index=index, skill_name=skill_name, skill_root=skill_root)
+        )
+        prefix = f"{_plain(skill_name)}: "
+        notifications.extend(_static_notifications(scan, prefix=prefix))
         if skill_root is None:
             notifications.append(
                 _notification(
-                    "The skill directory was not known relative to the repository, so results "
-                    "are anchored at paths relative to the skill."
+                    f"{prefix}the skill directory was not known relative to the repository, so "
+                    "its results are anchored at paths relative to the skill."
                 )
             )
-        runs.append(
-            {
-                "tool": {
-                    "driver": {
-                        "name": "Bellwether",
-                        "informationUri": _INFORMATION_URI,
-                        "version": version,
-                        "rules": _static_rule_descriptors(scan),
-                    }
-                },
-                "automationDetails": {"id": f"bellwether-static/{skill_name}/"},
-                "invocations": [
-                    {"executionSuccessful": True, "toolExecutionNotifications": notifications}
-                ],
-                "results": _static_results(
-                    scan, offset=0, skill_name=skill_name, skill_root=skill_root
-                ),
-                "properties": {
-                    "skill": skill_name,
+    run: dict[str, Any] = {
+        "tool": {
+            "driver": {
+                "name": "Bellwether",
+                "informationUri": _INFORMATION_URI,
+                "version": version,
+                "rules": _static_rule_descriptors(*reports),
+            }
+        },
+        "automationDetails": {"id": "bellwether-static/"},
+        "invocations": [{"executionSuccessful": True, "toolExecutionNotifications": notifications}],
+        "results": results,
+        "properties": {
+            "skills": [
+                {
+                    "name": skill_name,
+                    "root": skill_root,
                     "ruleset": scan.ruleset,
                     "scanners": list(scan.scanners),
                     "worst": scan.worst,
-                },
-            }
-        )
+                }
+                for skill_name, skill_root, scan in scans
+            ],
+        },
+    }
     return (
         canonical_json(
-            {"$schema": SARIF_SCHEMA_URI, "version": SARIF_VERSION, "runs": runs}, indent=2
+            {"$schema": SARIF_SCHEMA_URI, "version": SARIF_VERSION, "runs": [run]}, indent=2
         )
         + "\n"
     )
@@ -532,7 +553,7 @@ def render_sarif(summary: Summary, figures: Figures) -> str:
         results.extend(
             _static_results(
                 static,
-                offset=len(SARIF_RULES),
+                index=_static_rule_index(static, offset=len(SARIF_RULES)),
                 skill_name=summary.skill.name,
                 skill_root=figures.skill_root,
             )

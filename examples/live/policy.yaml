@@ -32,6 +32,10 @@ defaults: &defaults
       # a finding above max_severity_allowed blocks. true: a composition that has no
       # scan to read blocks as not_evaluable rather than reading as a clean scan.
       require_scan: true
+      # Gitleaks grades nothing (no SARIF level → SARIF's default `warning` → medium); a
+      # leaked token must still block. Applies only when its SARIF is passed with
+      # --scanner-sarif, as the Gate 0 workflow does (§15).
+      scanner_min_severity: {gitleaks: high}
     scope:
       require_manifest: false
       block_on: [exceeded]

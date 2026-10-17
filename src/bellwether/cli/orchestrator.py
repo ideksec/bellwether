@@ -1970,7 +1970,7 @@ def _static_result(profile: ProfileSpec, scan: ScanReport | None) -> TargetGateR
     counts = scan.counts()
     tally = ", ".join(f"{counts[s]} {s}" for s in reversed(list(counts)) if counts[s]) or "none"
     blocking = scan.above(threshold)
-    unscanned = [u for u in scan.files_not_scanned if not u.reason.startswith("evaluation")]
+    unscanned = list(scan.unscanned_outside_machinery())
     coverage = (
         f"; {len(unscanned)} payload file(s) not read: "
         + ", ".join(f"{u.path} ({u.reason})" for u in unscanned[:3])
@@ -2326,6 +2326,7 @@ ENFORCING_GATE_CONTROLS: frozenset[str] = frozenset(
         "static.require_scan",
         "static.max_severity_allowed",
         "static.required_scanners",
+        "static.scanner_min_severity",
         # scope (§12.5)
         "scope.require_manifest",
         "scope.block_on",

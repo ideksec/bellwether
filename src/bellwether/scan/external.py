@@ -38,8 +38,15 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from bellwether.errors import BellwetherError
-from bellwether.scan.findings import ScanFinding, ScanReport, Severity, visible_excerpt
+from bellwether.scan.findings import (
+    ScanFinding,
+    ScanReport,
+    Severity,
+    severity_rank,
+    visible_excerpt,
+)
 from bellwether.scan.rules import SECRET_PATTERNS
+from bellwether.skill.payload import names_machinery_dir
 
 __all__ = [
     "MAX_SARIF_BYTES",
@@ -227,36 +234,70 @@ def _spans(pattern: re.Pattern[str], text: str) -> list[tuple[int, int]]:
     return [match.span() for match in pattern.finditer(text)]
 
 
+def _floor(severity: Severity, floor: Severity | None) -> Severity:
+    if floor is None or severity_rank(severity) >= severity_rank(floor):
+        return severity
+    return floor
+
+
 def merge_external(
     report: ScanReport,
     scans: Sequence[ExternalScan],
     *,
     skill_root: Path,
     base: Path,
+    severity_floor: Mapping[str, str] | None = None,
 ) -> ScanReport:
-    """``report`` with every in-skill result of ``scans`` added, and the tools recorded."""
+    """``report`` with every in-skill result of ``scans`` added, and the tools recorded.
+
+    A result is the skill's when its resolved path is inside ``skill_root`` and not under the
+    skill's ``evals/`` machinery — the same exclusion the built-in scan makes, for the same
+    reason: its fixtures hold the credential-shaped bait a secret scanner exists to find, and a
+    finding there would report the test as the skill. Every result that is not the skill's is
+    counted in a note, with up to two of its URIs so a path mismatch (a scanner that reported
+    container paths, say) is visible rather than a quiet "nothing found".
+
+    ``severity_floor`` maps a normalised tool name to the least severity any of its results may
+    carry (``gates.static.scanner_min_severity``). It exists for tools that grade nothing: a
+    Gitleaks result carries no level, SARIF's default is ``warning``, and a leaked token would
+    otherwise read as ``medium``. A floor never lowers a result the tool graded higher.
+    """
+    floors = {scanner_name(tool): sev for tool, sev in (severity_floor or {}).items()}
     findings = set(report.findings)
-    outside: dict[str, int] = {}
+    outside: dict[str, list[str]] = {}
+    machinery: dict[str, int] = {}
     for scan in scans:
         for result in scan.results:
             path = _skill_relative(result.uri, skill_root=skill_root, base=base)
             if path is None:
-                outside[result.tool] = outside.get(result.tool, 0) + 1
+                outside.setdefault(result.tool, []).append(result.uri)
+                continue
+            if names_machinery_dir(PurePosixPath(path).parts[:-1]):
+                machinery[result.tool] = machinery.get(result.tool, 0) + 1
                 continue
             findings.add(
                 ScanFinding(
                     path=str(PurePosixPath(path)),
                     line=result.line,
                     rule_id=f"{result.tool}:{result.rule_id}",
-                    severity=result.severity,
+                    severity=_floor(result.severity, floors.get(result.tool)),  # type: ignore[arg-type]
                     message=_message(result),
                     excerpt="",
                 )
             )
     notes = list(report.notes)
+    for tool, uris in sorted(outside.items()):
+        examples = ", ".join(
+            visible_excerpt(uri or "(no uri)")[:80] for uri in sorted(set(uris))[:2]
+        )
+        notes.append(
+            f"{tool}: {len(uris)} result(s) outside this skill's directory, not attributed to it "
+            f"(e.g. {examples})"
+        )
     notes.extend(
-        f"{tool}: {count} result(s) outside this skill's directory, not attributed to it"
-        for tool, count in sorted(outside.items())
+        f"{tool}: {count} result(s) in the skill's evals/ machinery, which is never installed "
+        "with the skill, not attributed to it"
+        for tool, count in sorted(machinery.items())
     )
     tools = sorted({*report.scanners, *(tool for scan in scans for tool in scan.tools)})
     unique: dict[tuple[str, int, str], ScanFinding] = {}

@@ -90,6 +90,11 @@ class StaticGate(StrictModel):
     #: Bellwether never runs them (spec-notes); a required one that was not supplied refuses the
     #: run before the matrix, and composes a blocking ``not_evaluable`` if it gets that far.
     required_scanners: list[str] = Field(default_factory=list)
+    #: The least severity any result of a named external scanner may carry, e.g.
+    #: ``{gitleaks: high}``. For tools that grade nothing: a Gitleaks result has no SARIF level,
+    #: the format's default is ``warning`` (graded ``medium``), and a leaked token would pass a
+    #: ``medium`` threshold. A floor never lowers what a tool graded higher.
+    scanner_min_severity: dict[str, Severity] = Field(default_factory=dict)
 
 
 ScopeOutcome = Literal["exceeded", "unused", "not_evaluable"]

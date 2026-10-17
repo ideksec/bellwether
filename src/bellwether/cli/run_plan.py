@@ -27,7 +27,7 @@ from bellwether.config.models.policy import Policy, ProfileSpec
 from bellwether.errors import BellwetherError
 from bellwether.harness.provider import resolve_model
 
-__all__ = ["ResolvedRun", "ResolvedTarget", "resolve_run"]
+__all__ = ["ResolvedRun", "ResolvedTarget", "resolve_run", "select_profile"]
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,25 @@ class ResolvedRun:
     n_max: int
 
 
+def select_profile(
+    policy: Policy, manifest: SkillManifest | None, *, profile_override: str | None = None
+) -> tuple[str, ProfileSpec]:
+    """The policy profile a skill is judged under, and its name (§16.1).
+
+    ``--profile`` wins; otherwise the skill's ``criticality`` (``medium`` with no manifest)
+    selects it through ``policy.selection``. One rule for every command that judges a skill —
+    ``run`` and ``scan`` must not disagree about which threshold a skill is held to.
+    """
+    criticality: Criticality = "medium"
+    if manifest is not None:
+        criticality = manifest.metadata.criticality
+    profile_name = profile_override or policy.selection.by_criticality.get(criticality, criticality)
+    try:
+        return profile_name, policy.profile(profile_name)
+    except KeyError as error:
+        raise BellwetherError(str(error).strip("\"'")) from None
+
+
 def resolve_run(
     config: Config,
     policy: Policy,
@@ -69,15 +88,7 @@ def resolve_run(
     the profile through ``policy.selection`` (§16.1). The matrix comes from the resolved profile,
     with the skill's manifest overriding the target list and the look schedule where it sets them.
     """
-    criticality: Criticality = "medium"
-    if manifest is not None:
-        criticality = manifest.metadata.criticality
-
-    profile_name = profile_override or policy.selection.by_criticality.get(criticality, criticality)
-    try:
-        profile = policy.profile(profile_name)
-    except KeyError as error:
-        raise BellwetherError(str(error).strip("\"'")) from None
+    profile_name, profile = select_profile(policy, manifest, profile_override=profile_override)
 
     override = manifest.matrix if manifest is not None else None
     target_specs = (

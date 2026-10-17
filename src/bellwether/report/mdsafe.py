@@ -8,7 +8,7 @@ verdict: `ready` @team"`` once got a second, bot-authored verdict heading and a 
 the comment that was reporting it ``not_ready``. The HTML report escaped every value; the
 Markdown one escaped none.
 
-Two helpers, and every dynamic value goes through one of them:
+Three helpers, and every dynamic value goes through one of them:
 
 * :func:`code` — a value shown *as data* (a path, a capability, an argv). A code span whose
   fence is longer than any backtick run in the value, so no content can close it; line breaks
@@ -17,16 +17,18 @@ Two helpers, and every dynamic value goes through one of them:
 * :func:`text` — a value shown inside prose or a table cell (a gate reason, a finding, a note).
   One line, Markdown and HTML metacharacters backslash-escaped, ``@`` kept from mentioning.
 
-:func:`fence` does the same for a fenced block. Same reduce-then-compare rule as the rest of
+:func:`html_text` is :func:`text` for a value inside raw HTML (a ``<summary>``), where Markdown
+escapes do not apply. :func:`fence` does the same for a fenced block. Same reduce-then-compare rule as the rest of
 the project: the value is reduced to something that cannot be anything but text, rather than
 checked against a list of the ways it might not be.
 """
 
 from __future__ import annotations
 
+import html
 import re
 
-__all__ = ["code", "fence", "one_line", "text"]
+__all__ = ["code", "fence", "html_text", "one_line", "text"]
 
 #: Everything a Markdown or HTML renderer treats as a line break or a control. Shown, not taken.
 _LINE_BREAKS = re.compile(r"\r\n|[\r\n\v\f\x85\u2028\u2029]")
@@ -61,6 +63,19 @@ def code(value: object) -> str:
 def text(value: object) -> str:
     """``value`` as inert prose: one line, metacharacters escaped, mentions defused."""
     escaped = _METACHARACTERS.sub(r"\\\1", one_line(value))
+    return _MENTION.sub(_JOINER, escaped)
+
+
+def html_text(value: object) -> str:
+    """``value`` as inert text *inside raw HTML* — a ``<summary>``, say.
+
+    A line that starts with an HTML tag is an HTML block, where Markdown's backslash escapes are
+    not escapes: :func:`text` there turns ``<img src=x>`` into ``\\<img src=x\\>``, and the
+    renderer reads a literal backslash followed by a real ``<img>`` tag. Entities are what
+    escape in HTML, so the value is entity-escaped (``<``, ``>``, ``&`` and both quotes), kept on
+    one line, and its mentions defused the same way :func:`text` does.
+    """
+    escaped = html.escape(one_line(value), quote=True)
     return _MENTION.sub(_JOINER, escaped)
 
 
