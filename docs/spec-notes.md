@@ -5291,3 +5291,107 @@ created, it succeeds). The fix creates the directory as the runner before the lo
 structural test pins the order. A sandbox rule refused adding a non-root sudoer to rerun the
 suite locally, so CI's non-root `check` job is the proof that the fix holds.
 
+
+## §17.5, §18.1 — the baseline-update pull request, and manual runs
+
+**The baseline comes from the pull request's own evaluation, not a re-run.** §17.5 says the
+post-merge job opens a `chore: update baseline` pull request from a bot branch. It does not say
+where the observations come from. Re-evaluating on `main` would spend the same tokens again for
+what the review already read, so `bellwether-baseline.yml` (on a push to `main` touching a skill)
+finds the pull request the commit merged, the newest run of `bellwether.yml` on that pull
+request's *final head* that uploaded evidence, and reads the evaluations from that artifact.
+Nothing spends.
+
+**What is re-derived, and what is read.** The artifact was produced by the pull request's own
+run, so it is only as trustworthy as that run. One property is checked against something the
+artifact cannot influence: each evaluated skill's `payload_digest` must equal that of the skill
+of the same name *in the merged tree*, recomputed by the job. An evaluation of an earlier push,
+or of a skill the merge itself changed, is skipped with both digests named. The observations
+themselves cannot be re-derived without re-running; the pull request body says so, and the
+maintainer approving it is the control (§18.4 step 5).
+
+**Which `summary.json` is an evaluation's.** The evidence artifact also carries files a skill
+wrote (`outputs/`), and a skill can write one named `summary.json` with any verdict in it. So
+only the evaluations listed in `evaluations.txt` (written by the workflow's loop, PR #107) are
+read, each at exactly `<out>/<skill>/<eval_id>/summary.json`. A list line of any other shape is
+refused, and so is a listed evaluation that is missing or invalid: a proposal that silently drops
+one of the merged skills is the partial result §17.5 calls worse than a refusal. Whether
+upload-artifact roots the archive at `.bellwether-out/` or keeps the directory could not be
+observed from this environment (artifact storage is off-host, below), so both layouts are read;
+no other path is.
+
+**The token never goes to artifact storage.** GitHub answers an artifact download with a
+redirect to a pre-signed URL on another host (observed here: `gh api` refused to follow one to
+`productionresultssa6.blob.core.windows.net`). urllib follows a redirect with the request's
+headers, `Authorization` included. So `github_transport(follow_redirects=False)` returns the 302
+and the target is fetched with no credentials. The harness's fake serves its storage URL on a
+separate path and counts requests that arrive with a token. With the default transport the count
+is 1 (a test pins that), and with the download's transport it is 0.
+
+**A `not_ready` evaluation is not baselined** unless `--allow-not-ready` is passed. A baseline is
+the reference later runs are compared against, and baselining a blocked evaluation makes its
+regressions the reference. **One branch per merged pull request** (`bellwether/baseline-pr-<n>`):
+a single fixed branch force-pushed per merge would drop the previous merge's unmerged proposal.
+**Only `bellwether.yml`'s evaluations are baselined.** The claude-code workflow evaluates the same
+skills on a different target set, which §17.5 rules not comparable, so its regression gate is not
+composed against these records (it says so in a note). Separate baselines per harness would need
+a per-config baselines directory; not done.
+
+**Two repository settings this depends on**, stated in the workflow and in `ci-integration.md`.
+First, "Allow GitHub Actions to create and approve pull requests" must be on. Otherwise the open
+step fails with HTTP 403, naming that setting, after the branch is pushed, so the proposal is not
+lost. Whether this repository has it on could not be read from here (the proxy refuses that
+Actions path), so the first real merge will show. Second, a pull request opened with the workflow
+token starts no workflow runs (GitHub's loop rule). Where checks are required, a maintainer pushes
+to the branch, or the repository uses an App token.
+
+**The push leaves no token on disk.** The checkout does not persist credentials (the repository
+rule, `test_workflow_hardening`, caught the first draft, which did). The push step passes the
+token to git for that one command through a credential helper that reads it from the step's
+environment, so it is neither in `.git/config` nor in any process's arguments. Checked with
+`git credential fill`; the harness pushes to a local bare origin, where the helper is unused.
+
+**Manual runs (§18.1 `workflow_dispatch`).** Both live workflows take `skill`, `profile`, `depth`
+(`configured`, `quick`, `standard`, `deep`) and `targets`. Only a user with write access can
+dispatch, so a dispatch is itself the go-ahead the label is on a pull request, and it spends.
+The named skill goes through the same `changed-skills --under` mapping a diff does. A path that
+normalises outside the root, a skill-shaped test fixture, or a directory with no `SKILL.md` maps
+to nothing and is refused with exit 3. It does not fall through to the "nothing changed" branch,
+which would have posted `success` on every context. Each choice is passed as its own argument and
+only when given, so free text from the form is never split into further options. With no pull
+request, the statuses go on the dispatched commit (`GITHUB_SHA`, the only use of it in the job,
+pinned structurally) and no comment is attempted.
+
+The conditions the steps share (should this evaluate, can this token write, which commit) are now
+computed once in the detect step, instead of each step re-deriving them from the pull request's
+labels and head repository. The harness now renders a boolean expression as `true`/`false`, as
+GitHub does; before, it rendered Python's `True`, which the new `LABELLED` output would have read
+as "not labelled".
+
+The nightly drift run (§18.1 `schedule`) is not added. It spends on every firing, and this
+project's rule is no paid run without the owner's approval.
+
+| # | Revert | Result |
+|---|---|---|
+| B1 | the download follows the redirect (default transport) | red (the token reaches storage) |
+| B2 | the merged-payload check removed | red |
+| B3 | a `not_ready` evaluation baselined | red |
+| B4 | any merged pull request associated with the commit, not the one merged to it | red |
+| B5 | list lines not shape-checked | red (only after the test planted a member at the forged path; before that, it passed for the wrong reason) |
+| B6 | two evaluations of one skill: the first wins | red |
+| B7 | expired artifacts not passed over | red |
+| B8 | the git-status check replaced by "always changed" | red |
+| B9 | one fixed branch for every merge | red |
+| B10 | member size checked only after decompression | red (only after the test forbade decompression; before that, the post-read check made it pass) |
+| B11 | a `--run-id` with no artifact not refused | red (after a test for that case was added) |
+| B12 | `evaluations.txt` not read at the archive root | red |
+| D1 | a dispatched non-skill maps to "nothing changed" | red |
+| D2 | `--targets` unquoted | red |
+| D3 | a dispatch posts on the (empty) pull request head | red |
+| D5 | `configured` passed to `--depth` | red |
+| D6 | an unlabelled pull request evaluates | red |
+| D7 | the fork guard removed | red |
+
+D4 (the pull-request comment skipped on a dispatch) is unproved: without the guard, `pr-comment`
+fails to find a pull request behind its `|| true`, so the only difference is a line of noise in
+the log.

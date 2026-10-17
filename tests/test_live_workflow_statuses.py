@@ -116,6 +116,7 @@ def _fake_run(tmp: Path, outcomes: Mapping[str, tuple[str | Path | None, int]]) 
     script = tmp / "fake-bellwether-run"
     script.write_text(
         "#!/bin/bash\n"
+        f'printf "%s\\n" "$@" > "{tmp}/run-args-$(echo "$2" | tr / -)"\n'
         'skill="$2"; out=""\n'
         'while [ $# -gt 0 ]; do if [ "$1" = "--out" ]; then out="$2"; fi; shift; done\n'
         'mkdir -p "$out"\n'
@@ -336,13 +337,132 @@ def test_statuses_are_written_with_the_permission_and_on_the_head_sha(workflow: 
     document = yaml.safe_load((_WORKFLOWS / workflow).read_text("utf-8"))
     assert document["permissions"]["statuses"] == "write"
     text = (_WORKFLOWS / workflow).read_text("utf-8")
-    # Never GITHUB_SHA: on a pull_request event it is the merge commit, invisible on the PR.
-    assert "HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in text
+    # On a pull request, never GITHUB_SHA: it is the merge commit, invisible on the PR. The
+    # one use is a manual (workflow_dispatch) run's, which has no pull request and posts on the
+    # dispatched commit — and it sits inside that branch of the detect step.
+    assert "PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}" in text
     body = text.split("jobs:")[1]
-    assert "$GITHUB_SHA" not in body and "${GITHUB_SHA}" not in body and "github.sha" not in body
+    assert "github.sha" not in body
+    assert body.count("${GITHUB_SHA}") == 1 and "$GITHUB_SHA" not in body
+    detect = {s.get("name"): s for s in document["jobs"]["evaluate"]["steps"]}[
+        "Detect changed skills"
+    ]["run"]
+    dispatch_branch = detect.split('if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then')[
+        1
+    ].split("else")[0]
+    assert 'sha="${GITHUB_SHA}"' in dispatch_branch
+    assert 'sha="${PR_HEAD_SHA}"' in detect.split(dispatch_branch)[1]
+    for step in document["jobs"]["evaluate"]["steps"]:
+        if "HEAD_SHA" in (step.get("env") or {}):
+            assert step["env"]["HEAD_SHA"] == "${{ steps.detect.outputs.sha }}"
     steps = {s.get("name"): s for s in document["jobs"]["evaluate"]["steps"]}
     assert steps["Commit statuses"]["if"].strip().startswith("always()")
     # The loop appends to .bellwether-out/ as the runner user; `sudo … run` would otherwise
     # create it as root first. A test run as root cannot see this, so it is pinned here too.
     loop = steps["Evaluate and comment"]["run"]
     assert loop.index("mkdir -p .bellwether-out") < loop.index("sudo --preserve-env")
+
+
+# ---------------------------------------------------------------------------
+# A manual run (§18.1 workflow_dispatch)
+# ---------------------------------------------------------------------------
+
+
+def _dispatch(**inputs: str) -> Event:
+    return Event(name="workflow_dispatch", action="", inputs=inputs)
+
+
+def _run_args(tmp: Path, skill: str) -> list[str]:
+    return (tmp / f"run-args-{skill.replace('/', '-')}").read_text("utf-8").splitlines()
+
+
+@pytest.mark.parametrize("workflow", ["bellwether.yml", "bellwether-claude-code.yml"])
+def test_a_dispatch_evaluates_the_named_skill_and_posts_on_the_dispatched_commit(
+    api: FakeGitHub, tmp_path: Path, workflow: str
+) -> None:
+    repo, _base, head = _repository(tmp_path, skills=("a", "b"))
+    event = _dispatch(skill="examples/skills/a", depth="configured")
+    event.merge_sha = head  # github.sha on a dispatch is the dispatched ref's head
+    runner = _run(
+        workflow,
+        repo,
+        tmp_path,
+        api,
+        event=event,
+        key="sk-test",
+        outcomes={"a": ("demo-benign-note-taker", 0)},
+    )
+    assert not runner.failed, [(r.name, r.output[-600:]) for r in runner.results if r.returncode]
+    assert "Evaluate and comment" in runner.ran()
+    # Only the named skill, with no matrix override: `configured` passes nothing.
+    assert not (tmp_path / "run-args-examples-skills-b").exists()
+    args = _run_args(tmp_path, "examples/skills/a")
+    assert "--depth" not in args and "--profile" not in args and "--targets" not in args
+    # No pull request: no comment, and the statuses land on the dispatched commit.
+    assert api.comments == []
+    prefix = "bellwether-claude-code" if "claude" in workflow else "bellwether"
+    assert set(api.latest_statuses()) == _every_context(prefix)
+    assert {status["sha"] for status in api.statuses} == {head}
+
+
+def test_a_dispatch_passes_each_choice_as_one_argument(api: FakeGitHub, tmp_path: Path) -> None:
+    repo, _base, head = _repository(tmp_path, skills=("a",))
+    event = _dispatch(
+        skill="examples/skills/a/",
+        profile="strict",
+        depth="deep",
+        targets="small --no-cache",
+    )
+    event.merge_sha = head
+    runner = _run(
+        "bellwether.yml",
+        repo,
+        tmp_path,
+        api,
+        event=event,
+        key="sk-test",
+        outcomes={"a": ("demo-benign-note-taker", 0)},
+    )
+    assert not runner.failed
+    args = _run_args(tmp_path, "examples/skills/a")
+    assert args[args.index("--profile") + 1] == "strict"
+    assert args[args.index("--depth") + 1] == "deep"
+    # Free text from the form stays one argument: never split into a further option.
+    assert args[args.index("--targets") + 1] == "small --no-cache"
+    assert "--no-cache" not in args
+
+
+@pytest.mark.parametrize(
+    "skill",
+    [
+        "tests/corpus/hostile",  # skill-shaped, outside the root
+        "examples/skills/../../tests/corpus/hostile",  # climbs out
+        "examples/skills/missing",  # no such skill
+        "/etc",
+        "",
+    ],
+)
+def test_a_dispatch_of_anything_but_a_skill_under_the_root_is_refused(
+    api: FakeGitHub, tmp_path: Path, skill: str
+) -> None:
+    repo, _base, head = _repository(tmp_path, skills=("a",))
+    event = _dispatch(skill=skill)
+    event.merge_sha = head
+    runner = _run("bellwether.yml", repo, tmp_path, api, event=event, key="sk-test")
+    assert runner.failed
+    assert runner.result("Detect changed skills").returncode == 3
+    assert "Evaluate and comment" not in runner.ran()
+    assert not list(tmp_path.glob("run-args-*"))
+    assert api.statuses == [] and api.comments == []
+
+
+def test_a_dispatch_without_the_key_spends_nothing_and_says_so(
+    api: FakeGitHub, tmp_path: Path
+) -> None:
+    repo, _base, head = _repository(tmp_path, skills=("a",))
+    event = _dispatch(skill="examples/skills/a")
+    event.merge_sha = head
+    runner = _run("bellwether.yml", repo, tmp_path, api, event=event)
+    assert not runner.failed
+    assert not list(tmp_path.glob("run-args-*"))
+    assert set(_states(api).values()) == {"pending"}
