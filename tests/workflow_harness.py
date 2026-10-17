@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import threading
+import urllib.parse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,12 +44,34 @@ FAKE_TOKEN = "ghs_fake-token-for-the-workflow-harness"
 
 @dataclass
 class FakeGitHub:
-    """Issue comments and commit statuses, in memory, over real HTTP on localhost."""
+    """Issue comments, commit statuses, pull requests and Actions artifacts, in memory, over
+    real HTTP on localhost.
+
+    Artifact downloads behave as GitHub's do: the API answers ``/actions/artifacts/{id}/zip``
+    with a 302 to a storage URL on a *different path* (here ``/blob/{id}``), and the storage
+    URL counts every request that arrives carrying an ``authorization`` header in
+    :attr:`blob_auth` — a client that follows the redirect with its headers sends the
+    repository token to the storage host.
+    """
 
     comments: list[dict[str, Any]] = field(default_factory=list)
     statuses: list[dict[str, Any]] = field(default_factory=list)
     requests: list[tuple[str, str]] = field(default_factory=list)
     unauthorised: int = 0
+    #: merge commit SHA → the pull request ``/commits/{sha}/pulls`` lists for it.
+    commit_pulls: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: Workflow runs: each ``{"id", "workflow", "head_sha"}``.
+    runs: list[dict[str, Any]] = field(default_factory=list)
+    #: run id → its artifacts, each ``{"id", "name", "expired"}``.
+    artifacts: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
+    #: artifact id → the zip bytes the storage URL serves.
+    blobs: dict[int, bytes] = field(default_factory=dict)
+    blob_auth: int = 0
+    #: Pull requests opened or updated through ``/pulls``.
+    pulls: list[dict[str, Any]] = field(default_factory=list)
+    #: The status ``POST /pulls`` answers with when not 201 (a repository that does not let
+    #: Actions open pull requests answers 403).
+    create_pull_status: int = 201
 
     def __post_init__(self) -> None:
         fake = self
@@ -78,11 +101,60 @@ class FakeGitHub:
 
             def do_GET(self) -> None:
                 fake.requests.append(("GET", self.path))
+                if blob := re.fullmatch(r"/blob/(\d+)", self.path):
+                    if self.headers.get("authorization") is not None:
+                        fake.blob_auth += 1
+                    data = fake.blobs.get(int(blob.group(1)))
+                    if data is None:
+                        self._send(404, {"message": "Not Found"})
+                        return
+                    self.send_response(200)
+                    self.send_header("content-type", "application/zip")
+                    self.send_header("content-length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 if not self._authorised():
                     return
-                if re.match(r"/repos/[^/]+/[^/]+/issues/\d+/comments", self.path):
-                    page = int(re.search(r"[?&]page=(\d+)", self.path).group(1))  # type: ignore[union-attr]
+                path, _, query = self.path.partition("?")
+                params = dict(urllib.parse.parse_qsl(query))
+                if re.match(r"/repos/[^/]+/[^/]+/issues/\d+/comments", path):
+                    page = int(params.get("page", "1"))
                     self._send(200, fake.comments if page == 1 else [])
+                elif match := re.fullmatch(r"/repos/[^/]+/[^/]+/commits/([0-9a-f]+)/pulls", path):
+                    self._send(200, fake.commit_pulls.get(match.group(1), []))
+                elif match := re.fullmatch(
+                    r"/repos/[^/]+/[^/]+/actions/workflows/([^/]+)/runs", path
+                ):
+                    runs = [
+                        run
+                        for run in fake.runs
+                        if run["workflow"] == match.group(1)
+                        and run["head_sha"] == params.get("head_sha")
+                    ]
+                    self._send(200, {"total_count": len(runs), "workflow_runs": runs})
+                elif match := re.fullmatch(
+                    r"/repos/[^/]+/[^/]+/actions/runs/(\d+)/artifacts", path
+                ):
+                    found = [
+                        artifact
+                        for artifact in fake.artifacts.get(int(match.group(1)), [])
+                        if "name" not in params or artifact["name"] == params["name"]
+                    ]
+                    self._send(200, {"total_count": len(found), "artifacts": found})
+                elif match := re.fullmatch(r"/repos/[^/]+/[^/]+/actions/artifacts/(\d+)/zip", path):
+                    self.send_response(302)
+                    self.send_header("location", f"{fake.url}/blob/{match.group(1)}")
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                elif re.fullmatch(r"/repos/[^/]+/[^/]+/pulls", path):
+                    head = params.get("head", "")
+                    open_pulls = [
+                        pull
+                        for pull in fake.pulls
+                        if f"owner:{pull['head']}" == head and pull["state"] == "open"
+                    ]
+                    self._send(200, open_pulls)
                 else:
                     self._send(404, {"message": "Not Found"})
 
@@ -102,12 +174,41 @@ class FakeGitHub:
                 elif match := re.fullmatch(r"/repos/[^/]+/[^/]+/statuses/([0-9a-f]+)", self.path):
                     fake.statuses.append({**body, "sha": match.group(1)})
                     self._send(201, body)
+                elif re.fullmatch(r"/repos/[^/]+/[^/]+/pulls", self.path):
+                    if fake.create_pull_status != 201:
+                        self._send(
+                            fake.create_pull_status,
+                            {
+                                "message": "GitHub Actions is not permitted to create or approve "
+                                "pull requests."
+                            },
+                        )
+                        return
+                    number = 500 + len(fake.pulls)
+                    pull = {
+                        **body,
+                        "number": number,
+                        "state": "open",
+                        "html_url": f"https://github.com/owner/repo/pull/{number}",
+                    }
+                    fake.pulls.append(pull)
+                    self._send(201, pull)
                 else:
                     self._send(404, {"message": "Not Found"})
 
             def do_PATCH(self) -> None:
                 fake.requests.append(("PATCH", self.path))
                 if not self._authorised():
+                    return
+                if pulled := re.fullmatch(r"/repos/[^/]+/[^/]+/pulls/(\d+)", self.path):
+                    pull = next(
+                        (p for p in fake.pulls if p["number"] == int(pulled.group(1))), None
+                    )
+                    if pull is None:
+                        self._send(404, {"message": "Not Found"})
+                        return
+                    pull.update(self._body())
+                    self._send(200, pull)
                     return
                 match = re.fullmatch(r"/repos/[^/]+/[^/]+/issues/comments/(\d+)", self.path)
                 comment = next(
@@ -162,6 +263,9 @@ class Event:
     pr_number: int = 7
     action: str = "synchronize"
     label: str = ""
+    #: ``inputs.*`` of a ``workflow_dispatch``; every other input reads as "".
+    inputs: Mapping[str, str] = field(default_factory=dict)
+    ref_name: str = "main"
 
 
 class _Expression:
@@ -199,7 +303,7 @@ class _Expression:
         if name in ("true", "false"):
             return name == "true"
         value = self.contexts.get(name)
-        if value is None and name.startswith(("steps.", "secrets.", "env.")):
+        if value is None and name.startswith(("steps.", "secrets.", "env.", "inputs.")):
             return ""
         if value is None:
             raise KeyError(f"the harness does not model the context {name!r}")
@@ -311,6 +415,8 @@ class WorkflowRunner:
                 contexts[f"steps.{step}.outputs.{key}"] = value
         for key, value in self.secrets.items():
             contexts[f"secrets.{key}"] = value
+        for key, value in event.inputs.items():
+            contexts[f"inputs.{key}"] = value
         return contexts
 
     def _expression(self) -> _Expression:
@@ -318,8 +424,13 @@ class WorkflowRunner:
 
     def interpolate(self, text: str) -> str:
         expression = self._expression()
+
+        def render(value: object) -> str:
+            # GitHub renders a boolean as `true`/`false`, never Python's `True`.
+            return str(value).lower() if isinstance(value, bool) else str(value)
+
         return re.sub(
-            r"\$\{\{\s*(.*?)\s*\}\}", lambda m: str(expression.evaluate(m.group(1))), text
+            r"\$\{\{\s*(.*?)\s*\}\}", lambda m: render(expression.evaluate(m.group(1))), text
         )
 
     def should_run(self, step: Mapping[str, Any]) -> bool:
@@ -361,7 +472,18 @@ class WorkflowRunner:
                 "GITHUB_WORKSPACE": str(self.repo),
                 "GITHUB_REPOSITORY": "owner/repo",
                 "GITHUB_EVENT_NAME": self.event.name,
-                "GITHUB_REF": f"refs/pull/{self.event.pr_number}/merge",
+                "GITHUB_SHA": self.event.merge_sha,
+                "GITHUB_SERVER_URL": "https://github.com",
+                "GITHUB_REF": (
+                    f"refs/pull/{self.event.pr_number}/merge"
+                    if self.event.name == "pull_request"
+                    else f"refs/heads/{self.event.ref_name}"
+                ),
+                "GITHUB_REF_NAME": (
+                    f"{self.event.pr_number}/merge"
+                    if self.event.name == "pull_request"
+                    else self.event.ref_name
+                ),
             }
             completed = subprocess.run(
                 ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
@@ -399,6 +521,12 @@ def bellwether_wrapper(tmp: Path, bellwether: str, api: FakeGitHub) -> Path:
         'cmd="$1"; shift\n'
         'case "$cmd" in\n'
         f'  pr-comment|commit-status) exec "{bellwether}" "$cmd" --api-root "{api.url}" "$@" ;;\n'
+        "  baseline)\n"
+        '    sub="$1"; shift\n'
+        '    case "$sub" in\n'
+        f'      fetch|open-pr) exec "{bellwether}" baseline "$sub" --api-root "{api.url}" "$@" ;;\n'
+        f'      *) exec "{bellwether}" baseline "$sub" "$@" ;;\n'
+        "    esac ;;\n"
         f'  *) exec "{bellwether}" "$cmd" "$@" ;;\n'
         "esac\n",
         encoding="utf-8",

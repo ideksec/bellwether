@@ -1,0 +1,177 @@
+name: Bellwether baseline update
+
+# §17.5 / §18.1 `baseline-pr` / §18.4 step 5: when a pull request that changed a skill merges, the
+# skill's regression baseline should become what that pull request's evaluation observed. A
+# workflow token must never push to `main`, so this job *proposes*: it writes the new baseline
+# records onto a bot branch and opens a `chore: update baseline` pull request for a maintainer to
+# approve.
+#
+# Nothing is evaluated here and nothing spends. The observations come from the evidence artifact
+# the merged pull request's own evaluation run uploaded (`bellwether.yml`, on the pull request's
+# final head). One property is re-derived rather than read: each evaluated skill's payload digest
+# must equal the digest of that skill in the merged tree, so an evaluation of an earlier push, or
+# of a skill the merge itself changed, is skipped with both digests named. What the evaluation
+# observed is read, not re-run — the baseline pull request's body says so, and its reviewer is
+# the control. A `not_ready` evaluation is not baselined.
+#
+# Baselines are written beside the evaluation config (`examples/live/baselines/`), which is where
+# `bellwether run --config examples/live/config.yaml` reads them. Only the api-loop workflow's
+# evaluations are baselined: the claude-code workflow evaluates the same skills on a different
+# target set, which §17.5 rules not comparable, so its regression gate is not composed against
+# these records.
+#
+# Two things a repository needs to know (docs/ci-integration.md):
+#   * "Allow GitHub Actions to create and approve pull requests" (Settings → Actions → General)
+#     must be on, or the open step fails naming that setting — the branch is pushed either way.
+#   * A pull request opened with the workflow token starts no workflow runs (GitHub's rule, to
+#     prevent loops). Where branch protection requires checks, a maintainer re-runs them by
+#     pushing to the branch, or the repository opens these with a GitHub App token instead.
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["examples/skills/**"]
+  workflow_dispatch:
+    inputs:
+      merge-sha:
+        description: "The merged commit whose pull request's evaluation to baseline (default: the dispatched ref's head)"
+        required: false
+        default: ""
+      run-id:
+        description: "Baseline the evidence of this run instead — a manual evaluation, say"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bellwether-baseline-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BELLWETHER_SKILL_ROOTS: examples/skills
+  BELLWETHER_BASELINES: examples/live/baselines
+  BELLWETHER_EVALUATION_WORKFLOW: bellwether.yml
+  BELLWETHER_EVIDENCE_ARTIFACT: bellwether-evidence
+  BW_OUT: .bellwether-baseline
+
+jobs:
+  baseline-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # The bot branch is pushed (never main), and the pull request opened from it.
+      contents: write
+      pull-requests: write
+      # Reading another run's artifacts.
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Not left in .git/config: the push step hands the token to git for that one command,
+          # through a credential helper that reads it from the step's environment, so it never
+          # sits on disk or appears in a process's arguments.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Fetch the evaluation
+        id: fetch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ inputs.merge-sha }}
+          RUN_ID: ${{ inputs.run-id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${BW_OUT}"
+          args=(--merge-sha "${MERGE_SHA:-${GITHUB_SHA}}")
+          if [ -n "${RUN_ID:-}" ]; then args+=(--run-id "${RUN_ID}"); fi
+          uv run bellwether baseline fetch "${args[@]}" \
+            --workflow "${BELLWETHER_EVALUATION_WORKFLOW}" \
+            --artifact "${BELLWETHER_EVIDENCE_ARTIFACT}" \
+            --dest "${BW_OUT}/evaluations" --json > "${BW_OUT}/fetch.json"
+          cat "${BW_OUT}/fetch.json"
+          found="$(jq -r '.found' "${BW_OUT}/fetch.json")"
+          echo "found=${found}" >> "$GITHUB_OUTPUT"
+          if [ "${found}" != "true" ]; then
+            reason="$(jq -r '.reason' "${BW_OUT}/fetch.json")"
+            echo "Nothing to baseline: ${reason}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Write the baselines
+        id: update
+        if: steps.fetch.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          read -ra roots <<< "${BELLWETHER_SKILL_ROOTS}"
+          under=()
+          for root in "${roots[@]}"; do under+=(--under "${root}"); done
+          # The merged tree's skills — every one under the roots, not only the changed ones, so
+          # a skill is found by its declared name wherever it lives.
+          git ls-files -z -- "${roots[@]}" \
+            | uv run bellwether changed-skills -z "${under[@]}" > "${BW_OUT}/skills.txt"
+          mapfile -t evaluations < <(jq -r '.evaluations[].dir' "${BW_OUT}/fetch.json")
+          uv run bellwether baseline update "${evaluations[@]}" \
+            --skills-from "${BW_OUT}/skills.txt" \
+            --baselines "${BELLWETHER_BASELINES}" \
+            --source "${BW_OUT}/evaluations/source.json" \
+            --body "${BW_OUT}/body.md" --json > "${BW_OUT}/update.json"
+          cat "${BW_OUT}/update.json"
+          cat "${BW_OUT}/body.md" >> "$GITHUB_STEP_SUMMARY"
+          # What git sees, not what the command says it wrote: a record identical to the stored
+          # one leaves the tree clean, and an empty commit is not a proposal.
+          if [ -n "$(git status --porcelain -- "${BELLWETHER_BASELINES}")" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The stored baselines already match; nothing to propose."
+          fi
+
+      - name: Push the baseline branch
+        id: push
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr="$(jq -r '.pr.number // empty' "${BW_OUT}/fetch.json")"
+          sha="$(jq -r '.merge_sha' "${BW_OUT}/fetch.json")"
+          # One branch per merged pull request: two merges in a row each get their own proposal,
+          # rather than the second force-pushing over the first's.
+          if [ -n "${pr}" ]; then
+            branch="bellwether/baseline-pr-${pr}"
+            title="chore: update baseline (#${pr})"
+          else
+            branch="bellwether/baseline-run-$(jq -r '.run_id' "${BW_OUT}/fetch.json")"
+            title="chore: update baseline (${sha:0:12})"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${branch}"
+          git add -- "${BELLWETHER_BASELINES}"
+          git commit -q -m "${title}" -m "Proposed by the Bellwether baseline-pr job (§17.5)."
+          # shellcheck disable=SC2016  # expanded by git's helper shell, not here
+          git -c credential.helper= \
+              -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${GITHUB_TOKEN}"; }; f' \
+              push --force origin "HEAD:refs/heads/${branch}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
+
+      - name: Open the baseline pull request
+        if: steps.push.outputs.branch != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.push.outputs.branch }}
+          TITLE: ${{ steps.push.outputs.title }}
+        run: |
+          set -euo pipefail
+          uv run bellwether baseline open-pr --branch "${BRANCH}" --title "${TITLE}" \
+            --base "${GITHUB_REF_NAME}" --body-file "${BW_OUT}/body.md"

@@ -2054,6 +2054,368 @@ def baseline_clear(
     _emit({"removed": str(path)}, as_json=json_output, lines=[f"removed {path}"])
 
 
+_RepoOption = Annotated[
+    str | None, typer.Option("--repo", help="owner/repo (default: $GITHUB_REPOSITORY).")
+]
+_TokenEnvOption = Annotated[
+    str, typer.Option("--token-env", help="Env var holding the GitHub token.")
+]
+_ApiRootOption = Annotated[
+    str, typer.Option("--api-root", help="GitHub API root (for Enterprise).")
+]
+
+
+def _github_repository(repo: str | None, refuse: Callable[[str], NoReturn]) -> str:
+    repository = repo or os.environ.get("GITHUB_REPOSITORY", "")
+    if not repository:
+        refuse("no repository: pass --repo or set GITHUB_REPOSITORY")
+    return repository
+
+
+def _github_token(token_env: str, refuse: Callable[[str], NoReturn]) -> str:
+    token = os.environ.get(token_env, "")
+    if not token:
+        refuse(f"${token_env} is not set; the GitHub API needs a token")
+    return token
+
+
+@baseline_app.command("fetch")
+def baseline_fetch(
+    dest: Annotated[
+        Path, typer.Option("--dest", help="Directory to write the evaluations' summaries into.")
+    ],
+    merge_sha: Annotated[
+        str,
+        typer.Option(
+            "--merge-sha",
+            help="The pushed commit (GITHUB_SHA on a push to main): the pull request it merged "
+            "is found, and the evaluation run on that pull request's final head.",
+        ),
+    ] = "",
+    run_id: Annotated[
+        int | None,
+        typer.Option(
+            "--run-id",
+            help="Take the evidence of this workflow run instead of looking one up — a manual "
+            "(workflow_dispatch) evaluation, say.",
+        ),
+    ] = None,
+    workflow: Annotated[
+        str, typer.Option("--workflow", help="The evaluation workflow's file name.")
+    ] = "bellwether.yml",
+    artifact: Annotated[
+        str, typer.Option("--artifact", help="The evidence artifact's name.")
+    ] = "bellwether-evidence",
+    out_prefix: Annotated[
+        str,
+        typer.Option(
+            "--out-prefix", help="The output directory the workflow's evaluations.txt names."
+        ),
+    ] = ".bellwether-out/",
+    repo: _RepoOption = None,
+    token_env: _TokenEnvOption = "GITHUB_TOKEN",
+    api_root: _ApiRootOption = "https://api.github.com",
+    json_output: JsonFlag = False,
+) -> None:
+    """Fetch the evaluations a merged pull request was judged on (§17.5 ``baseline-pr``).
+
+    Finds the pull request ``--merge-sha`` merged, the newest run of ``--workflow`` on its final
+    head that uploaded ``--artifact``, and writes the summary of every evaluation that run lists
+    to ``<dest>/<n>/summary.json``, with ``<dest>/source.json`` naming where they came from.
+    Nothing is evaluated again. A push that merged no pull request, or a pull request no
+    evaluation ran on, is not an error: ``found`` is false and the reason says why.
+    """
+    from bellwether.cli.baseline_pr import (
+        artifact_of_run,
+        download_artifact,
+        find_evaluation_artifact,
+        find_merged_pr,
+        read_evaluations,
+    )
+    from bellwether.cli.pr import github_transport
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether baseline fetch: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    if not merge_sha and run_id is None:
+        refuse("pass --merge-sha (the merged commit) or --run-id (a run to take evidence from)")
+    repository = _github_repository(repo, refuse)
+    token = _github_token(token_env, refuse)
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    transport = github_transport(follow_redirects=False)
+    payload: dict[str, Any] = {"found": False, "dest": str(dest), "merge_sha": merge_sha}
+
+    def done(reason: str) -> None:
+        payload["reason"] = reason
+        _emit(payload, as_json=json_output, lines=[f"nothing to baseline: {reason}"])
+
+    try:
+        merged = None
+        if merge_sha:
+            merged = find_merged_pr(
+                transport, repository, merge_sha, token=token, api_root=api_root
+            )
+            if merged is None and run_id is None:
+                done(f"{merge_sha[:12]} merged no pull request (a direct push)")
+                return
+        if merged is not None:
+            payload["pr"] = {
+                "number": merged.number,
+                "head_sha": merged.head_sha,
+                "title": merged.title,
+                "url": merged.url,
+            }
+        if run_id is not None:
+            found = artifact_of_run(
+                transport,
+                repository,
+                run_id,
+                artifact=artifact,
+                token=token,
+                api_root=api_root,
+                server_url=server,
+            )
+            if found is None:
+                refuse(f"run {run_id} has no unexpired artifact named {artifact!r}")
+            evidence = found
+        else:
+            assert merged is not None
+            located = find_evaluation_artifact(
+                transport,
+                repository,
+                workflow=workflow,
+                head_sha=merged.head_sha,
+                artifact=artifact,
+                token=token,
+                api_root=api_root,
+                server_url=server,
+            )
+            if located is None:
+                done(
+                    f"no run of {workflow} on pull request #{merged.number}'s head "
+                    f"{merged.head_sha[:12]} uploaded {artifact!r} (not labelled for evaluation, "
+                    "or its evidence has expired)"
+                )
+                return
+            evidence = located
+        summaries = read_evaluations(
+            download_artifact(
+                transport, repository, evidence.artifact_id, token=token, api_root=api_root
+            ),
+            out_prefix=out_prefix,
+        )
+    except BellwetherError as error:
+        refuse(str(error))
+    if not summaries:
+        payload.update(run_id=evidence.run_id, run_url=evidence.run_url)
+        done(f"run {evidence.run_id} lists no completed evaluation")
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    for index, summary in enumerate(summaries, start=1):
+        target = dest / str(index)
+        target.mkdir(exist_ok=True)
+        (target / "summary.json").write_text(
+            canonical_json(summary.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
+        )
+    payload.update(
+        found=True,
+        run_id=evidence.run_id,
+        run_url=evidence.run_url,
+        evaluations=[
+            {
+                "dir": str(dest / str(i)),
+                "skill": s.skill.name,
+                "eval_id": s.eval_id,
+                "verdict": s.verdict.status,
+            }
+            for i, s in enumerate(summaries, start=1)
+        ],
+    )
+    (dest / "source.json").write_text(canonical_json(payload, indent=2) + "\n", encoding="utf-8")
+    _emit(
+        payload,
+        as_json=json_output,
+        lines=[
+            f"fetched {len(summaries)} evaluation(s) from {evidence.run_url}",
+            *(f"  {s.skill.name}: {s.eval_id} ({s.verdict.status})" for s in summaries),
+        ],
+    )
+
+
+@baseline_app.command("update")
+def baseline_update(
+    evaluations: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Evaluation directories (each holding summary.json)."),
+    ] = None,
+    skills_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--skills-from",
+            help="The merged tree's skill directories, one per line (`changed-skills` output).",
+        ),
+    ] = None,
+    skill_dirs: Annotated[
+        list[Path] | None,
+        typer.Option("--skill", help="A skill directory in the merged tree (repeatable)."),
+    ] = None,
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    body: Annotated[
+        Path | None,
+        typer.Option("--body", help="Write the baseline pull request's body (Markdown) here."),
+    ] = None,
+    source: Annotated[
+        Path | None,
+        typer.Option("--source", help="The source.json `baseline fetch` wrote, for the body."),
+    ] = None,
+    merge_sha: Annotated[
+        str, typer.Option("--merge-sha", help="The merged commit, for the body.")
+    ] = "",
+    allow_not_ready: Annotated[
+        bool,
+        typer.Option(
+            "--allow-not-ready",
+            help="Baseline a not_ready evaluation too (by default it is skipped: its "
+            "regressions would become the reference).",
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Decide and report, but write no baseline.")
+    ] = False,
+    json_output: JsonFlag = False,
+) -> None:
+    """Write the baselines a merged pull request's evaluations observed (§17.5).
+
+    Each evaluation is baselined only where its skill's payload digest equals that of the skill
+    with its name in the merged tree — recomputed here from ``--skill``/``--skills-from`` — so an
+    evaluation of an earlier push is never recorded as the merged skill's. A ``not_ready``
+    evaluation is skipped unless ``--allow-not-ready``. ``changed`` in the output is how many
+    files were written; zero means there is nothing to propose.
+    """
+    from bellwether.cli.baseline_pr import MergedPr, plan_baselines, render_baseline_pr_body
+    from bellwether.cli.diff import load_summary
+    from bellwether.skill import load_skill
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether baseline update: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    directories = list(skill_dirs or ())
+    if skills_from is not None:
+        try:
+            listed = skills_from.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            refuse(f"cannot read --skills-from {skills_from}: {type(error).__name__}")
+        directories.extend(Path(line) for line in listed if line.strip())
+    if not directories:
+        refuse("name the merged tree's skills (--skill or --skills-from)")
+    if not evaluations:
+        refuse("name the evaluation directories to baseline")
+    merged_payloads: dict[str, list[str]] = {}
+    try:
+        for directory in directories:
+            package = load_skill(directory, load_evals=False)
+            merged_payloads.setdefault(package.name, []).append(package.payload_digest)
+        summaries = [load_summary(directory / "summary.json") for directory in evaluations]
+        merged = None
+        run_link = None
+        if source is not None:
+            recorded = json.loads(source.read_text(encoding="utf-8"))
+            pr = recorded.get("pr") if isinstance(recorded, dict) else None
+            if isinstance(pr, dict):
+                merged = MergedPr(
+                    int(pr["number"]),
+                    str(pr["head_sha"]),
+                    str(pr.get("title", "")),
+                    str(pr.get("url", "")),
+                )
+            run_link = recorded.get("run_url") if isinstance(recorded, dict) else None
+            merge_sha = merge_sha or str(recorded.get("merge_sha", ""))
+        decisions = plan_baselines(
+            summaries,
+            merged_payloads,
+            baselines,
+            allow_not_ready=allow_not_ready,
+            write=not dry_run,
+        )
+    except (BellwetherError, OSError, ValueError, KeyError) as error:
+        refuse(f"{type(error).__name__}: {error}")
+    written = [d for d in decisions if d.action == "write"]
+    if body is not None:
+        body.write_text(
+            render_baseline_pr_body(
+                decisions,
+                merged=merged,
+                merge_sha=merge_sha,
+                run_url=run_link if isinstance(run_link, str) else None,
+            ),
+            encoding="utf-8",
+        )
+    _emit(
+        {
+            "changed": 0 if dry_run else len(written),
+            "decisions": [
+                {
+                    "skill": d.skill,
+                    "action": d.action,
+                    "reason": d.reason,
+                    "eval_id": d.eval_id,
+                    "path": str(d.path) if d.path is not None else None,
+                    "changed_key": list(d.changed_key),
+                }
+                for d in decisions
+            ],
+        },
+        as_json=json_output,
+        lines=[f"{d.skill}: {d.action} — {d.reason}" for d in decisions],
+    )
+
+
+@baseline_app.command("open-pr")
+def baseline_open_pr(
+    branch: Annotated[str, typer.Option("--branch", help="The pushed branch holding the update.")],
+    body_file: Annotated[Path, typer.Option("--body-file", help="The pull request's body.")],
+    title: Annotated[str, typer.Option("--title", help="The pull request's title.")] = (
+        "chore: update baseline"
+    ),
+    base: Annotated[str, typer.Option("--base", help="The branch to merge into.")] = "main",
+    repo: _RepoOption = None,
+    token_env: _TokenEnvOption = "GITHUB_TOKEN",
+    api_root: _ApiRootOption = "https://api.github.com",
+    json_output: JsonFlag = False,
+) -> None:
+    """Open the baseline pull request from ``--branch``, or update the one already open."""
+    from bellwether.cli.baseline_pr import upsert_pull_request
+    from bellwether.cli.pr import github_transport
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether baseline open-pr: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    repository = _github_repository(repo, refuse)
+    token = _github_token(token_env, refuse)
+    try:
+        text_body = body_file.read_text(encoding="utf-8")
+        result = upsert_pull_request(
+            github_transport(),
+            repository,
+            branch=branch,
+            base=base,
+            title=title,
+            body=text_body,
+            token=token,
+            api_root=api_root,
+        )
+    except (BellwetherError, OSError, UnicodeDecodeError) as error:
+        refuse(str(error))
+    _emit(
+        {"number": result.number, "url": result.url, "action": result.action},
+        as_json=json_output,
+        lines=[f"{result.action} pull request #{result.number} {result.url}"],
+    )
+
+
 def main() -> None:
     """Console entry point for ``bellwether`` and ``bw``."""
     try:
