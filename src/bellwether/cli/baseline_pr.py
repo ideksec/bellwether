@@ -596,14 +596,18 @@ def render_baseline_pr_body(
     lines += [
         "### Before approving",
         "",
-        "The skill's payload digest in each record was recomputed from the merged tree and "
-        "matches the evaluated one. What the evaluation *observed* was not re-run: it is read "
-        "from that run's evidence artifact, so read the run's report before approving — every "
-        "later evaluation of the skill is compared against this record, and a capability "
-        "recorded here stops reading as an expansion.",
+        (
+            "The skill's payload digest in each record was recomputed from the merged tree and "
+            "matches the evaluated one. What the evaluation *observed* was not re-run: it is "
+            "read from that run's evidence artifact, so read the run's report before approving "
+            "— every later evaluation of the skill is compared against this record, and a "
+            "capability recorded here stops reading as an expansion."
+        ),
         "",
-        "Two pull requests re-baselining the same skill conflict; regenerate the baseline on "
-        "`main` rather than merging the two by hand.",
+        (
+            "Two pull requests re-baselining the same skill conflict; regenerate the baseline on "
+            "`main` rather than merging the two by hand."
+        ),
     ]
     return "\n".join(lines) + "\n"
 
