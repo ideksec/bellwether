@@ -342,3 +342,7 @@ def test_statuses_are_written_with_the_permission_and_on_the_head_sha(workflow: 
     assert "$GITHUB_SHA" not in body and "${GITHUB_SHA}" not in body and "github.sha" not in body
     steps = {s.get("name"): s for s in document["jobs"]["evaluate"]["steps"]}
     assert steps["Commit statuses"]["if"].strip().startswith("always()")
+    # The loop appends to .bellwether-out/ as the runner user; `sudo … run` would otherwise
+    # create it as root first. A test run as root cannot see this, so it is pinned here too.
+    loop = steps["Evaluate and comment"]["run"]
+    assert loop.index("mkdir -p .bellwether-out") < loop.index("sudo --preserve-env")

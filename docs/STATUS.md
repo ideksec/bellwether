@@ -30,6 +30,10 @@ worst. Seventeen changes reverted one at a time, all red. One (S10) first went r
 wrong reason, because the harness didn't model `github.sha`. Once it did, the revert fails on
 the SHA itself.
 
+CI's non-root runner then found a defect the root test run could not see: the loop appended to
+`.bellwether-out/` after `sudo run` had created it as root, and the append was refused. The
+directory is now created by the runner user first (spec-notes).
+
 **Before that: Gate 0 is a CI check (`bellwether-scan.yml`).** Every pull request and `main` now
 run the static scan, with no secret, no label and no spend:
 - every skill under the real skill roots is scanned (`changed-skills --under`);

@@ -5279,3 +5279,15 @@ assertion that every status is on the head.
 
 S6 is unused.
 
+**CI's non-root runner found what root could not.** The first push of this change failed on CI,
+in three of the execution tests, and the cause was the workflow, not the tests. The loop's new
+line appends to `.bellwether-out/evaluations.txt` as the runner user. The first `sudo … run
+--out .bellwether-out/<skill>` had already created `.bellwether-out/` as root, and the loop's
+chown covers only the per-skill directory, so the append was refused. Under `bash -e` the
+evaluate step died after the first skill, and a real labelled run would have done the same.
+Locally the tests run as root and could not see it. It was reproduced by dropping privileges
+(`runuser -u nobody`: the append into a root-created directory is refused; into one the user
+created, it succeeds). The fix creates the directory as the runner before the loop, and a
+structural test pins the order. A sandbox rule refused adding a non-root sudoer to rerun the
+suite locally, so CI's non-root `check` job is the proof that the fix holds.
+

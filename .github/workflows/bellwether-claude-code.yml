@@ -182,6 +182,11 @@ jobs:
           fi
           bw="$(pwd)/.venv/bin/bellwether"
           status=0
+          # Created here, as the runner user, before any `sudo … run` does it as root: the loop
+          # appends to .bellwether-out/evaluations.txt as the runner, and a root-owned directory
+          # refused that ("Permission denied") — under `bash -e` the step then died after the
+          # first skill. Found by CI's non-root runner (tests/test_live_workflow_statuses.py).
+          mkdir -p .bellwether-out
           # The list is read on fd 3, never stdin: anything in the loop that reads stdin (a
           # `docker exec --interactive` with nothing to send did, PR #102) would otherwise
           # swallow the remaining skill names, and every skill after the first would go
