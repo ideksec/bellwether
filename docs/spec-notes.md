@@ -5199,3 +5199,83 @@ defence in depth.
 
 G12 is unused; the numbering is the order the reverts were written in.
 
+## §18.2 — commit statuses per gate group, and the static comment
+
+**Eight groups, not five.** §18.2 names `static`, `functional`, `consistency`, `security` and
+`evidence`. The build has gates those five don't cover, so three groups are added: `budget`
+(cost and wall clock), `regression` and `review` (the human-review attestation). Declared scope
+(`scope`, `scope.manifest`) reports into `security`, because exceeding it is a capability the
+skill did not declare (§12.5). The table is exact names, not prefixes: a new
+`security_runtime.*` gate has to be placed deliberately. A test extracts every gate name from
+the composition's source and fails on an unmapped gate or a dead mapping, the registry rule
+applied to the reporting side.
+
+**A required `not_evaluable` gate fails its group.** It blocks the verdict (§16.2), so a group
+that read green while its gate could not be decided would be the silent pass this project
+exists to prevent. An advisory one, like a `warn`, leaves the group `success` and says so in the
+description. GitHub statuses have no neutral state.
+
+**Two verdict contexts.** `verdict` fails on `not_ready` (the exit-code rule). `ready` fails on
+anything short of `ready`. §18.2 says the statuses are "the mechanism by which a repository
+decides whether `conditional` blocks"; with per-group contexts alone, a warning could only ever
+be green or red for every repository. Requiring `ready`, or not, is that decision.
+
+**Every branch posts.** A required context that is never posted reads "pending" forever and
+blocks every merge. So:
+- a pull request that changes no skill posts `success` on every context;
+- an unlabelled skill change posts `pending` (the evaluation costs tokens; a maintainer labels it);
+- a labelled one without a key posts `pending`;
+- a broken evaluation (exit 3, or a step that stopped before recording its code) posts `failure`
+  on every context. A skill with no summary must not read as a skill that passed.
+
+Statuses go on the **head** commit: on a `pull_request` event `GITHUB_SHA` is the merge commit,
+whose statuses never show on the PR. Each workflow has its own prefix (`bellwether`,
+`bellwether-claude-code`), and forks get none, because their token cannot write statuses.
+
+**A pre-existing bug the execution found.** The evaluate loop kept the *last* non-zero exit:
+`[ "${verdict_status}" -ne 0 ] && status=…`. An infrastructure failure (3) on one skill
+followed by a `not_ready` (2) on the next reported 2. The broken skill's partial tree would then
+have been read as evidence. The loop now keeps the worst code, and the test that pins it fails
+on the old line (S11).
+
+**The static comment.** `pr-comment` recognises the scan summary by its first line and gives it
+a key derived from a fixed domain string, so it can't collide with an evaluation's key (a hash
+of a JSON list). `--update-only` edits an existing comment but never creates one. The scan
+workflow uses it on a clean result, so a fixed PR's red comment turns clean, a PR that was never
+red collects none, and a red PR gets one comment updated in place.
+
+**The harness grew a fake GitHub.** `tests/workflow_harness.py` is now shared. It adds a real
+expression evaluator (`contains`, `always`, `!`, `&&`, `||`, heredoc step outputs), step-level
+`env:`, and a localhost fake of the comments and statuses API that rejects a call without the
+expected token. `bellwether` is reached through a wrapper that adds `--api-root` for the two
+API commands, so production code gains no test-only switch.
+
+Writing it found a bug in the fake itself: `page=(\d+)` matched inside `per_page=100`, so page 1
+read as page 100 and the existing comment was never found. Unmodelled contexts raise, so a
+workflow that starts reading a new context fails loudly here instead of evaluating to `""`. That
+is what S10 first tripped on: the revert to `github.sha` went red as an unmodelled context, not
+on the SHA. With `github.sha` modelled as a distinct merge commit, the revert fails on the
+assertion that every status is on the head.
+
+| # | Revert | Result |
+|---|---|---|
+| S1 | a required `not_evaluable` gate reads as a warning | red |
+| S2 | an unmapped gate defaults to a group | red |
+| S3 | only the first evaluation is read | red |
+| S4 | `ready` mirrors `verdict` | red |
+| S5 | descriptions not capped at 140 | red |
+| S7 | a rejected status ignored | red |
+| S8 | `--update-only` creates anyway | red |
+| S9 | the scan summary keyed like an evaluation | red |
+| S10 | statuses on `github.sha` | red (on the SHA, once the harness modelled it) |
+| S11 | the loop keeps the last non-zero exit | red |
+| S12 | the status step without `always()` | red |
+| S13 | the status fork guard removed | red |
+| S14 | the no-skill branch posts `pending` | red |
+| S15 | a clean scan always comments | red |
+| S16 | the evaluations list not written | red |
+| S17 | the no-key branch not recorded | red |
+| S18 | scope reported under `evidence` | red |
+
+S6 is unused.
+

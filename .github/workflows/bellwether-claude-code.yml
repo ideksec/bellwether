@@ -24,12 +24,16 @@ on:
 permissions:
   contents: read
   pull-requests: write   # so the report comment can be posted
+  statuses: write        # one commit status per gate group, for branch protection (§18.2)
 
 env:
   # Only skills under this directory are evaluated. The repository also keeps skill-shaped
   # test fixtures (some deliberately hostile, under tests/); a labelled PR touching one
   # must not spend tokens running it as if it were a skill.
   BELLWETHER_SKILL_ROOT: examples/skills
+  # Each workflow posts its commit statuses under its own prefix (`bellwether-claude-code/security`, …), so
+  # two harnesses evaluating the same pull request never overwrite each other's (§18.2).
+  BELLWETHER_STATUS_PREFIX: bellwether-claude-code
   BELLWETHER_CONFIG: examples/live/config-claude-code.yaml
   BELLWETHER_POLICY: examples/live/policy-claude-code.yaml
   # Higher than the api-loop smoke's 60k: the Claude Code CLI resends its whole system prompt and
@@ -95,6 +99,21 @@ jobs:
         if: steps.detect.outputs.skills == ''
         run: echo "No skills changed in this pull request; nothing to evaluate."
 
+
+      - name: Commit statuses — nothing to evaluate
+        # A pull request that changes no skill passes every context, explicitly: a required
+        # context left unposted reads "pending" forever and blocks the merge. Not from a fork,
+        # whose token cannot write statuses.
+        if: >-
+          steps.detect.outputs.skills == '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          uv run bellwether commit-status --sha "${HEAD_SHA}" \
+            --context-prefix "${BELLWETHER_STATUS_PREFIX}" \
+            --state success --reason "no skill changed in this pull request"
       - name: Not labelled for evaluation
         if: >-
           steps.detect.outputs.skills != '' &&
@@ -103,6 +122,22 @@ jobs:
           echo "These skills changed:"; cat changed-skills.txt
           echo "Add the 'bellwether-run' label to this PR to evaluate them under claude-code (costs model tokens)."
 
+
+      - name: Commit statuses — waiting for the label
+        # The evaluation costs model tokens and is opt-in. Until a maintainer adds the label,
+        # every context is pending — so a repository that requires them cannot merge an
+        # unevaluated skill change, and one that does not is unaffected.
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          !contains(github.event.pull_request.labels.*.name, 'bellwether-run') &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          uv run bellwether commit-status --sha "${HEAD_SHA}" \
+            --context-prefix "${BELLWETHER_STATUS_PREFIX}" \
+            --state pending --reason "add the bellwether-run label to evaluate (costs model tokens)"
       - name: Build the claude-code sandbox image
         # The CLI runs *inside* this image (§9.4); the live config's sandbox.image points at this
         # tag. Built here — the same daemon serves the sudo `run` below — rather than pulled from a
@@ -131,6 +166,7 @@ jobs:
         run: docker build -f sidecar/resolver/Dockerfile -t bw-resolver-sidecar:live .
 
       - name: Evaluate and comment
+        id: evaluate
         if: >-
           steps.detect.outputs.skills != '' &&
           contains(github.event.pull_request.labels.*.name, 'bellwether-run')
@@ -141,6 +177,7 @@ jobs:
           if [ -z "${ANTHROPIC_API_KEY}" ]; then
             echo "Labelled for evaluation, but ANTHROPIC_API_KEY is not set — skipping."
             echo "Would evaluate:"; cat changed-skills.txt
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           bw="$(pwd)/.venv/bin/bellwether"
@@ -183,6 +220,8 @@ jobs:
               exit 3
             fi
             eval_dir="${eval_dirs[0]}"
+            # The commit-status step reads every evaluation of this commit from this list.
+            echo "${eval_dir}" >> .bellwether-out/evaluations.txt
             # Drop the per-run sandbox scratch under runs/ before upload-artifact walks the tree:
             # it holds the kernel's overlayfs workdir (`work/work`, left mode 000, unreadable even
             # after chown), which the artifact's exclude walk hits EACCES on despite excluding
@@ -202,10 +241,49 @@ jobs:
             uv run bellwether pr-comment "${eval_dir}" || true
             # Exit 2 is a real not_ready verdict; 3 is infrastructure. Either keeps the check red,
             # but a not_ready is the skill's result, not a broken job.
-            [ "${verdict_status}" -ne 0 ] && status="${verdict_status}"
+            # The worst code wins: 3 (infrastructure) outranks 2 (not_ready). This used to keep
+            # the *last* non-zero code, so an infrastructure failure on one skill followed by a
+            # not_ready on the next reported 2 — a broken evaluation read as a verdict.
+            if [ "${verdict_status}" -gt "${status}" ]; then status="${verdict_status}"; fi
             echo "::endgroup::"
           done 3< changed-skills.txt
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
           exit "${status}"
+
+      - name: Commit statuses
+        # §18.2: one status per gate group on the pull request's *head* commit (GITHUB_SHA is
+        # the merge commit, whose statuses never show on the PR), worst across the evaluated
+        # skills, plus `verdict` and `ready`. `always()`: a not_ready verdict fails the step
+        # above, and that is exactly the result the statuses exist to report. Not from a fork.
+        if: >-
+          always() &&
+          steps.detect.outputs.skills != '' &&
+          contains(github.event.pull_request.labels.*.name, 'bellwether-run') &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVAL_STATUS: ${{ steps.evaluate.outputs.status }}
+        run: |
+          set -euo pipefail
+          list=.bellwether-out/evaluations.txt
+          common=(--sha "${HEAD_SHA}" --context-prefix "${BELLWETHER_STATUS_PREFIX}")
+          case "${EVAL_STATUS}" in
+            skipped)
+              uv run bellwether commit-status "${common[@]}" --state pending \
+                --reason "labelled, but ANTHROPIC_API_KEY is not set: not evaluated"
+              ;;
+            0|2)
+              mapfile -t evaluations < "${list}"
+              uv run bellwether commit-status "${common[@]}" "${evaluations[@]}"
+              ;;
+            *)
+              # Infrastructure (3), or a step that stopped before recording its status: a
+              # skill without a summary must not be read as a skill that passed.
+              uv run bellwether commit-status "${common[@]}" --state failure \
+                --reason "the evaluation did not complete (exit ${EVAL_STATUS:-unknown}); see the run"
+              ;;
+          esac
 
       - name: Upload the evidence
         # The ground truth behind the verdict must not die with the runner. Uploads the artifact

@@ -1097,6 +1097,137 @@ def _report_key_beside(comment: Path) -> str:
     return report_key(name, [str(slug) for slug in slugs])
 
 
+@app.command(name="commit-status")
+def commit_status(
+    evaluations: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Evaluation directories (each holding summary.json) of one commit."),
+    ] = None,
+    sha: Annotated[
+        str,
+        typer.Option(
+            "--sha",
+            help="The pull request's head SHA (github.event.pull_request.head.sha) — not "
+            "GITHUB_SHA, which on a pull request is the merge commit and never shows on the PR.",
+        ),
+    ] = "",
+    state: Annotated[
+        str | None,
+        typer.Option(
+            "--state",
+            help="Post this state on every context instead of reading evaluations: success "
+            "(nothing to evaluate), pending (waiting on a maintainer) or failure (the evaluation "
+            "did not complete). Needs --reason.",
+        ),
+    ] = None,
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="The description for --state.")
+    ] = None,
+    context_prefix: Annotated[
+        str,
+        typer.Option(
+            "--context-prefix",
+            help="Context prefix, e.g. bellwether → bellwether/security. Give each workflow "
+            "its own, or two harnesses overwrite each other's statuses.",
+        ),
+    ] = "bellwether",
+    repo: Annotated[
+        str | None, typer.Option("--repo", help="owner/repo (default: $GITHUB_REPOSITORY).")
+    ] = None,
+    token_env: Annotated[
+        str, typer.Option("--token-env", help="Env var holding the GitHub token.")
+    ] = "GITHUB_TOKEN",
+    api_root: Annotated[
+        str, typer.Option("--api-root", help="GitHub API root (for Enterprise).")
+    ] = "https://api.github.com",
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the statuses instead of posting them.")
+    ] = False,
+    json_output: JsonFlag = False,
+) -> None:
+    """Post a commit status per gate group, plus the verdict, for branch protection (§18.2).
+
+    One context per gate group — ``<prefix>/static``, ``functional``, ``consistency``,
+    ``security``, ``evidence``, ``budget``, ``regression``, ``review`` — failing when a gate in it
+    blocks; ``<prefix>/verdict`` failing on ``not_ready``; ``<prefix>/ready`` failing unless every
+    evaluation is ``ready``. A repository decides what blocks a merge by which contexts it
+    requires. Several evaluations of one commit (several changed skills) report the worst.
+    """
+    from bellwether.cli.pr import github_transport
+    from bellwether.cli.status import (
+        check_prefix,
+        check_sha,
+        evaluation_statuses,
+        post_statuses,
+        run_url,
+        uniform_statuses,
+    )
+    from bellwether.report.summary import Summary
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether commit-status: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    try:
+        prefix = check_prefix(context_prefix)
+        if sha or not dry_run:
+            check_sha(sha)
+        if state is not None:
+            if evaluations:
+                refuse("--state posts one state everywhere; it takes no evaluation directories")
+            if state not in ("success", "pending", "failure"):
+                refuse(f"--state must be success, pending or failure, not {state!r}")
+            if not reason:
+                refuse(f"--state needs --reason: the description says why every context is {state}")
+            statuses = uniform_statuses(state, reason, prefix=prefix)  # type: ignore[arg-type]
+        else:
+            if not evaluations:
+                refuse("name the evaluation directories to report, or pass --state and --reason")
+            summaries = []
+            for directory in evaluations:
+                path = directory / "summary.json"
+                try:
+                    summaries.append(Summary.model_validate_json(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError) as error:
+                    refuse(f"cannot read {path}: {type(error).__name__}: {error}")
+            statuses = evaluation_statuses(summaries, prefix=prefix)
+    except BellwetherError as error:
+        refuse(str(error))
+
+    lines = [f"{s.context}: {s.state} — {s.description}" for s in statuses]
+    payload = {
+        "sha": sha,
+        "statuses": [
+            {"context": s.context, "state": s.state, "description": s.description} for s in statuses
+        ],
+    }
+    if dry_run:
+        _emit(payload, as_json=json_output, lines=lines)
+        return
+    try:
+        repository = repo or os.environ.get("GITHUB_REPOSITORY", "")
+        if "/" not in repository:
+            raise BellwetherError(
+                "no repository: pass --repo owner/repo or run where GITHUB_REPOSITORY is set"
+            )
+        token = os.environ.get(token_env, "")
+        if not token:
+            raise BellwetherError(f"no GitHub token in ${token_env}; cannot post statuses")
+        posted = post_statuses(
+            github_transport(),
+            repository,
+            sha,
+            statuses,
+            token=token,
+            target_url=run_url(os.environ),
+            api_root=api_root,
+        )
+    except BellwetherError as error:
+        refuse(str(error))
+    payload["posted"] = posted  # type: ignore[assignment]
+    _emit(payload, as_json=json_output, lines=[*lines, f"posted {posted} status(es) on {sha}"])
+
+
 @app.command(name="pr-comment")
 def pr_comment(
     report: Annotated[
@@ -1120,6 +1251,14 @@ def pr_comment(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the comment instead of posting it.")
     ] = False,
+    update_only: Annotated[
+        bool,
+        typer.Option(
+            "--update-only",
+            help="Edit this report's existing comment but never create one — for a clean result "
+            "that must replace a stale red comment without adding noise to a PR never red.",
+        ),
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
     """Post (or update in place) a Bellwether report comment on a pull request (§18.2).
@@ -1129,19 +1268,28 @@ def pr_comment(
     owns its own comment, keyed from the ``summary.json`` beside the report, so two harnesses
     or two skills on one PR never overwrite each other. Repo and PR default to the GitHub
     Actions environment; the token is read from ``--token-env`` and used only in the auth header.
+
+    A static-scan summary (``bellwether scan --markdown``, first line ``<!-- bellwether-static
+    -->``) is accepted too: it owns one comment per pull request, keyed apart from every
+    evaluation's.
     """
     from bellwether.cli.pr import (
+        STATIC_SCAN_KEY,
         PrContext,
         github_transport,
         marked_body,
         resolve_pr_context,
         upsert_pr_comment,
     )
+    from bellwether.report import SCAN_MARKER
 
     source = report / "report" / "pr_comment.md" if report.is_dir() else report
     try:
         body = source.read_text(encoding="utf-8")
-        key = _report_key_beside(source)
+        # The scan summary is recognised by its own first line, which `render_scan_markdown`
+        # always writes and no evaluation's comment starts with.
+        is_scan = body.split("\n", 1)[0].strip() == SCAN_MARKER
+        key = STATIC_SCAN_KEY if is_scan else _report_key_beside(source)
     except OSError as error:
         typer.echo(f"bellwether pr-comment: cannot read {source}: {error}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
@@ -1163,7 +1311,13 @@ def pr_comment(
         if not token:
             raise BellwetherError(f"no GitHub token in ${token_env}; cannot post the comment")
         action = upsert_pr_comment(
-            github_transport(), context, body, key=key, token=token, api_root=api_root
+            github_transport(),
+            context,
+            body,
+            key=key,
+            token=token,
+            api_root=api_root,
+            update_only=update_only,
         )
     except (BellwetherError, ValueError) as error:
         typer.echo(f"bellwether pr-comment: {error}", err=True)
@@ -1172,7 +1326,11 @@ def pr_comment(
     _emit(
         {"action": action, "repo": context.slug, "pr": context.number},
         as_json=json_output,
-        lines=[f"{action} comment on {context.slug}#{context.number}"],
+        lines=[
+            f"no earlier comment on {context.slug}#{context.number} to update; nothing posted"
+            if action == "skipped"
+            else f"{action} comment on {context.slug}#{context.number}"
+        ],
     )
 
 

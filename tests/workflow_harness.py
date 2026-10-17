@@ -1,0 +1,421 @@
+"""Run a GitHub Actions job's own steps, locally, the way the runner would (§18).
+
+Linting a workflow says it parses; it does not say it works. Every defect this project's CI
+has had looked clean on the page, and the Gate 0 workflow's first execution here found a
+``bash -e`` abort that two linters passed. So the workflow tests execute the YAML:
+
+* each step's ``run:`` script, under the runner's own shell (``bash --noprofile --norc -eo
+  pipefail``), in a real git repository, with ``GITHUB_OUTPUT`` / ``GITHUB_STEP_SUMMARY`` files;
+* each step's ``if:`` and every ``${{ … }}`` evaluated by a small evaluator of the expression
+  language the workflows use (contexts, ``!``, ``&&``, ``||``, ``==``, ``!=``, ``contains``,
+  ``always``, ``success``, ``failure``), against the outputs earlier steps wrote — a step whose
+  condition names a misspelled output is skipped here exactly as on GitHub;
+* ``uses:`` steps are evaluated for whether they would run, and recorded, not run;
+* GitHub's REST API is a local :class:`FakeGitHub` that records comments and statuses and
+  rejects a call without the expected token.
+
+Substitutions are explicit and per test (``uv run bellwether`` → this venv's binary behind a
+wrapper that points ``pr-comment``/``commit-status`` at the fake API, for instance), so a
+reader can see exactly what is real.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import threading
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+FAKE_TOKEN = "ghs_fake-token-for-the-workflow-harness"
+
+# ---------------------------------------------------------------------------
+# A fake GitHub REST API
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeGitHub:
+    """Issue comments and commit statuses, in memory, over real HTTP on localhost."""
+
+    comments: list[dict[str, Any]] = field(default_factory=list)
+    statuses: list[dict[str, Any]] = field(default_factory=list)
+    requests: list[tuple[str, str]] = field(default_factory=list)
+    unauthorised: int = 0
+
+    def __post_init__(self) -> None:
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args: object) -> None:  # silence the test output
+                return
+
+            def _authorised(self) -> bool:
+                if self.headers.get("authorization") != f"Bearer {FAKE_TOKEN}":
+                    fake.unauthorised += 1
+                    self._send(401, {"message": "Bad credentials"})
+                    return False
+                return True
+
+            def _send(self, status: int, payload: object) -> None:
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _body(self) -> dict[str, Any]:
+                length = int(self.headers.get("content-length", "0"))
+                return json.loads(self.rfile.read(length) or b"{}")  # type: ignore[no-any-return]
+
+            def do_GET(self) -> None:
+                fake.requests.append(("GET", self.path))
+                if not self._authorised():
+                    return
+                if re.match(r"/repos/[^/]+/[^/]+/issues/\d+/comments", self.path):
+                    page = int(re.search(r"[?&]page=(\d+)", self.path).group(1))  # type: ignore[union-attr]
+                    self._send(200, fake.comments if page == 1 else [])
+                else:
+                    self._send(404, {"message": "Not Found"})
+
+            def do_POST(self) -> None:
+                fake.requests.append(("POST", self.path))
+                if not self._authorised():
+                    return
+                body = self._body()
+                if re.fullmatch(r"/repos/[^/]+/[^/]+/issues/\d+/comments", self.path):
+                    comment = {
+                        "id": 1000 + len(fake.comments),
+                        "body": body["body"],
+                        "user": {"login": "github-actions[bot]", "type": "Bot"},
+                    }
+                    fake.comments.append(comment)
+                    self._send(201, comment)
+                elif match := re.fullmatch(r"/repos/[^/]+/[^/]+/statuses/([0-9a-f]+)", self.path):
+                    fake.statuses.append({**body, "sha": match.group(1)})
+                    self._send(201, body)
+                else:
+                    self._send(404, {"message": "Not Found"})
+
+            def do_PATCH(self) -> None:
+                fake.requests.append(("PATCH", self.path))
+                if not self._authorised():
+                    return
+                match = re.fullmatch(r"/repos/[^/]+/[^/]+/issues/comments/(\d+)", self.path)
+                comment = next(
+                    (c for c in fake.comments if match and c["id"] == int(match.group(1))), None
+                )
+                if comment is None:
+                    self._send(404, {"message": "Not Found"})
+                    return
+                comment["body"] = self._body()["body"]
+                self._send(200, comment)
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    @property
+    def url(self) -> str:
+        port = self._server.server_address[1]
+        return f"http://127.0.0.1:{port}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+    def latest_statuses(self) -> dict[str, dict[str, Any]]:
+        """Context → the last status posted for it, as GitHub shows a commit's state."""
+        return {status["context"]: status for status in self.statuses}
+
+
+# ---------------------------------------------------------------------------
+# The expression language
+# ---------------------------------------------------------------------------
+
+_TOKEN = re.compile(
+    r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<op>&&|\|\||==|!=|!|\(|\)|,)"
+    r"|(?P<num>\d+)|(?P<name>[A-Za-z_][\w.*-]*))"
+)
+
+
+@dataclass
+class Event:
+    """The parts of the ``github`` context the workflows read."""
+
+    name: str = "pull_request"
+    labels: Sequence[str] = ()
+    fork: bool = False
+    head_sha: str = "a" * 40
+    #: ``github.sha`` — on a ``pull_request`` event, the synthetic *merge* commit, which is not
+    #: the head: a status posted on it never appears on the pull request.
+    merge_sha: str = "b" * 40
+    base_sha: str = ""
+    pr_number: int = 7
+    action: str = "synchronize"
+    label: str = ""
+
+
+class _Expression:
+    def __init__(self, contexts: Mapping[str, object], status: Mapping[str, bool]) -> None:
+        self.contexts = contexts
+        self.status = status
+
+    def python(self, text: str) -> str:
+        out: list[str] = []
+        position = 0
+        text = text.strip()
+        while position < len(text):
+            match = _TOKEN.match(text, position)
+            if match is None or match.end() == position:
+                raise ValueError(f"cannot read expression at {text[position:]!r}")
+            position = match.end()
+            if match.group("str") is not None:
+                out.append(repr(match.group("str")[1:-1].replace("''", "'")))
+            elif (op := match.group("op")) is not None:
+                out.append({"&&": " and ", "||": " or ", "!": " not "}.get(op, f" {op} "))
+            elif match.group("num") is not None:
+                out.append(match.group("num"))
+            else:
+                name = match.group("name")
+                following = text[position:].lstrip()
+                if following.startswith("("):
+                    if name not in ("contains", "always", "success", "failure"):
+                        raise ValueError(f"unsupported function {name}()")
+                    out.append(f"_{name}")
+                else:
+                    out.append(repr(self.lookup(name)))
+        return "".join(out)
+
+    def lookup(self, name: str) -> object:
+        if name in ("true", "false"):
+            return name == "true"
+        value = self.contexts.get(name)
+        if value is None and name.startswith(("steps.", "secrets.", "env.")):
+            return ""
+        if value is None:
+            raise KeyError(f"the harness does not model the context {name!r}")
+        return value
+
+    def evaluate(self, text: str) -> object:
+        def contains(haystack: object, needle: object) -> bool:
+            if isinstance(haystack, (list, tuple)):
+                return needle in haystack
+            return str(needle).lower() in str(haystack).lower()
+
+        namespace = {
+            "_contains": contains,
+            "_always": lambda: True,
+            "_success": lambda: not self.status["failed"],
+            "_failure": lambda: self.status["failed"],
+        }
+        return eval(self.python(text), {"__builtins__": {}}, namespace)
+
+
+def _parse_output_file(path: Path) -> dict[str, str]:
+    """``GITHUB_OUTPUT``: ``key=value`` lines and ``key<<DELIM`` … ``DELIM`` blocks."""
+    values: dict[str, str] = {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if "<<" in line and ("=" not in line or line.index("<<") < line.index("=")):
+            key, delimiter = line.split("<<", 1)
+            block: list[str] = []
+            while index < len(lines) and lines[index] != delimiter:
+                block.append(lines[index])
+                index += 1
+            index += 1
+            values[key] = "\n".join(block)
+        elif "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    return values
+
+
+# ---------------------------------------------------------------------------
+# The runner
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StepResult:
+    name: str
+    ran: bool
+    returncode: int = 0
+    output: str = ""
+
+
+class WorkflowRunner:
+    """Run one job of a workflow file in ``repo``, step by step."""
+
+    def __init__(
+        self,
+        workflow: Path,
+        job: str,
+        repo: Path,
+        tmp: Path,
+        *,
+        event: Event,
+        api: FakeGitHub | None = None,
+        secrets: Mapping[str, str] | None = None,
+        substitutions: Sequence[tuple[str, str]] = (),
+        skip: Sequence[str] = (),
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        self.workflow_env = {k: str(v) for k, v in (document.get("env") or {}).items()}
+        self.steps: list[dict[str, Any]] = list(document["jobs"][job]["steps"])
+        self.repo = repo
+        self.tmp = tmp
+        self.event = event
+        self.api = api
+        self.secrets = dict(secrets or {})
+        self.substitutions = list(substitutions)
+        self.skip = set(skip)
+        self.extra_env = dict(env or {})
+        self.outputs: dict[str, dict[str, str]] = {}
+        self.results: list[StepResult] = []
+        self.status = {"failed": False}
+        self.summary = tmp / "step_summary.md"
+        self.summary.write_text("", encoding="utf-8")
+
+    # -- contexts --------------------------------------------------------------------------
+
+    def _contexts(self) -> dict[str, object]:
+        event = self.event
+        head = "fork/repo" if event.fork else "owner/repo"
+        contexts: dict[str, object] = {
+            "github.event_name": event.name,
+            "github.repository": "owner/repo",
+            "github.token": FAKE_TOKEN,
+            "github.sha": event.merge_sha,
+            "github.event.action": event.action,
+            "github.event.label.name": event.label,
+            "github.event.pull_request.head.repo.full_name": head,
+            "github.event.pull_request.head.sha": event.head_sha,
+            "github.event.pull_request.base.sha": event.base_sha,
+            "github.event.pull_request.labels.*.name": list(event.labels),
+        }
+        for step, values in self.outputs.items():
+            for key, value in values.items():
+                contexts[f"steps.{step}.outputs.{key}"] = value
+        for key, value in self.secrets.items():
+            contexts[f"secrets.{key}"] = value
+        return contexts
+
+    def _expression(self) -> _Expression:
+        return _Expression(self._contexts(), self.status)
+
+    def interpolate(self, text: str) -> str:
+        expression = self._expression()
+        return re.sub(
+            r"\$\{\{\s*(.*?)\s*\}\}", lambda m: str(expression.evaluate(m.group(1))), text
+        )
+
+    def should_run(self, step: Mapping[str, Any]) -> bool:
+        condition = step.get("if")
+        if condition is None:
+            return not self.status["failed"]
+        text = str(condition).strip()
+        if text.startswith("${{") and text.endswith("}}"):
+            text = text[3:-2]
+        has_status = re.search(r"\b(always|success|failure)\(", text)
+        if not has_status and self.status["failed"]:
+            return False
+        return bool(self._expression().evaluate(text))
+
+    # -- execution -------------------------------------------------------------------------
+
+    def run(self) -> list[StepResult]:
+        for step in self.steps:
+            name = str(step.get("name", step.get("uses", "?")))
+            if name in self.skip or not self.should_run(step):
+                self.results.append(StepResult(name, ran=False))
+                continue
+            if "uses" in step:
+                self.results.append(StepResult(name, ran=True))
+                continue
+            script = self.interpolate(str(step["run"]))
+            for old, new in self.substitutions:
+                script = script.replace(old, new)
+            output = self.tmp / "github_output"
+            output.write_text("", encoding="utf-8")
+            step_env = {k: self.interpolate(str(v)) for k, v in (step.get("env") or {}).items()}
+            environment = {
+                **os.environ,
+                **self.workflow_env,
+                **self.extra_env,
+                **step_env,
+                "GITHUB_OUTPUT": str(output),
+                "GITHUB_STEP_SUMMARY": str(self.summary),
+                "GITHUB_WORKSPACE": str(self.repo),
+                "GITHUB_REPOSITORY": "owner/repo",
+                "GITHUB_EVENT_NAME": self.event.name,
+                "GITHUB_REF": f"refs/pull/{self.event.pr_number}/merge",
+            }
+            completed = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+                cwd=self.repo,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if "id" in step:
+                self.outputs[str(step["id"])] = _parse_output_file(output)
+            self.results.append(
+                StepResult(name, True, completed.returncode, completed.stdout + completed.stderr)
+            )
+            if completed.returncode != 0:
+                self.status["failed"] = True
+        return self.results
+
+    def ran(self) -> list[str]:
+        return [result.name for result in self.results if result.ran]
+
+    def result(self, name: str) -> StepResult:
+        return next(result for result in self.results if result.name == name)
+
+    @property
+    def failed(self) -> bool:
+        return bool(self.status["failed"])
+
+
+def bellwether_wrapper(tmp: Path, bellwether: str, api: FakeGitHub) -> Path:
+    """A ``bellwether`` that sends ``pr-comment`` and ``commit-status`` to the fake API."""
+    wrapper = tmp / "bellwether-wrapper"
+    wrapper.write_text(
+        "#!/bin/bash\n"
+        'cmd="$1"; shift\n'
+        'case "$cmd" in\n'
+        f'  pr-comment|commit-status) exec "{bellwether}" "$cmd" --api-root "{api.url}" "$@" ;;\n'
+        f'  *) exec "{bellwether}" "$cmd" "$@" ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def git_repo(path: Path) -> str:
+    """Initialise and commit everything under ``path``; the commit's SHA."""
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(path), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("add", "-A")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "fixture")
+    return git("rev-parse", "HEAD")

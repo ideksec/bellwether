@@ -24,7 +24,10 @@ changed skills would show every other skill's open alerts as "fixed" on that pul
    `bellwether run` judges it under — and merges the Gitleaks results in. Gitleaks grades
    nothing, so the policy floors it: `gates.static.scanner_min_severity: {gitleaks: high}`.
 4. The summary goes to the job page; the SARIF goes to the **Security tab** (skipped for a fork,
-   whose token cannot write security events) and to an artifact anyone can download.
+   whose token cannot write security events) and to an artifact anyone can download. When a
+   finding is above policy, the summary is also posted as **one PR comment**, updated in place.
+   A clean scan only *updates* an existing comment (`pr-comment --update-only`), so a fixed PR
+   doesn't keep a stale red comment and a PR that was never red gets none.
 5. Last, after both uploads: a finding above a skill's threshold fails the check (exit 2).
 
 To add another scanner (Semgrep, Trivy, Bandit), run it in its own step, write SARIF, and pass
@@ -106,6 +109,41 @@ identically (the `bellwether-run` label plus the key), and builds the claude-cod
 and the two sidecars before the run. On a labelled PR that changes a skill, both workflows run, so
 the skill is evaluated under both harnesses side by side.
 
+## Commit statuses: what blocks a merge is your choice
+
+Each live workflow posts one **commit status per gate group** on the pull request's head commit
+(§18.2), so branch protection can require exactly the gates you care about:
+
+| Context | Fails when |
+|---|---|
+| `bellwether/static` | the static gate blocks |
+| `bellwether/functional` | a pass-rate or trigger gate blocks |
+| `bellwether/consistency` | the BCI or trajectory gate blocks |
+| `bellwether/security` | a `security_runtime` gate or declared scope blocks |
+| `bellwether/evidence` | too few evaluable runs |
+| `bellwether/budget` | cost or wall-clock over budget |
+| `bellwether/regression` | the regression gate blocks |
+| `bellwether/review` | a required human review is missing or stale |
+| `bellwether/verdict` | the verdict is `not_ready` |
+| `bellwether/ready` | the verdict is anything but `ready` |
+
+A required gate that could not be evaluated blocks its group, as it blocks the verdict. A warning
+leaves its group green, with `warn` in the description. Several changed skills report the worst,
+per group. Require `bellwether/verdict` for the exit-code rule; require `bellwether/ready` to make
+`conditional` block; or require only the groups you trust.
+
+The other branches are explicit too, never left unposted (a required context nobody posts reads
+"pending" forever):
+- a pull request that changes no skill: `success`;
+- an unlabelled skill change: `pending`;
+- a labelled one without a key: `pending`;
+- an evaluation that broke: `failure`.
+
+The `claude-code` workflow posts under `bellwether-claude-code/…`, so the two harnesses never
+overwrite each other. Forks get no statuses: their token cannot write them.
+
+`bellwether commit-status <eval-dir>… --sha <head-sha> --dry-run` shows what would be posted.
+
 ## The key never enters the sandbox
 
 The API key is a secret held by the **harness on the CI runner**, not by the skill under
@@ -124,6 +162,11 @@ same job holds it — which is the property the `sneaky-exfiltrator` example is 
 - **`bellwether run` on a live container** — **proven end to end on CI.** A benign skill has
   reached `ready` on a real labelled pull request against a live model, in a sandbox behind the
   recording proxy with egress observed, and every run's evidence was uploaded as an artifact.
+- **Commit statuses** — every branch of both live workflows is executed step by step by
+  `tests/test_live_workflow_statuses.py` against a fake GitHub API. A fake `bellwether run`
+  drops in the committed demo evaluations, so the real loop, comments and statuses run. That is
+  how the loop's exit-code bug was pinned: an infrastructure failure followed by a `not_ready`
+  reported only the `not_ready`.
 - **Gate 0** — `bellwether-scan.yml` is executed step by step by
   `tests/test_scan_workflow.py`: the real Gitleaks image and the real `scan` run against a scratch
   repository, a clean one passes, a planted token fails the gate after both uploads (and the

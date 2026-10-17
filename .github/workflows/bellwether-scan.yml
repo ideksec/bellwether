@@ -57,6 +57,8 @@ jobs:
       # upload action needs to read the run's own metadata in a private repository.
       security-events: write
       actions: read
+      # The summary comment (§18.2), posted only when something is above policy.
+      pull-requests: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -176,6 +178,26 @@ jobs:
           include-hidden-files: true
           path: .bellwether-static/
           if-no-files-found: error
+
+      - name: Comment on the pull request
+        # One comment per pull request, updated in place. Posted when a finding is above policy;
+        # on a clean scan it only *updates* a comment an earlier red push left (so a fixed PR
+        # does not keep a stale red comment), and a PR that was never red gets none. Not from a
+        # fork, whose token cannot comment.
+        if: >-
+          always() &&
+          steps.scan.outputs.sarif == 'true' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SCAN_STATUS: ${{ steps.scan.outputs.status }}
+        run: |
+          if [ "${SCAN_STATUS}" = "2" ]; then
+            uv run bellwether pr-comment "${BW_OUT}/summary.md"
+          else
+            uv run bellwether pr-comment "${BW_OUT}/summary.md" --update-only
+          fi
 
       - name: Static gate
         if: steps.select.outputs.count != '0'
