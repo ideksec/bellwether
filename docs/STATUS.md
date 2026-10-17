@@ -11,7 +11,30 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: Gate 0 is a CI check (`bellwether-scan.yml`).** Every pull request and `main` now
+**Latest: commit statuses per gate group, and the static summary as a PR comment (§18.2).**
+`bellwether commit-status` posts one status per gate group on the pull request's head commit:
+`static`, `functional`, `consistency`, `security`, `evidence`, `budget`, `regression` and `review`,
+plus `verdict` (fails on `not_ready`) and `ready` (fails on anything short of `ready`). A
+repository decides what blocks a merge by which contexts it requires, which is how §18.2 makes
+`conditional` a choice. Every gate maps to exactly one group: a test extracts every gate name
+from the composition and fails the build on an unmapped one or a dead mapping. Both live workflows
+post on every branch (no skill → success, unlabelled → pending, broken → failure, per-harness
+prefix, not from forks). The scan workflow posts its summary as one PR comment when something is
+above policy, and only updates it when clean (`pr-comment --update-only`).
+
+Executing every branch of both live workflows (`tests/workflow_harness.py`, now shared, with a
+fake GitHub API and a fake `run` dropping in the committed demo trees) found that the evaluate
+loop kept the *last* non-zero exit. An infrastructure failure on one skill followed by a
+`not_ready` on the next reported 2, and a broken evaluation read as a verdict; it now keeps the
+worst. Seventeen changes reverted one at a time, all red. One (S10) first went red for the
+wrong reason, because the harness didn't model `github.sha`. Once it did, the revert fails on
+the SHA itself.
+
+CI's non-root runner then found a defect the root test run could not see: the loop appended to
+`.bellwether-out/` after `sudo run` had created it as root, and the append was refused. The
+directory is now created by the runner user first (spec-notes).
+
+**Before that: Gate 0 is a CI check (`bellwether-scan.yml`).** Every pull request and `main` now
 run the static scan, with no secret, no label and no spend:
 - every skill under the real skill roots is scanned (`changed-skills --under`);
 - Gitleaks runs in a digest-pinned, offline container and its SARIF is merged in;
@@ -1164,11 +1187,12 @@ commands exhaustively instead of counting them.
 | **Read and process capture** (§10.2, §10.3) — host-side fanotify on the run's own mounts, argv at the held exec, tree attribution, read domain; `credential_read_undeclared` and `process_exec_undeclared` scored | **done** — real containers locally and on CI; not yet under a live paid run |
 | `egress_volume_anomaly` scored · `execution.concurrency` · `findings.sarif` + `reporting.html`/`sarif` switches · cross-request canary reassembly | **done** |
 | **§15 static scanner** — built-in ruleset (34 rules, nine checks), the `static` gate decided from it, `security.static` in the summary, SARIF results at file and line, `bellwether scan`; the static corpus (`fetch-and-exec`, `obfuscated-injection`, `eval-aware`) asserted | **done** |
+| **Commit statuses per gate group** — `commit-status`, ten contexts on the head commit, every gate mapped (extracted-source completeness test), every live-workflow branch posts; static summary as one PR comment (`--update-only` when clean); workflows executed step by step against a fake GitHub API | **done** |
 | **Gate 0 CI check** — `bellwether-scan.yml`: every skill under the real roots, Gitleaks (digest-pinned, offline) delegated, per-criticality thresholds, Security-tab upload (not from forks), job summary, gate after the uploads; executed step by step against real repositories in `tests/test_scan_workflow.py` | **done** |
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2450 tests: 2374 offline, 76 under the `docker` mark (60 run locally, 16 CI-only skips with stated reasons; all 76 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2509 tests: 2432 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1312,10 +1336,10 @@ coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acc
 **Current state (top of the list):** every v0.1 work package is built, the kernel planes have
 run under labelled live evaluations on both harnesses (PR #102), and the §15 static scanner ships.
 What remains is **outside v0.1 or unproven live**:
-1. **§18.2 follow-ons** (offline, no spend): a commit status per gate group
-   (`bellwether/static`, `bellwether/functional`, …) so branch protection can require them
-   individually, and posting the static summary as an in-place PR comment (the `<!-- bellwether-static -->`
-   marker is already its upsert key).
+1. **§17.5 baseline-update PR** (offline, no spend): on merge, the bot opens a baseline-update
+   pull request a maintainer approves. This is the last §18.1 job not built (`baseline-pr`).
+   Also §18.1's `workflow_dispatch` inputs (skill, profile, depth, targets) and the nightly
+   full-library run that catches model drift; the nightly run spends, so it needs approval.
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
    it from `warn` — needs explicit approval to spend.
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the

@@ -16,11 +16,11 @@ already built), and ``uses:`` steps are evaluated for whether they would run, no
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,7 @@ import pytest
 import yaml
 
 from tests.test_sarif import assert_valid_sarif
+from tests.workflow_harness import Event, FakeGitHub, WorkflowRunner, bellwether_wrapper, git_repo
 
 _ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOW = _ROOT / ".github" / "workflows" / "bellwether-scan.yml"
@@ -67,7 +68,7 @@ def test_it_runs_on_every_pull_request_and_on_main_without_pull_request_target()
     assert "pull_request_target" not in text.split("\non:")[1]
 
 
-def test_it_uses_no_secret_and_writes_nothing_but_security_events() -> None:
+def test_it_uses_no_secret_and_writes_only_security_events_and_its_comment() -> None:
     text = _WORKFLOW.read_text(encoding="utf-8")
     assert "secrets." not in text
     assert _workflow()["permissions"] == {"contents": "read"}
@@ -75,6 +76,7 @@ def test_it_uses_no_secret_and_writes_nothing_but_security_events() -> None:
         "contents": "read",
         "security-events": "write",
         "actions": "read",
+        "pull-requests": "write",
     }
     checkout = _steps()[0]
     assert checkout["uses"].startswith("actions/checkout@")
@@ -86,7 +88,8 @@ def test_the_uploads_survive_a_failing_scan_and_the_gate_comes_after_them() -> N
     assert names.index("Scan") < names.index("Upload to code scanning")
     assert names.index("Upload to code scanning") < names.index("Static gate")
     assert names.index("Upload the scan") < names.index("Static gate")
-    for upload in ("Upload to code scanning", "Upload the scan"):
+    assert names.index("Comment on the pull request") < names.index("Static gate")
+    for upload in ("Upload to code scanning", "Upload the scan", "Comment on the pull request"):
         assert _step(upload)["if"].strip().startswith("always()")
     assert _step("Upload the scan")["with"]["if-no-files-found"] == "error"
 
@@ -98,6 +101,9 @@ def test_the_security_tab_upload_is_skipped_for_a_fork() -> None:
     # One category, set in the SARIF (`automationDetails`), never overridden here: the action's
     # `category` input would re-key the run.
     assert "category" not in _step("Upload to code scanning")["with"]
+    comment = " ".join(_step("Comment on the pull request")["if"].split())
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in comment
+    assert "github.event_name == 'pull_request'" in comment
 
 
 def test_the_scanner_image_is_pinned_by_digest_to_the_recorded_version() -> None:
@@ -145,12 +151,17 @@ def test_the_live_workflows_evaluate_only_skills_under_the_real_roots() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Running it
+# Running it (tests/workflow_harness.py)
 # ---------------------------------------------------------------------------
 
 _IMAGE = _workflow()["env"]["GITLEAKS_IMAGE"]
 #: A GitHub-token-shaped string, assembled at run time so no secret-shaped literal is committed.
 _FAKE_TOKEN = "ghp_" + "aB3dE5gH7jK9mN1pQ3sT5vX7zA9cE1gI3kM5"
+_SETUP = (
+    "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09",
+    "Install uv",
+    "Install Bellwether",
+)
 
 
 @pytest.fixture(scope="module")
@@ -165,128 +176,74 @@ def gitleaks_image() -> str:
     return _IMAGE
 
 
+@pytest.fixture
+def api() -> Iterator[FakeGitHub]:
+    fake = FakeGitHub()
+    yield fake
+    fake.close()
+
+
 def _repository(tmp_path: Path, *, leak: bool) -> Path:
     repo = tmp_path / "repo"
     shutil.copytree(_ROOT / "examples" / "skills" / "workspace-stats", repo / "examples/skills/ws")
     shutil.copytree(_ROOT / "tests" / "corpus-static" / "fetch-and-exec", repo / "tests/fx")
-    shutil.copy(_ROOT / "examples" / "live" / "policy.yaml", repo / "policy.yaml")
+    shutil.copy(_ROOT / "examples" / "live" / "policy.yaml", repo / "examples/live-policy.yaml")
     if leak:
-        skill = repo / "examples" / "skills" / "leaky"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text(
-            "---\nname: leaky\ndescription: Publishes the release notes to the team wiki.\n---\n"
-            f"\nAuthenticate with {_FAKE_TOKEN} when you post.\n",
-            encoding="utf-8",
-        )
-        # A secret in the skill's own test fixture is machinery, not the skill (§15).
-        fixtures = skill / "evals" / "fixtures"
-        fixtures.mkdir(parents=True)
-        (fixtures / "token.txt").write_text(f"{_FAKE_TOKEN}\n", encoding="utf-8")
-
-    def git(*args: str) -> None:
-        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
-
-    git("init", "-q")
-    git("add", "-A")
-    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "fixture")
+        _leak(repo)
+    git_repo(repo)
     return repo
 
 
-class _Runner:
-    """Runs the workflow's steps in order, the way the Actions runner would."""
+def _leak(repo: Path) -> None:
+    skill = repo / "examples" / "skills" / "leaky"
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: leaky\ndescription: Publishes the release notes to the team wiki.\n---\n"
+        f"\nAuthenticate with {_FAKE_TOKEN} when you post.\n",
+        encoding="utf-8",
+    )
+    # A secret in the skill's own test fixture is machinery, not the skill (§15).
+    fixtures = skill / "evals" / "fixtures"
+    fixtures.mkdir(parents=True, exist_ok=True)
+    (fixtures / "token.txt").write_text(f"{_FAKE_TOKEN}\n", encoding="utf-8")
 
-    def __init__(self, repo: Path, tmp: Path, *, event: str, fork: bool) -> None:
-        self.repo = repo
-        self.outputs: dict[str, dict[str, str]] = {}
-        self.summary = tmp / "step_summary.md"
-        self.summary.write_text("", encoding="utf-8")
-        self.failed = False
-        self.ran: list[str] = []
-        self.event = event
-        self.fork = fork
-        bellwether = Path(sys.executable).parent / "bellwether"
-        assert bellwether.exists(), bellwether
-        self.bellwether = str(bellwether)
-        workflow_env = {k: str(v) for k, v in _workflow()["env"].items()}
-        workflow_env["BELLWETHER_POLICY"] = "policy.yaml"
-        self.env = {**os.environ, **workflow_env, "GITHUB_WORKSPACE": str(repo)}
 
-    def _expression(self, text: str) -> str:
-        def lookup(match: re.Match[str]) -> str:
-            step, key = match.group(1), match.group(2)
-            return repr(self.outputs.get(step, {}).get(key, ""))
-
-        python = re.sub(r"steps\.(\w+)\.outputs\.(\w+)", lookup, " ".join(text.split()))
-        python = python.replace("always()", "True").replace("&&", " and ").replace("||", " or ")
-        python = python.replace("!=", " != ").replace("==", " == ")
-        head = "fork/repo" if self.fork else "owner/repo"
-        python = python.replace("github.event.pull_request.head.repo.full_name", repr(head))
-        python = python.replace("github.event_name", repr(self.event))
-        python = python.replace("github.repository", repr("owner/repo"))
-        return python
-
-    def condition(self, step: dict[str, Any]) -> bool:
-        if "if" not in step:
-            return not self.failed
-        expression = str(step["if"])
-        if not expression.strip().startswith("always()") and self.failed:
-            return False
-        return bool(eval(self._expression(expression), {"__builtins__": {}}, {}))
-
-    def run(self) -> None:
-        for step in _steps():
-            name = step.get("name", "checkout")
-            if name in ("checkout", "Install uv", "Install Bellwether"):
-                continue
-            if not self.condition(step):
-                continue
-            self.ran.append(name)
-            if "uses" in step:
-                continue
-            script = re.sub(
-                r"\$\{\{\s*steps\.(\w+)\.outputs\.(\w+)\s*\}\}",
-                lambda m: self.outputs.get(m.group(1), {}).get(m.group(2), ""),
-                step["run"],
-            ).replace("uv run bellwether", self.bellwether)
-            output = self.repo / ".github_output"
-            output.write_text("", encoding="utf-8")
-            completed = subprocess.run(
-                ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
-                cwd=self.repo,
-                env={
-                    **self.env,
-                    "GITHUB_OUTPUT": str(output),
-                    "GITHUB_STEP_SUMMARY": str(self.summary),
-                },
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.last = completed
-            if "id" in step:
-                values = dict(
-                    line.split("=", 1) for line in output.read_text("utf-8").splitlines() if line
-                )
-                self.outputs[step["id"]] = values
-            if completed.returncode != 0:
-                self.failed = True
-                self.failure = (name, completed.returncode, completed.stdout + completed.stderr)
+def _run(repo: Path, tmp: Path, api: FakeGitHub, *, event: Event) -> WorkflowRunner:
+    bellwether = Path(sys.executable).parent / "bellwether"
+    wrapper = bellwether_wrapper(tmp, str(bellwether), api)
+    runner = WorkflowRunner(
+        _WORKFLOW,
+        "scan",
+        repo,
+        tmp,
+        event=event,
+        api=api,
+        substitutions=[("uv run bellwether", str(wrapper))],
+        skip=_SETUP,
+        env={"BELLWETHER_POLICY": "examples/live-policy.yaml"},
+    )
+    runner.run()
+    return runner
 
 
 @pytest.mark.docker
 def test_a_clean_repository_passes_and_scans_only_the_real_roots(
-    gitleaks_image: str, tmp_path: Path
+    gitleaks_image: str, api: FakeGitHub, tmp_path: Path
 ) -> None:
     repo = _repository(tmp_path, leak=False)
-    runner = _Runner(repo, tmp_path, event="pull_request", fork=False)
-    runner.run()
-    assert not runner.failed, runner.failure
+    runner = _run(repo, tmp_path, api, event=Event())
+    assert not runner.failed, [r for r in runner.results if r.returncode]
     out = repo / ".bellwether-static"
     # tests/fx is a hostile fixture (curl | sh); it is not under the roots and is never scanned.
     assert (out / "skills.txt").read_text("utf-8").splitlines() == ["examples/skills/ws"]
     assert runner.outputs["scan"]["status"] == "0"
-    assert runner.ran[-1] == "Static gate"
-    assert "Upload to code scanning" in runner.ran and "Upload the scan" in runner.ran
+    assert runner.ran()[-1] == "Static gate"
+    assert {"Upload to code scanning", "Upload the scan", "Comment on the pull request"} <= set(
+        runner.ran()
+    )
+    # Clean, and never red before: `--update-only` finds no comment and posts none.
+    assert api.comments == []
+    assert api.unauthorised == 0
     document = assert_valid_sarif((out / "bellwether-static.sarif").read_text("utf-8"))
     assert len(document["runs"]) == 1
     assert document["runs"][0]["automationDetails"] == {"id": "bellwether-static/"}
@@ -297,24 +254,33 @@ def test_a_clean_repository_passes_and_scans_only_the_real_roots(
 
 @pytest.mark.docker
 @pytest.mark.parametrize("fork", [False, True])
-def test_a_leaked_token_fails_the_gate_after_the_upload(
-    gitleaks_image: str, tmp_path: Path, fork: bool
+def test_a_leaked_token_fails_the_gate_after_the_uploads_and_the_comment(
+    gitleaks_image: str, api: FakeGitHub, tmp_path: Path, fork: bool
 ) -> None:
     repo = _repository(tmp_path, leak=True)
-    runner = _Runner(repo, tmp_path, event="pull_request", fork=fork)
-    runner.run()
+    runner = _run(repo, tmp_path, api, event=Event(fork=fork))
     # The scan itself completes (exit 2 is a verdict, not a crash); the gate step fails last.
     assert runner.outputs["scan"]["status"] == "2"
-    assert runner.failed and runner.failure[0] == "Static gate" and runner.failure[1] == 2
-    assert ("Upload to code scanning" in runner.ran) is (not fork)
-    assert "Upload the scan" in runner.ran
+    failed = [r for r in runner.results if r.ran and r.returncode]
+    assert [(r.name, r.returncode) for r in failed] == [("Static gate", 2)]
+    assert ("Upload to code scanning" in runner.ran()) is (not fork)
+    assert ("Comment on the pull request" in runner.ran()) is (not fork)
+    assert "Upload the scan" in runner.ran()
+
+    if fork:
+        assert api.comments == []
+    else:
+        (comment,) = api.comments
+        assert comment["body"].startswith("<!-- bellwether-static -->")
+        assert "finding(s) above policy" in comment["body"]
+        assert _FAKE_TOKEN not in comment["body"]
 
     out = repo / ".bellwether-static"
     document = assert_valid_sarif((out / "bellwether-static.sarif").read_text("utf-8"))
     results = document["runs"][0]["results"]
     gitleaks = [r for r in results if r["ruleId"] == "gitleaks:github-pat"]
-    # Attributed to the skill's SKILL.md (a relative scan root from the repository root), floored to high → `error`; the
-    # fixture under evals/ is machinery and is not attributed.
+    # Attributed to the skill's SKILL.md (a relative scan root from the repository root),
+    # floored to high → `error`; the fixture under evals/ is machinery and is not attributed.
     assert [r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in gitleaks] == [
         "examples/skills/leaky/SKILL.md"
     ]
@@ -328,17 +294,37 @@ def test_a_leaked_token_fails_the_gate_after_the_upload(
 
 
 @pytest.mark.docker
-def test_a_repository_with_no_skills_is_a_quiet_pass(gitleaks_image: str, tmp_path: Path) -> None:
+def test_fixing_the_leak_updates_the_red_comment_instead_of_leaving_it(
+    gitleaks_image: str, api: FakeGitHub, tmp_path: Path
+) -> None:
+    """Push 1 leaks: one comment, red. Push 2 fixes it: the *same* comment turns clean — a
+    fixed PR must not keep a stale red comment, nor collect a second one."""
+    repo = _repository(tmp_path, leak=True)
+    (tmp_path / "1").mkdir()
+    first = _run(repo, tmp_path / "1", api, event=Event())
+    assert first.outputs["scan"]["status"] == "2"
+    (comment,) = api.comments
+    assert "finding(s) above policy" in comment["body"]
+
+    shutil.rmtree(repo / "examples" / "skills" / "leaky")
+    shutil.rmtree(repo / ".bellwether-static")
+    (tmp_path / "2").mkdir()
+    second = _run(repo, tmp_path / "2", api, event=Event())
+    assert not second.failed, [r for r in second.results if r.returncode]
+    (comment,) = api.comments
+    assert "nothing above policy" in comment["body"]
+    assert [method for method, _ in api.requests].count("PATCH") == 1
+
+
+@pytest.mark.docker
+def test_a_repository_with_no_skills_is_a_quiet_pass(
+    gitleaks_image: str, api: FakeGitHub, tmp_path: Path
+) -> None:
     repo = tmp_path / "repo"
     (repo / "docs").mkdir(parents=True)
     (repo / "docs" / "x.md").write_text("x\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
-        check=True,
-    )
-    runner = _Runner(repo, tmp_path, event="push", fork=False)
-    runner.run()
-    assert not runner.failed, runner.failure
-    assert runner.ran == ["Select the skills", "No skills"]
+    git_repo(repo)
+    runner = _run(repo, tmp_path, api, event=Event(name="push"))
+    assert not runner.failed
+    assert runner.ran() == ["Select the skills", "No skills"]
+    assert api.requests == []

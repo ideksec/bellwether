@@ -33,9 +33,11 @@ from bellwether.errors import BellwetherError
 
 __all__ = [
     "GITHUB_API_ROOT",
+    "STATIC_SCAN_KEY",
     "GitHubResponse",
     "GitHubTransport",
     "PrContext",
+    "auth_headers",
     "comment_marker",
     "find_existing_comment",
     "marked_body",
@@ -61,6 +63,12 @@ def report_key(skill_name: str, target_slugs: Sequence[str]) -> str:
     """
     material = json.dumps([skill_name, sorted(target_slugs)], ensure_ascii=True)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+#: The key of the static-scan summary's comment (§15, §18.2). One per pull request — the scan
+#: covers every skill at once — and derived from a fixed domain string, so it cannot equal an
+#: evaluation's key (a hash of a JSON list).
+STATIC_SCAN_KEY = hashlib.sha256(b"bellwether-static-scan/v1").hexdigest()[:16]
 
 
 def comment_marker(key: str) -> str:
@@ -136,7 +144,7 @@ def find_existing_comment(comments: list[Mapping[str, object]], marker: str) -> 
     return None
 
 
-def _auth_headers(token: str) -> dict[str, str]:
+def auth_headers(token: str) -> dict[str, str]:
     """The headers every call carries. The token appears here and nowhere else."""
     return {
         "authorization": f"Bearer {token}",
@@ -192,21 +200,27 @@ def upsert_pr_comment(
     key: str,
     token: str,
     api_root: str = GITHUB_API_ROOT,
+    update_only: bool = False,
 ) -> str:
     """Create the report comment, or edit the one a prior run left, and say which (§18.2).
 
-    Returns ``"created"`` or ``"updated"``. Raises :class:`BellwetherError` on any non-success
+    Returns ``"created"`` or ``"updated"`` — or ``"skipped"`` when ``update_only`` is set and no
+    prior comment exists. ``update_only`` is how a clean result is posted: it must replace a
+    stale red comment from an earlier push, but a pull request that was never red should not
+    collect a comment saying so. Raises :class:`BellwetherError` on any non-success
     status, with the body excerpt, so a CI step fails loudly rather than reporting a phantom
-    success. The token is passed to :func:`_auth_headers` and never otherwise handled here.
+    success. The token is passed to :func:`auth_headers` and never otherwise handled here.
     """
     root = api_root.rstrip("/")
-    headers = _auth_headers(token)
+    headers = auth_headers(token)
     body = marked_body(comment, key)
 
     existing = find_existing_comment(
         _list_comments(transport, root, context, headers), comment_marker(key)
     )
 
+    if existing is None and update_only:
+        return "skipped"
     payload = json.dumps({"body": body}).encode("utf-8")
     if existing is not None:
         url = f"{root}/repos/{context.slug}/issues/comments/{existing}"
