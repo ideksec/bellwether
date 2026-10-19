@@ -235,9 +235,11 @@ def render_drift_issue(reading: DriftReading, *, run_url: str | None) -> tuple[s
     """The drift issue's title and body for one skill."""
     title = f"Bellwether drift: {reading.skill}"
     lines = [
-        f"The nightly evaluation of {code(reading.skill)} regressed against its stored baseline "
-        "(§18.1). The same skill and scenarios were run with the cache off; what changed is the "
-        "model, the provider, or the environment underneath them.",
+        (
+            f"The nightly evaluation of {code(reading.skill)} regressed against its stored "
+            "baseline (§18.1). The same skill and scenarios were run with the cache off; what "
+            "changed is the model, the provider, or the environment underneath them."
+        ),
         "",
         f"- Verdict: {code(reading.verdict)} (baseline {code(reading.baseline_verdict)}, "
         f"evaluation {code(reading.baseline_eval_id)})",
@@ -256,8 +258,10 @@ def render_drift_issue(reading: DriftReading, *, run_url: str | None) -> tuple[s
         lines.append("- not recorded by this evaluation")
     lines += [
         "",
-        "If the new behaviour is intended, re-set the baseline from tonight's evaluation "
-        "(`bellwether baseline set`); this issue closes itself on the next stable night.",
+        (
+            "If the new behaviour is intended, re-set the baseline from tonight's evaluation "
+            "(`bellwether baseline set`); this issue closes itself on the next stable night."
+        ),
         "",
         _digest_marker(reading),
         _marker(reading.skill),
