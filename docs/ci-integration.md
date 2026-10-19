@@ -144,6 +144,56 @@ overwrite each other. Forks get no statuses: their token cannot write them.
 
 `bellwether commit-status <eval-dir>… --sha <head-sha> --dry-run` shows what would be posted.
 
+## Manual runs
+
+Both live workflows can also be started by hand (**Actions → Bellwether → Run workflow**, §18.1),
+with four inputs:
+
+| Input | Meaning |
+|---|---|
+| `skill` | the skill directory to evaluate, under the skill root (e.g. `examples/skills/benign-note-taker`) |
+| `profile` | a policy profile, instead of the one the skill's criticality selects |
+| `depth` | `configured` (the config's own matrix), or the `quick` / `standard` / `deep` preset |
+| `targets` | comma-separated model aliases to keep; not with a depth preset |
+
+Only someone with write access can dispatch a workflow, so a dispatch is itself the go-ahead,
+like the label on a pull request, and **it spends**. The named skill must be a skill directory under
+the skill root: anything else (a test fixture, a path that climbs out, a directory with no
+`SKILL.md`) is refused with exit 3, not quietly reported as "nothing to evaluate". With no pull
+request there is no comment, and the commit statuses go on the dispatched commit.
+
+## Baselines after a merge
+
+When a pull request that changed a skill merges, the regression baseline (§17.5) should become
+what its evaluation observed. A workflow token must never push to `main`, so
+[`.github/workflows/bellwether-baseline.yml`](../.github/workflows/bellwether-baseline.yml)
+**proposes** instead:
+
+1. it finds the pull request the push merged, and the newest `bellwether.yml` run on that pull
+   request's final head that uploaded evidence;
+2. it reads the evaluations that run listed in `evaluations.txt`, and nothing else in the
+   artifact. A skill's own output files are uploaded too, and one could be named `summary.json`.
+3. it recomputes each skill's payload digest from the merged tree and baselines an evaluation
+   only where they match. An evaluation of an earlier push, or of a skill the merge changed, is
+   skipped with both digests named. A `not_ready` evaluation is not baselined.
+4. it pushes `bellwether/baseline-pr-<n>` and opens `chore: update baseline (#n)`, whose body
+   lists each new record beside the one it replaces, and what was skipped and why.
+
+Nothing is re-evaluated, so nothing spends. What the evaluation observed is read from its
+artifact, not re-run, so **read the run's report before approving**. Every later evaluation
+of the skill is compared against the record. It can also be run by hand, with the merged
+commit or a specific run's id (a manual deep run, say).
+
+Two repository settings matter:
+- **Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests"**
+  must be on. Otherwise the last step fails naming it, and the pushed branch can be opened by
+  hand.
+- A pull request opened with the workflow token **starts no workflow runs** (GitHub's rule). If
+  branch protection requires checks, push to the branch to run them, or open these pull
+  requests with a GitHub App token.
+
+The artifact download never sends the repository token to the storage host it redirects to.
+
 ## The key never enters the sandbox
 
 The API key is a secret held by the **harness on the CI runner**, not by the skill under

@@ -11,7 +11,29 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: commit statuses per gate group, and the static summary as a PR comment (§18.2).**
+**Latest: the baseline-update pull request (§17.5, §18.1 `baseline-pr`) and manual runs.**
+When a pull request that changed a skill merges, `bellwether-baseline.yml` turns the evaluation
+it was judged on into a proposed regression baseline. The steps:
+- find the merged pull request, and the newest `bellwether.yml` run on its final head that
+  uploaded evidence;
+- read only the evaluations that run listed in `evaluations.txt`;
+- recompute each skill's payload digest from the merged tree, and baseline an evaluation only
+  where it matches (`not_ready` is skipped);
+- push `bellwether/baseline-pr-<n>`, and open `chore: update baseline (#n)` for a maintainer.
+
+Nothing is re-run or spent, and nothing is pushed to `main`. Three new commands:
+`bellwether baseline fetch | update | open-pr`. The artifact download never carries the token to
+the storage host GitHub redirects to (observed off-host; urllib would have followed with the
+header). Both live workflows also take `workflow_dispatch` inputs (`skill`, `profile`, `depth`,
+`targets`). A dispatched path that is not a skill under the root is refused with exit 3, rather
+than reading as "nothing changed" and posting green. The workflow, the branch push to a bare
+origin, the pull request and every dispatch branch are executed in the harness. Eighteen
+safeguards were reverted one at a time, and all went red. Three were red only after their test
+was tightened. One is unproved and stated (spec-notes). Not yet observed live: a real merge
+through the new workflow. The first labelled skill PR to merge will exercise it, and whether the
+repository lets Actions open pull requests is unknown from here.
+
+**Before that: commit statuses per gate group, and the static summary as a PR comment (§18.2).**
 `bellwether commit-status` posts one status per gate group on the pull request's head commit:
 `static`, `functional`, `consistency`, `security`, `evidence`, `budget`, `regression` and `review`,
 plus `verdict` (fails on `not_ready`) and `ready` (fails on anything short of `ready`). A
@@ -1192,7 +1214,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2509 tests: 2432 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2569 tests: 2492 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1336,10 +1358,11 @@ coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acc
 **Current state (top of the list):** every v0.1 work package is built, the kernel planes have
 run under labelled live evaluations on both harnesses (PR #102), and the §15 static scanner ships.
 What remains is **outside v0.1 or unproven live**:
-1. **§17.5 baseline-update PR** (offline, no spend): on merge, the bot opens a baseline-update
-   pull request a maintainer approves. This is the last §18.1 job not built (`baseline-pr`).
-   Also §18.1's `workflow_dispatch` inputs (skill, profile, depth, targets) and the nightly
-   full-library run that catches model drift; the nightly run spends, so it needs approval.
+1. **The nightly drift run** (§18.1 `schedule`): the same skills on a new model version, opening
+   an issue on a drift failure (§18.4 step 6). It spends on every firing, so it needs the owner's
+   approval. The baseline-update pull request and manual runs are built (above). Their first
+   real exercise is the next labelled skill PR to merge; watch that the baseline PR opens (the
+   repository setting) and that its body reads right.
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
    it from `warn` — needs explicit approval to spend.
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the

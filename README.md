@@ -206,7 +206,11 @@ the checks that can actually move a skill off `ready`:
   tier-1 capability *expansion* blocks under the default policy, a pass-rate lower-bound drop
   beyond `max_pass_rate_drop` blocks, a new sensitive-directory hit warns. Composed only where a
   baseline exists and its key is comparable (same canon version and target set); otherwise the
-  verdict says why. The BCI is compared only under the same weights digest.
+  verdict says why. The BCI is compared only under the same weights digest. In CI, a merged
+  pull request's evaluation becomes the proposed new baseline: `bellwether-baseline.yml` opens a
+  `chore: update baseline` pull request for a maintainer to approve. It checks each evaluated
+  payload against the merged tree, and it never pushes to `main` or re-runs anything
+  (`bellwether baseline fetch | update | open-pr`, [ci-integration](docs/ci-integration.md)).
 
 What is **declared in the policy but does not yet gate** the scored verdict: the instrumentation probe
 (`instrumentation_probe` — needs the §3.5 probe suite), `harness_state_write` (its gate was withdrawn

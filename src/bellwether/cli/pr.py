@@ -80,10 +80,15 @@ def comment_marker(key: str) -> str:
 
 
 class GitHubResponse(NamedTuple):
-    """The minimum of a GitHub API response the poster reads: status and raw body."""
+    """The minimum of a GitHub API response the poster reads: status and raw body.
+
+    ``location`` is the ``Location`` header of a redirect, for a transport built not to follow
+    one (an artifact download must not carry the token to the storage host it redirects to).
+    """
 
     status: int
     body: bytes
+    location: str = ""
 
 
 #: The transport seam: ``(method, url, headers, body) -> GitHubResponse``. Injected so the
@@ -283,24 +288,41 @@ def _pr_number(environ: Mapping[str, str]) -> int | None:
     return None
 
 
-def github_transport(timeout: float = 30.0) -> GitHubTransport:
+def github_transport(timeout: float = 30.0, *, follow_redirects: bool = True) -> GitHubTransport:
     """The real transport: a urllib call that returns the status instead of raising on 4xx.
 
     Kept a factory so the timeout is bound once and the call site stays a plain
     :data:`GitHubTransport`. An HTTP error status is *returned*, so the upsert maps it to a
     :class:`BellwetherError` with context rather than an opaque ``HTTPError``.
+
+    ``follow_redirects=False`` returns a 3xx as-is, its target in
+    :attr:`GitHubResponse.location`. urllib follows a redirect with the request's headers —
+    the ``Authorization`` header included, to whatever host the redirect names — so a call
+    GitHub answers with a redirect off its own host (an artifact download) must not follow.
     """
     import urllib.error
     import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    opener = (
+        urllib.request.build_opener()
+        if follow_redirects
+        else urllib.request.build_opener(_NoRedirect())
+    )
 
     def call(
         method: str, url: str, headers: Mapping[str, str], body: bytes | None
     ) -> GitHubResponse:
         request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with opener.open(request, timeout=timeout) as response:
                 return GitHubResponse(int(response.status), response.read())
         except urllib.error.HTTPError as error:
-            return GitHubResponse(int(error.code), error.read())
+            return GitHubResponse(
+                int(error.code), error.read(), error.headers.get("location", "") or ""
+            )
 
     return call

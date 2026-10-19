@@ -20,6 +20,26 @@ name: Bellwether (claude-code)
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
+  # §18.1: a manual deep run. Only someone with write access can dispatch a workflow, so a
+  # dispatch is itself the maintainer's go-ahead the label is on a pull request — it spends.
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: "Skill directory to evaluate (under the skill root, e.g. examples/skills/benign-note-taker)"
+        required: true
+      profile:
+        description: "Policy profile (default: the one the skill's criticality selects)"
+        required: false
+        default: ""
+      depth:
+        description: "Matrix preset: configured (the config's own matrix), quick, standard or deep"
+        type: choice
+        options: [configured, quick, standard, deep]
+        default: configured
+      targets:
+        description: "Comma-separated model aliases to keep (e.g. small); not with a depth preset"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -74,6 +94,12 @@ jobs:
 
       - name: Detect changed skills
         id: detect
+        env:
+          DISPATCH_SKILL: ${{ inputs.skill }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'bellwether-run') }}
         run: |
           # pipefail matters: without it a git-diff failure upstream of the pipe is swallowed and
           # the step emits an empty "no skills changed" — a detection failure dressed as a clean
@@ -83,8 +109,34 @@ jobs:
           # `-z` on both ends: without it git C-quotes a path with a non-ASCII byte
           # ("caf\303\251/SKILL.md"), and a skill under such a directory was silently never
           # evaluated. `changed-skills` refuses a quoted line rather than drop it.
-          git diff --name-only -z "${{ github.event.pull_request.base.sha }}" HEAD \
-            | uv run bellwether changed-skills -z --under "${BELLWETHER_SKILL_ROOT}" > changed-skills.txt
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            # A manual run names its skill. It goes through the same mapping a diff does, so it
+            # must be a skill directory under the skill root — a path outside it (a `..`, a test
+            # fixture), or a directory with no SKILL.md, maps to nothing and is refused rather
+            # than run. The input is not echoed into the error: it is free text.
+            printf '%s/SKILL.md\0' "${DISPATCH_SKILL%/}" \
+              | uv run bellwether changed-skills -z --under "${BELLWETHER_SKILL_ROOT}" > changed-skills.txt
+            if [ ! -s changed-skills.txt ]; then
+              echo "::error::the dispatched skill is not a skill directory under ${BELLWETHER_SKILL_ROOT}"
+              exit 3
+            fi
+            evaluate=true
+            trusted=true
+            sha="${GITHUB_SHA}"
+          else
+            git diff --name-only -z "${BASE_SHA}" HEAD \
+              | uv run bellwether changed-skills -z --under "${BELLWETHER_SKILL_ROOT}" > changed-skills.txt
+            evaluate="${LABELLED}"
+            # A fork's token cannot write statuses or comments.
+            if [ "${PR_HEAD_REPO}" = "${GITHUB_REPOSITORY}" ]; then trusted=true; else trusted=false; fi
+            # Statuses go on the pull request's head, never GITHUB_SHA (the merge commit).
+            sha="${PR_HEAD_SHA}"
+          fi
+          {
+            echo "evaluate=${evaluate}"
+            echo "trusted=${trusted}"
+            echo "sha=${sha}"
+          } >> "$GITHUB_OUTPUT"
           echo "Changed skills:"; cat changed-skills.txt
           # A random delimiter: a fixed `EOF` ends the value early if a skill directory is named
           # `EOF`, and whatever follows is read as further outputs.
@@ -106,10 +158,10 @@ jobs:
         # whose token cannot write statuses.
         if: >-
           steps.detect.outputs.skills == '' &&
-          github.event.pull_request.head.repo.full_name == github.repository
+          steps.detect.outputs.trusted == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.detect.outputs.sha }}
         run: |
           uv run bellwether commit-status --sha "${HEAD_SHA}" \
             --context-prefix "${BELLWETHER_STATUS_PREFIX}" \
@@ -117,7 +169,7 @@ jobs:
       - name: Not labelled for evaluation
         if: >-
           steps.detect.outputs.skills != '' &&
-          !contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+          steps.detect.outputs.evaluate != 'true'
         run: |
           echo "These skills changed:"; cat changed-skills.txt
           echo "Add the 'bellwether-run' label to this PR to evaluate them under claude-code (costs model tokens)."
@@ -129,11 +181,11 @@ jobs:
         # unevaluated skill change, and one that does not is unaffected.
         if: >-
           steps.detect.outputs.skills != '' &&
-          !contains(github.event.pull_request.labels.*.name, 'bellwether-run') &&
-          github.event.pull_request.head.repo.full_name == github.repository
+          steps.detect.outputs.evaluate != 'true' &&
+          steps.detect.outputs.trusted == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.detect.outputs.sha }}
         run: |
           uv run bellwether commit-status --sha "${HEAD_SHA}" \
             --context-prefix "${BELLWETHER_STATUS_PREFIX}" \
@@ -145,7 +197,7 @@ jobs:
         # Dockerfile; the tag is moving on purpose (a fresh build each run), like the sidecars.
         if: >-
           steps.detect.outputs.skills != '' &&
-          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+          steps.detect.outputs.evaluate == 'true'
         run: docker build -f sandbox/claude-code/Dockerfile -t bw-sandbox-claude-code:live .
 
       - name: Build the recording-proxy sidecar image
@@ -154,7 +206,7 @@ jobs:
         # egress.image points at this tag.
         if: >-
           steps.detect.outputs.skills != '' &&
-          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+          steps.detect.outputs.evaluate == 'true'
         run: docker build -f sidecar/proxy/Dockerfile -t bw-proxy-sidecar:live .
 
       - name: Build the controlled-resolver sidecar image
@@ -162,17 +214,20 @@ jobs:
         # sandbox is pointed at the resolver via --dns and the DNS plane is observed (§10.6).
         if: >-
           steps.detect.outputs.skills != '' &&
-          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+          steps.detect.outputs.evaluate == 'true'
         run: docker build -f sidecar/resolver/Dockerfile -t bw-resolver-sidecar:live .
 
       - name: Evaluate and comment
         id: evaluate
         if: >-
           steps.detect.outputs.skills != '' &&
-          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+          steps.detect.outputs.evaluate == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
+          DISPATCH_PROFILE: ${{ inputs.profile }}
+          DISPATCH_DEPTH: ${{ inputs.depth }}
+          DISPATCH_TARGETS: ${{ inputs.targets }}
         run: |
           if [ -z "${ANTHROPIC_API_KEY}" ]; then
             echo "Labelled for evaluation, but ANTHROPIC_API_KEY is not set — skipping."
@@ -187,6 +242,14 @@ jobs:
           # refused that ("Permission denied") — under `bash -e` the step then died after the
           # first skill. Found by CI's non-root runner (tests/test_live_workflow_statuses.py).
           mkdir -p .bellwether-out
+          # A manual run's choices (§18.1). Each is passed only when given, as its own argument,
+          # so free text from the dispatch form is never word-split into further options.
+          extra=()
+          if [ -n "${DISPATCH_PROFILE:-}" ]; then extra+=(--profile "${DISPATCH_PROFILE}"); fi
+          if [ -n "${DISPATCH_DEPTH:-}" ] && [ "${DISPATCH_DEPTH}" != "configured" ]; then
+            extra+=(--depth "${DISPATCH_DEPTH}")
+          fi
+          if [ -n "${DISPATCH_TARGETS:-}" ]; then extra+=(--targets "${DISPATCH_TARGETS}"); fi
           # The list is read on fd 3, never stdin: anything in the loop that reads stdin (a
           # `docker exec --interactive` with nothing to send did, PR #102) would otherwise
           # swallow the remaining skill names, and every skill after the first would go
@@ -200,7 +263,7 @@ jobs:
             # scoped token and never reaches the sandbox.
             if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" run "${skill}" \
                  --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
-                 --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}" < /dev/null; then
+                 --max-tokens "${BELLWETHER_MAX_TOKENS}" --out "${out}" "${extra[@]}" < /dev/null; then
               verdict_status=0
             else
               verdict_status=$?
@@ -243,7 +306,9 @@ jobs:
             echo "::group::Bellwether report — ${skill} (claude-code)"
             cat "${eval_dir}/report/pr_comment.md" 2>/dev/null || echo "(no report was rendered)"
             echo "::endgroup::"
-            uv run bellwether pr-comment "${eval_dir}" || true
+            if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+              uv run bellwether pr-comment "${eval_dir}" || true
+            fi
             # Exit 2 is a real not_ready verdict; 3 is infrastructure. Either keeps the check red,
             # but a not_ready is the skill's result, not a broken job.
             # The worst code wins: 3 (infrastructure) outranks 2 (not_ready). This used to keep
@@ -263,11 +328,11 @@ jobs:
         if: >-
           always() &&
           steps.detect.outputs.skills != '' &&
-          contains(github.event.pull_request.labels.*.name, 'bellwether-run') &&
-          github.event.pull_request.head.repo.full_name == github.repository
+          steps.detect.outputs.evaluate == 'true' &&
+          steps.detect.outputs.trusted == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.detect.outputs.sha }}
           EVAL_STATUS: ${{ steps.evaluate.outputs.status }}
         run: |
           set -euo pipefail
@@ -298,7 +363,7 @@ jobs:
         if: >-
           always() &&
           steps.detect.outputs.skills != '' &&
-          contains(github.event.pull_request.labels.*.name, 'bellwether-run')
+          steps.detect.outputs.evaluate == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bellwether-evidence-claude-code
