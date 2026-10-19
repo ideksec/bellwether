@@ -49,7 +49,7 @@ __all__ = [
 #: The ``summary.json`` schema version. Bumped on any change to the shape below. A minor
 #: bump adds optional keys; a major bump is a break. Producers stamp it; consumers read it
 #: before trusting anything else in the file.
-SCHEMA_VERSION = "1.4"
+SCHEMA_VERSION = "1.5"
 
 
 class ReportModel(BaseModel):
@@ -89,6 +89,10 @@ class MatrixSummary(ReportModel):
     #: baseline key's ``target_set_digest`` is derived from, so a baseline collected on
     #: frontier+small is never compared with one collected on frontier alone.
     target_slugs: tuple[str, ...] = ()
+    #: Target slug → the model ids that served its runs (reported where the provider said,
+    #: else requested), sorted. What a drift report compares: the same alias answered by a
+    #: different model is the "new model version" a nightly run exists to notice (§18.1).
+    models: Mapping[str, tuple[str, ...]] = Field(default_factory=dict)
     runs_planned: int
     runs_completed: int
     runs_evaluable: int

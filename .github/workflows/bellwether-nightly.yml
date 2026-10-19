@@ -1,0 +1,176 @@
+name: Bellwether nightly drift
+
+# §18.1: "a nightly full-library run — this is how you catch model drift: the same skills, the
+# same tests, a new model version". §18.4 step 6: "a drift failure opens an issue automatically".
+#
+# Every skill under the skill root is evaluated with the cache off (a cached trace would replay
+# last night's model), each against its stored baseline (§17.5), and `bellwether drift` reads
+# the result: a skill whose regression gate blocks, or whose verdict is worse than its
+# baseline's, has drifted and gets one issue — edited in place, commented on only when the
+# findings change, closed on a later stable night. Which model served each target is in the
+# issue: the same alias answered by a different model is the usual cause.
+#
+# THIS SPENDS MODEL TOKENS ON EVERY RUN, so the schedule is inert until a maintainer opts in:
+# set the repository variable BELLWETHER_NIGHTLY to `true` (Settings → Secrets and variables →
+# Actions → Variables). Until then the scheduled run skips its only job and spends nothing. A
+# manual run (Actions → Run workflow) is a maintainer's explicit go-ahead, like the label on a
+# pull request, and runs whatever the variable says.
+#
+# The model to watch is the one the config names. A dated snapshot id (as the smoke config
+# here pins) changes only when someone edits it, so drift then means the provider or the
+# environment moved; an undated alias is what lets a new model version arrive unannounced.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bellwether-nightly
+  cancel-in-progress: false
+
+env:
+  BELLWETHER_SKILL_ROOT: examples/skills
+  BELLWETHER_CONFIG: examples/live/config.yaml
+  BELLWETHER_POLICY: examples/live/policy.yaml
+  BELLWETHER_MAX_TOKENS: "60000"
+  BELLWETHER_BASELINES: examples/live/baselines
+
+jobs:
+  nightly:
+    # The opt-in. A scheduled run with the variable unset is skipped here, before any step —
+    # nothing is installed, built or spent.
+    if: github.event_name == 'workflow_dispatch' || vars.BELLWETHER_NIGHTLY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      # One drift issue per drifting skill.
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The job runs evaluated skill content on this runner; nothing needs git credentials.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Select the skills
+        id: select
+        run: |
+          set -euo pipefail
+          # Every tracked skill under the root, NUL-separated end to end (§18.1 "full library").
+          git ls-files -z -- "${BELLWETHER_SKILL_ROOT}" \
+            | uv run bellwether changed-skills -z --under "${BELLWETHER_SKILL_ROOT}" > skills.txt
+          echo "Skills:"; cat skills.txt
+          echo "count=$(grep -c . skills.txt || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Build the recording-proxy sidecar image
+        if: steps.select.outputs.count != '0'
+        run: docker build -f sidecar/proxy/Dockerfile -t bw-proxy-sidecar:live .
+
+      - name: Build the controlled-resolver sidecar image
+        if: steps.select.outputs.count != '0'
+        run: docker build -f sidecar/resolver/Dockerfile -t bw-resolver-sidecar:live .
+
+      - name: Evaluate every skill
+        id: evaluate
+        if: steps.select.outputs.count != '0'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            # Opted in, but nothing to run with: a configuration error, not a quiet night.
+            echo "::error::the nightly run is enabled but ANTHROPIC_API_KEY is not set"
+            exit 3
+          fi
+          bw="$(pwd)/.venv/bin/bellwether"
+          status=0
+          # As the runner user, before `sudo … run` could create it as root (PR #107).
+          mkdir -p .bellwether-out
+          : > .bellwether-out/evaluations.txt
+          # fd 3, never stdin: a reader of stdin inside the loop would swallow the list (PR #102).
+          while IFS= read -r skill <&3; do
+            [ -z "${skill}" ] && continue
+            echo "::group::Evaluating ${skill}"
+            out=".bellwether-out/$(echo "${skill}" | tr '/' '-')"
+            # --no-cache: a cached trace is last night's model answering; replaying it would
+            # report "no drift" by construction (§19.2).
+            if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" run "${skill}" \
+                 --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
+                 --max-tokens "${BELLWETHER_MAX_TOKENS}" --no-cache --out "${out}" < /dev/null; then
+              verdict_status=0
+            else
+              verdict_status=$?
+            fi
+            sudo chown -R "$(id -u):$(id -g)" "${out}" || true
+            mapfile -t eval_dirs < <(find "${out}" -maxdepth 1 -mindepth 1 -type d \
+              ! -name .cache | sort)
+            if [ "${#eval_dirs[@]}" -ne 1 ]; then
+              echo "::error::expected exactly one evaluation directory under ${out}," \
+                   "found ${#eval_dirs[@]}"
+              status=3
+              echo "::endgroup::"
+              continue
+            fi
+            eval_dir="${eval_dirs[0]}"
+            echo "${eval_dir}" >> .bellwether-out/evaluations.txt
+            sudo rm -rf "${eval_dir}/runs" 2>/dev/null || true
+            # 2 is a not_ready verdict — the drift step decides what that means against the
+            # baseline. 3 is infrastructure, and the worst code wins.
+            if [ "${verdict_status}" -eq 3 ]; then status=3; fi
+            echo "::endgroup::"
+          done 3< skills.txt
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+
+      - name: Read drift
+        id: drift
+        # After a broken evaluation too: the loop records it and carries on, so the skills that
+        # did complete are still read, and the last step fails the run for the broken one.
+        if: steps.select.outputs.count != '0' && steps.evaluate.outputs.status != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mapfile -t evaluations < .bellwether-out/evaluations.txt
+          if [ "${#evaluations[@]}" -eq 0 ]; then
+            echo "::error::no evaluation completed; nothing to read for drift"
+            exit 3
+          fi
+          if uv run bellwether drift "${evaluations[@]}" --baselines "${BELLWETHER_BASELINES}" \
+               --markdown .bellwether-out/drift.md --issues; then
+            drift=0
+          else
+            drift=$?
+          fi
+          cat .bellwether-out/drift.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo "drift=${drift}" >> "$GITHUB_OUTPUT"
+          exit "${drift}"
+
+      - name: Upload the evidence
+        if: always() && steps.select.outputs.count != '0'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bellwether-nightly
+          include-hidden-files: true
+          path: |
+            .bellwether-out/**
+            !.bellwether-out/**/runs/**
+          if-no-files-found: warn
+
+      - name: Infrastructure
+        # A broken evaluation fails the run even where the skills that completed are stable.
+        if: always() && steps.evaluate.outputs.status == '3'
+        run: |
+          echo "::error::at least one evaluation did not complete; see its group in the log"
+          exit 3

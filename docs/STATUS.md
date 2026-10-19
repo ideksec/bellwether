@@ -11,7 +11,29 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: the baseline-update pull request (§17.5, §18.1 `baseline-pr`) and manual runs.**
+**Latest: the nightly drift run (§18.1 `schedule`, §18.4 step 6) — built, and off.**
+`bellwether-nightly.yml` evaluates every skill under the root with the cache off, against its
+stored baseline. `bellwether drift` then reads each result:
+- `drift`: the regression gate blocks, or the verdict is worse than the baseline's;
+- `warn`, `stable`, `not_comparable` (the §17.5 key rules the baseline out), or `no_baseline`.
+
+A drifting skill gets one issue. It is edited in place, commented on only when its findings
+change, and closed on a stable night. Only the bot's own issues are matched, and pull requests
+in the issue list are skipped. **The schedule spends nothing until a maintainer sets the
+repository variable `BELLWETHER_NIGHTLY` to `true`.** The job's own `if:` skips before any
+step. A manual run is the explicit go-ahead.
+
+`summary.json` (schema 1.5) gains `matrix.models`: per target, the model ids that answered,
+reported where the provider said, else requested. The drift issue names the model beside the
+baseline's. The demo reports and the JSON Schema are regenerated.
+
+The workflow, its opt-in, the issues and a broken evaluation are executed in the harness (which
+now models `vars.*`, a job's `if:` and the issues API). Fourteen safeguards were reverted, all
+red. Three were red only after their tests were tightened, and one `always()` was removed as
+inert (spec-notes). Not yet run live: it needs the variable, the key, and your approval to
+spend.
+
+**Before that: the baseline-update pull request (§17.5, §18.1 `baseline-pr`) and manual runs.**
 When a pull request that changed a skill merges, `bellwether-baseline.yml` turns the evaluation
 it was judged on into a proposed regression baseline. The steps:
 - find the merged pull request, and the newest `bellwether.yml` run on its final head that
@@ -1214,7 +1236,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2569 tests: 2492 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2602 tests: 2525 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1358,11 +1380,14 @@ coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acc
 **Current state (top of the list):** every v0.1 work package is built, the kernel planes have
 run under labelled live evaluations on both harnesses (PR #102), and the §15 static scanner ships.
 What remains is **outside v0.1 or unproven live**:
-1. **The nightly drift run** (§18.1 `schedule`): the same skills on a new model version, opening
-   an issue on a drift failure (§18.4 step 6). It spends on every firing, so it needs the owner's
-   approval. The baseline-update pull request and manual runs are built (above). Their first
-   real exercise is the next labelled skill PR to merge; watch that the baseline PR opens (the
-   repository setting) and that its body reads right.
+1. **First live runs of what is built and unexercised.**
+   - The baseline-update pull request: the next labelled skill PR to merge exercises it. Watch
+     that the PR opens (the Actions setting) and that its body reads right.
+   - The nightly drift run: off until `BELLWETHER_NIGHTLY=true`. It spends on every firing,
+     so turning it on is the owner's call. A first manual dispatch costs one smoke run per
+     skill (about $0.30 each).
+   - Both need a stored baseline before `drift` can say anything. Today `examples/live/baselines/`
+     is empty, so the first night reads `no_baseline` for every skill.
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
    it from `warn` — needs explicit approval to spend.
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the

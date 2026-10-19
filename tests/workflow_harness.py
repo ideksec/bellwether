@@ -72,6 +72,9 @@ class FakeGitHub:
     #: The status ``POST /pulls`` answers with when not 201 (a repository that does not let
     #: Actions open pull requests answers 403).
     create_pull_status: int = 201
+    #: Issues opened or edited through ``/issues`` (not pull requests), each with its number,
+    #: state, body and author; comments on them land in :attr:`comments` with ``issue`` set.
+    issues: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         fake = self
@@ -121,6 +124,11 @@ class FakeGitHub:
                 if re.match(r"/repos/[^/]+/[^/]+/issues/\d+/comments", path):
                     page = int(params.get("page", "1"))
                     self._send(200, fake.comments if page == 1 else [])
+                elif re.fullmatch(r"/repos/[^/]+/[^/]+/issues", path):
+                    page, per_page = int(params.get("page", "1")), int(params.get("per_page", "30"))
+                    state = params.get("state", "open")
+                    listed = [i for i in fake.issues if state == "all" or i["state"] == state]
+                    self._send(200, listed[(page - 1) * per_page : page * per_page])
                 elif match := re.fullmatch(r"/repos/[^/]+/[^/]+/commits/([0-9a-f]+)/pulls", path):
                     self._send(200, fake.commit_pulls.get(match.group(1), []))
                 elif match := re.fullmatch(
@@ -163,9 +171,10 @@ class FakeGitHub:
                 if not self._authorised():
                     return
                 body = self._body()
-                if re.fullmatch(r"/repos/[^/]+/[^/]+/issues/\d+/comments", self.path):
+                if on := re.fullmatch(r"/repos/[^/]+/[^/]+/issues/(\d+)/comments", self.path):
                     comment = {
                         "id": 1000 + len(fake.comments),
+                        "issue": int(on.group(1)),
                         "body": body["body"],
                         "user": {"login": "github-actions[bot]", "type": "Bot"},
                     }
@@ -174,6 +183,16 @@ class FakeGitHub:
                 elif match := re.fullmatch(r"/repos/[^/]+/[^/]+/statuses/([0-9a-f]+)", self.path):
                     fake.statuses.append({**body, "sha": match.group(1)})
                     self._send(201, body)
+                elif re.fullmatch(r"/repos/[^/]+/[^/]+/issues", self.path):
+                    issue = {
+                        "number": 900 + len(fake.issues),
+                        "title": body["title"],
+                        "body": body["body"],
+                        "state": "open",
+                        "user": {"login": "github-actions[bot]", "type": "Bot"},
+                    }
+                    fake.issues.append(issue)
+                    self._send(201, issue)
                 elif re.fullmatch(r"/repos/[^/]+/[^/]+/pulls", self.path):
                     if fake.create_pull_status != 201:
                         self._send(
@@ -209,6 +228,16 @@ class FakeGitHub:
                         return
                     pull.update(self._body())
                     self._send(200, pull)
+                    return
+                if edited := re.fullmatch(r"/repos/[^/]+/[^/]+/issues/(\d+)", self.path):
+                    issue = next(
+                        (i for i in fake.issues if i["number"] == int(edited.group(1))), None
+                    )
+                    if issue is None:
+                        self._send(404, {"message": "Not Found"})
+                        return
+                    issue.update(self._body())
+                    self._send(200, issue)
                     return
                 match = re.fullmatch(r"/repos/[^/]+/[^/]+/issues/comments/(\d+)", self.path)
                 comment = next(
@@ -265,6 +294,8 @@ class Event:
     label: str = ""
     #: ``inputs.*`` of a ``workflow_dispatch``; every other input reads as "".
     inputs: Mapping[str, str] = field(default_factory=dict)
+    #: ``vars.*``, the repository's configuration variables; an unset one reads as "".
+    vars: Mapping[str, str] = field(default_factory=dict)
     ref_name: str = "main"
 
 
@@ -303,7 +334,7 @@ class _Expression:
         if name in ("true", "false"):
             return name == "true"
         value = self.contexts.get(name)
-        if value is None and name.startswith(("steps.", "secrets.", "env.", "inputs.")):
+        if value is None and name.startswith(("steps.", "secrets.", "env.", "inputs.", "vars.")):
             return ""
         if value is None:
             raise KeyError(f"the harness does not model the context {name!r}")
@@ -379,6 +410,7 @@ class WorkflowRunner:
         document = yaml.safe_load(workflow.read_text(encoding="utf-8"))
         self.workflow_env = {k: str(v) for k, v in (document.get("env") or {}).items()}
         self.steps: list[dict[str, Any]] = list(document["jobs"][job]["steps"])
+        self.job_if: str | None = document["jobs"][job].get("if")
         self.repo = repo
         self.tmp = tmp
         self.event = event
@@ -417,6 +449,8 @@ class WorkflowRunner:
             contexts[f"secrets.{key}"] = value
         for key, value in event.inputs.items():
             contexts[f"inputs.{key}"] = value
+        for key, value in event.vars.items():
+            contexts[f"vars.{key}"] = value
         return contexts
 
     def _expression(self) -> _Expression:
@@ -447,7 +481,18 @@ class WorkflowRunner:
 
     # -- execution -------------------------------------------------------------------------
 
+    def job_runs(self) -> bool:
+        """The job's own ``if:`` — evaluated as GitHub does, before any step."""
+        if self.job_if is None:
+            return True
+        return bool(self._expression().evaluate(str(self.job_if)))
+
     def run(self) -> list[StepResult]:
+        if not self.job_runs():
+            self.results = [
+                StepResult(str(s.get("name", s.get("uses", "?"))), False) for s in self.steps
+            ]
+            return self.results
         for step in self.steps:
             name = str(step.get("name", step.get("uses", "?")))
             if name in self.skip or not self.should_run(step):
@@ -520,7 +565,7 @@ def bellwether_wrapper(tmp: Path, bellwether: str, api: FakeGitHub) -> Path:
         "#!/bin/bash\n"
         'cmd="$1"; shift\n'
         'case "$cmd" in\n'
-        f'  pr-comment|commit-status) exec "{bellwether}" "$cmd" --api-root "{api.url}" "$@" ;;\n'
+        f'  pr-comment|commit-status|drift) exec "{bellwether}" "$cmd" --api-root "{api.url}" "$@" ;;\n'
         "  baseline)\n"
         '    sub="$1"; shift\n'
         '    case "$sub" in\n'

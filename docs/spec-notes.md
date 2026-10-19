@@ -5395,3 +5395,58 @@ project's rule is no paid run without the owner's approval.
 D4 (the pull-request comment skipped on a dispatch) is unproved: without the guard, `pr-comment`
 fails to find a pull request behind its `|| true`, so the only difference is a line of noise in
 the log.
+
+## §18.1, §18.4 — the nightly drift run, and which model answered
+
+**Drift is read from the evaluation's own regression gate.** A nightly run is an ordinary
+`bellwether run` of every skill with the cache off. A cached trace is last night's model
+answering, so with the cache on the night reads "no drift" by construction. The run already
+compares itself with the stored baseline under the §17.5 key rules. `bellwether drift` adds
+one more check: a verdict worse than the baseline's (`ready` → `conditional` → `not_ready`)
+is drift even when the regression gate passes. A security gate that newly blocks is a
+regression the capability delta does not show. A warning gate is `warn`, with no issue,
+because §18.4 opens one on a drift *failure*. A baseline the key rules out is
+`not_comparable`, with the evaluation's own note, never "stable".
+
+**One issue per skill, by a marker the bot wrote.** The marker key hashes a fixed domain string
+with the skill name, so it can't collide with a comment key. Only issues authored by a bot
+are matched: anyone can paste a marker into an issue. Pull requests in the issue listing are
+skipped. A night with the same findings changes nothing, because a findings digest in the body
+decides. Changed findings edit the body and leave one comment. A stable night closes the
+issue with a comment. A `not_comparable` night leaves an open issue alone: a skill that could
+not be compared has not stopped drifting.
+
+**`matrix.models` (schema 1.5).** The issue should name the model that answered, and
+`summary.json` did not record it. Only the traces did, in each `model_turn` action. Each run's
+served set is now read from those actions: the reported id where the provider gave one, else
+the requested id. A turn's requested id is not added when it reported one, because the alias
+asked for is not a model that served anything. The sets are aggregated per target into the
+summary. The field is additive (an older summary still validates), the demo reports and the
+committed JSON Schema are regenerated, and a baseline from before it reads "not recorded".
+
+**Off until a maintainer opts in.** The workflow spends on every firing, and this project runs
+nothing paid without the owner's approval. So the job's own `if:` requires the repository
+variable `BELLWETHER_NIGHTLY` to be `true` on a scheduled run. Unset, the job is skipped before
+any step, and nothing is installed or spent. A manual dispatch runs regardless: it is the
+explicit go-ahead, like the label on a pull request. The harness now evaluates a job's `if:`
+and models `vars.*`. Enabled without a key is an error, not a quiet night.
+
+| # | Revert | Result |
+|---|---|---|
+| N1 | the job's opt-in removed | red |
+| N2 | the cache left on | red |
+| N3 | a worse verdict not drift unless the regression gate blocks | red |
+| N4 | an unchanged night edits and comments anyway | red |
+| N5 | a person's issue with the marker matched | red |
+| N6 | pull requests in the issue list matched | red |
+| N7 | only the first page of open issues searched | red |
+| N8 | a `not_comparable` night closes the issue | red |
+| N9 | a turn's requested id added beside its reported one | red (only after the test gave the unreported turn a distinct alias; before that the sets coincided) |
+| N10 | enabled without a key runs anyway | red |
+| N12 | a run that exits 3 after writing its tree is not counted as broken | red (only after a parametrised case left a tree; before that, the no-tree branch set the code) |
+| N13 | the issue key not domain-separated | red |
+
+N11 is gone rather than proved. The drift step had `always()`, and removing it changed nothing:
+the evaluate step records its status and carries on, so the only way it fails is the
+missing-key exit. That exit writes no status, and the drift step is skipped on that anyway.
+The `always()` was inert, so it was removed.

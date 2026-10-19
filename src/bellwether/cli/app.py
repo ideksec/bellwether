@@ -2416,6 +2416,113 @@ def baseline_open_pr(
     )
 
 
+@app.command(name="drift")
+def drift(
+    evaluations: Annotated[
+        list[Path] | None,
+        typer.Argument(help="Evaluation directories (each holding summary.json) of one night."),
+    ] = None,
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    markdown: Annotated[
+        Path | None, typer.Option("--markdown", help="Write the run's drift summary here.")
+    ] = None,
+    issues: Annotated[
+        bool,
+        typer.Option(
+            "--issues",
+            help="Open, update or close one drift issue per skill (needs a token with "
+            "issues: write).",
+        ),
+    ] = False,
+    run_link: Annotated[
+        str | None,
+        typer.Option("--run-url", help="The run's URL, for the issue (default: from Actions)."),
+    ] = None,
+    repo: _RepoOption = None,
+    token_env: _TokenEnvOption = "GITHUB_TOKEN",
+    api_root: _ApiRootOption = "https://api.github.com",
+    json_output: JsonFlag = False,
+) -> None:
+    """Read a nightly re-evaluation against each skill's baseline (§18.1 model drift).
+
+    Each evaluation is ``drift`` (the regression gate blocks, or the verdict is worse than the
+    baseline's), ``warn``, ``stable``, ``not_comparable`` (the §17.5 key rules the baseline
+    out — re-set it) or ``no_baseline``. Which model served each target is reported beside it.
+    With ``--issues``, a drifting skill gets one issue, edited in place and commented on only
+    when its findings change, and closed on a later stable night. Exit 2 when any skill
+    drifted, 0 otherwise, 3 when the evaluations cannot be read or an issue cannot be written.
+    """
+    from bellwether.cli.baselines import read_baseline_for
+    from bellwether.cli.diff import load_summary
+    from bellwether.cli.drift import read_drift, render_drift_markdown, upsert_drift_issues
+    from bellwether.cli.pr import github_transport
+    from bellwether.cli.status import run_url
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether drift: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    if not evaluations:
+        refuse("name the evaluation directories to read")
+    link = run_link or run_url(os.environ)
+    try:
+        readings = []
+        for directory in evaluations:
+            summary = load_summary(directory / "summary.json")
+            readings.append(read_drift(summary, read_baseline_for(baselines, summary.skill.name)))
+    except BellwetherError as error:
+        refuse(str(error))
+    readings.sort(key=lambda reading: reading.skill)
+    if markdown is not None:
+        markdown.write_text(render_drift_markdown(readings, run_url=link), encoding="utf-8")
+    actions: dict[str, str] = {}
+    if issues:
+        repository = _github_repository(repo, refuse)
+        token = _github_token(token_env, refuse)
+        try:
+            actions = dict(
+                upsert_drift_issues(
+                    github_transport(),
+                    repository,
+                    readings,
+                    token=token,
+                    run_url=link,
+                    api_root=api_root,
+                )
+            )
+        except BellwetherError as error:
+            refuse(str(error))
+    drifted = [reading.skill for reading in readings if reading.status == "drift"]
+    _emit(
+        {
+            "drifted": drifted,
+            "readings": [
+                {
+                    "skill": r.skill,
+                    "status": r.status,
+                    "eval_id": r.eval_id,
+                    "verdict": r.verdict,
+                    "baseline_verdict": r.baseline_verdict,
+                    "findings": list(r.findings),
+                    "reason": r.reason,
+                    "models": {slug: list(ids) for slug, ids in r.models.items()},
+                    "issue": actions.get(r.skill),
+                }
+                for r in readings
+            ],
+        },
+        as_json=json_output,
+        lines=[
+            f"{r.skill}: {r.status}"
+            + (f" — {'; '.join(r.findings) or r.reason}" if r.findings or r.reason else "")
+            + (f" [issue {actions[r.skill]}]" if r.skill in actions else "")
+            for r in readings
+        ],
+    )
+    if drifted:
+        raise typer.Exit(ExitCode.NOT_READY)
+
+
 def main() -> None:
     """Console entry point for ``bellwether`` and ``bw``."""
     try:
