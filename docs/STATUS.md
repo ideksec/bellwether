@@ -28,7 +28,7 @@ reported where the provider said, else requested. The drift issue names the mode
 baseline's. The demo reports and the JSON Schema are regenerated.
 
 The workflow, its opt-in, the issues and a broken evaluation are executed in the harness (which
-now models `vars.*`, a job's `if:` and the issues API). Fourteen safeguards were reverted, all
+now models `vars.*`, a job's `if:` and the issues API). Twelve safeguards were reverted, all
 red. Three were red only after their tests were tightened, and one `always()` was removed as
 inert (spec-notes). Not yet run live: it needs the variable, the key, and your approval to
 spend.
