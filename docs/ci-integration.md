@@ -194,6 +194,32 @@ Two repository settings matter:
 
 The artifact download never sends the repository token to the storage host it redirects to.
 
+## Nightly drift
+
+[`.github/workflows/bellwether-nightly.yml`](../.github/workflows/bellwether-nightly.yml) is how
+you catch **model drift** (§18.1): the same skills and tests, run again on whatever model the
+provider now serves. Every skill under the skill root is evaluated with the cache off, against
+its stored baseline, and `bellwether drift` reads the result:
+
+| Result | Meaning | Issue |
+|---|---|---|
+| `drift` | the regression gate blocks, or the verdict is worse than the baseline's | opened, or edited when its findings change |
+| `warn` | the regression gate warns | none |
+| `stable` | compared, nothing regressed | an open one is closed |
+| `not_comparable` | the §17.5 key rules the baseline out (new canon version, different targets) | left as it is |
+| `no_baseline` | nothing stored to compare with | none |
+
+Each drifting skill has at most one open issue. It names the model that answered each target
+beside the one that answered the baseline (`matrix.models` in `summary.json`), because the
+same alias served by a new model is the usual cause. A model change alone is not drift.
+
+**It spends on every run, so it is off by default.** Set the repository variable
+`BELLWETHER_NIGHTLY` to `true` (Settings → Secrets and variables → Actions → Variables) to let
+the schedule fire. Until then a scheduled run skips its job before any step. **Run workflow**
+starts one by hand. A dated model id in the config only changes when someone edits it, so then
+drift means the provider or the environment moved. An undated alias is what lets a new model
+version arrive unannounced.
+
 ## The key never enters the sandbox
 
 The API key is a secret held by the **harness on the CI runner**, not by the skill under

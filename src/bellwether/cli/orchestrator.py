@@ -342,6 +342,11 @@ class AnalysedRun:
     #: state — a skill that never finishes is not a skill that finished wrong — so the
     #: reason travels beside the outcome for the strip chart and the matrix counts.
     exit_reason: str | None = None
+    #: The model ids that served this run's turns, sorted (§9.3): the provider's reported id
+    #: where it gave one, else the requested id. A silent model update is a primary cause of
+    #: "the skill changed but the code didn't", and it is what a nightly drift run exists to
+    #: catch — so the summary carries what actually answered, not only the alias asked for.
+    models: tuple[str, ...] = ()
     #: Declared capabilities this run never exercised (§12.5 ``unused``): a tool on the
     #: manifest's ``allow`` list never called, a declared glob never matched. Over-declaration
     #: is how ``allowed-tools`` widens into a privilege a reviewer must reason about.
@@ -1241,6 +1246,25 @@ def undeclared_sensitive_hits(hits: Sequence[str], scope: DeclaredScope | None) 
     return tuple(remaining)
 
 
+def served_models(actions: Sequence[Action]) -> tuple[str, ...]:
+    """The model ids a run's ``model_turn`` actions name, sorted and distinct.
+
+    The provider's reported id wins; a turn that reported none contributes the id requested, so
+    a provider that never reports reads as a stable model rather than a missing one.
+    """
+    served: set[str] = set()
+    for action in actions:
+        if action.plane != "harness" or action.kind != "model_turn":
+            continue
+        data = action.action
+        for key in ("model_id_reported", "model_id_requested"):
+            value = data.get(key)
+            if isinstance(value, str) and value:
+                served.add(value)
+                break
+    return tuple(sorted(served))
+
+
 def analyse_run(
     plan: RunPlan,
     executed: ExecutedRun,
@@ -1362,6 +1386,7 @@ def analyse_run(
     return AnalysedRun(
         key=key,
         outcome=outcome,
+        models=served_models(trace.actions),
         expectation=plan.scenario.expectation,
         activation=activation,
         caps_t1=frozenset(canon.caps_t1),
@@ -3681,10 +3706,15 @@ def _build_summary(
         index = looks.index(reading.look) + 1 if reading.look in looks else len(looks)
         key = str(index)
         stopped_at[key] = stopped_at.get(key, 0) + 1
+    served: dict[str, set[str]] = {}
+    for reading in readings:
+        for run in reading.runs:
+            served.setdefault(reading.target.slug, set()).update(run.models)
     matrix = MatrixSummary(
         scenarios=len(scenarios),
         targets=len(targets),
         target_slugs=tuple(targets),
+        models={slug: tuple(sorted(ids)) for slug, ids in sorted(served.items()) if ids},
         runs_planned=n_completed,
         runs_completed=n_completed,
         runs_evaluable=n_evaluable,

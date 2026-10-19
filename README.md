@@ -211,6 +211,9 @@ the checks that can actually move a skill off `ready`:
   `chore: update baseline` pull request for a maintainer to approve. It checks each evaluated
   payload against the merged tree, and it never pushes to `main` or re-runs anything
   (`bellwether baseline fetch | update | open-pr`, [ci-integration](docs/ci-integration.md)).
+  A nightly workflow (off until the `BELLWETHER_NIGHTLY` variable is set, because it spends)
+  re-evaluates every skill against its baseline. `bellwether drift` opens one issue per drifting
+  skill and names the model that answered.
 
 What is **declared in the policy but does not yet gate** the scored verdict: the instrumentation probe
 (`instrumentation_probe` — needs the §3.5 probe suite), `harness_state_write` (its gate was withdrawn

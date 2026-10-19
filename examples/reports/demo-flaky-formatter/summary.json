@@ -108,6 +108,11 @@
       12,
       20
     ],
+    "models": {
+      "api-loop-scripted-frontier": [
+        "demo-model-v1"
+      ]
+    },
     "runs_cached": 0,
     "runs_completed": 20,
     "runs_errored": 0,
@@ -137,7 +142,7 @@
     "profile": "medium"
   },
   "regression": null,
-  "schema_version": "1.4",
+  "schema_version": "1.5",
   "security": {
     "canary_leaks": [],
     "runtime": {},

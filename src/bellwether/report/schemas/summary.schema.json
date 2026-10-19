@@ -450,6 +450,16 @@
           "title": "Looks",
           "type": "array"
         },
+        "models": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Models",
+          "type": "object"
+        },
         "runs_cached": {
           "default": 0,
           "title": "Runs Cached",
@@ -876,7 +886,7 @@
       "default": null
     },
     "schema_version": {
-      "default": "1.4",
+      "default": "1.5",
       "title": "Schema Version",
       "type": "string"
     },
@@ -904,6 +914,6 @@
     "security",
     "limitations"
   ],
-  "title": "Bellwether summary.json (schema 1.4)",
+  "title": "Bellwether summary.json (schema 1.5)",
   "type": "object"
 }
