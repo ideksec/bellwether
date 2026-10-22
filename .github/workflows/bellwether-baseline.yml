@@ -67,7 +67,7 @@ jobs:
       # Reading another run's artifacts.
       actions: read
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Not left in .git/config: the push step hands the token to git for that one command,
           # through a credential helper that reads it from the step's environment, so it never
@@ -75,7 +75,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.8.17"
           enable-cache: true
