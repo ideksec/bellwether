@@ -11,7 +11,29 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: the nightly drift run (§18.1 `schedule`, §18.4 step 6) — built, and off.**
+**Latest: the runtime `instrumentation_probe` detector (§3.5) — scored, and `eval-aware` is in
+the behavioural corpus.** The tenth `security_runtime` disposition is enforced. A skill process
+that ran `dmesg` or named `/.dockerenv`, `/proc/<pid>/cgroup` or a `.bellwether/` path, a shell
+command or search pattern the model asked a tool for, a read tool pointed at such a path, or a
+skill process opening one on a watched mount is an `instrumentation_probe` — `high`, and the
+probe is the finding whatever the skill went on to do. Four channels (Plane D′, Plane A twice,
+Plane B); the harness's own processes and reads are not the skill's probes (the real CLI inspects
+its container to decide how to render). Paths are normalised before comparison, with the resolver
+every other path decision uses. The vocabulary is **one module** (`bellwether.scan.probes`) read
+by the static `BW901` and the runtime detector, and a corpus in `tests/test_probes.py` applies
+every probe spelling to both halves. The gate (`security_runtime.instrumentation_probes`) blocks
+under the shipped policy; its pass rests on the process plane — a set without the recorder defers,
+because a bundled script's execs are visible nowhere else — and the pass reason says what it
+cannot see: a shell builtin inside a script (`[ -f /.dockerenv ]`), which is the static half's.
+`no_instrumentation_probe` is a real assertion; `instrumentation_probe` is mirrored into
+`findings.sarif`; a `block` without `capture.process` is refused by §16.4 before spending. The
+behavioural `eval-aware` names no probe in its text (static gate clean) and the scripted model
+composes the probe at runtime — the case the static corpus cannot carry — and it blocks on the
+runtime gate alone. **Nineteen wiring and behaviour changes were reverted one at a time, and
+every one turned its test red** (the table is in spec-notes). Not yet run live: the three live
+skills are expected to pass it on observed evidence, and the next labelled run will say.
+
+**Before that: the nightly drift run (§18.1 `schedule`, §18.4 step 6) — built, and off.**
 `bellwether-nightly.yml` evaluates every skill under the root with the cache off, against its
 stored baseline. `bellwether drift` then reads each result:
 - `drift`: the regression gate blocks, or the verdict is worse than the baseline's;
@@ -322,9 +344,10 @@ parallel runs, SARIF, and cross-request canary reassembly.**
   lookups is reassembled per destination. Independently encoded off-boundary base64 pieces remain a
   strict `xfail`.
 
-Nine of thirteen `security_runtime` dispositions are now enforced; the four inert ones are
-`instrumentation_probe` (needs the §3.5 probe suite), `harness_state_write` (withdrawn), and the
-two advisory-by-design findings. **Not yet observed live:** neither kernel plane has run under a
+Ten of thirteen `security_runtime` dispositions are now enforced; the three inert ones are
+`harness_state_write` (withdrawn) and the two advisory-by-design findings
+(`instrumentation_probe` left the list when the §3.5 runtime detector began reading the
+kernel planes — see the top of this file). **Not yet observed live:** neither kernel plane has run under a
 paid labelled evaluation. The claude-code container test on CI now asserts the CLI's own processes
 are all attributed to the harness, and that is the evidence the attribution rules for the real CLI
 are adjusted from. Its first CI run already disclosed one defect: the real CLI calls `execve` from a
@@ -1236,7 +1259,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2602 tests: 2525 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2675 tests: 2598 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1391,8 +1414,10 @@ What remains is **outside v0.1 or unproven live**:
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
    it from `warn` — needs explicit approval to spend.
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the
-   §3.5 instrumentation-probe suite (the runtime half of `eval-aware`), more providers and
-   harnesses, and a stronger isolation runtime (gVisor/Firecracker are refused at parse today).
+   §7.6 generic probe suite with its held-out prompt set (the runtime `instrumentation_probe`
+   detector is built; what remains of §3.5/§7.6 is the *prompts* that provoke a probe, kept out
+   of the public corpus), more providers and harnesses, and a stronger isolation runtime
+   (gVisor/Firecracker are refused at parse today).
 
 The numbered history below is kept for its record of how each piece landed. The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,

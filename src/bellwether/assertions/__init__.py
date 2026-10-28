@@ -44,6 +44,12 @@ from bellwether.assertions.evidence import (
     WriteEvidence,
 )
 from bellwether.assertions.precedence import TraceInconsistency, trace_inconsistencies
+from bellwether.assertions.probes import (
+    ProbeEvidence,
+    classify_probe_path,
+    instrumentation_probes,
+    probe_in_text,
+)
 from bellwether.assertions.results import (
     AssertionResult,
     AssertionStatus,
@@ -60,6 +66,7 @@ __all__ = [
     "NearMiss",
     "ObservedPath",
     "ObservedProcess",
+    "ProbeEvidence",
     "ProcessAttribution",
     "RunOutcome",
     "ScopeEntry",
@@ -70,12 +77,15 @@ __all__ = [
     "apply_path_baseline",
     "apply_tool_baseline",
     "attribute_process",
+    "classify_probe_path",
     "derive_assertions",
     "evaluate",
     "evaluate_all",
     "evaluate_scope",
     "expand_braces",
     "glob_to_regex",
+    "instrumentation_probes",
+    "probe_in_text",
     "run_outcome",
     "trace_inconsistencies",
     "undeclared_credential_reads",

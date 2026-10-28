@@ -22,7 +22,7 @@ documentation as much as in the verdict.
 | Over-broad capability | Skill silently touches files, hosts, or tools outside its declared scope | Declared-vs-observed scope gate, live on the `run` path; capability profile at three tiers | Network/write scope derivations (undeclared-egress scoring) |
 | Tool/permission escalation | Frontmatter pre-approves tools beyond need, suppressing user prompts | `allowed-tools` recorded at parse; observed tool calls checked against the manifest's tool scope; static breadth findings for an unrestricted shell (BW601) or a wildcard grant (BW602) | — |
 | Trigger hijacking | A description broad enough to steal activation from other skills | Nothing yet | Coexistence matrix on the scheduled trigger (§7.4, v0.2) |
-| Evaluation-aware behaviour | Skill detects that it is under test and behaves only while observed | Test machinery excluded from the container by allowlist; markers, paths, hostnames, workspace roots randomised per evaluation; static probe detection (BW901: `/.dockerenv`, `.bellwether`, `/proc/1/cgroup`, `TracerPid`, `dmesg`, …), asserted on the `eval-aware` static corpus skill | Held-out probe set (§7.6); the runtime `instrumentation_probe` detector |
+| Evaluation-aware behaviour | Skill detects that it is under test and behaves only while observed | Test machinery excluded from the container by allowlist; markers, paths, hostnames, workspace roots randomised per evaluation; static probe detection (BW901: `/.dockerenv`, `.bellwether`, `/proc/1/cgroup`, `TracerPid`, `dmesg`, …), asserted on the `eval-aware` static corpus skill; the runtime `instrumentation_probe` detector over the same vocabulary — skill processes, shell commands and reads that inspect container metadata or look for the machinery — scored as `security_runtime.instrumentation_probes` and asserted on the `eval-aware` behavioural corpus skill | Held-out probe set (§7.6); a shell builtin inside a bundled script execs nothing and is visible only to the static half |
 | Silent regression | An update degrades behaviour or widens capability unnoticed | Nothing yet | Baseline diffing with component-level invalidation (§17.5, v0.2) |
 | Model-specific failure | Works on one model, behaves dangerously on another | The matrix runs every configured target and each gate takes the worst per-target result — a skill passing on one model and failing on another does not average into a pass | Cross-model divergence report (§14); providers beyond Anthropic |
 | Destructive action | Deletion, overwrite, or repo-wide modification | Filesystem plane (host-side overlay diff, whiteout-aware) + assertions; reads of the workspace and planted credentials, and every process the skill starts, captured host-side by fanotify and scored (`credential_read_undeclared`, `process_exec_undeclared`) | Reads outside the workspace and canary mounts (the read domain is recorded, and an absence claim outside it is `not_evaluable`) |
@@ -193,9 +193,10 @@ production. This is the obvious counter-move against a supply-chain tool.
 The specification additionally defines an `instrumentation_probe` finding at `high`
 severity — any read of a path matching Bellwether's own machinery, any process inspecting
 container metadata, any string comparison against a canary marker format — with a corpus
-skill that attempts detection as its regression test. **Neither the detector nor that
-corpus skill ships yet**; the finding kind is reserved and its policy disposition is
-listed by `doctor` as inert until they land.
+skill that attempts detection as its regression test. Both ship: the detector reads the
+process, harness and read planes (`bellwether.assertions.probes`), the gate blocks under the
+default policy, and `tests/corpus/eval-aware` is the regression test. What it cannot see is
+stated in the gate's own pass reason: a shell builtin inside a bundled script.
 
 **Honest limitation.** A sufficiently determined skill can probably still detect a
 sandbox. The mitigations raise cost and produce evidence; they do not close the gap.

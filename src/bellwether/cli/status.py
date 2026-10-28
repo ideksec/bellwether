@@ -84,6 +84,7 @@ _GROUP_OF: Mapping[str, str] = {
     "security_runtime.credential_reads": "security",
     "security_runtime.dns": "security",
     "security_runtime.egress": "security",
+    "security_runtime.instrumentation_probes": "security",
     "security_runtime.processes": "security",
     "security_runtime.provider_endpoint": "security",
     "security_runtime.sensitive_directories": "security",

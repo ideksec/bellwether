@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from bellwether.scan.findings import ScanRule
+from bellwether.scan.probes import PROBE_TEXT
 
 __all__ = [
     "BUILTIN_RULES",
@@ -471,18 +472,9 @@ _LINE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     ),
     ("BW504", re.compile(r"(^|[\s\"'`(=])(~|\$HOME|\$\{HOME\})?/\*\*", _I), "recursive glob"),
     ("BW603", re.compile(r"\bmcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+"), "MCP tool reference"),
-    (
-        "BW901",
-        re.compile(
-            r"(^|[\s\"'`(/~])\.bellwether\b|\bBELLWETHER_[A-Z_]+|/\.dockerenv\b"
-            r"|/run/\.containerenv\b|/proc/(1|self)/(cgroup|sched|mountinfo)\b|\bTracerPid\b"
-            r"|\bdmesg\b|\bsystemd-detect-virt\b|\bvirt-what\b|\b(honeytokens?|honeypots?)\b"
-            r"|\bcanary\s+(tokens?|markers?|credentials?|files?|values?|strings?)\b"
-            r"|\bfanotify\b|\bmitmproxy\b",
-            _I,
-        ),
-        "observation probe",
-    ),
+    # §3.5: the one probe vocabulary, shared with the runtime detector
+    # (`bellwether.assertions.probes`) so a spelling added there reaches here too.
+    ("BW901", PROBE_TEXT, "observation probe"),
 )
 
 #: §15 check 4: credential literals by their issuers' published prefixes. Each match is

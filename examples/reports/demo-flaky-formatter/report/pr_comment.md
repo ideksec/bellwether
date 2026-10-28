@@ -10,7 +10,7 @@ _failed one or more blocking gates._ · profile **medium** · skill **flaky-form
 > budget.cost not composed: no pricing configured for scripted/frontier (providers.\<name\>.pricing), so max\_cost\_usd 25.00 is not enforced on this evaluation; reported token usage is in summary.cost
 > regression not composed: no baseline is stored for skill 'flaky-formatter' (set one with \`bellwether baseline set\` from a reviewed evaluation, §17.5)
 
-**Gates:** 🔴 1 block · 🟡 1 warn · ⚪ 9 not_evaluable · 🟢 4 pass
+**Gates:** 🔴 1 block · 🟡 1 warn · ⚪ 10 not_evaluable · 🟢 4 pass
 
 ### Gates
 
@@ -30,6 +30,7 @@ _failed one or more blocking gates._ · profile **medium** · skill **flaky-form
 | security\_runtime.credential\_reads | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: read capture did not watch every planted credential on every run in this set, so an undeclared credential read cannot be ruled out (§10.2, §10.7) |
 | security\_runtime.processes | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: process capture did not observe every run in this set, so an undeclared process cannot be ruled out (§10.3, §10.7) |
 | security\_runtime.volume\_anomaly | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: the recording proxy did not decide every request on every run in this set, so request volume is not observed and the gate cannot be decided (§10.5.2, §10.7) |
+| security\_runtime.instrumentation\_probes | ⚪ `not_evaluable` | unobserved | warn | api-loop-scripted-frontier: process capture did not observe every run in this set, so a probe made by a script the skill ran cannot be ruled out (§3.5, §10.3, §10.7) |
 | budget.wall\_clock | 🟢 `pass` | 20.00 min | ≤ 60 min | matrix: the matrix spent 20.00 min of wall clock, within the 60 min ceiling |
 
 ### Repetition outcomes

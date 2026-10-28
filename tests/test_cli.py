@@ -222,15 +222,17 @@ def test_doctor_warns_that_some_runtime_dispositions_do_not_gate_yet(tmp_path: P
     assert runtime["status"] == "warn"
     # The comma-separated list of inert dispositions sits between "not_ready: " and ". Treat".
     inert_list = runtime["detail"].split("not_ready: ", 1)[1].split(". ", 1)[0]
-    for inert in ("trace_inconsistency", "instrumentation_probe"):
+    for inert in ("trace_inconsistency", "harness_state_write", "possible_egress_induced_failure"):
         assert inert in inert_list
     # credential_read_undeclared and process_exec_undeclared left the list when host-side read
-    # and process capture made their evidence observable and their gates scored, and
-    # egress_volume_anomaly when the per-run request bytes were compared against the set median.
+    # and process capture made their evidence observable and their gates scored,
+    # egress_volume_anomaly when the per-run request bytes were compared against the set median,
+    # and instrumentation_probe when the §3.5 detector began reading those same planes.
     for scored in (
         "credential_read_undeclared",
         "process_exec_undeclared",
         "egress_volume_anomaly",
+        "instrumentation_probe",
     ):
         assert scored not in inert_list
     # And one that has *left* the list: `sensitive_directory_access` is scored now, so doctor
