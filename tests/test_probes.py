@@ -10,8 +10,6 @@ assertion, and the §16.4 precondition.
 
 from __future__ import annotations
 
-import datetime as dt
-
 import pytest
 import yaml
 
@@ -34,7 +32,6 @@ from tests.factories import make_action, make_footer, make_header
 
 _CONTEXT = NormalizationContext(workspace_root="/work/a7f3c1", home="/home/agent", tmp="/tmp")
 _TARGET = TargetInfo(harness="api-loop", provider="anthropic", model_alias="frontier")
-_START = dt.datetime(2026, 8, 20, 12, 0, tzinfo=dt.UTC)
 
 # ---------------------------------------------------------------------------
 # One vocabulary, two halves
