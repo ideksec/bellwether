@@ -5658,3 +5658,80 @@ taken on one target.
 Not run live: a real third-party skill under `bellwether probe` against a live model is a paid
 run and waits on approval. The scripted executor exercises the whole path short of the
 container.
+
+## §7.4 — the trigger-collision matrix, and what `bellwether coexistence` measures
+
+§7.4 asks for a scheduled, library-wide matrix: every skill's probe scenarios run with the full
+library offered beside it, one target, `n_max: 12`, a trigger-collision matrix whose headline is
+the delta against `.bellwether/baselines/_library.coexistence.json`. The loading half landed
+earlier ("§7.4 — companions are offered, not staged"); this is the matrix.
+
+### What is built
+
+`bellwether coexistence <library>` reads every `skills/<name>/SKILL.md` directly under the root
+(fewer than two members, or two with one name, is refused) and, per member, selects the §7.4
+probes: the `probe: activation` and `probe: representative` scenarios where marked; otherwise the
+first `should_trigger` scenario stands in as the representative and the §7.6 generated probe —
+the description echoed back — as the activation. A skill with no scenarios contributes the
+generated probe alone. Each member is then one ordinary `run_evaluation` of that probe suite —
+the same sandbox, planes, estimate gate and artifact tree as `run` — with **every other member
+as a companion** and `--repetitions 12` (fixed-N, so a count has a denominator; the per-member
+verdicts are `descriptive_only` and are not the point).
+
+Two readings were added for it: `RunReading.activated_skills` (every skill Plane A saw
+activate on a run, not only the one under test) and `EvalResult.readings` (what the artifacts
+summarise away). The matrix is one row per (member, probe) with a count per winner; a run on
+which no skill activated is counted under `(none)` rather than dropped, and a winner is credited
+to the member it names by the same rule `skill_activated` uses, which understands the real
+CLI's `bundle:skill` qualification. An unknown name is kept as recorded, so a harness that
+activated something outside the library is visible.
+
+The baseline is the matrix itself, keyed on the sorted member package digests (§4's "library
+baseline"). `--set-baseline` writes it; every run compares against it where present, and the
+delta is §7.4's sentence shape — "`greedy` began winning 12 of 12 activations on `alpha`'s `act`
+probe, previously won by `alpha` or no skill (0 → 12)" — or the stated reason it cannot be
+compared: a member added, removed or changed (named), a different target, a different N. A
+different library is never diffed; a full re-run with `--set-baseline` is the remedy, as §7.4
+says.
+
+### Refusals
+
+- **Two targets.** §7.4: one target. A profile resolving to more is refused before any member is
+  loaded for execution, naming `--targets <alias>`; the scaffold's profiles run two, so the
+  command needs the flag there.
+- **`api-loop` without `--force`.** §9.4: Bellwether writes the system prompt on `api-loop`, so
+  collisions measured there measure its prompt assembly. A forced matrix carries
+  `portable: false` and the label *harness-specific: not portable* in the file and the page.
+- **A declared name never chooses a directory.** Members carry the directory they loaded from.
+
+### Not built, stated
+
+- **The scheduled workflow** (§7.4 item 1, §18) and the **§19.3 description-digest flag** (a PR
+  changing a description posts a warning and flags the library for the next scheduled run). The
+  command is what that workflow would call; the workflow and the flag are the next brick.
+- **Live.** No matrix has been run against a live model; the three live-smoke skills are the only
+  library here, and a paid run waits on approval.
+
+### Revert-proving: seventeen changes, sixteen red
+
+| # | Reverted | Red test |
+|---|---|---|
+| X1 | the run does not record which skills activated | `test_a_greedy_skill_wins_the_others_activations` |
+| X2 | the result does not expose its readings | same |
+| X3 | each member is offered alone, not with the library | same (the executor records who was offered) |
+| X4 | `api-loop` not refused without `--force` | `test_api_loop_is_refused_without_force` |
+| X5 | two targets accepted | `test_two_targets_are_refused_rather_than_averaged` |
+| X6 | the marked activation probe ignored | `test_probe_selection_follows_the_marks_then_the_fallbacks` |
+| X7 | the representative fallback dropped | same |
+| X8 | the library key built from names, not digests | the key test, `test_a_changed_member_invalidates_the_baseline` |
+| X9 | a key mismatch compared anyway | `test_a_changed_member_invalidates_the_baseline` |
+| X10 | a run with no activation dropped from the count | `test_runs_with_no_activation_are_counted_as_none` |
+| X11 | the not-portable label lost | `test_a_greedy_skill_wins_the_others_activations` |
+| X12 | winners credited by raw name, not matched to a member | `test_a_bundle_qualified_activation_is_credited_to_the_member` — a first version of this row was measured against a helper test and stayed green; the end-to-end case was added and measured again |
+| X13 | a one-member library accepted | `test_a_library_needs_two_members_with_distinct_names` |
+| X14 | the delta silent on the probed skill's own losses | `test_the_baseline_delta_names_who_began_and_stopped_winning` |
+| X15 | N not 12 | `test_a_greedy_skill_wins_the_others_activations` |
+| X16 | `coexistence`'s `--out` default drifts from the excluded directory | `test_every_commands_out_default_is_the_directory_the_exclusion_names` |
+| X17 | a probe's own `also_load_skills` kept in the stored suite | **stays green.** The companions a probe runs with come from the command's own resolver, which overrides the field, so the scrub changes no run; it keeps the recorded suite from claiming companions it did not choose. Defensive, and no test is claimed for it. |
+
+The container suite (61 run locally, 16 CI-only skips with stated reasons) is green.

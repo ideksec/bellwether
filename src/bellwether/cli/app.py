@@ -1809,9 +1809,219 @@ def probe(
 
 
 @app.command()
-def coexistence(json_output: JsonFlag = False) -> None:
-    """Library-wide trigger-collision matrix."""
-    _not_yet("coexistence", "v0.2", "coexistence runs on the schedule trigger, off the PR path")
+def coexistence(
+    library: Annotated[
+        Path, typer.Argument(help="The library root: the directory holding skills/<name>/SKILL.md.")
+    ],
+    config: Annotated[Path, typer.Option("--config", help="Path to config.yaml.")] = CONFIG_FILE,
+    policy_path: Annotated[
+        Path | None,
+        typer.Option("--policy", help="Path to policy.yaml (default: beside --config)."),
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Override the policy profile.")
+    ] = None,
+    out: Annotated[
+        Path, typer.Option("--out", help="Where artifact trees are written.")
+    ] = RUN_OUTPUT_DIR,
+    max_tokens: Annotated[
+        int,
+        typer.Option(
+            "--max-tokens",
+            help="Hard per-repetition token ceiling — the cost guard for a live run.",
+        ),
+    ] = 1_000_000,
+    targets: Annotated[
+        str | None,
+        typer.Option("--targets", help="The one model alias to run on (§7.4: one target)."),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Run on an api-loop target anyway; the matrix is labelled 'harness-specific: "
+            "not portable' (§9.4).",
+        ),
+    ] = False,
+    set_baseline: Annotated[
+        bool,
+        typer.Option(
+            "--set-baseline",
+            help="Store this matrix as .bellwether/baselines/_library.coexistence.json.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip the confirmation after each pre-flight estimate (§19.1)."),
+    ] = False,
+    json_output: JsonFlag = False,
+) -> None:
+    """Library-wide trigger-collision matrix (§7.4) — for the scheduled trigger, off the PR path.
+
+    Every skill under the library root runs its probe scenarios (``probe: activation`` and
+    ``probe: representative``, else its first ``should_trigger`` and the §7.6 generated probe)
+    with the whole library offered beside it, on one target at a fixed N of 12; the matrix
+    records which skill won each activation, and the headline is the delta against the stored
+    library baseline. Each member's evaluation is an ordinary artifact tree under ``--out``;
+    the matrix lands beside them as ``coexistence-<stamp>/coexistence.{json,md}``.
+    """
+    import datetime as dt
+
+    from bellwether.cli.coexistence import (
+        LIBRARY_BASELINE_FILE,
+        compare_with_baseline,
+        library_members,
+        load_library_baseline,
+        render_coexistence_json,
+        render_coexistence_markdown,
+        resolve_coexistence_target,
+        run_coexistence,
+        write_library_baseline,
+    )
+    from bellwether.cli.execution import isolation_from_config, zone_map_from_config
+    from bellwether.cli.run import (
+        RunDeclinedError,
+        build_proxy_provider,
+        build_resolver_provider,
+        claude_code_providers,
+        run_limits_from_config,
+        sandbox_executor_factory,
+    )
+    from bellwether.determinism import stable_hash
+
+    try:
+        loaded_config = load_config(config)
+        loaded_policy = load_policy(_policy_beside(config, policy_path))
+    except (BellwetherError, ConfigurationError, OSError) as error:
+        typer.echo(f"bellwether coexistence: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    try:
+        target = resolve_coexistence_target(
+            loaded_config,
+            loaded_policy,
+            environ=os.environ,
+            profile_override=profile,
+            target_aliases=_split_csv(targets),
+            force=force,
+        )
+        members = library_members(library)
+    except (BellwetherError, ConfigurationError) as error:
+        typer.echo(f"bellwether coexistence: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    daemon_ok, daemon_reason = DockerBackend(image=loaded_config.sandbox.image).available()
+    if not daemon_ok:
+        typer.echo(
+            f"bellwether coexistence: the sandbox is unavailable — {daemon_reason}", err=True
+        )
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    created_at = dt.datetime.now(dt.UTC).isoformat()
+    stamp = f"{dt.datetime.now(dt.UTC):%Y%m%dT%H%M%SZ}"
+
+    def executor_factory_for(eval_id: str):  # type: ignore[no-untyped-def]
+        return sandbox_executor_factory(
+            loaded_config.sandbox.image,
+            out / eval_id / "runs",
+            eval_id,
+            limits=run_limits_from_config(loaded_config, max_total_tokens=max_tokens),
+            artifact_root=out,
+            proxy=build_proxy_provider(
+                loaded_config,
+                environ=os.environ,
+                brokered_providers=claude_code_providers(loaded_policy, None),
+                rng_seed=int(stable_hash(eval_id).removeprefix("sha256:")[:16], 16),
+            ),
+            provider_base_urls={
+                name: provider.base_url for name, provider in loaded_config.providers.items()
+            },
+            provider_types={
+                name: provider.type for name, provider in loaded_config.providers.items()
+            },
+            resolver=build_resolver_provider(loaded_config),
+            isolation=isolation_from_config(loaded_config.sandbox),
+            zones=zone_map_from_config(loaded_config.capture.zones),
+            randomize_identifiers=loaded_config.sandbox.randomize_identifiers,
+            plant_canaries=loaded_config.canaries.enabled,
+            capture_reads=loaded_config.capture.filesystem_reads == "fanotify",
+            capture_processes=loaded_config.capture.process == "fanotify",
+        )
+
+    try:
+        matrix = run_coexistence(
+            config=loaded_config,
+            policy=loaded_policy,
+            members=members,
+            target=target,
+            environ=os.environ,
+            executor_factory_for=executor_factory_for,
+            out_dir=out,
+            created_at=created_at,
+            bellwether_version=__version__,
+            profile_override=profile,
+            shared_fixture_root=config.parent / "fixtures",
+            max_tokens_per_run=max_tokens,
+            on_estimate=_estimate_gate(yes),
+            on_member=lambda package, result: typer.echo(
+                f"bellwether coexistence [{package.name}]: {result.artifacts.root}", err=True
+            ),
+        )
+        baseline_path = config.parent / "baselines" / LIBRARY_BASELINE_FILE
+        baseline = load_library_baseline(baseline_path) if baseline_path.is_file() else None
+        delta = compare_with_baseline(matrix, baseline)
+        matrix_dir = out / f"coexistence-{stamp}"
+        matrix_dir.mkdir(parents=True, exist_ok=True)
+        (matrix_dir / "coexistence.json").write_text(
+            render_coexistence_json(matrix), encoding="utf-8"
+        )
+        (matrix_dir / "coexistence.md").write_text(
+            render_coexistence_markdown(matrix, delta), encoding="utf-8"
+        )
+        stored = write_library_baseline(matrix, baseline_path.parent) if set_baseline else None
+    except RunDeclinedError as error:
+        typer.echo(f"bellwether coexistence: {error}", err=True)
+        raise typer.Exit(ExitCode.DECLINED) from None
+    except (BellwetherError, ConfigurationError, OSError) as error:
+        typer.echo(f"bellwether coexistence: {error}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
+
+    collisions = [
+        (cell.skill, cell.probe_id, cell.collisions()) for cell in matrix.cells if cell.collisions()
+    ]
+    _emit(
+        {
+            "matrix": str(matrix_dir / "coexistence.json"),
+            "markdown": str(matrix_dir / "coexistence.md"),
+            "library_key": matrix.library_key,
+            "members": list(matrix.members),
+            "target": matrix.target,
+            "portable": matrix.portable,
+            "collisions": [
+                {"skill": skill, "probe": probe, "won_by": won} for skill, probe, won in collisions
+            ],
+            "comparable": delta.comparable,
+            "changes": list(delta.changes),
+            "baseline_written": str(stored) if stored else None,
+        },
+        as_json=json_output,
+        lines=[
+            f"coexistence: {len(matrix.members)} skills on {matrix.target}"
+            + ("" if matrix.portable else " (harness-specific: not portable)")
+            + f" — {matrix_dir / 'coexistence.md'}",
+            *(
+                [f"  {skill}/{probe}: won by {won}" for skill, probe, won in collisions]
+                or ["  no probe's activation was won by another skill"]
+            ),
+            *(
+                [f"  baseline: {delta.reason}"]
+                if not delta.comparable
+                else [f"  {change}" for change in delta.changes]
+                or ["  no change against the stored library baseline"]
+            ),
+            *([f"  baseline written: {stored}"] if stored else []),
+        ],
+    )
 
 
 @app.command(name="init-manifest")
