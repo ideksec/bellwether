@@ -694,6 +694,15 @@ def run(
             "into the static scan (§15); repeatable. Bellwether reads it, never runs the tool.",
         ),
     ] = None,
+    generic_probes: Annotated[
+        bool,
+        typer.Option(
+            "--generic-probes",
+            help="For a skill that declares no scenarios, run the generic probe suite of §7.6 "
+            "(activation, unrelated prompts, a representative task) instead of refusing; the "
+            "verdict says task quality was not evaluated. A skill's own scenarios always win.",
+        ),
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
     """Run a full evaluation: matrix, capture, metrics, verdict, artifacts.
@@ -716,6 +725,7 @@ def run(
         build_proxy_provider,
         build_resolver_provider,
         claude_code_providers,
+        effective_suite,
         run_evaluation,
         run_limits_from_config,
         sandbox_executor_factory,
@@ -797,11 +807,13 @@ def run(
             # .bellwether/fixtures/<name>/, or `empty` — so scenarios that need different
             # starting trees are expressible; `fixture` above stays the default for plans
             # that name none.
+            # The suite the run will use — the skill's own, or the §7.6 generic probes — so a
+            # generated suite's fixtures (none: a bare workspace) resolve the same way. A skill
+            # with nothing to run is refused by run_evaluation, with the message, not here.
+            suite = effective_suite(package, generic_probes=generic_probes)
             fixture_for = (
-                fixture_resolver(
-                    skill_dir, package.scenarios, shared_root=config.parent / "fixtures"
-                )
-                if package.scenarios is not None
+                fixture_resolver(skill_dir, suite, shared_root=config.parent / "fixtures")
+                if suite is not None
                 else None
             )
             # §17.5: the skill's stored baseline, beside the config, feeds the regression gate.
@@ -832,6 +844,7 @@ def run(
                 max_tokens_per_run=max_tokens,
                 on_estimate=_estimate_gate(yes),
                 scanner_sarif=tuple(scanner_sarif or ()),
+                generic_probes=generic_probes,
                 environ=os.environ,
                 make_executor=sandbox_executor_factory(
                     loaded_config.sandbox.image,
@@ -1723,11 +1736,76 @@ def scan(
 
 @app.command()
 def probe(
-    target: Annotated[str, typer.Argument(help="Path or URL of a third-party skill.")],
+    target: Annotated[
+        str, typer.Argument(help="Directory of a third-party skill (the one holding SKILL.md).")
+    ],
+    config: Annotated[Path, typer.Option("--config", help="Path to config.yaml.")] = CONFIG_FILE,
+    policy_path: Annotated[
+        Path | None,
+        typer.Option("--policy", help="Path to policy.yaml (default: beside --config)."),
+    ] = None,
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="Override the policy profile.")
+    ] = None,
+    out: Annotated[
+        Path, typer.Option("--out", help="Where artifact trees are written.")
+    ] = RUN_OUTPUT_DIR,
+    max_tokens: Annotated[
+        int,
+        typer.Option(
+            "--max-tokens",
+            help="Hard per-repetition token ceiling — the cost guard for a live run.",
+        ),
+    ] = 1_000_000,
+    targets: Annotated[
+        str | None,
+        typer.Option(
+            "--targets", help="Comma-separated model aliases to keep (e.g. frontier,small)."
+        ),
+    ] = None,
+    budget_usd: Annotated[
+        float | None,
+        typer.Option("--budget-usd", help="Override the profile's max_cost_usd (§19.1)."),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip the confirmation after the pre-flight estimate (§19.1)."),
+    ] = False,
+    strict: Annotated[
+        bool, typer.Option("--strict", help="Promote a conditional verdict to a failing exit code.")
+    ] = False,
     json_output: JsonFlag = False,
 ) -> None:
-    """External mode: run the generic probe suite against a skill with no scenarios."""
-    _not_yet("probe", "v0.2", "the generic probe suite of §7.6 has not landed")
+    """External mode (§5, §7.6): evaluate a third-party skill that supplies no scenarios.
+
+    The static scan runs as always; the behavioural matrix runs the generic probe suite — the
+    skill's own description echoed back as the activation probe, unrelated prompts for
+    over-triggering, and one representative task — under the same sandbox, capture planes and
+    security gates as ``run``. The verdict's notes say that task quality was not evaluated. A
+    skill that does declare scenarios runs those instead. Only a local directory is accepted in
+    this build; fetch a URL first and point at the checkout.
+    """
+    if "://" in target:
+        typer.echo(
+            "bellwether probe: only a local skill directory is accepted in this build; clone or "
+            f"download {target} first and point at the directory holding SKILL.md.",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+    run(
+        skills=[target],
+        config=config,
+        policy_path=policy_path,
+        profile=profile,
+        out=out,
+        max_tokens=max_tokens,
+        targets=targets,
+        budget_usd=budget_usd,
+        yes=yes,
+        strict=strict,
+        generic_probes=True,
+        json_output=json_output,
+    )
 
 
 @app.command()

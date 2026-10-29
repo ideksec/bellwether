@@ -553,6 +553,7 @@ def test_every_commands_out_default_is_the_directory_the_exclusion_names() -> No
     # exception; anything else changing membership has to be a deliberate edit here.
     assert set(defaults) == {
         "run",
+        "probe",
         "init_manifest",
         "show_trace",
         "render_report",

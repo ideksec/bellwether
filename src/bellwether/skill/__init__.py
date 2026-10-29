@@ -58,15 +58,25 @@ from bellwether.skill.plugin import (
     load_plugin,
     plugin_skill_dirs,
 )
+from bellwether.skill.probes import (
+    ACTIVATION_PROBE_ID,
+    REPRESENTATIVE_PROBE_ID,
+    UNRELATED_PROMPTS,
+    generic_probe_suite,
+    unrelated_probe_id,
+)
 
 __all__ = [
+    "ACTIVATION_PROBE_ID",
     "DEFAULT_PAYLOAD_ALLOWLIST",
     "DIGEST_FORMAT",
     "EVALS_DIR",
     "PLUGIN_MANIFEST",
     "PLUGIN_MCP_FILE",
     "PLUGIN_SKILLS_DIR",
+    "REPRESENTATIVE_PROBE_ID",
     "SKILL_FILE",
+    "UNRELATED_PROMPTS",
     "Executable",
     "FileRecord",
     "Frontmatter",
@@ -80,6 +90,7 @@ __all__ = [
     "description_digest",
     "detect_interpreter",
     "estimate_tokens",
+    "generic_probe_suite",
     "has_unusual_path_characters",
     "is_plugin_root",
     "load_plugin",
@@ -92,4 +103,5 @@ __all__ = [
     "plugin_skill_dirs",
     "read_file_records",
     "slugify_name",
+    "unrelated_probe_id",
 ]
