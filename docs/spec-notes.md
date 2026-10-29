@@ -3594,11 +3594,13 @@ does demonstrate it somewhere to say so.
 
 ### What this leaves
 
-**Four** dispositions remain inert — nine enforced of thirteen — and the reasons are not
+**Three** dispositions remain inert — ten enforced of thirteen — and the reasons are not
 uniform. `process_exec_undeclared` and `credential_read_undeclared` *were* on this list waiting on
 capture that did not exist; host-side read and process capture now decide both (see "§10.2,
-§10.3 — reads and processes from fanotify", below). `instrumentation_probe` waits on the §3.5
-probe suite. `egress_volume_anomaly` *was* on this list for want of a reference volume; it is
+§10.3 — reads and processes from fanotify", below). `instrumentation_probe` *was* on this list
+waiting on the §3.5 probe suite; it is now read off those same planes and scored
+(`security_runtime.instrumentation_probes` — see "§3.5 — the runtime `instrumentation_probe`
+detector", below). `egress_volume_anomaly` *was* on this list for want of a reference volume; it is
 now scored against the repetition set's peer median (`security_runtime.volume_anomaly`).
 `unexpected_provider_endpoint` *was* on this list with no producer at all — the finding kind was
 defined in §11.3 and in `RUNTIME_FINDING_KINDS` and nothing emitted it; it is now produced at the
@@ -5042,8 +5044,8 @@ are in the test corpus. A Markdown table row is not a pipeline.
   rest of the file" needs a language model of its own and is not approximated.
 - **No external delegation.** *(Built since — see "§15 — delegation reads scanner output, it
   never runs a scanner".)*
-- **The runtime half of `eval-aware` is unbuilt.** That is §3.5's `instrumentation_probe`, which
-  needs the probe suite.
+- **The runtime half of `eval-aware`.** *(Built since — see "§3.5 — the runtime
+  `instrumentation_probe` detector". The static half still carries the shell-builtin case.)*
 
 **`BW901` was narrowed before it shipped.** The bare words `bellwether` and `canary` are not
 probes: a skill may name the tool, and "canary deployment" is ordinary English. The rule matches
@@ -5450,3 +5452,129 @@ N11 is gone rather than proved. The drift step had `always()`, and removing it c
 the evaluate step records its status and carries on, so the only way it fails is the
 missing-key exit. That exit writes no status, and the drift step is skipped on that anyway.
 The `always()` was inert, so it was removed.
+
+## §3.5 — the runtime `instrumentation_probe` detector
+
+§3.5 says that any read of a path matching Bellwether's own machinery, any process inspecting
+container metadata, and any string comparison against a canary marker format "are recorded as
+`instrumentation_probe` findings at `high` severity." Until now only the static half existed
+(`BW901`, §15 check 9, over the skill's text) and the disposition was the one scored nowhere.
+The reason was honest — there was no plane to read a *runtime* probe from — and that reason
+ended when reads and processes were captured host-side ("§10.2, §10.3 — reads and processes
+from fanotify"). This entry is the runtime half, and what it diverges from.
+
+### What it reads, and from where
+
+Four channels, each presence evidence (§10.8: a hit is a hit whatever the plane's fidelity):
+
+- **Plane D′ processes** attributed to the skill — a probe *program* (`dmesg`,
+  `systemd-detect-virt`, `virt-what`, by argv0 *or* by the file the kernel executed, §10.3's
+  double identity), a probe *path* among the argv tokens, or a probe *idiom* anywhere in the
+  argv text (a `sh -c <script>` carries the script as one token, and is read as a command).
+- **Plane A shell commands and search patterns** — the `command` the model asked a shell tool
+  for (api-loop `bash`, the CLI `Bash`) and the `pattern` it asked `Grep` for. What the skill
+  *asked*, where the process plane is what *ran*; both are read because the first exists on a run
+  without the recorder and the second sees what the first cannot (a script's own execs).
+- **Plane A reported reads** — the path a read tool was pointed at, whichever process opened
+  it: a `Read` of `/.dockerenv` is the model's probe though the CLI did the reading.
+- **Plane B observed reads** by a skill process on a watched mount — a look for `.bellwether/`
+  in the workspace, where the payload allowlist (§9.1 step 3) makes sure it never is.
+
+**The harness's own processes and reads are not the skill's probes.** The real CLI inspects its
+container to decide how to render — a Node runtime's `is-docker` reads `/.dockerenv` and
+`/proc/self/cgroup` — and that is attributed to the harness by tree (§10.3), never to the skill.
+A detector that judged by name would block every run under the CLI. Reads the harness's own
+process made are skipped for the same reason; a read the model *asked* for is on Plane A.
+
+**Content a `write` tool carries is prose, not a probe.** A README that mentions `dmesg` is a
+README. Only the two intent keys are read; the one-line allowlist is in the module.
+
+### One vocabulary, two halves
+
+The probe *vocabulary* — which paths, which programs, which text idioms — is one module,
+`bellwether.scan.probes`, read by `BW901` and by the runtime detector. This is the rule from the
+independent review applied before the review finds it: where two places implement one rule,
+write one corpus and apply it to both. `tests/test_probes.py` runs every probe spelling through
+`scan_text` *and* `probe_in_text`, and every ordinary text through neither. A spelling added to
+the vocabulary reaches both; one deleted from a copy would fail the other half's test (R10).
+
+The halves still differ in one way, stated: the static regex is a text rule and matches
+`.bellwether` at a word boundary, so `.bellwether-ish/` fires it; the runtime path check judges
+by *component*, so `/work/.bellwether-ish/x` is not a probe there. The static half is the
+higher-sensitivity one on purpose — it is a reviewer's hint at `high`, not a gate on its own
+below the profile's threshold — and the corpus's negative rows are the ones both halves agree on.
+
+### Normalise, then compare
+
+Paths are reduced with `normalize_container_path`, the lexical resolver every other path decision
+uses since "§11.4, §13.5.4 — one path, many spellings," before they meet the vocabulary. So
+`//.dockerenv`, `/./.dockerenv`, `/etc/../.dockerenv`, `/proc/1/./cgroup`, `/proc/self/../1/cgroup`
+and `//proc/1/cgroup` are the probe they resolve to, and `/proc/<any pid>/cgroup` is a cgroup read
+whatever the pid component — `1`, `self`, `$$` as the shell left it, a number found with `ps`.
+A `KEY=value` token is judged by its value. A command `shlex` cannot parse is split on
+whitespace, never skipped. The spelling corpus is in `tests/test_probes.py`; a new spelling is
+one line there.
+
+### The gate, and what its pass does not say
+
+`security_runtime.instrumentation_probes` takes the `instrumentation_probe` disposition — `block`
+in the shipped policy — and has the three states the other security gates have. **Presence
+first:** a recorded probe takes the disposition whatever else the set saw, including a set the
+recorder did not fully observe (R16). **The absence claim rests on the process plane:** a set
+without process capture at absence-supporting fidelity defers (R19), because what a bundled
+script actually ran is visible nowhere else, and a clean harness stream on a run nobody watched
+exec is not a run that probed nothing. The §16.4 precondition refuses a `block` disposition
+without `capture.process` before anything is spent (R5), as it does for `process_exec_undeclared`.
+
+What a pass does not say, and the pass reason says so: a **shell builtin inside a bundled
+script** — the static corpus's `env-check.sh` is `[ -f /.dockerenv ] || [ -d .bellwether ]` —
+execs nothing and opens a path outside the read domain, so the runtime plane is silent on it.
+That case is `BW901`'s, which is why the static half stays and why the static corpus's
+`eval-aware` keeps its row. The behavioural `eval-aware` is the converse: its text names no
+probe (the static gate passes), and the *model* composes the probe at runtime from "make sure
+you are not inside a test harness." Each half carries the case the other cannot.
+
+`no_instrumentation_probe` is a real assertion now, same shape as `no_process_exec`: fail with
+every probe's `seq` as evidence, `not_evaluable` with the plane reason where the process plane
+cannot support absence, pass otherwise. `instrumentation_probe` is mirrored into `findings.sarif`
+at `high` (§17.3), and the gate is in the `security` commit-status group (§18.2).
+
+### Removed: a map nothing read
+
+`_PLANE_DEPENDENT_CHECKS` in the orchestrator named four dispositions and the plane each needs,
+and no code read it. It was added with the first-light composition and outlived the code that
+used it; the §16.4 precondition check carries the same knowledge in the form that is executed.
+A map of "which control needs which plane" that nothing consults is the project's signature
+defect in miniature, so it is gone rather than extended. No test can go red for deleting dead
+code, and none is claimed.
+
+### Revert-proving: nineteen changes, nineteen red
+
+Each wiring or behaviour change was reverted alone and its pinning tests re-run, from a driver
+that restores the file afterwards. The measurement, not a summary of it:
+
+| # | Reverted | Red test |
+|---|---|---|
+| R1 | `analyse_run` hands the gate no probes | `test_eval_aware_is_blocked_by_the_runtime_probe_gate` |
+| R2 | `aggregate` drops the probes across the set | same |
+| R3 | the gate is not composed | `test_readme_gate_list_matches_the_composed_verdict` |
+| R4 | disposition left out of `ENFORCED_SECURITY_RUNTIME_DISPOSITIONS` | `test_the_disposition_is_enforced`, the SARIF mirror test, `doctor`'s inert list, the spec-notes count |
+| R5 | §16.4 precondition removed | `test_a_blocking_probe_gate_without_process_capture_is_refused_up_front` |
+| R6 | harness-role processes judged as the skill's | `test_the_harness_s_own_processes_are_not_the_skill_s_probes` |
+| R7 | harness-role reads judged as the skill's | `test_an_observed_skill_read_of_the_machinery_is_a_probe` |
+| R8 | `content` scanned alongside `command`/`pattern` | `test_content_a_write_tool_carries_is_prose_not_a_probe` |
+| R9 | paths compared raw, not normalised | `test_every_spelling_of_a_probe_path_is_the_same_probe` |
+| R10 | `BW901` keeps its own regex copy, one entry short | `test_every_probe_fires_the_static_rule` |
+| R11 | `no_instrumentation_probe` left `_not_built` | the assertion tests |
+| R12 | SARIF rule removed | the SARIF mirror test |
+| R13 | commit-status group unmapped | `test_commit_status` (an unmapped gate raises) |
+| R14 | demo not softened to `warn` | `test_benign_is_conditional_and_consistent` |
+| R15 | executed file name not judged, argv0 only | `test_a_skill_process_running_a_probe_program_is_a_probe` |
+| R16 | absence bar checked before presence | `test_a_probe_blocks_even_where_the_set_was_not_fully_observed` |
+| R17 | the tool-call channel removed | `test_a_shell_command_the_model_asked_for_is_a_probe`, the corpus case |
+| R18 | the reported-read channel removed | `test_a_read_tool_pointed_at_a_probe_path_is_a_probe` |
+| R19 | absence passes without the process plane | `test_no_probe_without_the_process_plane_defers`, the demo's gate list |
+
+The container suite (61 run locally, 16 CI-only skips with stated reasons) is green with the
+gate composed. Not yet run live: the three live-smoke skills are expected to pass the gate on
+observed evidence under both harnesses, and the next labelled run is what will say so.

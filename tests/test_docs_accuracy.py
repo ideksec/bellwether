@@ -46,6 +46,7 @@ def test_spec_notes_states_the_real_inert_count() -> None:
     match = re.search(r"\*\*(\w+)\*\* dispositions remain inert — (\w+) enforced of (\w+)", notes)
     assert match is not None, "the inert-disposition sentence in spec-notes has moved or changed"
     words = {
+        "three": 3,
         "four": 4,
         "five": 5,
         "six": 6,

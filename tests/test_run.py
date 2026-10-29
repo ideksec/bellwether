@@ -137,6 +137,7 @@ def _policy() -> Policy:
             "unexpected_provider_endpoint": "warn",
             "credential_read_undeclared": "warn",
             "process_exec_undeclared": "warn",
+            "instrumentation_probe": "warn",
         }
     )
     gates = low.gates.model_copy(update={"security_runtime": security})
@@ -423,6 +424,7 @@ def test_run_refuses_a_profile_requiring_planes_the_runner_lacks(
             "unexpected_provider_endpoint": "warn",
             "credential_read_undeclared": "warn",
             "process_exec_undeclared": "warn",
+            "instrumentation_probe": "warn",
         }
     )
     gates = high.gates.model_copy(update={"security_runtime": security})

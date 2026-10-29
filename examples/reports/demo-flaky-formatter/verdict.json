@@ -86,6 +86,12 @@
       "status": "not_evaluable"
     },
     {
+      "name": "security_runtime.instrumentation_probes",
+      "reason": "api-loop-scripted-frontier: process capture did not observe every run in this set, so a probe made by a script the skill ran cannot be ruled out (§3.5, §10.3, §10.7)",
+      "required": false,
+      "status": "not_evaluable"
+    },
+    {
       "name": "budget.wall_clock",
       "reason": "matrix: the matrix spent 20.00 min of wall clock, within the 60 min ceiling",
       "required": true,

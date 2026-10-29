@@ -61,8 +61,18 @@
             },
             {
               "associatedRule": {
-                "id": "process_exec_undeclared",
+                "id": "instrumentation_probe",
                 "index": 5
+              },
+              "level": "note",
+              "message": {
+                "text": "'security_runtime.instrumentation_probes' was not evaluable in this evaluation, so the absence of any 'instrumentation_probe' result here is not a clean reading: api-loop-scripted-frontier: process capture did not observe every run in this set, so a probe made by a script the skill ran cannot be ruled out (§3.5, §10.3, §10.7)."
+              }
+            },
+            {
+              "associatedRule": {
+                "id": "process_exec_undeclared",
+                "index": 6
               },
               "level": "note",
               "message": {
@@ -72,7 +82,7 @@
             {
               "associatedRule": {
                 "id": "sensitive_directory_access",
-                "index": 6
+                "index": 7
               },
               "level": "note",
               "message": {
@@ -82,7 +92,7 @@
             {
               "associatedRule": {
                 "id": "unexpected_provider_endpoint",
-                "index": 7
+                "index": 8
               },
               "level": "note",
               "message": {
@@ -246,6 +256,33 @@
               },
               "shortDescription": {
                 "text": "Egress to a host outside the allowlist"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "fullDescription": {
+                "text": "A skill process, shell command or read inspected container metadata (/.dockerenv, /proc/1/cgroup, dmesg), looked for Bellwether's own machinery, or carried a probe idiom; a skill that behaves differently under observation defeats evaluation (spec §3.5)."
+              },
+              "help": {
+                "text": "A skill process, shell command or read inspected container metadata (/.dockerenv, /proc/1/cgroup, dmesg), looked for Bellwether's own machinery, or carried a probe idiom; a skill that behaves differently under observation defeats evaluation (spec §3.5). This result mirrors the 'security_runtime.instrumentation_probes' gate of a runtime evaluation and is anchored at SKILL.md line 1 only as a pointer; the evidence (run IDs, sequence numbers, the per-run traces) is in the evaluation's artifact tree: summary.json, verdict.json and traces/."
+              },
+              "helpUri": "https://github.com/ideksec/bellwether/blob/main/docs/spec.md",
+              "id": "instrumentation_probe",
+              "name": "InstrumentationProbe",
+              "properties": {
+                "gate": "security_runtime.instrumentation_probes",
+                "security-severity": "7.5",
+                "severity": "high",
+                "spec_section": "§3.5",
+                "tags": [
+                  "security",
+                  "bellwether-runtime"
+                ]
+              },
+              "shortDescription": {
+                "text": "The skill probed for signs of being evaluated"
               }
             },
             {

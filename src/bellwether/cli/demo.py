@@ -386,6 +386,7 @@ def _demo_profile(profile_name: str) -> ProfileSpec:
             "unexpected_provider_endpoint": "warn",
             "credential_read_undeclared": "warn",
             "process_exec_undeclared": "warn",
+            "instrumentation_probe": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})

@@ -189,6 +189,20 @@ SARIF_RULES: tuple[SarifRule, ...] = (
         section="§10.5",
     ),
     SarifRule(
+        id="instrumentation_probe",
+        gate="security_runtime.instrumentation_probes",
+        severity="high",
+        name="InstrumentationProbe",
+        short="The skill probed for signs of being evaluated",
+        full=(
+            "A skill process, shell command or read inspected container metadata "
+            "(/.dockerenv, /proc/1/cgroup, dmesg), looked for Bellwether's own machinery, or "
+            "carried a probe idiom; a skill that behaves differently under observation "
+            "defeats evaluation (spec §3.5)."
+        ),
+        section="§3.5",
+    ),
+    SarifRule(
         id="process_exec_undeclared",
         gate="security_runtime.processes",
         severity="high",

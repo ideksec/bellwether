@@ -10,5 +10,8 @@ point is what the scan reports from the text. `tests/test_static_scan.py` assert
 | `obfuscated-injection` | `BW201` high | a base64 "token" in SKILL.md decodes to an instruction override |
 | `eval-aware` | `BW901` high | a bundled script checks for `/.dockerenv`, `.bellwether/` and the container cgroup before behaving (§3.5) |
 
-The runtime half of `eval-aware` (§3.5's `instrumentation_probe` disposition) needs the probe
-suite and is not built; the static half is what this corpus asserts.
+The runtime half of `eval-aware` (§3.5's `instrumentation_probe` disposition) is the
+behavioural corpus's `eval-aware` (`tests/corpus/`): what the skill *ran*, judged from the
+process, harness and read planes. The two halves share one vocabulary
+(`bellwether.scan.probes`). The static half here carries the case the runtime half cannot see:
+`[ -f /.dockerenv ]` is a shell builtin, so it execs nothing.

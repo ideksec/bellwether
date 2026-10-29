@@ -380,6 +380,25 @@ def check_preconditions(
             )
         )
 
+    # And the instrumentation-probe gate (§3.5): presence can come from Plane A, but "no probe"
+    # is an absence claim over what the skill ran, which only process capture can witness.
+    if (
+        gates.security_runtime.instrumentation_probe == "block"
+        and "process" not in available_planes
+    ):
+        failures.append(
+            PreconditionFailure(
+                gate="security_runtime.instrumentation_probe",
+                target="(runner)",
+                remedy=(
+                    "process capture is not in this composition (capture.process: off), so the "
+                    "absence of an instrumentation probe cannot be witnessed and the gate would "
+                    "be not_evaluable; set capture.process: fanotify, or set "
+                    "instrumentation_probe to 'warn'"
+                ),
+            )
+        )
+
     # (6) Mandatory policy controls this build cannot satisfy. Each of these was accepted by
     # the schema, printed in the resolved policy, and enforced nowhere — the silent-no-op shape
     # §16.4 exists to catch, reached through the policy document instead of through the planes.

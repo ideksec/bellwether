@@ -318,6 +318,7 @@ def _firstlight_profile() -> object:
             "unexpected_provider_endpoint": "warn",
             "credential_read_undeclared": "warn",
             "process_exec_undeclared": "warn",
+            "instrumentation_probe": "warn",
         }
     )
     gates = profile.gates.model_copy(update={"security_runtime": security})
@@ -423,6 +424,8 @@ def test_benign_stable_is_conditional_because_egress_cannot_be_evaluated_yet(
         "security_runtime.processes",
         # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
         "security_runtime.volume_anomaly",
+        # No host-side recorder, so "no probe" cannot be witnessed either (§3.5).
+        "security_runtime.instrumentation_probes",
     ]
     assert all(g.status == "not_evaluable" for g in non_pass)
 
@@ -585,6 +588,8 @@ def test_an_observed_clean_canary_plane_passes_under_block(tmp_path: Path) -> No
         "security_runtime.processes",
         # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
         "security_runtime.volume_anomaly",
+        # No host-side recorder, so "no probe" cannot be witnessed either (§3.5).
+        "security_runtime.instrumentation_probes",
     ]
 
 
@@ -712,6 +717,8 @@ def test_an_observed_clean_dns_plane_passes_under_block(tmp_path: Path) -> None:
         "security_runtime.processes",
         # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
         "security_runtime.volume_anomaly",
+        # No host-side recorder, so "no probe" cannot be witnessed either (§3.5).
+        "security_runtime.instrumentation_probes",
     ]
 
 

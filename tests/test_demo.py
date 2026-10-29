@@ -60,6 +60,8 @@ def test_benign_is_conditional_and_consistent(tmp_path: Path) -> None:
         "security_runtime.processes",
         # No proxy, so no run has a request volume to compare (§10.5.2): defers, advisory.
         "security_runtime.volume_anomaly",
+        # No host-side recorder, so "no probe" cannot be witnessed either (§3.5).
+        "security_runtime.instrumentation_probes",
     ]
 
 
