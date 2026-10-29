@@ -457,7 +457,6 @@ def test_doctor_reports_a_bad_config_as_an_infrastructure_error(tmp_path: Path) 
 @pytest.mark.parametrize(
     ("command", "args"),
     [
-        ("probe", ["./somewhere"]),
         ("coexistence", []),
     ],
 )

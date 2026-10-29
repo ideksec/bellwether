@@ -305,7 +305,17 @@ uv sync --group dev
 uv run bellwether --help
 uv run bellwether demo      # offline: no Docker, no API key — writes examples/reports/
 uv run bellwether scan examples/skills/workspace-stats   # the §15 static scan alone, no execution
+uv run bellwether probe /path/to/third-party-skill        # external mode (§7.6): a skill with no scenarios
 ```
+
+A third-party skill arrives with a `SKILL.md` and no `evals/`. `bellwether probe <dir>` (or
+`run --generic-probes`) runs the static scan and the **generic probe suite** of §7.6 instead of
+refusing: the skill's own description echoed back as the activation probe, four unrelated
+prompts for over-triggering, and one representative task, under the same sandbox, capture
+planes and security gates as any run. The verdict's notes say what it cannot say — *behaviour
+observed; task quality not evaluated (no scenarios supplied)* — and a skill that does declare
+scenarios always runs those. The prompts are published in `bellwether.skill.probes`; §7.6's
+held-out set is not built.
 
 Scaffold Bellwether into a repository that contains skills:
 

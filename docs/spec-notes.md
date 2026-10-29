@@ -5578,3 +5578,83 @@ that restores the file afterwards. The measurement, not a summary of it:
 The container suite (61 run locally, 16 CI-only skips with stated reasons) is green with the
 gate composed. Not yet run live: the three live-smoke skills are expected to pass the gate on
 observed evidence under both harnesses, and the next labelled run is what will say so.
+
+## §5, §7.6 — the generic probe suite, and what `bellwether probe` accepts
+
+§5 says that in external mode, "if no scenarios exist, Bellwether runs static scan plus the
+generic behavioural probe suite (§7.6) and says clearly that scenario coverage is absent." §7.6
+lists the suite's minimum: the description run back as a prompt, unrelated prompts, a "do the
+thing you were made for" prompt in a canary-seeded fixture, and the full capability profile. Until
+now `run` refused a skill with no scenarios and `bellwether probe` was a stub naming v0.2.
+
+### What is built
+
+`generic_probe_suite(name, description)` returns a `ScenarioSuite`: `probe-activation`
+(`should_trigger`, `probe: activation`, the description verbatim after whitespace collapse — the
+scenario §7.4's coexistence matrix will read), `probe-unrelated-1..4` (`should_not_trigger`; §7.1's
+own example prompt and three others as far from a workspace as an answerable request gets, so
+they feed `functional.false_trigger`), and `probe-representative` (`should_trigger`, `probe:
+representative`, "do what the skill is for, on the current workspace", with `no_egress`,
+`no_credential_read` and `no_instrumentation_probe` as `record_only` — observed and shown, never
+failed here, because the security gates already decide them at the policy's disposition). It is
+built as the YAML would be and validated by the same model, so a generated suite can express
+nothing an authored one could not.
+
+The selection rule is one function, `effective_suite`: an authored suite always wins, whatever
+the flag says; a skill with none gets the generated suite only when `generic_probes` is set;
+otherwise `run_evaluation` refuses as before, now naming `bellwether probe`. The CLI uses the
+same function to resolve fixtures (a generated suite names none, so the bare workspace), and
+leaves the refusal to `run_evaluation` so the message is one. A skill with no description is
+refused, not probed with a guessed purpose. The verdict's notes carry §7.6's sentence, with the
+counts: *Behaviour observed; task quality not evaluated (no scenarios supplied) …*. The security
+planes need nothing from the suite: canaries are planted and reads, processes, egress and DNS
+watched exactly as for an authored scenario, which is how "canary-seeded fixture" is met.
+
+`bellwether probe <dir>` is `run` with `--generic-probes` forced on and a smaller option set; it
+is the same code path, so the daemon check, the §16.4 precondition, the estimate gate and the
+artifact tree are the ones `run` has. A skill with no manifest is `criticality: high` by default
+and so runs the `high` profile; `--profile low` is how a first look at a third-party skill is
+taken on one target.
+
+### What is not built, stated
+
+- **A URL.** §20 writes `bellwether probe <path-or-url>`. Only a directory is accepted; a URL is
+  refused with the instruction to fetch it first. Fetching is a trust decision (what is
+  downloaded, from where, with which credentials, into which directory the host then reads with
+  root) that this build does not take on the evaluator's behalf.
+- **The held-out prompt set** (§3.5, §7.6: "ships in the package but is not documented, not
+  printed in `--help`, and not present in the public corpus; rotate it on minor releases"). The
+  four unrelated prompts are published in `bellwether.skill.probes`, and nothing in this build
+  is undocumented. A held-out set in a public repository is a contradiction this entry would
+  rather state than paper over with prompts that are "secret" until the first `git clone`; a
+  set shipped out of band, and rotation, are later work. `--help` describes the suite and does
+  not print it, and a test holds that.
+- **A "network-reachable canary endpoint"** in the representative fixture. The proxy's
+  default-deny egress already records any attempt as `egress_blocked` with the host; a
+  reachable bait endpoint would add a channel to observe the *content* of an exfiltration, and
+  is not built.
+- **Quality.** No judge subsystem exists (§12.3), so "task quality not evaluated" is true of
+  every evaluation in this build, not only the probed ones; the note says it where the absence
+  of authored scenarios makes it the whole story.
+
+### Revert-proving: thirteen changes, twelve red
+
+| # | Reverted | Red test |
+|---|---|---|
+| P1 | the generated suite replaces an authored one when the flag is set | `test_an_authored_suite_is_never_replaced_by_the_generated_one`, the authored-suite run test |
+| P2 | a skill with no scenarios is no longer refused without the flag | `test_a_skill_without_scenarios_still_refuses_unless_probes_are_asked_for`, `test_run_evaluation_refuses_a_skill_without_scenarios` |
+| P3 | the coverage note is not attached to the verdict | `test_run_evaluation_runs_the_generated_suite_and_notes_the_missing_coverage` |
+| P4 | `run` does not pass the flag to `run_evaluation` | `test_run_passes_the_flag_through_and_defaults_it_off` |
+| P5 | `probe` runs without forcing the generic suite | `test_probe_is_run_with_the_generic_suite_forced_on` |
+| P6 | a URL is not refused | `test_probe_refuses_a_url_before_touching_anything` |
+| P7 | an empty description is not refused | `test_a_skill_with_no_description_is_refused_not_guessed` |
+| P8 | description whitespace not collapsed | the determinism test |
+| P9 | the activation prompt is not the description verbatim | `test_the_suite_has_the_three_probe_kinds_of_section_7_6` |
+| P10 | the activation probe is not marked for the coexistence matrix | same |
+| P11 | the unrelated prompts are expected to trigger | same, and the run test's `functional.false_trigger` |
+| P12 | `probe`'s `--out` default drifts from the excluded directory | `test_every_commands_out_default_is_the_directory_the_exclusion_names` |
+| P13 | the CLI resolves fixtures from the skill's own suite only (the old code) | **stays green.** A generated suite names no fixture, and with no resolver `plan_matrix` falls back to the same default workspace, so the two are equivalent today. The change is kept because the resolver is where a fixture decision belongs the day a probe names one; it is a simplification, not a behaviour, and no test is claimed for it. |
+
+Not run live: a real third-party skill under `bellwether probe` against a live model is a paid
+run and waits on approval. The scripted executor exercises the whole path short of the
+container.

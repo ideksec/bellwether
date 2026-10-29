@@ -245,7 +245,7 @@ class _ScriptedExecutor:
         )
 
 
-def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON, config=None):  # type: ignore[no-untyped-def]
+def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON, config=None, **options):  # type: ignore[no-untyped-def]
     holder: dict[str, _ScriptedExecutor] = {}
 
     def make_executor(pkg, fixture, client_factory):  # type: ignore[no-untyped-def]
@@ -263,6 +263,7 @@ def _evaluate(package: SkillPackage, tmp_path: Path, *, environ=_ENVIRON, config
         eval_id="firstlight",
         created_at="2026-08-05T12:00:00Z",
         bellwether_version="0.1.0",
+        **options,
     )
     return result, holder["exec"]
 

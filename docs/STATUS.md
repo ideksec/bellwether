@@ -11,7 +11,25 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: the runtime `instrumentation_probe` detector (§3.5) — scored, and `eval-aware` is in
+**Latest: the generic probe suite (§5 external mode, §7.6) — `bellwether probe` is real.** A
+third-party skill with no `evals/scenarios.yaml` was refused by `run` and `probe` was a stub.
+Now `bellwether.skill.probes.generic_probe_suite` builds a suite from the skill's description —
+`probe-activation` (`probe: activation`, the description echoed back, `should_trigger`), four
+`probe-unrelated-N` prompts (`should_not_trigger`, feeding `functional.false_trigger`) and
+`probe-representative` (`probe: representative`, "do what this skill is for", with the security
+assertions `record_only`) — validated through the same model an authored suite takes, so it can
+express nothing an authored one could not. `run_evaluation(generic_probes=True)` uses it only
+where the skill declares no scenarios (an authored suite always wins; without the flag the
+refusal stands, now naming `bellwether probe`), and the verdict's notes carry §7.6's required
+statement: *Behaviour observed; task quality not evaluated (no scenarios supplied)*. `bellwether
+probe <dir>` delegates to `run` with the flag forced on and a URL refused (local directory only in
+this build). A skill with no description is refused rather than probed with a guess. **Twelve of
+thirteen changes reverted red**; the thirteenth (the CLI resolving fixtures from the effective
+suite rather than the skill's own) is behaviour-equivalent today and stays green, stated in
+spec-notes. Not built, stated: §7.6's held-out prompt set and rotation — the prompts are
+published in the module. Not run live.
+
+**Before that: the runtime `instrumentation_probe` detector (§3.5) — scored, and `eval-aware` is in
 the behavioural corpus.** The tenth `security_runtime` disposition is enforced. A skill process
 that ran `dmesg` or named `/.dockerenv`, `/proc/<pid>/cgroup` or a `.bellwether/` path, a shell
 command or search pattern the model asked a tool for, a read tool pointed at such a path, or a
@@ -1259,7 +1277,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2675 tests: 2598 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2687 tests: 2610 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1414,9 +1432,10 @@ What remains is **outside v0.1 or unproven live**:
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
    it from `warn` — needs explicit approval to spend.
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the
-   §7.6 generic probe suite with its held-out prompt set (the runtime `instrumentation_probe`
-   detector is built; what remains of §3.5/§7.6 is the *prompts* that provoke a probe, kept out
-   of the public corpus), more providers and harnesses, and a stronger isolation runtime
+   §7.6 held-out prompt set and its rotation (the generic probe suite and `bellwether probe` are
+   built; the published prompts are in `bellwether.skill.probes`), `bellwether probe` on a URL,
+   coexistence on the scheduled trigger (§7.4, which can now read every skill's
+   `probe: activation`), more providers and harnesses, and a stronger isolation runtime
    (gVisor/Firecracker are refused at parse today).
 
 The numbered history below is kept for its record of how each piece landed. The

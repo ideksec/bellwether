@@ -60,7 +60,7 @@ from bellwether.config.models.config import Config
 from bellwether.config.models.manifest import SkillManifest
 from bellwether.config.models.policy import Policy
 from bellwether.config.models.provider import ModelPricing
-from bellwether.config.models.scenarios import Scenario
+from bellwether.config.models.scenarios import Scenario, ScenarioSuite
 from bellwether.determinism import stable_hash
 from bellwether.errors import BellwetherError
 from bellwether.harness import (
@@ -78,7 +78,7 @@ from bellwether.scan import (
     scan_package,
     scanner_name,
 )
-from bellwether.skill import PluginBundle, SkillPackage
+from bellwether.skill import PluginBundle, SkillPackage, generic_probe_suite
 from bellwether.verdict import validate_capability_weights
 
 __all__ = [
@@ -90,9 +90,12 @@ __all__ = [
     "build_resolver_provider",
     "claude_code_providers",
     "depth_options",
+    "effective_suite",
     "policy_digest",
+    "probe_coverage_note",
     "repository_relative_root",
     "run_evaluation",
+    "scenario_suite_for",
     "select_scenarios",
 ]
 
@@ -112,6 +115,54 @@ def policy_digest(policy: Policy) -> str:
     visible rather than silent.
     """
     return "sha256:" + stable_hash(policy.model_dump_json())
+
+
+def scenario_suite_for(package: SkillPackage, *, generic_probes: bool) -> ScenarioSuite:
+    """The suite an evaluation of ``package`` runs: its own, or the §7.6 generic probe suite.
+
+    A skill that declares scenarios runs them, whatever ``generic_probes`` says — an authored
+    suite is never silently replaced by a generated one. A skill that declares none refuses
+    unless ``generic_probes`` is set (external mode, §5), in which case the generated suite is
+    returned and the caller says so in the verdict's notes (:func:`probe_coverage_note`): a
+    suite with no scenarios produces no evidence, and a generated one produces evidence about
+    activation and behaviour but none about task quality.
+    """
+    suite = effective_suite(package, generic_probes=generic_probes)
+    if suite is not None:
+        return suite
+    raise BellwetherError(
+        f"skill '{package.name}' declares no scenarios (evals/scenarios.yaml), so there is "
+        "nothing to run; a scenario suite with no scenarios produces no evidence. For a "
+        "third-party skill, `bellwether probe` (or `run --generic-probes`) runs the generic "
+        "probe suite of §7.6 instead"
+    )
+
+
+def effective_suite(package: SkillPackage, *, generic_probes: bool) -> ScenarioSuite | None:
+    """:func:`scenario_suite_for` without the refusal: ``None`` where there is nothing to run.
+
+    For a caller that needs the suite before the evaluation decides — the CLI resolving each
+    scenario's fixture — and must leave the refusal, with its message, to ``run_evaluation``.
+    """
+    suite = package.scenarios
+    if suite is not None and suite.scenarios:
+        return suite
+    if generic_probes:
+        return generic_probe_suite(package.name, package.description)
+    return None
+
+
+def probe_coverage_note(package: SkillPackage, suite: ScenarioSuite) -> str:
+    """§7.6's required statement, for the verdict notes: scenario coverage is absent."""
+    unrelated = sum(1 for s in suite.scenarios if s.expectation == "should_not_trigger")
+    return (
+        "Behaviour observed; task quality not evaluated (no scenarios supplied): skill "
+        f"'{package.name}' declares no evals/scenarios.yaml, so the generic probe suite of §7.6 "
+        f"ran instead — its description echoed back as the activation probe, {unrelated} "
+        "unrelated prompts for over-triggering, and one representative task. The capability "
+        "profile and the security gates are earned from observation as for any run; whether "
+        "the skill did its job well is not measured"
+    )
 
 
 def select_scenarios(
@@ -192,6 +243,7 @@ def run_evaluation(
     max_tokens_per_run: int = 1_000_000,
     on_estimate: Callable[[RunEstimate], bool] | None = None,
     scanner_sarif: Sequence[Path] = (),
+    generic_probes: bool = False,
 ) -> EvalResult:
     """Resolve, plan, drive, and compose a full evaluation, or raise :class:`BellwetherError`.
 
@@ -264,12 +316,8 @@ def run_evaluation(
             f"{rendered}"
         )
 
-    suite = package.scenarios
-    if suite is None or not suite.scenarios:
-        raise BellwetherError(
-            f"skill '{package.name}' declares no scenarios (evals/scenarios.yaml), so there is "
-            "nothing to run; a scenario suite with no scenarios produces no evidence"
-        )
+    suite = scenario_suite_for(package, generic_probes=generic_probes)
+    probe_notes = [probe_coverage_note(package, suite)] if suite is not package.scenarios else []
     # §7.2 / §20: `--scenario ID` and `--tag TAG` narrow the suite. A filter that selects
     # nothing refuses — an empty selection run to completion would be a clean-looking verdict
     # about no evidence at all.
@@ -547,7 +595,7 @@ def run_evaluation(
         # contents in the report, and a configured-but-unapplied baseline still has to be
         # rendered with the reason, or "not applied" reads as "nothing to absorb".
         platform_baseline=platform_baseline,
-        extra_notes=baseline_notes,
+        extra_notes=[*probe_notes, *baseline_notes],
         deterministic_sampling=deterministic_sampling,
         # §12.5/§6.3: the facts the `scope.require_manifest` and `human_review` gates are
         # decided from. `created_at.date()` rather than the clock: a gate whose input is read
