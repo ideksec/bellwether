@@ -294,6 +294,10 @@ class AnalysedRun:
     #: ``activated``, ``not_activated``, or ``unobserved`` where the harness emits no activation
     #: event. What ``functional.max_false_trigger_rate`` counts on ``should_not_trigger`` sets.
     activation: str = "unobserved"
+    #: Every skill Plane A saw activate on this run, sorted — the skill under test and any
+    #: §7.4 companion alike. What the coexistence matrix counts: not whether *this* skill
+    #: loaded but *which* did.
+    activated_skills: tuple[str, ...] = ()
     #: The §13.5.4 hits no manifest deliberately declares — what the gate reads. Kept apart
     #: from ``sensitive_hits``, which stays the full list the §13.5.2 report section and the
     #: §17.5 regression comparison are built from: a declared credential read is still a fact
@@ -1399,6 +1403,7 @@ def analyse_run(
         models=served_models(trace.actions),
         expectation=plan.scenario.expectation,
         activation=activation,
+        activated_skills=tuple(sorted({name for _seq, name in index.activated_skills})),
         caps_t1=frozenset(canon.caps_t1),
         caps_t2=frozenset(canon.caps_t2),
         caps_t3=frozenset(canon.caps_t3),
@@ -2943,6 +2948,9 @@ class EvalResult:
     summary: Summary
     artifacts: ArtifactTree
     exit_code: int
+    #: The per-set readings the verdict was composed from, for a caller that needs what the
+    #: artifacts summarise away — the coexistence matrix reads each run's activated skills.
+    readings: tuple[SetReading, ...] = ()
 
 
 #: The per-target label the budget gates carry. A budget is a claim about the whole matrix
@@ -3666,6 +3674,7 @@ def orchestrate(
         summary=summary,
         artifacts=artifacts,
         exit_code=_exit_code(verdict),
+        readings=tuple(readings),
     )
 
 
