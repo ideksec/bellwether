@@ -10,6 +10,7 @@ and api-loop refusals, the library key, and the command's front door are pinned 
 from __future__ import annotations
 
 import datetime as dt
+import re
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -527,4 +528,7 @@ def test_a_winner_is_credited_to_the_member_it_names_through_a_bundle_qualifier(
 def test_coexistence_help_describes_the_matrix() -> None:
     result = runner.invoke(app, ["coexistence", "--help"])
     assert result.exit_code == 0
-    assert "--set-baseline" in result.output and "--force" in result.output
+    # Under forced colour (CI) rich styles the option names with escape codes inside them;
+    # the assertion is about the words, so read the plain text.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--set-baseline" in plain and "--force" in plain
