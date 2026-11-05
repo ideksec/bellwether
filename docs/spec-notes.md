@@ -5735,3 +5735,75 @@ says.
 | X17 | a probe's own `also_load_skills` kept in the stored suite | **stays green.** The companions a probe runs with come from the command's own resolver, which overrides the field, so the scrub changes no run; it keeps the recorded suite from claiming companions it did not choose. Defensive, and no test is claimed for it. |
 
 The container suite (61 run locally, 16 CI-only skips with stated reasons) is green.
+
+## §7.4 item 1, §18.4 — coexistence on the schedule, and the library's one issue
+
+§7.4 puts the trigger-collision matrix "off the pull-request path", on the `schedule` trigger,
+and §18.4 has a scheduled failure open an issue. The command landed in the previous entry; this
+is the workflow and the reading.
+
+### What is built
+
+`bellwether-coexistence.yml` mirrors the nightly drift workflow: a weekly cron, inert until a
+maintainer sets the repository variable `BELLWETHER_COEXISTENCE` to `true` — the job's own `if:`
+skips before any step, so nothing is installed, built or spent — and a `workflow_dispatch` that
+is the explicit go-ahead, with inputs for the one target alias (`haiku` by default) and for
+forcing an api-loop target. The harness is claude-code (§9.4: on api-loop the collisions would
+measure Bellwether's own prompt assembly), so the workflow builds the claude-code sandbox image
+and both sidecars, as the live claude-code workflow does. `bellwether coexistence` runs under
+`sudo` (the overlay capture needs root) with `--yes`: a scheduled run has nobody to answer the
+pre-flight estimate, and the token ceiling and the policy's `max_cost_usd` bound the spend. The
+one `coexistence-*` directory is selected deterministically (§24) or the step refuses, the same
+lesson as the live workflow's `find | head -n1`.
+
+`bellwether coexistence-report <coexistence.json> --baseline … --markdown … --issues` is the
+reading, kept apart from the run the way `drift` is from `run` so the workflow can be executed in
+the harness with the run faked and the reading real. The matrix is one of three things:
+`collisions` (some probe's activation was won by another skill), `changed` (no collision, but a
+*comparable* baseline differs) or `clean`. A baseline that cannot be compared — a member added,
+removed or changed; a different target or N — is said so and does not make a collision-free
+matrix anything but clean; the remedy is the committed baseline, not a delta over different sets.
+Exit 2 on `collisions` or `changed`, so the scheduled run goes red the way the nightly does on
+drift.
+
+The issue is the library's, singular. Opened on `collisions` or `changed`; where one is open,
+edited in place and commented on only when the findings digest moves; closed with a comment on a
+later `clean` run. It is found by its marker on the last line, among the bot's own open issues
+only — one a person wrote carrying the marker is never touched, and a pull request in the issue
+list is not an issue. Every name in it is a code span no name can close, composed once; the
+sentences are not escaped a second time (which had turned the backticks into literals).
+
+### The baseline is a committed file
+
+The nightly drift flow proposes baselines through a pull request. The library baseline has no
+such flow yet: to set it, download the run's artifact and commit its `coexistence.json` as
+`examples/live/baselines/_library.coexistence.json`. The key is the sorted member package digests,
+so the first run after any skill changes reads "not compared" until the file is replaced. A
+baseline-update pull request for it is a brick for later, if the committed file proves tedious.
+
+### Not built, stated
+
+- **The §19.3 description-digest flag.** A pull request changing a skill's `description_digest`
+  should post that the library is flagged for the next scheduled run. The scheduled run now exists
+  for it to point at; the detection and the comment are the next brick.
+- **Live.** The workflow has not fired against a live model: it needs the variable, the key, and
+  approval to spend.
+
+### Revert-proving: twelve changes, twelve red
+
+| # | Reverted | Red test |
+|---|---|---|
+| W1 | the schedule runs without the opt-in | `test_the_schedule_spends_nothing_until_a_maintainer_opts_in` |
+| W2 | the report step opens no issue | `test_a_colliding_run_opens_the_issue_and_fails` |
+| W3 | the report exits 0 on collisions | the report command test, the colliding run |
+| W4 | a dispatch's `force` input ignored | `test_a_dispatch_passes_its_target_and_force_through` |
+| W5 | a dispatch's target ignored | same |
+| W6 | a person's issue carrying the marker touched | `test_an_issue_a_person_wrote_with_the_marker_is_never_touched` |
+| W7 | unchanged findings re-edited and re-commented | `test_a_collision_opens_one_issue_and_an_unchanged_run_adds_nothing` — first measured against an anchor the formatter had moved, so the driver skipped it; measured again by hand |
+| W8 | a clean run leaves the issue open | `test_a_clean_run_closes_the_issue` |
+| W10 | a missing key not refused | `test_the_schedule_is_off_without_the_key_too` |
+| W12 | a changed matrix read as clean | `test_a_moved_matrix_with_no_collision_is_changed_only_against_a_comparable_baseline` |
+| W13 | a not-comparable baseline read as changed | `test_a_clean_matrix_is_clean_whether_or_not_it_can_be_compared` |
+| W16 | the evidence not uploaded after a broken run | `test_a_broken_matrix_run_fails_as_infrastructure` |
+
+The container suite (61 run locally, 16 CI-only skips with stated reasons) is green.

@@ -31,16 +31,22 @@ any skill invalidates it, and the delta says so rather than comparing across dif
 from __future__ import annotations
 
 import datetime as dt
+import json
+import re
+import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from bellwether.assertions.engine import skill_name_matches
+from bellwether.cli.drift import _MAX_ISSUE_PAGES, _REPOSITORY, IssueAction, _call
 from bellwether.cli.estimate import RunEstimate
 from bellwether.cli.fixtures import fixture_resolver
 from bellwether.cli.orchestrator import EvalResult, TargetInfo
+from bellwether.cli.pr import GITHUB_API_ROOT, GitHubTransport, auth_headers
 from bellwether.cli.run import ExecutorFactory, apply_matrix_options, run_evaluation
 from bellwether.cli.run_plan import resolve_run
 from bellwether.config.models.config import Config
@@ -57,19 +63,24 @@ __all__ = [
     "LIBRARY_BASELINE_FILE",
     "MATRIX_VERSION",
     "CoexistenceMatrix",
+    "CoexistenceStatus",
     "LibraryDelta",
     "LibraryMember",
     "ProbeCell",
+    "coexistence_findings",
+    "coexistence_status",
     "collision_matrix",
     "compare_with_baseline",
     "library_key",
     "library_members",
     "load_library_baseline",
     "probe_scenarios_for",
+    "render_coexistence_issue",
     "render_coexistence_json",
     "render_coexistence_markdown",
     "resolve_coexistence_target",
     "run_coexistence",
+    "upsert_coexistence_issue",
     "write_library_baseline",
 ]
 
@@ -537,24 +548,26 @@ def compare_with_baseline(
     for cell in current.cells:
         prior = before.get((cell.skill, cell.probe_id))
         if prior is None:
-            changes.append(f"`{cell.skill}` gained a probe `{cell.probe_id}` the baseline lacks")
+            changes.append(
+                f"{code(cell.skill)} gained a probe {code(cell.probe_id)} the baseline lacks"
+            )
             continue
         for name in sorted(set(cell.winners) | set(prior.winners)):
             now, then = cell.winners.get(name, 0), prior.winners.get(name, 0)
             if now == then:
                 continue
-            who = "no skill" if name == NO_ACTIVATION else f"`{name}`"
-            on = f"on `{cell.skill}`'s `{cell.probe_id}` probe"
+            who = "no skill" if name == NO_ACTIVATION else code(name)
+            on = f"on {code(cell.skill)}'s {code(cell.probe_id)} probe"
             if name == cell.skill:
                 verb = "regained" if now > then else "lost"
                 changes.append(
-                    f"`{cell.skill}` {verb} {abs(now - then)} of {cell.runs} activations {on} "
+                    f"{code(cell.skill)} {verb} {abs(now - then)} of {cell.runs} activations {on} "
                     f"({then} → {now})"
                 )
             elif now > then:
                 changes.append(
                     f"{who} began winning {now - then} of {cell.runs} activations {on}, "
-                    f"previously won by `{cell.skill}` or no skill ({then} → {now})"
+                    f"previously won by {code(cell.skill)} or no skill ({then} → {now})"
                 )
             else:
                 changes.append(
@@ -562,7 +575,9 @@ def compare_with_baseline(
                     f"({then} → {now})"
                 )
     for key in set(before) - {(cell.skill, cell.probe_id) for cell in current.cells}:
-        changes.append(f"`{key[0]}` no longer has the probe `{key[1]}` the baseline recorded")
+        changes.append(
+            f"{code(key[0])} no longer has the probe {code(key[1])} the baseline recorded"
+        )
     return LibraryDelta(
         comparable=True,
         reason="same library, target and N as the stored baseline",
@@ -623,3 +638,219 @@ def render_coexistence_markdown(matrix: CoexistenceMatrix, delta: LibraryDelta) 
             + f" | {cell.winners.get(NO_ACTIVATION, 0)} |"
         )
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# The scheduled run's reading, and its issue (§7.4 item 1, §18.4)
+# ---------------------------------------------------------------------------
+
+#: What a scheduled matrix amounts to: a probe's activation won by another skill, a delta
+#: against the stored baseline, or neither.
+CoexistenceStatus = Literal["collisions", "changed", "clean"]
+
+_ISSUE_MARKER = "<!-- bellwether-coexistence -->"
+_ISSUE_MARKER_RE = re.compile(r"<!-- bellwether-coexistence -->\s*$")
+
+
+def coexistence_status(matrix: CoexistenceMatrix, delta: LibraryDelta) -> CoexistenceStatus:
+    """``collisions`` where any probe's activation went to another skill; else ``changed``
+    where the comparable baseline differs; else ``clean``. A baseline that cannot be compared
+    is said so in the delta and does not make a collision-free matrix anything but clean."""
+    if any(cell.collisions() for cell in matrix.cells):
+        return "collisions"
+    if delta.comparable and delta.changes:
+        return "changed"
+    return "clean"
+
+
+def coexistence_findings(matrix: CoexistenceMatrix, delta: LibraryDelta) -> tuple[str, ...]:
+    """The sentences an issue carries, sorted: each collision, then each change."""
+    lines = [
+        f"{code(cell.skill)}'s {code(cell.probe_id)} probe ({cell.probe_kind}) was won by "
+        + ", ".join(f"{code(name)} on {count} of {cell.runs} runs" for name, count in won.items())
+        for cell in matrix.cells
+        if (won := cell.collisions())
+    ]
+    return tuple(sorted(lines)) + tuple(delta.changes)
+
+
+def _findings_digest(findings: Sequence[str]) -> str:
+    return stable_hash("\n".join(findings)).removeprefix("sha256:")[:16]
+
+
+def _findings_marker(findings: Sequence[str]) -> str:
+    return f"<!-- bellwether-coexistence-findings:{_findings_digest(findings)} -->"
+
+
+def render_coexistence_issue(
+    matrix: CoexistenceMatrix, delta: LibraryDelta, *, run_url: str | None
+) -> tuple[str, str]:
+    """The library's one issue: title and body."""
+    status = coexistence_status(matrix, delta)
+    findings = coexistence_findings(matrix, delta)
+    collisions = sum(1 for cell in matrix.cells if cell.collisions())
+    title = (
+        f"Bellwether coexistence: {collisions} probe(s) won by another skill"
+        if status == "collisions"
+        else "Bellwether coexistence: the trigger-collision matrix changed"
+    )
+    lines = [
+        (
+            "The scheduled coexistence run (§7.4) offered every skill in the library beside "
+            f"each skill's probes, on {code(matrix.target)} at N={matrix.n}, and recorded which "
+            "skill won each activation."
+        ),
+        "",
+        f"- Library: {len(matrix.members)} skill(s), key {code(matrix.library_key[:19] + '…')}",
+    ]
+    if not matrix.portable:
+        lines.append(f"- **{NOT_PORTABLE}** — measured on `api-loop` (§9.4)")
+    if run_url:
+        lines.append(f"- Run and matrix: {run_url}")
+    lines += ["", "**What the matrix shows**", ""]
+    # Composed above from code spans no name can close; not escaped again.
+    lines += [f"- {item}" for item in findings] or ["- nothing"]
+    lines += ["", "**Against the stored library baseline**", ""]
+    if not delta.comparable:
+        lines.append(f"- Not compared: {text(delta.reason)}.")
+    elif not delta.changes:
+        lines.append("- No change.")
+    else:
+        lines += [f"- {change}" for change in delta.changes]
+    lines += [
+        "",
+        (
+            "A collision means a description broad enough to capture activations meant for "
+            "another skill. If the matrix is the intended state of the library, commit the "
+            "run's `coexistence.json` as `_library.coexistence.json` beside the other "
+            "baselines; this issue closes itself on the next clean run."
+        ),
+        "",
+        _findings_marker(findings),
+        _ISSUE_MARKER,
+    ]
+    return title, "\n".join(lines) + "\n"
+
+
+def _open_coexistence_issue(
+    transport: GitHubTransport, root: str, token: str
+) -> Mapping[str, object] | None:
+    """The bot's own open coexistence issue, if any — one per repository."""
+    for page in range(1, _MAX_ISSUE_PAGES + 1):
+        query = urllib.parse.urlencode({"state": "open", "per_page": 100, "page": page})
+        response = transport("GET", f"{root}/issues?{query}", auth_headers(token), None)
+        if response.status != 200:
+            raise BellwetherError(f"listing issues failed with HTTP {response.status}")
+        try:
+            issues = json.loads(response.body)
+        except ValueError:
+            raise BellwetherError("listing issues: the response is not JSON") from None
+        if not isinstance(issues, list):
+            raise BellwetherError("listing issues: expected a list")
+        for issue in issues:
+            if not isinstance(issue, Mapping) or "pull_request" in issue:
+                continue
+            user = issue.get("user")
+            body = issue.get("body")
+            if not (isinstance(user, Mapping) and user.get("type") == "Bot"):
+                continue
+            if isinstance(body, str) and _ISSUE_MARKER_RE.search(body):
+                return issue
+        if len(issues) < 100:
+            break
+    return None
+
+
+def upsert_coexistence_issue(
+    transport: GitHubTransport,
+    repository: str,
+    matrix: CoexistenceMatrix,
+    delta: LibraryDelta,
+    *,
+    token: str,
+    run_url: str | None = None,
+    api_root: str = GITHUB_API_ROOT,
+) -> IssueAction:
+    """Open, update or close the library's coexistence issue; what was done.
+
+    ``collisions`` or ``changed`` opens the issue, or — where one is open — edits it and
+    comments only if the findings changed. ``clean`` closes an open one with a comment. The
+    issue is the bot's own: one a person wrote with the marker is never touched.
+    """
+    if not _REPOSITORY.fullmatch(repository):
+        raise BellwetherError(f"not an owner/repo: {repository!r}")
+    root = f"{api_root.rstrip('/')}/repos/{repository}"
+    issue = _open_coexistence_issue(transport, root, token)
+    number = issue.get("number") if issue is not None else None
+    if issue is not None and not isinstance(number, int):
+        raise BellwetherError("the open coexistence issue has no number")
+    status = coexistence_status(matrix, delta)
+    if status != "clean":
+        title, body = render_coexistence_issue(matrix, delta, run_url=run_url)
+        if issue is None:
+            _call(
+                transport,
+                "POST",
+                f"{root}/issues",
+                token,
+                {"title": title, "body": body},
+                201,
+                "opening the coexistence issue",
+            )
+            return "opened"
+        previous = issue.get("body")
+        if (
+            isinstance(previous, str)
+            and _findings_marker(coexistence_findings(matrix, delta)) in previous
+        ):
+            return "unchanged"
+        _call(
+            transport,
+            "PATCH",
+            f"{root}/issues/{number}",
+            token,
+            {"title": title, "body": body},
+            200,
+            f"updating coexistence issue #{number}",
+        )
+        note = (
+            "The matrix changed"
+            + (f" on {run_url}" if run_url else "")
+            + "; the description above is updated."
+        )
+        _call(
+            transport,
+            "POST",
+            f"{root}/issues/{number}/comments",
+            token,
+            {"body": note},
+            201,
+            f"commenting on coexistence issue #{number}",
+        )
+        return "updated"
+    if issue is None:
+        return "none"
+    note = (
+        "No collision and no change against the stored library baseline on this run"
+        + (f" ({run_url})" if run_url else "")
+        + ". Closing."
+    )
+    _call(
+        transport,
+        "POST",
+        f"{root}/issues/{number}/comments",
+        token,
+        {"body": note},
+        201,
+        f"commenting on coexistence issue #{number}",
+    )
+    _call(
+        transport,
+        "PATCH",
+        f"{root}/issues/{number}",
+        token,
+        {"state": "closed", "state_reason": "completed"},
+        200,
+        f"closing coexistence issue #{number}",
+    )
+    return "closed"

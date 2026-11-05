@@ -1,0 +1,166 @@
+name: Bellwether coexistence
+
+# §7.4: the library-wide trigger-collision matrix runs on the schedule, off the pull-request
+# path — "running every skill's should_trigger scenarios against the whole library on every pull
+# request is not affordable for any library worth having." Every skill under the skill root runs
+# its two probe scenarios with the whole library offered beside it, on one target at a fixed N
+# of 12, and `bellwether coexistence-report` reads the matrix against the stored library baseline:
+# a probe whose activation another skill won, or a matrix that moved against the baseline, keeps
+# one issue open for the library — edited in place, commented on only when the findings change,
+# closed on a later clean run.
+#
+# THIS SPENDS MODEL TOKENS ON EVERY RUN — a library of m skills is up to 2·m probes × 12 runs —
+# so the schedule is inert until a maintainer opts in: set the repository variable
+# BELLWETHER_COEXISTENCE to `true` (Settings → Secrets and variables → Actions → Variables).
+# Until then the scheduled run skips its only job and spends nothing. A manual run (Actions →
+# Run workflow) is a maintainer's explicit go-ahead and runs whatever the variable says.
+#
+# The harness is claude-code (§9.4): on api-loop Bellwether writes the system prompt, so
+# collisions measured there measure its own prompt assembly; `bellwether coexistence` refuses an
+# api-loop target unless the dispatch sets `force`, and labels such a matrix not portable.
+#
+# The baseline is a committed file: to set it, download the run's artifact and commit its
+# coexistence.json as examples/live/baselines/_library.coexistence.json. The key is the sorted
+# member package digests, so adding, removing or changing any skill invalidates it, and the
+# report says so rather than diffing across different libraries.
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: "The one model alias to run on (§7.4: one target)"
+        required: false
+        default: "haiku"
+      force:
+        description: "Run on an api-loop target anyway (labelled not portable, §9.4)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bellwether-coexistence
+  cancel-in-progress: false
+
+env:
+  BELLWETHER_SKILL_ROOT: examples/skills
+  BELLWETHER_CONFIG: examples/live/config-claude-code.yaml
+  BELLWETHER_POLICY: examples/live/policy-claude-code.yaml
+  BELLWETHER_MAX_TOKENS: "400000"
+  BELLWETHER_BASELINES: examples/live/baselines
+
+jobs:
+  coexistence:
+    # The opt-in. A scheduled run with the variable unset is skipped here, before any step —
+    # nothing is installed, built or spent.
+    if: github.event_name == 'workflow_dispatch' || vars.BELLWETHER_COEXISTENCE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      # The library's one coexistence issue.
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The job runs evaluated skill content on this runner; nothing needs git credentials.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Build the claude-code sandbox image
+        run: docker build -f sandbox/claude-code/Dockerfile -t bw-sandbox-claude-code:live .
+
+      - name: Build the recording-proxy sidecar image
+        run: docker build -f sidecar/proxy/Dockerfile -t bw-proxy-sidecar:live .
+
+      - name: Build the controlled-resolver sidecar image
+        run: docker build -f sidecar/resolver/Dockerfile -t bw-resolver-sidecar:live .
+
+      - name: Run the matrix
+        id: matrix
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISPATCH_TARGETS: ${{ inputs.targets }}
+          DISPATCH_FORCE: ${{ inputs.force }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            # Opted in, but nothing to run with: a configuration error, not a quiet run.
+            echo "::error::the coexistence run is enabled but ANTHROPIC_API_KEY is not set"
+            exit 3
+          fi
+          bw="$(pwd)/.venv/bin/bellwether"
+          # As the runner user, before `sudo … coexistence` could create it as root (PR #107).
+          mkdir -p .bellwether-out
+          target="${DISPATCH_TARGETS:-haiku}"
+          extra=()
+          if [ "${DISPATCH_FORCE:-false}" = "true" ]; then extra+=(--force); fi
+          # The host-side overlay capture (§10.0) mounts overlayfs, which needs root. --yes: a
+          # scheduled run has nobody to answer the estimate; the token ceiling and the policy's
+          # max_cost_usd bound the spend.
+          if sudo --preserve-env=ANTHROPIC_API_KEY "${bw}" coexistence "${BELLWETHER_SKILL_ROOT}" \
+               --config "${BELLWETHER_CONFIG}" --policy "${BELLWETHER_POLICY}" \
+               --max-tokens "${BELLWETHER_MAX_TOKENS}" --targets "${target}" --yes \
+               --out .bellwether-out "${extra[@]}" < /dev/null; then
+            status=0
+          else
+            status=$?
+          fi
+          sudo chown -R "$(id -u):$(id -g)" .bellwether-out || true
+          # The per-member sandbox scratch under runs/ holds the kernel's overlayfs workdir
+          # (mode 000), which upload-artifact cannot walk; no evidence the artifact keeps is there.
+          sudo find .bellwether-out -type d -name runs -prune -exec rm -rf {} + 2>/dev/null || true
+          # Exactly one matrix directory, selected deterministically (§24), or refuse.
+          mapfile -t matrices < <(find .bellwether-out -maxdepth 1 -mindepth 1 -type d \
+            -name 'coexistence-*' | sort)
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          if [ "${status}" -ne 0 ]; then
+            echo "::error::bellwether coexistence did not complete (exit ${status})"
+            exit "${status}"
+          fi
+          if [ "${#matrices[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one coexistence-* directory under .bellwether-out," \
+                 "found ${#matrices[@]}: ${matrices[*]:-(none)}"
+            exit 3
+          fi
+          echo "matrix=${matrices[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Read the matrix
+        id: report
+        if: steps.matrix.outputs.matrix != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MATRIX_DIR: ${{ steps.matrix.outputs.matrix }}
+        run: |
+          set -uo pipefail
+          if uv run bellwether coexistence-report "${MATRIX_DIR}/coexistence.json" \
+               --baseline "${BELLWETHER_BASELINES}/_library.coexistence.json" \
+               --markdown .bellwether-out/coexistence-report.md --issues; then
+            report=0
+          else
+            report=$?
+          fi
+          cat .bellwether-out/coexistence-report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo "report=${report}" >> "$GITHUB_OUTPUT"
+          exit "${report}"
+
+      - name: Upload the matrix and the evidence
+        if: always() && steps.matrix.outputs.status != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bellwether-coexistence
+          include-hidden-files: true
+          path: |
+            .bellwether-out/**
+            !.bellwether-out/**/runs/**
+          if-no-files-found: warn

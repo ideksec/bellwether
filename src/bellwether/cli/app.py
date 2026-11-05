@@ -2024,6 +2024,115 @@ def coexistence(
     )
 
 
+@app.command(name="coexistence-report")
+def coexistence_report(
+    matrix_file: Annotated[
+        Path, typer.Argument(help="A run's coexistence.json (written by `bellwether coexistence`).")
+    ],
+    baseline: Annotated[
+        Path | None,
+        typer.Option(
+            "--baseline", help="The stored _library.coexistence.json (absent: not compared)."
+        ),
+    ] = None,
+    markdown: Annotated[
+        Path | None, typer.Option("--markdown", help="Write the matrix and its headline here.")
+    ] = None,
+    issues: Annotated[
+        bool,
+        typer.Option(
+            "--issues",
+            help="Open, update or close the library's one coexistence issue (needs a token with "
+            "issues: write).",
+        ),
+    ] = False,
+    run_link: Annotated[
+        str | None,
+        typer.Option("--run-url", help="The run's URL, for the issue (default: from Actions)."),
+    ] = None,
+    repo: _RepoOption = None,
+    token_env: _TokenEnvOption = "GITHUB_TOKEN",
+    api_root: _ApiRootOption = "https://api.github.com",
+    json_output: JsonFlag = False,
+) -> None:
+    """Read a scheduled coexistence matrix against the stored library baseline (§7.4, §18.4).
+
+    The matrix is ``collisions`` (a probe's activation was won by another skill), ``changed``
+    (the comparable baseline differs) or ``clean``. With ``--issues``, a collision or a change
+    keeps one issue open for the library, edited in place and commented on only when its
+    findings change, and closed on a later clean run. Exit 2 on collisions or a change, 0 when
+    clean, 3 when the matrix cannot be read or an issue cannot be written.
+    """
+    from pydantic import ValidationError
+
+    from bellwether.cli.coexistence import (
+        CoexistenceMatrix,
+        coexistence_findings,
+        coexistence_status,
+        compare_with_baseline,
+        load_library_baseline,
+        render_coexistence_markdown,
+        upsert_coexistence_issue,
+    )
+    from bellwether.cli.pr import github_transport
+    from bellwether.cli.status import run_url
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether coexistence-report: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    link = run_link or run_url(os.environ)
+    try:
+        matrix = CoexistenceMatrix.model_validate_json(matrix_file.read_text(encoding="utf-8"))
+        stored = (
+            load_library_baseline(baseline) if baseline is not None and baseline.is_file() else None
+        )
+    except OSError as error:
+        refuse(f"cannot read {matrix_file}: {error}")
+    except ValidationError as error:
+        refuse(f"{matrix_file} is not a coexistence matrix: {error}")
+    except BellwetherError as error:
+        refuse(str(error))
+    delta = compare_with_baseline(matrix, stored)
+    status = coexistence_status(matrix, delta)
+    findings = coexistence_findings(matrix, delta)
+    if markdown is not None:
+        markdown.write_text(render_coexistence_markdown(matrix, delta), encoding="utf-8")
+    action = "none"
+    if issues:
+        repository = _github_repository(repo, refuse)
+        token = _github_token(token_env, refuse)
+        try:
+            action = upsert_coexistence_issue(
+                github_transport(),
+                repository,
+                matrix,
+                delta,
+                token=token,
+                run_url=link,
+                api_root=api_root,
+            )
+        except BellwetherError as error:
+            refuse(str(error))
+    _emit(
+        {
+            "status": status,
+            "findings": list(findings),
+            "comparable": delta.comparable,
+            "reason": delta.reason,
+            "issue": action,
+        },
+        as_json=json_output,
+        lines=[
+            f"coexistence: {status}" + (f" — issue {action}" if issues else ""),
+            *([f"  {finding}" for finding in findings] or ["  no collision, no change"]),
+            *([f"  baseline: {delta.reason}"] if not delta.comparable else []),
+        ],
+    )
+    if status != "clean":
+        raise typer.Exit(ExitCode.NOT_READY)
+
+
 @app.command(name="init-manifest")
 def init_manifest(
     skill: Annotated[str, typer.Argument(help="Skill directory (the one holding SKILL.md).")],
