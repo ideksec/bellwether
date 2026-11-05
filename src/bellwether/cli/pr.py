@@ -32,6 +32,7 @@ from typing import NamedTuple
 from bellwether.errors import BellwetherError
 
 __all__ = [
+    "COEXISTENCE_FLAG_KEY",
     "GITHUB_API_ROOT",
     "STATIC_SCAN_KEY",
     "GitHubResponse",
@@ -69,6 +70,10 @@ def report_key(skill_name: str, target_slugs: Sequence[str]) -> str:
 #: covers every skill at once — and derived from a fixed domain string, so it cannot equal an
 #: evaluation's key (a hash of a JSON list).
 STATIC_SCAN_KEY = hashlib.sha256(b"bellwether-static-scan/v1").hexdigest()[:16]
+
+#: The key of the §19.3 coexistence-flag comment: one per pull request, derived from its own
+#: domain string so it can equal neither an evaluation's key nor the scan summary's.
+COEXISTENCE_FLAG_KEY = hashlib.sha256(b"bellwether-coexistence-flag/v1").hexdigest()[:16]
 
 
 def comment_marker(key: str) -> str:

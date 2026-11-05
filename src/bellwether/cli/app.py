@@ -1286,7 +1286,9 @@ def pr_comment(
     -->``) is accepted too: it owns one comment per pull request, keyed apart from every
     evaluation's.
     """
+    from bellwether.cli.library_flag import FLAG_MARKER
     from bellwether.cli.pr import (
+        COEXISTENCE_FLAG_KEY,
         STATIC_SCAN_KEY,
         PrContext,
         github_transport,
@@ -1301,8 +1303,15 @@ def pr_comment(
         body = source.read_text(encoding="utf-8")
         # The scan summary is recognised by its own first line, which `render_scan_markdown`
         # always writes and no evaluation's comment starts with.
-        is_scan = body.split("\n", 1)[0].strip() == SCAN_MARKER
-        key = STATIC_SCAN_KEY if is_scan else _report_key_beside(source)
+        first_line = body.split("\n", 1)[0].strip()
+        if first_line == SCAN_MARKER:
+            key = STATIC_SCAN_KEY
+        elif first_line == FLAG_MARKER:
+            # The §19.3 coexistence flag (`bellwether description-changed --markdown`): one
+            # comment per pull request, keyed apart from the scan's and every evaluation's.
+            key = COEXISTENCE_FLAG_KEY
+        else:
+            key = _report_key_beside(source)
     except OSError as error:
         typer.echo(f"bellwether pr-comment: cannot read {source}: {error}", err=True)
         raise typer.Exit(ExitCode.INFRASTRUCTURE) from None
@@ -2131,6 +2140,77 @@ def coexistence_report(
     )
     if status != "clean":
         raise typer.Exit(ExitCode.NOT_READY)
+
+
+@app.command(name="description-changed")
+def description_changed_command(
+    skills: Annotated[
+        list[str] | None,
+        typer.Argument(help="Changed skill directories (as `changed-skills` printed them)."),
+    ] = None,
+    skills_from: Annotated[
+        Path | None,
+        typer.Option("--skills-from", help="A file of skill directories, one per line."),
+    ] = None,
+    base: Annotated[
+        Path | None,
+        typer.Option(
+            "--base",
+            help="A tree holding the base commit's files at the same relative paths "
+            "(`git archive <base> <root> | tar -x -C <dir>`). Absent: every skill reads as added.",
+        ),
+    ] = None,
+    head: Annotated[
+        Path, typer.Option("--head", help="The head tree (default: the working directory).")
+    ] = Path(),
+    markdown: Annotated[
+        Path | None,
+        typer.Option("--markdown", help="Write the pull-request comment here (§19.3)."),
+    ] = None,
+    json_output: JsonFlag = False,
+) -> None:
+    """Which changed skills changed their description — the §19.3 coexistence flag.
+
+    A description is the trigger surface, so a change to one flags the library for the next
+    scheduled coexistence run (§7.4); a skill added or removed flags it too. A skill whose body
+    alone changed does not. Advisory: exit 0 whether or not anything is flagged, 3 only when a
+    skill cannot be read. The Markdown says whether the library is flagged and when the
+    scheduled run resolves it; `bellwether pr-comment` posts it as one comment per pull request.
+    """
+    from bellwether.cli.library_flag import description_changed, render_flag_markdown
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether description-changed: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    names = list(skills or ())
+    if skills_from is not None:
+        try:
+            listed = skills_from.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as error:
+            refuse(f"cannot read --skills-from {skills_from}: {type(error).__name__}")
+        names.extend(line for line in listed if line.strip())
+    try:
+        changes = description_changed(names, head=head, base=base)
+    except BellwetherError as error:
+        refuse(str(error))
+    if markdown is not None:
+        markdown.write_text(render_flag_markdown(changes), encoding="utf-8")
+    flagged = [change.skill for change in changes if change.flags]
+    _emit(
+        {
+            "flagged": bool(flagged),
+            "changes": [{"skill": c.skill, "status": c.status} for c in changes],
+        },
+        as_json=json_output,
+        lines=[
+            (
+                f"library flagged for a coexistence re-run: {', '.join(flagged)}"
+                if flagged
+                else "no skill description changed; the library is not flagged"
+            )
+        ],
+    )
 
 
 @app.command(name="init-manifest")

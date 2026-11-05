@@ -11,7 +11,26 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: coexistence on the schedule (§7.4 item 1, §18.4) — `bellwether-coexistence.yml` and
+**Latest: the §19.3 coexistence flag on pull requests — `bellwether description-changed`.** A
+description is the trigger surface a harness shows the model, so a pull request that changes one
+can change which skill wins an activation without any other file moving. `bellwether.yml` now
+compares each changed skill's `SKILL.md` at the head with the base commit's copy (extracted with
+`git archive`; Bellwether runs no git) by the §6.1 `description_digest`, so a pure reflow of the
+same sentence is not a change; a skill the base lacks is *added*, one the head lacks is
+*removed*, and both flag. The result is one comment per pull request, keyed apart from the scan
+summary's and every evaluation's (`COEXISTENCE_FLAG_KEY`, recognised by its first-line marker):
+the library is flagged, which skills flagged it, and when the scheduled run resolves it (Mondays
+05:23 UTC, `Bellwether coexistence`, if `BELLWETHER_COEXISTENCE` is set, or by hand). A push that
+stops changing descriptions updates that comment (`--update-only`); a pull request that never
+changed one gets none; a fork gets none. The matrix is never run on the pull request. The command
+is advisory (exit 0 either way, 3 only when a skill cannot be read). Executed in the harness on a
+two-commit repository: a changed description posts the comment, a body-only change posts
+nothing, a fork posts nothing. **Eleven changes reverted: eleven red** — one only after the test
+learned to pin the schedule statement §19.3 requires, which the first measurement showed it
+did not. The live-statuses test that counted comments now excludes the flag, which that pull
+request earns by adding two skills.
+
+**Before that: coexistence on the schedule (§7.4 item 1, §18.4) — `bellwether-coexistence.yml` and
 `coexistence-report`.** The matrix now runs off the pull-request path: a weekly schedule, inert
 until a maintainer sets the repository variable `BELLWETHER_COEXISTENCE` to `true` (the job's own
 `if:` skips before any step; a manual dispatch is the explicit go-ahead, with inputs for the one
@@ -1315,7 +1334,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2720 tests: 2643 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2734 tests: 2657 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1476,9 +1495,9 @@ What remains is **outside v0.1 or unproven live**:
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the
    §7.6 held-out prompt set and its rotation (the generic probe suite and `bellwether probe` are
    built; the published prompts are in `bellwether.skill.probes`), `bellwether probe` on a URL,
-   the §19.3 description-digest flag on pull requests (the scheduled coexistence workflow and the
-   `coexistence-report` issue are built), more providers and harnesses, and a stronger isolation
-   runtime (gVisor/Firecracker are refused at parse today).
+   a baseline-update pull request for `_library.coexistence.json` (today a maintainer commits the
+   run's `coexistence.json`; the §19.3 flag and the scheduled run are built), more providers and
+   harnesses, and a stronger isolation runtime (gVisor/Firecracker are refused at parse today).
 
 The numbered history below is kept for its record of how each piece landed. The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,

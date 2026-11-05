@@ -143,6 +143,41 @@ jobs:
         if: steps.detect.outputs.skills == ''
         run: echo "No skills changed in this pull request; nothing to evaluate."
 
+      - name: Coexistence flag
+        # §19.3: a changed description (or a skill added or removed) flags the library for the
+        # next scheduled coexistence run (§7.4) — it never runs the matrix here. One comment per
+        # pull request says so, and says when the schedule resolves it; a push that stops
+        # changing descriptions updates that comment rather than leaving it, and a pull request
+        # that never changed one gets none (`--update-only`). Not from a fork, whose token
+        # cannot comment. Costs nothing: no model, no sandbox.
+        if: >-
+          steps.detect.outputs.skills != '' &&
+          github.event_name == 'pull_request' &&
+          steps.detect.outputs.trusted == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          mkdir -p .bellwether-out .bellwether-base
+          # The base commit's copy of each changed skill, at the same relative path, for the
+          # description comparison. A skill the base lacks is simply absent there (added).
+          while IFS= read -r skill <&3; do
+            [ -z "${skill}" ] && continue
+            if git cat-file -e "${BASE_SHA}:${skill}/SKILL.md" 2>/dev/null; then
+              git archive "${BASE_SHA}" -- "${skill}" | tar -x -C .bellwether-base
+            fi
+          done 3< changed-skills.txt
+          uv run bellwether description-changed --skills-from changed-skills.txt \
+            --base .bellwether-base --markdown .bellwether-out/coexistence-flag.md --json \
+            > .bellwether-out/coexistence-flag.json
+          cat .bellwether-out/coexistence-flag.md >> "$GITHUB_STEP_SUMMARY"
+          if grep -q '"flagged": true' .bellwether-out/coexistence-flag.json; then
+            uv run bellwether pr-comment .bellwether-out/coexistence-flag.md
+          else
+            uv run bellwether pr-comment .bellwether-out/coexistence-flag.md --update-only
+          fi
+
 
       - name: Commit statuses — nothing to evaluate
         # A pull request that changes no skill passes every context, explicitly: a required

@@ -241,8 +241,13 @@ def test_evaluated_skills_report_the_worst_gate_per_group(api: FakeGitHub, tmp_p
     latest = api.latest_statuses()
     assert "sneaky-exfiltrator" in latest["bellwether/verdict"]["description"]
     assert all(len(s["description"]) <= 140 for s in api.statuses)
-    # One comment per evaluation, keyed apart.
-    assert len(api.comments) == 2
+    # One comment per evaluation, keyed apart — plus the §19.3 coexistence flag, which this
+    # pull request earns by adding two skills; it is not a report comment.
+    reports = [
+        c for c in api.comments if not c["body"].startswith("<!-- bellwether-coexistence-flag -->")
+    ]
+    assert len(reports) == 2
+    assert len(api.comments) == 3
     assert api.unauthorised == 0
     listed = (repo / ".bellwether-out" / "evaluations.txt").read_text("utf-8").splitlines()
     assert len(listed) == 2 and not any("hostile" in line for line in listed)

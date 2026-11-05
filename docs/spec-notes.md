@@ -5807,3 +5807,62 @@ baseline-update pull request for it is a brick for later, if the committed file 
 | W16 | the evidence not uploaded after a broken run | `test_a_broken_matrix_run_fails_as_infrastructure` |
 
 The container suite (61 run locally, 16 CI-only skips with stated reasons) is green.
+
+## §19.3 — the coexistence flag on a pull request
+
+§19.3: "A change to any skill's `description_digest` (§6.1) additionally flags the library for
+coexistence re-run on the next scheduled build (§7.4) — it does not trigger a synchronous
+library-wide matrix on the pull request, which at the costs above is not affordable. The PR
+comment says the library was flagged and when the scheduled run will resolve it." With the
+scheduled run in place (previous entry), this is the flag.
+
+### What is built
+
+`bellwether description-changed` compares each changed skill's `SKILL.md` at the head with the
+same file in a tree of the base commit, by the §6.1 `description_digest`. The digest normalises
+whitespace, so a pure reflow of the same sentence is not a change, and a pull request that
+touches only a skill's body or scripts is not flagged: the description is the trigger surface,
+and nothing else in the skill changes who wins an activation. A skill the base lacks is *added*,
+one the head lacks is *removed*; both change the library's composition and both flag. A
+directory that is a skill in neither tree is refused rather than read as "no change".
+
+Bellwether runs no git. `bellwether.yml` extracts the base commit's copy of each changed skill
+with `git archive` into a scratch tree (only where the base has that `SKILL.md`), and the command
+compares two plain directories — the same discipline `changed-skills` keeps, where the workflow
+runs `git diff` and the tool reads a list. The step runs on every pull request (not from a fork,
+whose token cannot comment), costs nothing (no model, no sandbox), and posts **one comment per
+pull request** through `pr-comment`, which recognises the flag's first-line marker and keys it
+apart from the scan summary and every evaluation (`COEXISTENCE_FLAG_KEY`). The comment names the
+skills that flagged the library and says when the schedule resolves it. A push that stops
+changing descriptions updates that comment (`--update-only`); a pull request that never changed
+one gets none. The command is advisory — exit 0 whether or not anything is flagged, 3 only when a
+skill cannot be read — because the flag is information for the reader and for the scheduled run,
+not a gate.
+
+### What the flag does not do
+
+It does not run the matrix, start the scheduled workflow, or set the repository variable. §19.3
+is explicit that the matrix is not affordable on the pull-request path, and the scheduled run is
+a maintainer's opt-in; the flag's job is to say that a change to the trigger surface happened and
+where its consequences will be measured. A library whose schedule is off is told so in the same
+sentence.
+
+### Revert-proving: eleven changes, eleven red
+
+| # | Reverted | Red test |
+|---|---|---|
+| F1 | the raw text compared instead of the digest (a reflow or a body change flags) | `test_a_changed_description_flags_and_a_body_change_does_not`, the reflow test |
+| F2 | an added skill does not flag | `test_an_added_or_removed_skill_flags` |
+| F3 | a removed skill does not flag | same |
+| F4 | a directory that is a skill in neither tree passes silently | `test_a_directory_that_is_a_skill_in_neither_tree_is_refused` |
+| F5 | the comment omits when the schedule resolves the flag | `test_the_markdown_names_the_flagged_skills_and_when_the_schedule_resolves_it` — **first measured green**: the test checked the schedule variable but not the time, which is the one thing §19.3 asks the comment to say; the assertion was added and the row measured again |
+| F6 | `pr-comment` keys the flag as the scan summary | `test_pr_comment_recognises_the_flag_by_its_first_line` |
+| F7 | the flag key collides with the scan key | `test_the_flag_comment_has_its_own_key` |
+| F8 | the workflow posts the flag from a fork | `test_a_fork_gets_no_flag_comment` |
+| F9 | the workflow always creates the comment (no `--update-only`) | `test_a_body_only_change_posts_nothing` |
+| F10 | the workflow compares against no base tree (everything reads as added) | same |
+| F11 | the command exits non-zero when flagged | `test_the_command_is_advisory_and_writes_the_comment` |
+
+The live-statuses test that counted a pull request's comments now excludes the flag, which that
+pull request earns by adding two skills; the count of report comments is unchanged. The container
+suite (61 run locally, 16 CI-only skips with stated reasons) is green.
