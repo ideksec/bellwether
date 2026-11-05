@@ -106,16 +106,20 @@ def render_flag_markdown(changes: Sequence[DescriptionChange]) -> str:
         lines += [
             "### Library not flagged for a coexistence re-run",
             "",
-            "No skill in this pull request changed its description, was added or was removed, "
-            "so the trigger-collision matrix (§7.4) is unaffected.",
+            (
+                "No skill in this pull request changed its description, was added or was "
+                "removed, so the trigger-collision matrix (§7.4) is unaffected."
+            ),
         ]
         return "\n".join(lines) + "\n"
     words = {"changed": "changed its description", "added": "is new", "removed": "is removed"}
     lines += [
         "### Library flagged for a coexistence re-run (§7.4, §19.3)",
         "",
-        "A description is the trigger surface a harness shows the model, so this pull request "
-        "can change which skill wins an activation:",
+        (
+            "A description is the trigger surface a harness shows the model, so this pull "
+            "request can change which skill wins an activation:"
+        ),
         "",
     ]
     lines += [f"- {code(change.skill)} {words[change.status]}" for change in flagged]
