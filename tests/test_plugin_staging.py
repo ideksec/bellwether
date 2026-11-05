@@ -554,6 +554,7 @@ def test_every_commands_out_default_is_the_directory_the_exclusion_names() -> No
     assert set(defaults) == {
         "run",
         "probe",
+        "coexistence",
         "init_manifest",
         "show_trace",
         "render_report",

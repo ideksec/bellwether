@@ -454,21 +454,6 @@ def test_doctor_reports_a_bad_config_as_an_infrastructure_error(tmp_path: Path) 
     assert result.exit_code == ExitCode.INFRASTRUCTURE
 
 
-@pytest.mark.parametrize(
-    ("command", "args"),
-    [
-        ("coexistence", []),
-    ],
-)
-def test_unimplemented_commands_exit_three_and_name_their_work_package(
-    command: str, args: list[str]
-) -> None:
-    """Exit 3 is "could not evaluate". An empty result would read as a clean run."""
-    result = runner.invoke(app, [command, *args])
-    assert result.exit_code == ExitCode.INFRASTRUCTURE
-    assert "not implemented" in result.output
-
-
 def test_run_without_a_skill_refuses(tmp_path: Path) -> None:
     """`run` with no skill argument is an infrastructure refusal, not an empty clean run."""
     result = runner.invoke(app, ["run"])

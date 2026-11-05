@@ -11,7 +11,25 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: the generic probe suite (§5 external mode, §7.6) — `bellwether probe` is real.** A
+**Latest: the trigger-collision matrix (§7.4) — `bellwether coexistence` is real.** The last
+stubbed command. Every skill under a library root runs its two probe scenarios (`probe:
+activation` and `probe: representative`; where unmarked, its first `should_trigger` as the
+representative and the §7.6 generated probe as the activation; a skill with no scenarios
+contributes the generated probe alone) with **the whole library offered beside it**, on one
+target at a fixed N of 12, through the ordinary `run_evaluation` — same sandbox, planes, estimate
+gate and artifact tree. Each run now records every skill Plane A saw activate
+(`RunReading.activated_skills`) and `EvalResult` carries its readings, which is what the matrix
+counts: not whether the probed skill loaded but *which* did. The matrix (`coexistence.json`/`.md`
+under `--out`) is keyed on the sorted member package digests; `--set-baseline` stores it as
+`.bellwether/baselines/_library.coexistence.json`, and the headline is the §7.4 delta —
+"`greedy` began winning 12 of 12 activations on `alpha`'s `act` probe" — or the stated reason it
+cannot be compared (a member added, removed or changed; a different target or N). Two targets are
+refused rather than averaged; `api-loop` is refused without `--force` and a forced matrix is
+labelled *harness-specific: not portable* (§9.4). **Seventeen changes reverted: sixteen red**; one
+(scrubbing a probe's own `also_load_skills`) is defensive and stays green, stated in spec-notes.
+Not built, stated: the scheduled workflow and the §19.3 description-digest flag. Not run live.
+
+**Before that: the generic probe suite (§5 external mode, §7.6) — `bellwether probe` is real.** A
 third-party skill with no `evals/scenarios.yaml` was refused by `run` and `probe` was a stub.
 Now `bellwether.skill.probes.generic_probe_suite` builds a suite from the skill's description —
 `probe-activation` (`probe: activation`, the description echoed back, `should_trigger`), four
@@ -1277,7 +1295,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2687 tests: 2610 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2699 tests: 2622 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1434,9 +1452,9 @@ What remains is **outside v0.1 or unproven live**:
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the
    §7.6 held-out prompt set and its rotation (the generic probe suite and `bellwether probe` are
    built; the published prompts are in `bellwether.skill.probes`), `bellwether probe` on a URL,
-   coexistence on the scheduled trigger (§7.4, which can now read every skill's
-   `probe: activation`), more providers and harnesses, and a stronger isolation runtime
-   (gVisor/Firecracker are refused at parse today).
+   the scheduled coexistence workflow and the §19.3 description-digest flag (the
+   `bellwether coexistence` command and its library baseline are built), more providers and
+   harnesses, and a stronger isolation runtime (gVisor/Firecracker are refused at parse today).
 
 The numbered history below is kept for its record of how each piece landed. The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,
