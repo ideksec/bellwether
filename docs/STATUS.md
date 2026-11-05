@@ -11,7 +11,27 @@ evidence (per-run ARF traces + report) is uploaded from CI.
 **Update it at the end of a session, not the start** — a status file that lags is worse than none,
 because it is trusted.
 
-**Latest: the trigger-collision matrix (§7.4) — `bellwether coexistence` is real.** The last
+**Latest: coexistence on the schedule (§7.4 item 1, §18.4) — `bellwether-coexistence.yml` and
+`coexistence-report`.** The matrix now runs off the pull-request path: a weekly schedule, inert
+until a maintainer sets the repository variable `BELLWETHER_COEXISTENCE` to `true` (the job's own
+`if:` skips before any step; a manual dispatch is the explicit go-ahead, with inputs for the one
+target alias and for forcing an api-loop target). The harness is claude-code (§9.4). The
+workflow builds the sandbox and both sidecars, runs `bellwether coexistence` under `sudo` with
+`--yes` (nobody answers an estimate on a schedule; the token ceiling and `max_cost_usd` bound the
+spend), selects the one `coexistence-*` directory deterministically or refuses, and
+`bellwether coexistence-report` reads the matrix against the committed
+`examples/live/baselines/_library.coexistence.json`: `collisions` (a probe won by another skill),
+`changed` (moved against a comparable baseline) or `clean`. A collision or a change keeps **one
+issue** open for the library — the bot's own, found by its marker, edited in place and commented
+on only when the findings digest moves, closed on a later clean run; a person's issue carrying
+the marker is never touched. Exit 2 on collisions or a change, so the scheduled run goes red the
+way the nightly does on drift. Every branch is executed in the workflow harness with a fake
+`coexistence` dropping a matrix and the real report reading it against the fake GitHub.
+**Twelve changes reverted: twelve red** (one re-measured after the formatter moved its anchor).
+Not built, stated: the §19.3 description-digest flag on pull requests. Not run live: it needs the
+variable, the key, and your approval to spend.
+
+**Before that: the trigger-collision matrix (§7.4) — `bellwether coexistence` is real.** The last
 stubbed command. Every skill under a library root runs its two probe scenarios (`probe:
 activation` and `probe: representative`; where unmarked, its first `should_trigger` as the
 representative and the §7.6 generated probe as the activation; a skill with no scenarios
@@ -1295,7 +1315,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2699 tests: 2622 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2720 tests: 2643 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The independent-review round (this session)
 
@@ -1445,6 +1465,10 @@ What remains is **outside v0.1 or unproven live**:
    - The nightly drift run: off until `BELLWETHER_NIGHTLY=true`. It spends on every firing,
      so turning it on is the owner's call. A first manual dispatch costs one smoke run per
      skill (about $0.30 each).
+   - The scheduled coexistence run: off until `BELLWETHER_COEXISTENCE=true`. A first manual
+     dispatch runs up to two probes × 12 repetitions per skill under claude-code, and its
+     `coexistence.json`, committed as `examples/live/baselines/_library.coexistence.json`, is
+     the first library baseline.
    - Both need a stored baseline before `drift` can say anything. Today `examples/live/baselines/`
      is empty, so the first night reads `no_baseline` for every skill.
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
@@ -1452,9 +1476,9 @@ What remains is **outside v0.1 or unproven live**:
 3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the
    §7.6 held-out prompt set and its rotation (the generic probe suite and `bellwether probe` are
    built; the published prompts are in `bellwether.skill.probes`), `bellwether probe` on a URL,
-   the scheduled coexistence workflow and the §19.3 description-digest flag (the
-   `bellwether coexistence` command and its library baseline are built), more providers and
-   harnesses, and a stronger isolation runtime (gVisor/Firecracker are refused at parse today).
+   the §19.3 description-digest flag on pull requests (the scheduled coexistence workflow and the
+   `coexistence-report` issue are built), more providers and harnesses, and a stronger isolation
+   runtime (gVisor/Firecracker are refused at parse today).
 
 The numbered history below is kept for its record of how each piece landed. The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,

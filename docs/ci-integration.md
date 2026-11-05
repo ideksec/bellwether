@@ -220,6 +220,30 @@ starts one by hand. A dated model id in the config only changes when someone edi
 drift means the provider or the environment moved. An undated alias is what lets a new model
 version arrive unannounced.
 
+## Scheduled coexistence
+
+[`.github/workflows/bellwether-coexistence.yml`](../.github/workflows/bellwether-coexistence.yml)
+runs the §7.4 trigger-collision matrix off the pull-request path: every skill under the skill
+root runs its probe scenarios with the whole library offered beside it, on one claude-code
+target at a fixed N of 12 (`bellwether coexistence`), and `bellwether coexistence-report` reads
+the matrix against the committed library baseline:
+
+| Result | Meaning | Issue |
+|---|---|---|
+| `collisions` | a probe's activation was won by another skill | opened, or edited when the findings change |
+| `changed` | no collision, but the matrix moved against a comparable baseline | opened, or edited when the findings change |
+| `clean` | no collision and no change (or no baseline to compare with) | an open one is closed |
+
+The library has at most one open issue. The baseline is a committed file: download the run's
+artifact and commit its `coexistence.json` as `examples/live/baselines/_library.coexistence.json`
+(the key is the sorted member package digests, so any change to the library invalidates it and
+the report says so rather than diffing across different libraries).
+
+**It spends on every run, so it is off by default.** Set the repository variable
+`BELLWETHER_COEXISTENCE` to `true` to let the weekly schedule fire; **Run workflow** starts one
+by hand, with inputs for the one target alias and for forcing an api-loop target (labelled
+*harness-specific: not portable*, §9.4).
+
 ## The key never enters the sandbox
 
 The API key is a secret held by the **harness on the CI runner**, not by the skill under

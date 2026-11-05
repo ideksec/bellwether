@@ -565,7 +565,7 @@ def bellwether_wrapper(tmp: Path, bellwether: str, api: FakeGitHub) -> Path:
         "#!/bin/bash\n"
         'cmd="$1"; shift\n'
         'case "$cmd" in\n'
-        f'  pr-comment|commit-status|drift) exec "{bellwether}" "$cmd" --api-root "{api.url}" "$@" ;;\n'
+        f'  pr-comment|commit-status|drift|coexistence-report) exec "{bellwether}" "$cmd" --api-root "{api.url}" "$@" ;;\n'
         "  baseline)\n"
         '    sub="$1"; shift\n'
         '    case "$sub" in\n'
