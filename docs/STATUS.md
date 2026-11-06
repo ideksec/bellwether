@@ -3,11 +3,11 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the **post-v0.1 bricks** arc (PRs #110–#115): every v0.1 work package
-is built, both harnesses have reached `ready` on live labelled pull requests (#65, #102), and the
-first five bricks beyond v0.1 have landed — the runtime `instrumentation_probe` gate, the generic
-probe suite, the trigger-collision matrix, its scheduled run with one issue per library, and the
-§19.3 flag on pull requests. **Update this file at the end of a session, not the start** — a status
+Last updated at the end of the **post-v0.1 bricks** arc (PRs #110–#115 and the one after): every
+v0.1 work package is built, both harnesses have reached `ready` on live labelled pull requests
+(#65, #102), and the first six bricks beyond v0.1 have landed — the runtime `instrumentation_probe`
+gate, the generic probe suite, the trigger-collision matrix, its scheduled run with one issue per
+library, the §19.3 flag on pull requests, and the library baseline-update pull request. **Update this file at the end of a session, not the start** — a status
 file that lags is worse than none, because it is trusted.
 
 ## What's next — the development path, in order
@@ -29,8 +29,11 @@ Every one of these spends model tokens. Build nothing here; ask, and run only on
      `no_baseline`;
    - the **scheduled coexistence run** (`bellwether-coexistence.yml`): inert until
      `BELLWETHER_COEXISTENCE` is `true`; a first manual dispatch runs up to two probes × 12
-     repetitions per skill under claude-code. Commit its `coexistence.json` as
-     `examples/live/baselines/_library.coexistence.json` to make the first library baseline.
+     repetitions per skill under claude-code. Dispatch with `set_baseline` to have the run
+     propose its matrix as the first library baseline through a pull request (or, once a run
+     has uploaded one, dispatch with `set_baseline` and that run's id in `baseline_run_id`, which
+     spends nothing). Watch that the second job finds the artifact and that the pull request
+     opens — neither has been observed live.
 2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone
    promotes `egress_volume_anomaly` from `warn`.
 3. **Run `bellwether probe` against a real third-party skill** once, so external mode has been
@@ -41,30 +44,23 @@ Every one of these spends model tokens. Build nothing here; ask, and run only on
 Each is scoped so the six checks, the offline suite and a revert-proof table can close it in one
 session. Read the named spec-notes entry before starting.
 
-1. **A baseline-update pull request for the library file.** Today a maintainer commits a run's
-   `coexistence.json` by hand. Mirror `bellwether-baseline.yml`'s "Push the baseline branch" and
-   "Open the baseline pull request" steps in `bellwether-coexistence.yml`, behind a dispatch input
-   (`set_baseline`), reusing `bellwether baseline open-pr`. *Done when* the harness test shows the
-   branch on a bare origin holding exactly `_library.coexistence.json` and the pull request on the
-   fake GitHub, and `main` untouched. Spec-notes: "§7.4 item 1, §18.4 — coexistence on the
-   schedule" and "§17.5, §18.1 — the baseline-update pull request".
-2. **The `pids_limit` exit reason** (Outstanding actions, below). Docker gives no distinct exit
+1. **The `pids_limit` exit reason** (Outstanding actions, below). Docker gives no distinct exit
    code; read the container cgroup's `pids.events` (`max` counter) before the container is removed.
    *Done when* a container test that hits the limit produces `exit_reason: pids_limit` in the
    footer, counted as a distinct state (§12.7).
-3. **Static scanner: a second decoding level** (spec-notes "§15 — the built-in static scanner",
+2. **Static scanner: a second decoding level** (spec-notes "§15 — the built-in static scanner",
    known gaps). A base64 block inside a base64 block is reported as encoded text, not decoded
    twice. *Done when* a corpus row with nested encoding fires `BW201`. Variable indirection and
    language-mismatch detection stay out of scope and stay stated.
-4. **Canary scan gaps** (spec-notes, the Brick 6 entry): a marker split across DNS labels or
+3. **Canary scan gaps** (spec-notes, the Brick 6 entry): a marker split across DNS labels or
    written files in chunks under 12 characters, and a marker inside a larger encoded payload past
    the decode bound (`encoded-chunked-thief` is a strict `xfail`). *Done when* the xfail turns
    into a pass with the corpus skill blocked.
-5. **The held-out probe set and its rotation** (§3.5, §7.6). A design question first: a set that
+4. **The held-out probe set and its rotation** (§3.5, §7.6). A design question first: a set that
    is "undocumented" cannot live in a public repository; spec-notes "§5, §7.6 — the generic probe
    suite" states the contradiction. Decide the shipping channel with the owner before building.
    `bellwether probe` on a URL belongs with it (fetching is a trust decision).
-6. **`fixture.yaml` generated content** (§9.1 step 1) — needs a schema decision first.
+5. **`fixture.yaml` generated content** (§9.1 step 1) — needs a schema decision first.
 
 ### C. Later phases (need a judge, a new provider or a new runtime)
 
@@ -94,7 +90,29 @@ The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth 
 
 ## How we got here (newest first)
 
-**Latest: the §19.3 coexistence flag on pull requests — `bellwether description-changed`.** A
+**Latest: the library baseline-update pull request (§7.4, §17.5, §18.4 step 5) — `bellwether
+baseline library`, `set_baseline`, `baseline_run_id`.** The library coexistence baseline was a file
+a maintainer committed by hand after downloading a run's artifact; it is now proposed the way the
+per-skill baselines are. `bellwether-coexistence.yml` gained a **second job that evaluates
+nothing**: on a dispatch with `set_baseline`, after the matrix job passed *or* failed (a colliding
+matrix is still the library's state), it fetches the run's matrix — uploaded on its own as a small
+`bellwether-coexistence-matrix` artifact — through the redirect-safe API download, recomputes every
+member's package digest and the library key from the checked-out tree (a matrix of a library that
+has since changed is refused naming the difference), writes `_library.coexistence.json` onto
+`bellwether/library-baseline-run-<id>` and opens `chore: update library baseline (run <id>)` with
+`baseline open-pr`. `baseline_run_id` proposes an earlier run's matrix and skips the matrix job, so
+recording last week's matrix spends nothing. The job that runs skill content keeps
+`contents: read`; the one with a token that can push never runs a skill, and the shape test pins
+both. Both jobs are executed in the harness — the baseline job in a fresh clone of a bare origin,
+whose branch holds exactly the library file while `main` is untouched — with the test standing in
+for `actions/upload-artifact` explicitly; the harness learned `needs.<job>.result` and GitHub's
+rule that a `needs` job runs only after success unless its `if` carries a status function. The
+executed test found one defect before review did (the body read "replaces" from the filesystem
+after the write). **Twenty changes reverted: twenty red**, each with the failing test named in
+spec-notes. Not observed live: that a job's artifact is listed by the API for a later job of the
+same run, and the repository setting that lets Actions open pull requests.
+
+**Before that: the §19.3 coexistence flag on pull requests — `bellwether description-changed`.** A
 description is the trigger surface a harness shows the model, so a pull request that changes one
 can change which skill wins an activation without any other file moving. `bellwether.yml` now
 compares each changed skill's `SKILL.md` at the head with the base commit's copy (extracted with
@@ -1417,7 +1435,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2734 tests: 2657 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2765 tests: 2688 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The first independent-review round (twelve findings, at `592e309`)
 

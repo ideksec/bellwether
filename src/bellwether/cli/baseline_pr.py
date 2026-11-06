@@ -75,6 +75,7 @@ __all__ = [
     "find_merged_pr",
     "plan_baselines",
     "read_evaluations",
+    "read_member",
     "render_baseline_pr_body",
     "upsert_pull_request",
 ]
@@ -317,7 +318,7 @@ def download_artifact(
 # ---------------------------------------------------------------------------
 
 
-def _member(archive: zipfile.ZipFile, name: str, cap: int) -> bytes | None:
+def read_member(archive: zipfile.ZipFile, name: str, cap: int) -> bytes | None:
     try:
         info = archive.getinfo(name)
     except KeyError:
@@ -375,9 +376,9 @@ def read_evaluations(zip_bytes: bytes, *, out_prefix: str = ".bellwether-out/") 
         # from this environment (artifact storage is off-host), so both are accepted, and no
         # other: a member is read only at a path the list names.
         root = ""
-        listing = _member(archive, EVALUATIONS_LIST, _MAX_LIST_BYTES)
+        listing = read_member(archive, EVALUATIONS_LIST, _MAX_LIST_BYTES)
         if listing is None:
-            listing = _member(archive, out_prefix + EVALUATIONS_LIST, _MAX_LIST_BYTES)
+            listing = read_member(archive, out_prefix + EVALUATIONS_LIST, _MAX_LIST_BYTES)
             root = out_prefix
         if listing is None:
             raise BellwetherError(
@@ -393,7 +394,7 @@ def read_evaluations(zip_bytes: bytes, *, out_prefix: str = ".bellwether-out/") 
             if not line:
                 continue
             member = root + _evaluation_member(line, out_prefix)
-            data = _member(archive, member, _MAX_SUMMARY_BYTES)
+            data = read_member(archive, member, _MAX_SUMMARY_BYTES)
             if data is None:
                 raise BellwetherError(f"the artifact lists {line!r} but holds no {member}")
             try:

@@ -2838,6 +2838,150 @@ def baseline_update(
     )
 
 
+@baseline_app.command("library")
+def baseline_library(
+    run_id: Annotated[
+        int,
+        typer.Option(
+            "--run-id",
+            help="The coexistence workflow run whose matrix artifact to propose (GITHUB_RUN_ID "
+            "for this run; an earlier run's id to propose that run's matrix without spending).",
+        ),
+    ],
+    skill_root: Annotated[
+        Path,
+        typer.Option(
+            "--skill-root",
+            help="The library root in the checked-out tree (skills/<name>/SKILL.md), whose "
+            "members' package digests the matrix must match.",
+        ),
+    ],
+    baselines: _BaselinesDir = Path(".bellwether/baselines"),
+    artifact: Annotated[
+        str, typer.Option("--artifact", help="The matrix artifact's name.")
+    ] = "bellwether-coexistence-matrix",
+    body: Annotated[
+        Path | None,
+        typer.Option("--body", help="Write the baseline pull request's body (Markdown) here."),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Decide and report, but write no baseline.")
+    ] = False,
+    repo: _RepoOption = None,
+    token_env: _TokenEnvOption = "GITHUB_TOKEN",
+    api_root: _ApiRootOption = "https://api.github.com",
+    json_output: JsonFlag = False,
+) -> None:
+    """Write the library coexistence baseline a run's matrix recorded (§7.4, §17.5).
+
+    Fetches the one ``coexistence.json`` in run ``--run-id``'s ``--artifact``, checks that every
+    member's package digest — and so the library key — matches the skills under ``--skill-root``
+    in this tree (a matrix of a library that has since changed is refused with the difference
+    named), and writes it as ``_library.coexistence.json`` under ``--baselines``. Nothing is
+    evaluated again. ``changed`` in the output is whether the stored file differs; false means
+    there is nothing to propose.
+    """
+    from bellwether.cli.baseline_pr import artifact_of_run, download_artifact
+    from bellwether.cli.coexistence import (
+        LIBRARY_BASELINE_FILE,
+        coexistence_findings,
+        coexistence_status,
+        compare_with_baseline,
+        library_members,
+        load_library_baseline,
+        write_library_baseline,
+    )
+    from bellwether.cli.library_baseline import (
+        library_mismatch,
+        plan_library_baseline,
+        read_matrix_artifact,
+        render_library_baseline_pr_body,
+    )
+    from bellwether.cli.pr import github_transport
+
+    def refuse(message: str) -> NoReturn:
+        typer.echo(f"bellwether baseline library: {message}", err=True)
+        raise typer.Exit(ExitCode.INFRASTRUCTURE)
+
+    repository = _github_repository(repo, refuse)
+    token = _github_token(token_env, refuse)
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    transport = github_transport(follow_redirects=False)
+    try:
+        found = artifact_of_run(
+            transport,
+            repository,
+            run_id,
+            artifact=artifact,
+            token=token,
+            api_root=api_root,
+            server_url=server,
+        )
+        if found is None:
+            refuse(f"run {run_id} has no unexpired artifact named {artifact!r}")
+        matrix = read_matrix_artifact(
+            download_artifact(
+                transport, repository, found.artifact_id, token=token, api_root=api_root
+            )
+        )
+        packages = [member.package for member in library_members(skill_root)]
+        mismatch = library_mismatch(matrix, packages)
+        if mismatch is not None:
+            refuse(mismatch)
+        stored_path = baselines / LIBRARY_BASELINE_FILE
+        stored = None
+        if stored_path.is_file():
+            try:
+                stored = load_library_baseline(stored_path)
+            except BellwetherError:
+                stored = None  # a stored file that is not a baseline is replaced, and said so
+    except BellwetherError as error:
+        refuse(str(error))
+    delta = compare_with_baseline(matrix, stored)
+    plan = plan_library_baseline(matrix, baselines, delta=delta)
+    if plan.changed and not dry_run:
+        write_library_baseline(matrix, baselines)
+    if body is not None:
+        body.write_text(
+            render_library_baseline_pr_body(
+                matrix,
+                plan,
+                run_id=found.run_id,
+                run_url=found.run_url,
+                baselines_dir=str(baselines),
+            ),
+            encoding="utf-8",
+        )
+    status = coexistence_status(matrix, delta)
+    _emit(
+        {
+            "run_id": found.run_id,
+            "run_url": found.run_url,
+            "artifact_id": found.artifact_id,
+            "library_key": matrix.library_key,
+            "target": matrix.target,
+            "n": matrix.n,
+            "status": status,
+            "findings": list(coexistence_findings(matrix, delta)),
+            "comparable": delta.comparable,
+            "reason": delta.reason,
+            "changed": plan.changed,
+            "written": plan.changed and not dry_run,
+            "path": str(plan.path),
+        },
+        as_json=json_output,
+        lines=[
+            f"run {found.run_id}: matrix of {len(matrix.members)} skill(s) on {matrix.target}, "
+            f"{status}",
+            (
+                f"{'would write' if dry_run else 'wrote'} {plan.path}"
+                if plan.changed
+                else f"{plan.path} already holds this matrix; nothing to propose"
+            ),
+        ],
+    )
+
+
 @baseline_app.command("open-pr")
 def baseline_open_pr(
     branch: Annotated[str, typer.Option("--branch", help="The pushed branch holding the update.")],
