@@ -176,9 +176,7 @@ def test_what_is_not_a_matrix_or_not_a_zip_is_refused() -> None:
 def test_an_oversized_member_is_refused_before_it_is_decompressed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import bellwether.cli.library_baseline as module
-
-    monkeypatch.setattr(module, "_MAX_MATRIX_BYTES", 64)
+    monkeypatch.setattr("bellwether.cli.library_baseline._MAX_MATRIX_BYTES", 64)
     big = _zip({"coexistence.json": b"{" + b" " * 4096 + b"}"})
 
     def never(self: zipfile.ZipFile, *args: object, **kwargs: object) -> bytes:
