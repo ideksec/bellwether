@@ -234,10 +234,17 @@ the matrix against the committed library baseline:
 | `changed` | no collision, but the matrix moved against a comparable baseline | opened, or edited when the findings change |
 | `clean` | no collision and no change (or no baseline to compare with) | an open one is closed |
 
-The library has at most one open issue. The baseline is a committed file: download the run's
-artifact and commit its `coexistence.json` as `examples/live/baselines/_library.coexistence.json`
-(the key is the sorted member package digests, so any change to the library invalidates it and
-the report says so rather than diffing across different libraries).
+The library has at most one open issue. The baseline is a committed file,
+`examples/live/baselines/_library.coexistence.json`, keyed on the sorted member package digests, so
+any change to the library invalidates it and the report says so rather than diffing across
+different libraries. To set it, dispatch the workflow with **`set_baseline`**: a second job that
+runs no skill fetches the run's matrix artifact, checks every member's package digest against the
+checked-out tree (a matrix of a library that has since changed is refused, naming the
+difference), writes the file onto a bot branch and opens a `chore: update library baseline`
+pull request for a maintainer to approve — a workflow token never pushes to `main`. With
+**`baseline_run_id`** it proposes the matrix an earlier run uploaded and spends nothing: the
+matrix job is skipped. The same repository setting the per-skill baseline pull request needs
+("Allow GitHub Actions to create and approve pull requests") applies.
 
 On a pull request, `bellwether.yml` flags the library instead of running the matrix (§19.3): a
 skill whose description changed — the trigger surface — or a skill added or removed earns one

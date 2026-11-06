@@ -297,6 +297,12 @@ class Event:
     #: ``vars.*``, the repository's configuration variables; an unset one reads as "".
     vars: Mapping[str, str] = field(default_factory=dict)
     ref_name: str = "main"
+    #: ``github.run_id`` / ``GITHUB_RUN_ID``.
+    run_id: int = 42
+    #: ``needs.<job>.result`` for the jobs this one depends on (``success``, ``failure``,
+    #: ``cancelled`` or ``skipped``). A job the expression names and the test did not model
+    #: raises, as GitHub refuses a ``needs`` the job does not declare.
+    needs: Mapping[str, str] = field(default_factory=dict)
 
 
 class _Expression:
@@ -435,6 +441,7 @@ class WorkflowRunner:
             "github.repository": "owner/repo",
             "github.token": FAKE_TOKEN,
             "github.sha": event.merge_sha,
+            "github.run_id": str(event.run_id),
             "github.event.action": event.action,
             "github.event.label.name": event.label,
             "github.event.pull_request.head.repo.full_name": head,
@@ -451,6 +458,8 @@ class WorkflowRunner:
             contexts[f"inputs.{key}"] = value
         for key, value in event.vars.items():
             contexts[f"vars.{key}"] = value
+        for job, result in event.needs.items():
+            contexts[f"needs.{job}.result"] = result
         return contexts
 
     def _expression(self) -> _Expression:
@@ -482,10 +491,19 @@ class WorkflowRunner:
     # -- execution -------------------------------------------------------------------------
 
     def job_runs(self) -> bool:
-        """The job's own ``if:`` — evaluated as GitHub does, before any step."""
-        if self.job_if is None:
+        """The job's own ``if:`` — evaluated as GitHub does, before any step.
+
+        A job with ``needs`` runs only when every needed job succeeded, unless its ``if`` names a
+        status function (``always()``, ``failure()``, ``success()``); then the expression alone
+        decides. ``event.needs`` is what the needed jobs did.
+        """
+        condition = None if self.job_if is None else str(self.job_if)
+        has_status = condition is not None and re.search(r"\b(always|success|failure)\(", condition)
+        if not has_status and any(result != "success" for result in self.event.needs.values()):
+            return False
+        if condition is None:
             return True
-        return bool(self._expression().evaluate(str(self.job_if)))
+        return bool(self._expression().evaluate(condition))
 
     def run(self) -> list[StepResult]:
         if not self.job_runs():
@@ -518,6 +536,7 @@ class WorkflowRunner:
                 "GITHUB_REPOSITORY": "owner/repo",
                 "GITHUB_EVENT_NAME": self.event.name,
                 "GITHUB_SHA": self.event.merge_sha,
+                "GITHUB_RUN_ID": str(self.event.run_id),
                 "GITHUB_SERVER_URL": "https://github.com",
                 "GITHUB_REF": (
                     f"refs/pull/{self.event.pr_number}/merge"
@@ -569,7 +588,7 @@ def bellwether_wrapper(tmp: Path, bellwether: str, api: FakeGitHub) -> Path:
         "  baseline)\n"
         '    sub="$1"; shift\n'
         '    case "$sub" in\n'
-        f'      fetch|open-pr) exec "{bellwether}" baseline "$sub" --api-root "{api.url}" "$@" ;;\n'
+        f'      fetch|open-pr|library) exec "{bellwether}" baseline "$sub" --api-root "{api.url}" "$@" ;;\n'
         f'      *) exec "{bellwether}" baseline "$sub" "$@" ;;\n'
         "    esac ;;\n"
         f'  *) exec "{bellwether}" "$cmd" "$@" ;;\n'

@@ -19,10 +19,14 @@ name: Bellwether coexistence
 # collisions measured there measure its own prompt assembly; `bellwether coexistence` refuses an
 # api-loop target unless the dispatch sets `force`, and labels such a matrix not portable.
 #
-# The baseline is a committed file: to set it, download the run's artifact and commit its
-# coexistence.json as examples/live/baselines/_library.coexistence.json. The key is the sorted
-# member package digests, so adding, removing or changing any skill invalidates it, and the
-# report says so rather than diffing across different libraries.
+# The baseline is a committed file, examples/live/baselines/_library.coexistence.json, keyed on
+# the sorted member package digests, so adding, removing or changing any skill invalidates it,
+# and the report says so rather than diffing across different libraries. To set it, dispatch
+# with `set_baseline`: a second job that evaluates nothing fetches the run's matrix artifact,
+# checks every member digest against this tree, writes the file onto a bot branch and opens a
+# `chore: update library baseline` pull request for a maintainer to approve (§17.5: a workflow
+# token never pushes to main). With `baseline_run_id` it proposes an earlier run's matrix
+# instead and spends nothing — the matrix job is skipped.
 
 on:
   schedule:
@@ -37,6 +41,14 @@ on:
         description: "Run on an api-loop target anyway (labelled not portable, §9.4)"
         type: boolean
         default: false
+      set_baseline:
+        description: "Propose the matrix as the library baseline through a pull request (never a push to main)"
+        type: boolean
+        default: false
+      baseline_run_id:
+        description: "With set_baseline: propose the matrix an earlier run of this workflow uploaded instead of running one (spends nothing)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -51,12 +63,16 @@ env:
   BELLWETHER_POLICY: examples/live/policy-claude-code.yaml
   BELLWETHER_MAX_TOKENS: "400000"
   BELLWETHER_BASELINES: examples/live/baselines
+  BW_OUT: .bellwether-baseline
 
 jobs:
   coexistence:
     # The opt-in. A scheduled run with the variable unset is skipped here, before any step —
-    # nothing is installed, built or spent.
-    if: github.event_name == 'workflow_dispatch' || vars.BELLWETHER_COEXISTENCE == 'true'
+    # nothing is installed, built or spent. A dispatch naming an earlier run's matrix to
+    # baseline is not a run either.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.baseline_run_id == '')
+      || (github.event_name == 'schedule' && vars.BELLWETHER_COEXISTENCE == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -164,3 +180,112 @@ jobs:
             .bellwether-out/**
             !.bellwether-out/**/runs/**
           if-no-files-found: warn
+
+      # The matrix alone, as its own artifact: what the baseline job below (or a later dispatch
+      # naming this run) fetches through the API, bounded and unambiguous, without the evidence.
+      - name: Upload the matrix
+        if: always() && steps.matrix.outputs.matrix != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bellwether-coexistence-matrix
+          path: ${{ steps.matrix.outputs.matrix }}/coexistence.json
+          if-no-files-found: error
+
+  library-baseline-pr:
+    # §17.5 / §18.4 step 5, for the library: a maintainer's dispatch with `set_baseline`
+    # proposes the matrix as the stored library baseline. Nothing is evaluated here and nothing
+    # spends — the matrix is read from this run's artifact (or an earlier run's, by
+    # `baseline_run_id`), so the job that ran skill content above keeps `contents: read` and
+    # the one with a token that can push never runs a skill. It runs after a matrix job that
+    # passed *or* failed (a colliding matrix is still the library's state, and the pull request
+    # says so), and when the matrix job was skipped for an earlier run's id.
+    needs: coexistence
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' && inputs.set_baseline == 'true'
+      && needs.coexistence.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # The bot branch is pushed (never main), and the pull request opened from it.
+      contents: write
+      pull-requests: write
+      # Reading this run's (or an earlier run's) artifact.
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # The push step hands the token to git for that one command, through a credential
+          # helper that reads it from the step's environment; it never sits on disk.
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: "0.8.17"
+          enable-cache: true
+
+      - name: Install Bellwether
+        run: uv sync --frozen
+
+      - name: Write the library baseline
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BASELINE_RUN_ID: ${{ inputs.baseline_run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${BW_OUT}"
+          run="${BASELINE_RUN_ID:-${GITHUB_RUN_ID}}"
+          # The matrix of `run`, checked member by member against this tree's skills (a matrix
+          # of a library that has since changed is refused, naming the difference), written as
+          # the library baseline. Nothing is evaluated.
+          uv run bellwether baseline library --run-id "${run}" \
+            --artifact bellwether-coexistence-matrix \
+            --skill-root "${BELLWETHER_SKILL_ROOT}" --baselines "${BELLWETHER_BASELINES}" \
+            --body "${BW_OUT}/body.md" --json > "${BW_OUT}/library.json"
+          cat "${BW_OUT}/library.json"
+          cat "${BW_OUT}/body.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+          # What git sees, not what the command says it wrote: a record identical to the stored
+          # one leaves the tree clean, and an empty commit is not a proposal.
+          if [ -n "$(git status --porcelain -- "${BELLWETHER_BASELINES}")" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The stored library baseline already matches; nothing to propose."
+          fi
+
+      - name: Push the library baseline branch
+        id: push
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN: ${{ steps.update.outputs.run }}
+        run: |
+          set -euo pipefail
+          # One branch per source run: two proposals in a row each get their own, rather than
+          # the second force-pushing over the first's.
+          branch="bellwether/library-baseline-run-${RUN}"
+          title="chore: update library baseline (run ${RUN})"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${branch}"
+          git add -- "${BELLWETHER_BASELINES}"
+          git commit -q -m "${title}" -m "Proposed by the Bellwether coexistence workflow (§7.4, §17.5)."
+          # shellcheck disable=SC2016  # expanded by git's helper shell, not here
+          git -c credential.helper= \
+              -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${GITHUB_TOKEN}"; }; f' \
+              push --force origin "HEAD:refs/heads/${branch}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
+
+      - name: Open the library baseline pull request
+        if: steps.push.outputs.branch != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.push.outputs.branch }}
+          TITLE: ${{ steps.push.outputs.title }}
+        run: |
+          set -euo pipefail
+          uv run bellwether baseline open-pr --branch "${BRANCH}" --title "${TITLE}" \
+            --base "${GITHUB_REF_NAME}" --body-file "${BW_OUT}/body.md"

@@ -5866,3 +5866,107 @@ sentence.
 The live-statuses test that counted a pull request's comments now excludes the flag, which that
 pull request earns by adding two skills; the count of report comments is unchanged. The container
 suite (61 run locally, 16 CI-only skips with stated reasons) is green.
+
+## §7.4, §17.5, §18.4 step 5 — the library baseline-update pull request
+
+The previous coexistence entry left the library baseline as a file a maintainer commits by hand
+after downloading a run's artifact. §17.5's rule for the per-skill baselines applies to the
+library's too — a baseline is reviewable because it arrives as a pull request, and a workflow
+token never pushes to `main` — so this is the same flow for `_library.coexistence.json`.
+
+### What is built
+
+`bellwether-coexistence.yml` takes two more dispatch inputs. `set_baseline` proposes the run's
+matrix as the stored library baseline through a `chore: update library baseline (run <id>)` pull
+request from a bot branch (`bellwether/library-baseline-run-<id>`, one per source run so two
+proposals never force-push over each other). `baseline_run_id` proposes the matrix an *earlier*
+run uploaded instead: the matrix job is skipped by its own `if:`, so a maintainer who liked last
+Monday's scheduled matrix records it without spending a second run. The matrix job now uploads
+the one `coexistence.json` it selected as its own small artifact (`bellwether-coexistence-matrix`),
+after a passing *or* failing report — a colliding matrix is still the library's state, and
+proposing it is a maintainer's call — beside the full evidence artifact.
+
+**The proposal is a second job that evaluates nothing.** The first design put the push and
+open-pr steps at the end of the matrix job, which is what the STATUS entry scoping this brick
+said. That would hand `contents: write` to the job that runs evaluated skill content on the
+runner, and the job's own checkout comment says why it has no git credentials: nothing there
+needs any. So `library-baseline-pr` is a separate job with `needs: coexistence`, its own
+`contents: write` / `pull-requests: write` / `actions: read`, and no step that runs a skill or
+`sudo`; the matrix job keeps `contents: read`, and the shape test pins both. It runs when the
+matrix job passed, failed (exit 2 on collisions) or was skipped for an earlier run's id, never
+when it was cancelled.
+
+**What is re-derived, and what is read.** `bellwether baseline library --run-id … --skill-root …
+--baselines …` fetches the run's matrix artifact through the API (the redirect-safe download
+`baseline fetch` uses, so the token never reaches the storage host), reads the one member named
+`coexistence.json` (zero, two or more, oversized or not-a-matrix are each refused), and
+recomputes every member's package digest and the library key from the skills under the root in
+the tree the job checked out. A matrix of a library that has since changed — a skill added,
+removed or whose digest moved — is refused with the difference named, not proposed as this
+library's baseline; a forged key that disagrees with its own members is refused too. What the run
+*observed* cannot be re-derived without spending again; the pull request body says so and names
+the run, and the maintainer approving it is the control (§18.4 step 5). The body also says what
+the record replaces (no baseline, a baseline of the same or a different library, or a stored file
+that is not a baseline at all — which is replaced, not refused, since the proposal is what fixes
+it) and, for a colliding matrix, that a collision recorded here still opens the library's issue
+on the next run: collisions are read from each run on its own, and only the winner counts stop
+reading as a *change*. Whether anything is proposed is decided by `git status`, as in the
+baseline workflow: an identical record leaves the tree clean and no branch is pushed.
+
+### Executed, and what could not be
+
+Both jobs run in the workflow harness: the matrix job with a fake `bellwether coexistence`
+dropping a matrix of the scratch repository's real skills (so the digest check has something
+real to pass), and the baseline job in a **fresh clone of the bare origin**, as a second runner
+would check out, with the real `baseline library` reading the artifact over HTTP from the fake
+GitHub and the real `open-pr` opening the pull request. The one hop the harness cannot execute
+is `actions/upload-artifact`; the test stands in for it explicitly, zipping the single file the
+step's `path:` names at the archive root. Two things follow from that and are stated rather than
+claimed: that upload-artifact roots a single-file upload at the archive root (the reader finds
+the member by name wherever it sits, so a kept directory reads the same), and that an artifact a
+job uploads is listed by the REST API for a later job of the same run — the baseline workflow
+reads another run's artifact the same way, and that path has not fired live either. The harness
+gained `needs.<job>.result`, `github.run_id`, and GitHub's rule that a job with `needs` runs
+only after success unless its `if` carries a status function — without that rule, dropping
+`always()` from the baseline job could never have gone red.
+
+**One defect the executed test found before review did.** The body's "replaces" line read the
+filesystem after the baseline had been written, so every fresh proposal said it replaced an
+invalid stored file. The plan now records whether a file was stored when the decision was made.
+
+### Revert-proving: twenty changes, twenty red
+
+| # | Reverted | Red test |
+|---|---|---|
+| L1 | a dispatch naming an earlier run still runs the matrix (old job if) | `test_a_dispatch_naming_an_earlier_run_does_not_run_the_matrix` |
+| L2 | the baseline job runs without set_baseline | `test_the_baseline_job_runs_only_on_a_dispatch_that_asked_for_it` (that case) |
+| L3 | the baseline job's if drops always() (skipped after a failed or skipped matrix job) | `test_the_baseline_job_runs_only_on_a_dispatch_that_asked_for_it` (that case) |
+| L4 | a cancelled matrix job still proposes | `test_the_baseline_job_runs_only_on_a_dispatch_that_asked_for_it` (that case) |
+| L5 | the matrix-only artifact is not uploaded | `test_a_dispatch_with_set_baseline_proposes_the_run_matrix_from_a_bot_branch` |
+| L6 | the matrix artifact is uploaded only after a passing report (no always()) | `test_the_matrix_is_uploaded_after_a_colliding_run_too` |
+| L7 | the git-status check replaced by always changed | `test_a_stored_baseline_that_already_matches_proposes_nothing` |
+| L8 | the push step runs regardless of changed | `test_a_stored_baseline_that_already_matches_proposes_nothing` |
+| L9 | one fixed branch for every proposal | `test_a_dispatch_with_set_baseline_proposes_the_run_matrix_from_a_bot_branch` |
+| L10 | the matrix job's token widened to contents: write | `test_the_baseline_job_is_shaped_as_documented` |
+| L11 | the dispatch run id interpolated into the script body | `test_the_baseline_job_is_shaped_as_documented` |
+| L12 | the tree check removed (a matrix of a changed library is proposed) | `test_a_matrix_of_a_changed_library_is_refused_not_proposed` |
+| L13 | the download follows the redirect (default transport) | `test_the_command_writes_the_baseline_and_the_body` |
+| L14 | two matrices in the artifact: the first wins | `test_an_artifact_with_no_matrix_or_two_is_refused` |
+| L15 | member size checked only after decompression | `test_an_oversized_member_is_refused_before_it_is_decompressed` |
+| L16 | 'replaces' read from the filesystem after the write (the defect the test found) | `test_a_dispatch_with_set_baseline_proposes_the_run_matrix_from_a_bot_branch` |
+| L17 | a key that disagrees with its members accepted | `test_a_key_that_disagrees_with_its_members_is_refused` |
+| L18 | an identical stored record rewritten and proposed (changed always true) | `test_the_same_record_again_is_not_rewritten` |
+| L19 | the body no longer says the observations were not re-run | `test_the_body_names_the_run_what_it_replaces_and_what_was_not_re_run` |
+| L20 | names in the body escaped as prose instead of code spans (target) | `test_values_the_run_chose_are_inert_in_the_body` |
+
+Every row was measured with the one change reverted and the file restored; L3 is red only because the harness now models GitHub's `needs`-success rule (above), which the first measurement would have missed.
+
+### Not built, stated
+
+- A `.gitattributes` merge rule for the library file. The per-skill rule (`*.baseline.json
+  merge=ours`) does not match `_library.coexistence.json`; two proposals for the library conflict
+  textually and the body says to regenerate on `main`, which is the same resolution.
+- **Live.** Neither job has fired against GitHub: the matrix job needs the variable, the key and
+  approval to spend; the baseline job needs a matrix artifact to read, and the repository setting
+  "Allow GitHub Actions to create and approve pull requests", which the existing baseline workflow
+  also depends on and which cannot be read from here.

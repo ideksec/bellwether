@@ -260,6 +260,7 @@ Phase A and B are done. The bricks since are each one pull request, built to the
 | The trigger-collision matrix, `bellwether coexistence`, the library baseline | §7.4 | a greedy skill is shown winning the others' activations; the delta names who began winning | done (PR #112) |
 | Coexistence on the schedule, `coexistence-report`, one issue per library | §7.4 item 1, §18.4 | every workflow branch executed in the harness; red on collisions | done (PR #114) — not fired live |
 | The description-digest flag on pull requests, `description-changed` | §19.3 | a changed description posts the one comment, a body-only change posts nothing | done (PR #115) |
+| The library baseline-update pull request, `baseline library`, `set_baseline` / `baseline_run_id` | §7.4, §17.5, §18.4 step 5 | both jobs executed in the harness: the bot branch on a bare origin holds exactly `_library.coexistence.json`, the pull request is on the fake GitHub, `main` untouched | done — not fired live |
 
 **What is next** is kept in one place, `docs/STATUS.md` → "What's next — the development path,
 in order", with the done-when of each remaining brick. The order there is the order to build.
