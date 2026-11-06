@@ -239,6 +239,12 @@ artifact and commit its `coexistence.json` as `examples/live/baselines/_library.
 (the key is the sorted member package digests, so any change to the library invalidates it and
 the report says so rather than diffing across different libraries).
 
+On a pull request, `bellwether.yml` flags the library instead of running the matrix (§19.3): a
+skill whose description changed — the trigger surface — or a skill added or removed earns one
+comment saying the library is flagged for the next scheduled run and when that is
+(`bellwether description-changed`, compared against the base commit's tree; a pure reflow of the
+same description is not a change). A pull request that touches only a skill's body gets none.
+
 **It spends on every run, so it is off by default.** Set the repository variable
 `BELLWETHER_COEXISTENCE` to `true` to let the weekly schedule fire; **Run workflow** starts one
 by hand, with inputs for the one target alias and for forcing an api-loop target (labelled
