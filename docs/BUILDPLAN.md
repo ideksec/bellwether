@@ -248,6 +248,22 @@ materialised by a build step. CI asserts each expected verdict.
 
 ---
 
+## Phase C — after v0.1 (unnumbered bricks, in the order they landed)
+
+Phase A and B are done. The bricks since are each one pull request, built to the cadence in
+`CLAUDE.md` and recorded in `docs/STATUS.md` ("How we got here") and `docs/spec-notes.md`:
+
+| Brick | Spec | Done-when | Status |
+|---|---|---|---|
+| The runtime `instrumentation_probe` gate, shared vocabulary with `BW901`, `eval-aware` in the behavioural corpus | §3.5 | the corpus skill blocks on the runtime gate while its static scan is clean; nineteen reverts red | done (PR #110) |
+| The generic probe suite, `bellwether probe`, `run --generic-probes` | §5, §7.6 | a skill with no scenarios is evaluated and the verdict says task quality was not evaluated | done (PR #111) — held-out prompts and URL fetching not built |
+| The trigger-collision matrix, `bellwether coexistence`, the library baseline | §7.4 | a greedy skill is shown winning the others' activations; the delta names who began winning | done (PR #112) |
+| Coexistence on the schedule, `coexistence-report`, one issue per library | §7.4 item 1, §18.4 | every workflow branch executed in the harness; red on collisions | done (PR #114) — not fired live |
+| The description-digest flag on pull requests, `description-changed` | §19.3 | a changed description posts the one comment, a body-only change posts nothing | done (PR #115) |
+
+**What is next** is kept in one place, `docs/STATUS.md` → "What's next — the development path,
+in order", with the done-when of each remaining brick. The order there is the order to build.
+
 ## Sequencing notes
 
 - **WP-7 (epoch anchoring) and WP-19 (noise floor) are a pair.** WP-19 is the only test that proves

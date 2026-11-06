@@ -3,13 +3,96 @@
 The entry point for a new session. Read this, then `docs/BUILDPLAN.md` for the next work
 package, then `docs/spec.md` for the detail of whatever you are building.
 
-Last updated at the end of the **claude-code-live** arc: the proxy is wired into the executor as a
-dual-homed sidecar, and a benign skill has reached **`ready` on a live labelled PR with egress
-observed under *both* harnesses** — api-loop and, now, the real Claude Code CLI headless in the
-sandbox (PR #65, `claude-code-live-smoke`: 8 gates pass, functional 6/6, DNS clean). Every run's
-evidence (per-run ARF traces + report) is uploaded from CI.
-**Update it at the end of a session, not the start** — a status file that lags is worse than none,
-because it is trusted.
+Last updated at the end of the **post-v0.1 bricks** arc (PRs #110–#115): every v0.1 work package
+is built, both harnesses have reached `ready` on live labelled pull requests (#65, #102), and the
+first five bricks beyond v0.1 have landed — the runtime `instrumentation_probe` gate, the generic
+probe suite, the trigger-collision matrix, its scheduled run with one issue per library, and the
+§19.3 flag on pull requests. **Update this file at the end of a session, not the start** — a status
+file that lags is worse than none, because it is trusted.
+
+## What's next — the development path, in order
+
+Two kinds of work remain, and they are kept apart because one of them spends money.
+
+### A. Needs the owner's go-ahead (an agent must not start these alone)
+
+Every one of these spends model tokens. Build nothing here; ask, and run only on approval.
+
+1. **First live firing of each scheduled workflow.** All three are built and executed branch by
+   branch in the harness, and none has run against a live model:
+   - the **baseline-update pull request** (`bellwether-baseline.yml`): the next labelled skill PR
+     to merge exercises it. Watch that the PR opens (the repository must let Actions open pull
+     requests) and that its body reads right;
+   - the **nightly drift run** (`bellwether-nightly.yml`): inert until the repository variable
+     `BELLWETHER_NIGHTLY` is `true`; a first manual dispatch costs one smoke run per skill
+     (about $0.30 each). Until `examples/live/baselines/` holds records, every skill reads
+     `no_baseline`;
+   - the **scheduled coexistence run** (`bellwether-coexistence.yml`): inert until
+     `BELLWETHER_COEXISTENCE` is `true`; a first manual dispatch runs up to two probes × 12
+     repetitions per skill under claude-code. Commit its `coexistence.json` as
+     `examples/live/baselines/_library.coexistence.json` to make the first library baseline.
+2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone
+   promotes `egress_volume_anomaly` from `warn`.
+3. **Run `bellwether probe` against a real third-party skill** once, so external mode has been
+   seen live.
+
+### B. Buildable offline now — one brick, one PR each, in this order
+
+Each is scoped so the six checks, the offline suite and a revert-proof table can close it in one
+session. Read the named spec-notes entry before starting.
+
+1. **A baseline-update pull request for the library file.** Today a maintainer commits a run's
+   `coexistence.json` by hand. Mirror `bellwether-baseline.yml`'s "Push the baseline branch" and
+   "Open the baseline pull request" steps in `bellwether-coexistence.yml`, behind a dispatch input
+   (`set_baseline`), reusing `bellwether baseline open-pr`. *Done when* the harness test shows the
+   branch on a bare origin holding exactly `_library.coexistence.json` and the pull request on the
+   fake GitHub, and `main` untouched. Spec-notes: "§7.4 item 1, §18.4 — coexistence on the
+   schedule" and "§17.5, §18.1 — the baseline-update pull request".
+2. **The `pids_limit` exit reason** (Outstanding actions, below). Docker gives no distinct exit
+   code; read the container cgroup's `pids.events` (`max` counter) before the container is removed.
+   *Done when* a container test that hits the limit produces `exit_reason: pids_limit` in the
+   footer, counted as a distinct state (§12.7).
+3. **Static scanner: a second decoding level** (spec-notes "§15 — the built-in static scanner",
+   known gaps). A base64 block inside a base64 block is reported as encoded text, not decoded
+   twice. *Done when* a corpus row with nested encoding fires `BW201`. Variable indirection and
+   language-mismatch detection stay out of scope and stay stated.
+4. **Canary scan gaps** (spec-notes, the Brick 6 entry): a marker split across DNS labels or
+   written files in chunks under 12 characters, and a marker inside a larger encoded payload past
+   the decode bound (`encoded-chunked-thief` is a strict `xfail`). *Done when* the xfail turns
+   into a pass with the corpus skill blocked.
+5. **The held-out probe set and its rotation** (§3.5, §7.6). A design question first: a set that
+   is "undocumented" cannot live in a public repository; spec-notes "§5, §7.6 — the generic probe
+   suite" states the contradiction. Decide the shipping channel with the owner before building.
+   `bellwether probe` on a URL belongs with it (fetching is a trust decision).
+6. **`fixture.yaml` generated content** (§9.1 step 1) — needs a schema decision first.
+
+### C. Later phases (need a judge, a new provider or a new runtime)
+
+Judges and embeddings (the quality gate and the BCI output component, §12.3); server-side tool
+parsing into `proxy_inferred` records (§10.5.3); more providers and harnesses
+(`generic-subprocess`, §9.4); a stronger isolation runtime (gVisor/Firecracker are refused at
+parse today). Each is a work package, not a brick.
+
+### D. Repository settings — human-only
+
+See "Outstanding actions → Repository settings" below: branch protection to confirm, private
+vulnerability reporting, Dependabot, CodeQL results.
+
+### How a brick is closed here
+
+The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth keeping:
+
+- **Revert-prove per change, publish the table.** A throwaway script reverts each wiring change
+  alone, runs the tests meant to pin it, and restores the file; the table of what went red — and
+  what stayed green, with why — goes in the spec-notes entry. Three of the last six bricks found a
+  row that stayed green on first measurement (a helper tested instead of its caller, an anchor the
+  formatter had moved, an assertion that missed the one sentence the spec asks for); each was
+  fixed and measured again rather than claimed.
+- **Execute the workflow, not the YAML.** `tests/workflow_harness.py` runs a job step by step
+  against a fake GitHub with a fake `bellwether run`/`coexistence` dropping fixtures; every CI
+  defect this project found was found by running the step.
+
+## How we got here (newest first)
 
 **Latest: the §19.3 coexistence flag on pull requests — `bellwether description-changed`.** A
 description is the trigger surface a harness shows the model, so a pull request that changes one
@@ -1336,7 +1419,7 @@ commands exhaustively instead of counting them.
 
 2734 tests: 2657 offline, 77 under the `docker` mark (61 run locally, 16 CI-only skips with stated reasons; all 77 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
-## The independent-review round (this session)
+## The first independent-review round (twelve findings, at `592e309`)
 
 An outside agent reviewed the repository at `592e309` — no access to `docs/spec-notes.md`, every
 finding reproduced by running code — and reported **twelve findings: one critical, six high, five
@@ -1469,35 +1552,7 @@ assertions; §12.5's deny precedence and deletions-are-mutations; §13.1's "stop
 scheduler stops"; §16.1's every-accepted-control-enforces-or-refuses; §19.1's cap-is-a-ceiling
 -only-where-enforced; and §19.2's effective-run-specification and identity rules.
 
-## What's next — remaining work, in recommended order
-
-Phase A and the recording-proxy spine of Phase B are done, and the live loop reaches `ready`. The
-coverage-honesty (WP-18) and calibration (WP-19) proofs are in, and the v0.1 acceptance corpus
-(WP-20) is complete, and so is the second harness (WP-17).
-
-**Current state (top of the list):** every v0.1 work package is built, the kernel planes have
-run under labelled live evaluations on both harnesses (PR #102), and the §15 static scanner ships.
-What remains is **outside v0.1 or unproven live**:
-1. **First live runs of what is built and unexercised.**
-   - The baseline-update pull request: the next labelled skill PR to merge exercises it. Watch
-     that the PR opens (the Actions setting) and that its body reads right.
-   - The nightly drift run: off until `BELLWETHER_NIGHTLY=true`. It spends on every firing,
-     so turning it on is the owner's call. A first manual dispatch costs one smoke run per
-     skill (about $0.30 each).
-   - The scheduled coexistence run: off until `BELLWETHER_COEXISTENCE=true`. A first manual
-     dispatch runs up to two probes × 12 repetitions per skill under claude-code, and its
-     `coexistence.json`, committed as `examples/live/baselines/_library.coexistence.json`, is
-     the first library baseline.
-   - Both need a stored baseline before `drift` can say anything. Today `examples/live/baselines/`
-     is empty, so the first night reads `no_baseline` for every skill.
-2. **Measure the volume gate's false-positive rate** on live multi-turn runs before anyone promotes
-   it from `warn` — needs explicit approval to spend.
-3. **Later phases:** judges and embeddings (the quality gate and the BCI output component), the
-   §7.6 held-out prompt set and its rotation (the generic probe suite and `bellwether probe` are
-   built; the published prompts are in `bellwether.skill.probes`), `bellwether probe` on a URL,
-   a baseline-update pull request for `_library.coexistence.json` (today a maintainer commits the
-   run's `coexistence.json`; the §19.3 flag and the scheduled run are built), more providers and
-   harnesses, and a stronger isolation runtime (gVisor/Firecracker are refused at parse today).
+## How the v0.1 work packages landed
 
 The numbered history below is kept for its record of how each piece landed. The
 order below reflects dependencies and reuses momentum — it is not the raw WP numbering,
@@ -2129,11 +2184,11 @@ it cheap — `cli/changed.py`, `bellwether changed-skills`, and
   detection still runs. Every action is SHA-pinned (the same discipline `pin_lint` enforces on
   the CI workflow), and `docs/ci-integration.md` documents adapting it for a skill repository.
 
-## What to do next
+## Run-path gaps, as they closed (historical)
 
-This section keeps the **granular** run-path gaps; the top-of-file "What's next — recommended order"
-is the authoritative sequence, and the two agree. The live-container CLI run against a real model is
-**done** (PR #45 reached `ready`); what remains under it is polish and the other planes:
+This section kept the **granular** run-path gaps while the live loop was being proven; every item
+in it has since closed, and the top-of-file "What's next — the development path, in order" is the
+only list to work from. Kept for the record of what closed and where.
 
 1. **Residual run-path gaps (now that the live run itself is proven).** Most of this item has since
    closed: declared scope applies on the live path as the Declared-vs-Observed table (BW-47), the
@@ -2144,11 +2199,10 @@ is the authoritative sequence, and the two agree. The live-container CLI run aga
    `doctor`/`run`. **Closed since:** the per-run limits are configuration-derived rather than
    the generic defaults (`execution.limits` → `run_limits_from_config`), recorded on every run
    header, and in the run-cache observability key.
-2. **WP-15's controlled DNS resolver — the container half.** The host core (allowlist, NXDOMAIN
-   decision, query record, canary-in-labels scan) is done and offline-tested. What remains is its own
-   sidecar (a second peer on the internal bridge, `dnslib`/`coredns`), the §3.3 invariant-3 UDP/53
-   lockdown that forces every lookup through it, and the `dns_query`/`dns_blocked` trace actions —
-   the CI-only container slice, mirroring the proxy sidecar.
+2. **WP-15's controlled DNS resolver — the container half — closed.** The resolver sidecar, the
+   `--dns` wiring into every sandbox, the `dns_query`/`dns_blocked` trace actions and the scored
+   DNS gate all landed and were validated on CI (PR #58); see "How the v0.1 work packages
+   landed", item 1.
 3. **The `openai_compatible` live client — done.** The Chat Completions message-shape translation
    the Anthropic client did not need is implemented (`OpenAiCompatibleClient`), with the §3.3 key
    guard extended to it via an out-of-checkout trusted-host env var. See the entry at the top.

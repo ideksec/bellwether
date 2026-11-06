@@ -8,9 +8,11 @@ inspectable evidence. The thesis is deliberately humble — a strong *regression
 
 ## Start every session here
 
-1. **`docs/STATUS.md`** — the live state of the build and, at the top, **"What's next — remaining
-   work, in recommended order."** This is the single source of truth for *where we are* and *what to
-   pick up*. Read it first, every time.
+1. **`docs/STATUS.md`** — the live state of the build and, at the top, **"What's next — the
+   development path, in order."** This is the single source of truth for *where we are* and *what
+   to pick up*: it separates what an agent can build offline now from what needs the owner's
+   approval to spend. Read it first, every time. The history of how each piece landed follows it,
+   newest first.
 2. **`docs/BUILDPLAN.md`** — the order and the "done-when" for each work package. Note the
    progress/re-ordering note at the top of Phase B: the build inserted unnumbered integration work,
    so the remaining order differs from the raw WP numbers.
@@ -72,9 +74,15 @@ alongside, with `execution.concurrency`, `findings.sarif` and cross-request cana
 merged — an exec from a secondary thread, an interpreter open reported `running`, and the CLI's
 own `sh -c` housekeeping attributed to the skill. **Neither kernel plane has yet run under a live
 paid evaluation.**
-What
-remains is *proof breadth*: every v0.1 work package is built, including the **`claude-code`
-adapter** (WP-17 — the real CLI headless inside the sandbox, stream-json → Plane A, its hooks →
+**Every
+v0.1 work package is built**, and the first post-v0.1 bricks have landed since: the runtime
+`instrumentation_probe` gate (§3.5), the generic probe suite and `bellwether probe` (§7.6), the
+library-wide trigger-collision matrix `bellwether coexistence` (§7.4) with its scheduled workflow
+and one issue per library, and the §19.3 flag that a pull request changing a description earns.
+What remains is *proof breadth* and the later phases: every scheduled workflow is built and
+executed in the harness but none has fired against a live model, which needs the owner's approval
+to spend. The `claude-code`
+adapter (WP-17 — the real CLI headless inside the sandbox, stream-json → Plane A, its hooks →
 the host-owned sink, cross-checked; scoped token through the proxy; offline-proven against a real
 CLI 2.1.257 session, in-container proof CI-only; **run live on a labelled PR and reached `ready`**
 on PR #65). The acceptance
