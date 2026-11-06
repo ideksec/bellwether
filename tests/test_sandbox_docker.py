@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from bellwether.determinism import SeededRng
+from bellwether.errors import BellwetherError
 from bellwether.sandbox import (
     DockerBackend,
     IsolationProfile,
@@ -355,6 +356,62 @@ def test_a_timeout_is_a_failure_not_an_infrastructure_error(
 
     assert result.timed_out
     assert result.exit_reason == "timeout"
+
+
+#: Forks past an 8-process limit and returns quickly: each child lives a second, so the shell's
+#: own fork retries succeed once the first children exit, and the exec never hangs.
+FORK_PAST_THE_LIMIT = "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do sleep 1 & done; wait"
+
+
+def test_a_fork_past_the_pids_limit_is_counted_on_the_container_cgroup(
+    backend: DockerBackend,
+    skill_dir: Path,
+    fixture_source: Path,
+    tmp_path: Path,
+) -> None:
+    """§9.2/§12.7: Docker gives the pids limit no exit code; the kernel's ``pids.events``
+    counter on the container's cgroup is the observation, and it must be read while the
+    container exists — it goes with the cgroup."""
+    usable, reason = overlay_available()
+    if not usable:
+        pytest.skip(f"no host-side overlay: {reason}")
+    tight = prepare_sandbox(
+        load_skill(skill_dir),
+        fixture_source,
+        tmp_path / "pids-run",
+        rng=SeededRng(1, "pids"),
+        isolation=IsolationProfile(pids_limit=8),
+    )
+    backend.mount(tight)
+    try:
+        backend.start_persistent(tight)
+        before = backend.pids_events(tight)
+        assert before.max_hits == 0 and before.limit == 8, before
+        assert before.source.endswith("/pids.events")
+        result = backend.exec_in(tight, ["sh", "-c", FORK_PAST_THE_LIMIT], timeout=60)
+        assert not result.timed_out
+        # The shell saw EAGAIN; the kernel counted the refusals on the cgroup.
+        assert "fork" in result.stderr.lower(), result.stderr
+        after = backend.pids_events(tight)
+        assert after.max_hits >= 1, after
+        assert after.limit == 8
+        # Once the container is gone so is its cgroup: the counter is unreadable, not zero.
+        backend.stop_persistent(tight)
+        with pytest.raises(BellwetherError):
+            backend.pids_events(tight)
+    finally:
+        backend.stop_persistent(tight)
+        backend.unmount(tight)
+
+
+def test_a_run_that_stays_under_the_limit_counts_no_hit(backend: DockerBackend, mounted) -> None:  # type: ignore[no-untyped-def]
+    backend.start_persistent(mounted)
+    try:
+        backend.exec_in(mounted, ["sh", "-c", "echo one & echo two & wait"], timeout=30)
+        events = backend.pids_events(mounted)
+        assert events.max_hits == 0 and events.limit == 512, events
+    finally:
+        backend.stop_persistent(mounted)
 
 
 def test_availability_reports_a_reason(backend: DockerBackend) -> None:

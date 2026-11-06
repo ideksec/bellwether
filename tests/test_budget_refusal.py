@@ -66,12 +66,17 @@ def test_the_host_finds_the_cap_and_the_trace_carries_it() -> None:
 
 
 def test_the_executor_settles_a_cap_as_budget_exceeded() -> None:
-    """Pinned on the source because the executor needs a Docker daemon; the CI container test
+    """The settlement itself is ``footer_exit_reason`` (called here); that the executor derives
+    the cap from the run's flows and hands it over is pinned on the source, because the executor
+    needs a Docker daemon — the CI container test
     ``test_a_proxy_cap_ends_a_claude_code_run_as_budget_exceeded`` drives it with the real CLI."""
+    from bellwether.trace import footer_exit_reason
+
+    assert footer_exit_reason([], budget_cap=True, pids_limit_hit=False) == "budget_exceeded"
     source = (
         Path(__file__).resolve().parents[1] / "src" / "bellwether" / "cli" / "execution.py"
     ).read_text(encoding="utf-8")
     cap = source.index("budget_cap = budget_refusal(egress_flows)")
-    settle = source.index('exit_reason = "budget_exceeded"')
+    settle = source.index("budget_cap=bool(budget_cap),")
     assert cap < settle
-    assert "if budget_cap:" in source[settle - 400 : settle]
+    assert "footer_exit_reason(" in source[settle - 200 : settle]

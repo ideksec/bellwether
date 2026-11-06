@@ -54,6 +54,7 @@ __all__ = [
     "egress_body_actions",
     "exit_reason_from_events",
     "filesystem_actions",
+    "footer_exit_reason",
     "harness_actions",
     "model_channel_actions",
     "redact_trace_actions",
@@ -125,6 +126,30 @@ def exit_reason_from_events(events: list[RawHarnessEvent]) -> ExitReason | None:
                 return "budget_exceeded"
             return "harness_error"
     return None
+
+
+def footer_exit_reason(
+    events: list[RawHarnessEvent], *, budget_cap: bool, pids_limit_hit: bool
+) -> ExitReason:
+    """The footer's ``exit_reason``, with what the sandbox observed layered over what the
+    harness said (§12.7).
+
+    The event stream names how the harness ended (``completed``, ``timeout``, a limit), or
+    nothing — a run with no exit event never reached an end Bellwether observed, which is a
+    ``harness_error`` (scored a fail), never a silent success. A proxy refusal on an operator
+    limit (``budget_cap``) makes the run ``budget_exceeded`` whatever the harness made of it:
+    not_evaluable, never the skill's failure (§10.5.1). A fork the sandbox's pids limit refused
+    (``pids_limit_hit``) makes it ``pids_limit`` over every other reading, including the
+    operator's: the skill spawned past the ceiling §9.2 sets, which is attributable to the
+    skill, is scored a fail, and must not be retried (§13.2) — a run that then timed out, or
+    that the proxy then cut, hit the limit first.
+    """
+    reason: ExitReason = exit_reason_from_events(events) or "harness_error"
+    if budget_cap:
+        reason = "budget_exceeded"
+    if pids_limit_hit:
+        reason = "pids_limit"
+    return reason
 
 
 def provider_rejection_from_events(
