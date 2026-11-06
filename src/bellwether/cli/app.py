@@ -90,17 +90,6 @@ def _emit(payload: dict[str, Any], *, as_json: bool, lines: list[str]) -> None:
             typer.echo(line)
 
 
-def _not_yet(command: str, work_package: str, what: str) -> None:
-    """Refuse a command whose implementation has not landed, naming the work package."""
-    typer.echo(
-        f"'bellwether {command}' is not implemented in this build.\n"
-        f"  {what}\n"
-        f"  Lands in {work_package} — see docs/BUILDPLAN.md.",
-        err=True,
-    )
-    raise typer.Exit(ExitCode.INFRASTRUCTURE)
-
-
 @app.command()
 def version(json_output: JsonFlag = False) -> None:
     """Print the Bellwether version."""

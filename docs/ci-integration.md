@@ -279,6 +279,12 @@ same job holds it — which is the property the `sneaky-exfiltrator` example is 
   Security-tab upload is skipped for a fork). Running it found a defect no linter did — the
   runner's `bash -e` aborted the scan step on exit 2 before the summary and the SARIF flag were
   written.
+- **The scheduled runs and the flag** — `bellwether-nightly.yml` (drift, one issue per drifting
+  skill) and `bellwether-coexistence.yml` (the §7.4 matrix, one issue per library) are both
+  executed branch by branch in the harness (`tests/test_drift.py`,
+  `tests/test_coexistence_workflow.py`), and both are inert until a maintainer sets their
+  repository variable. The §19.3 flag step in `bellwether.yml` is executed on a two-commit
+  repository (`tests/test_library_flag.py`). **None of the three has fired against a live model.**
 - **What is still narrow.** The live proofs cover a handful of skills on one cheap target per
   harness (`api-loop` + Haiku; `claude-code` + Haiku), at a single look of 6. Both harnesses have
   run live on labelled pull requests (#65, #102). See `docs/STATUS.md` for the current boundary,

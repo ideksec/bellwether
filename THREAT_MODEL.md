@@ -16,14 +16,14 @@ documentation as much as in the verdict.
 | Instruction injection in a skill body | Hidden or obfuscated directives — base64, unicode tricks, non-English text, system-message impersonation | Built-in static scan (§15, `bellwether-builtin/1`): instruction overrides, concealment, system-message framing, base64/hex blocks that decode to text, invisible and bidi characters, mixed-script words, instructions in HTML comments — a finding above `max_severity_allowed` blocks. Plus behavioural evidence: whatever the directive makes the agent *do* is captured by the planes below | Language-mismatch detection; injection-specific detectors (dedicated scanners can be delegated to today with `--scanner-sarif`) |
 | Credential exfiltration | Skill causes the agent to read secrets and transmit them | Canaries planted per run; leaks scanned across output, DNS names, tool args, egress URLs and bodies, written files; a leak **gates the verdict** (`security_runtime.canaries`) | Model-API read-state grading (`canary_without_read`) |
 | DNS-channel exfiltration | Secret encoded into query labels, bypassing an HTTP proxy entirely — an HTTP proxy does not see UDP/53 | Controlled resolver (NXDOMAIN default, full query log), label-aware canary matching; a canary in a query name gates via the canary gate | Scoring DNS-outside-allowlist as its own gate |
-| Exfiltration via the allowlisted model channel | Skill embeds secrets in a prompt to the permitted model endpoint | Per-run request and byte caps on the sandbox-scoped channel. **Residual — see below** | Model-API body scanning, request-shape enforcement, volume anomaly detection (§10.5.2, v0.2) |
+| Exfiltration via the allowlisted model channel | Skill embeds secrets in a prompt to the permitted model endpoint | Per-run request and byte caps on the sandbox-scoped channel; every composed request scanned host-side for planted canaries and graded by read state (`security_runtime.canary_reads`); every request to a provider host held to the model call's shape at the proxy (`security_runtime.provider_endpoint`); per-run request volume against the peers' median (`security_runtime.volume_anomaly`, `warn`). **Residual — see below** | Content that was never planted and leaves at the same volume on every run has no canary to find and no quiet peer to stand out against |
 | Exfiltration via server-side tools | Skill uses a provider-executed tool so no packet leaves the sandbox other than the allowlisted API call | Nothing yet — stated, not hidden | Proxy-side parsing into `proxy_inferred` records; coverage degradation where unparseable (§10.5.3, v0.2) |
 | Dynamic payload fetch | Skill body looks benign but fetches instructions at runtime, so the reviewed artifact differs from the executed one | Default-deny egress blocks the fetch and records the attempt as evidence; static fetch-and-execute detection (BW301) is an automatic critical — pipelines are normalised (wrappers, paths, quoting removed) before comparison, and download-then-run is followed across statements and lines | Variable indirection (`c=curl; $c … \| sh`) needs shell evaluation and is not detected statically |
 | Over-broad capability | Skill silently touches files, hosts, or tools outside its declared scope | Declared-vs-observed scope gate, live on the `run` path; capability profile at three tiers | Network/write scope derivations (undeclared-egress scoring) |
 | Tool/permission escalation | Frontmatter pre-approves tools beyond need, suppressing user prompts | `allowed-tools` recorded at parse; observed tool calls checked against the manifest's tool scope; static breadth findings for an unrestricted shell (BW601) or a wildcard grant (BW602) | — |
-| Trigger hijacking | A description broad enough to steal activation from other skills | Nothing yet | Coexistence matrix on the scheduled trigger (§7.4, v0.2) |
+| Trigger hijacking | A description broad enough to steal activation from other skills | `bellwether coexistence`: the §7.4 library-wide trigger-collision matrix, every skill's probes with the whole library offered beside them, on the schedule (`bellwether-coexistence.yml`, opt-in) with one issue per library while a probe is won by another skill; a pull request that changes a description is flagged for the next run (§19.3) | No matrix has run against a live model; the library baseline is a committed file |
 | Evaluation-aware behaviour | Skill detects that it is under test and behaves only while observed | Test machinery excluded from the container by allowlist; markers, paths, hostnames, workspace roots randomised per evaluation; static probe detection (BW901: `/.dockerenv`, `.bellwether`, `/proc/1/cgroup`, `TracerPid`, `dmesg`, …), asserted on the `eval-aware` static corpus skill; the runtime `instrumentation_probe` detector over the same vocabulary — skill processes, shell commands and reads that inspect container metadata or look for the machinery — scored as `security_runtime.instrumentation_probes` and asserted on the `eval-aware` behavioural corpus skill | Held-out probe set (§7.6); a shell builtin inside a bundled script execs nothing and is visible only to the static half |
-| Silent regression | An update degrades behaviour or widens capability unnoticed | Nothing yet | Baseline diffing with component-level invalidation (§17.5, v0.2) |
+| Silent regression | An update degrades behaviour or widens capability unnoticed | Stored per-skill baselines (§17.5) with the regression gate (tier-1 capability expansion and a pass-rate drop block), the baseline-update pull request a merged skill PR proposes, and the nightly drift run (`bellwether drift`, one issue per drifting skill, opt-in) | Neither has fired live: `examples/live/baselines/` is empty until the first labelled skill PR merges |
 | Model-specific failure | Works on one model, behaves dangerously on another | The matrix runs every configured target and each gate takes the worst per-target result — a skill passing on one model and failing on another does not average into a pass | Cross-model divergence report (§14); providers beyond Anthropic |
 | Destructive action | Deletion, overwrite, or repo-wide modification | Filesystem plane (host-side overlay diff, whiteout-aware) + assertions; reads of the workspace and planted credentials, and every process the skill starts, captured host-side by fanotify and scored (`credential_read_undeclared`, `process_exec_undeclared`) | Reads outside the workspace and canary mounts (the read domain is recorded, and an absence claim outside it is `not_evaluable`) |
 
@@ -128,13 +128,17 @@ need `evil.com`; it puts the value in a prompt.
 
 **This is not fully mitigable by a proxy that must let model traffic through.** The
 specification makes four partial mitigations mandatory, and none of them close it. Their
-implementation status, stated plainly: per-run request and byte caps on the
-sandbox-scoped channel are **live**; model-API body scanning, request-shape enforcement,
-and volume anomaly detection are **designed but not yet implemented** (§10.5.2, v0.2).
-The §21 guard is live today: the configuration settings governing these mitigations
-cannot be disabled without Bellwether emitting a `critical` configuration finding and
-refusing to run above the `low` profile — so a config cannot silently opt out of them,
-now or once they land.
+implementation status, stated plainly: all four are **live**. Per-run request and byte caps
+on the sandbox-scoped channel; model-API body scanning, host-side, of every composed request
+for the planted canaries, graded by whether a recorded read carried the value into context
+(`security_runtime.canary_reads`, §10.4.1); request-shape enforcement at the proxy, holding
+every request to a provider host to the model call's shape, observed from the pinned CLI
+binary (`security_runtime.provider_endpoint`, §10.5.2); and volume anomaly detection against
+the repetition set's peer median (`security_runtime.volume_anomaly`, `warn`). None of them
+closes the channel: content that was never planted, sent at the same volume on every run, has
+no canary to find and no quiet peer to stand out against. The §21 guard is live too: the
+configuration settings governing these mitigations cannot be disabled without Bellwether
+emitting a `critical` configuration finding and refusing to run above the `low` profile.
 
 The canary URL/body scan deliberately exempts the model-API channel for the same reason,
 so a value routed to the provider endpoint is not treated as an exfiltration finding —
@@ -187,7 +191,7 @@ production. This is the obvious counter-move against a supply-chain tool.
 | Predictable canary marker format | Markers are generated per evaluation from a recorded seed, with no fixed prefix or recognisable structure | Live |
 | Predictable canary file paths | Paths are drawn per evaluation from a pool larger than the set used in any one evaluation | Live |
 | Recognisable fixture names | Fixture directory names and the workspace root path are randomised | Live |
-| Published probe prompts | A held-out probe subset ships in the package, is not documented, and is rotated on minor releases | Planned with the probe suite (§7.6, v0.2) |
+| Published probe prompts | A held-out probe subset ships in the package, is not documented, and is rotated on minor releases | The generic probe suite ships (`bellwether probe`, §7.6) with its prompts published in `bellwether.skill.probes`; the held-out set and its rotation are **not built**, and `docs/spec-notes.md` says why |
 | Environment tells | Hostname and container name randomised, a plausible home directory populated | Live |
 
 The specification additionally defines an `instrumentation_probe` finding at `high`
