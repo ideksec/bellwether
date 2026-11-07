@@ -5,10 +5,10 @@ package, then `docs/spec.md` for the detail of whatever you are building.
 
 Last updated at the end of the **post-v0.1 bricks** arc (PRs #110–#115 and the one after): every
 v0.1 work package is built, both harnesses have reached `ready` on live labelled pull requests
-(#65, #102), and the first seven bricks beyond v0.1 have landed — the runtime `instrumentation_probe`
+(#65, #102), and the first eight bricks beyond v0.1 have landed — the runtime `instrumentation_probe`
 gate, the generic probe suite, the trigger-collision matrix, its scheduled run with one issue per
-library, the §19.3 flag on pull requests, the library baseline-update pull request, and the
-`pids_limit` exit reason. **Update this file at the end of a session, not the start** — a status
+library, the §19.3 flag on pull requests, the library baseline-update pull request, the
+`pids_limit` exit reason, and the scanner's nested-encoding peel. **Update this file at the end of a session, not the start** — a status
 file that lags is worse than none, because it is trusted.
 
 ## What's next — the development path, in order
@@ -45,19 +45,15 @@ Every one of these spends model tokens. Build nothing here; ask, and run only on
 Each is scoped so the six checks, the offline suite and a revert-proof table can close it in one
 session. Read the named spec-notes entry before starting.
 
-1. **Static scanner: a second decoding level** (spec-notes "§15 — the built-in static scanner",
-   known gaps). A base64 block inside a base64 block is reported as encoded text, not decoded
-   twice. *Done when* a corpus row with nested encoding fires `BW201`. Variable indirection and
-   language-mismatch detection stay out of scope and stay stated.
-2. **Canary scan gaps** (spec-notes, the Brick 6 entry): a marker split across DNS labels or
+1. **Canary scan gaps** (spec-notes, the Brick 6 entry): a marker split across DNS labels or
    written files in chunks under 12 characters, and a marker inside a larger encoded payload past
    the decode bound (`encoded-chunked-thief` is a strict `xfail`). *Done when* the xfail turns
    into a pass with the corpus skill blocked.
-3. **The held-out probe set and its rotation** (§3.5, §7.6). A design question first: a set that
+2. **The held-out probe set and its rotation** (§3.5, §7.6). A design question first: a set that
    is "undocumented" cannot live in a public repository; spec-notes "§5, §7.6 — the generic probe
    suite" states the contradiction. Decide the shipping channel with the owner before building.
    `bellwether probe` on a URL belongs with it (fetching is a trust decision).
-4. **`fixture.yaml` generated content** (§9.1 step 1) — needs a schema decision first.
+3. **`fixture.yaml` generated content** (§9.1 step 1) — needs a schema decision first.
 
 ### C. Later phases (need a judge, a new provider or a new runtime)
 
@@ -87,7 +83,19 @@ The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth 
 
 ## How we got here (newest first)
 
-**Latest: the `pids_limit` exit reason (§9.2, §12.7) — read from the container's cgroup.** Docker
+**Latest: nested encodings are peeled (§15 check 2).** The scanner's stated gap — a base64 block
+inside a base64 block reported as encoded text — was measured first: the nested block already
+fired `BW201` (base64 text is printable), but the preview showed the inner encoded string instead
+of the instruction, and a double-encoded ELF header was reported as text rather than an executable.
+`_decoded_hits` now peels up to four layers while the decoding is, whole, one more token (ASCII,
+fullmatch, both letter cases for base64, hex before base64), and the finding names the innermost
+content and the chain: `base64 inside base64 block decodes to text: 'Ignore all previous…'`. Six
+layers peel to four and still fire. A new static-corpus skill, `nested-obfuscation`, carries the
+override encoded twice; four nested rows join the `BW201` corpus and the double-encoded ELF the
+`BW202` one; the benign corpus is unchanged. Variable indirection and language mismatch stay out,
+stated. Revert table in spec-notes.
+
+**Before that: the `pids_limit` exit reason (§9.2, §12.7) — read from the container's cgroup.** Docker
 gives the pids limit no exit code, so a refused fork read as `completed` or `harness_error`. The
 kernel's `pids.events` `max` counter on the container cgroup is the one record, and it dies with
 the container: measured here, the cgroup was gone by the time a one-shot `docker start -a`
@@ -1447,7 +1455,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2783 tests: 2703 offline, 80 under the `docker` mark (64 run locally, 16 CI-only skips with stated reasons; all 80 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2794 tests: 2714 offline, 80 under the `docker` mark (64 run locally, 16 CI-only skips with stated reasons; all 80 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The first independent-review round (twelve findings, at `592e309`)
 

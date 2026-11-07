@@ -5038,8 +5038,8 @@ are in the test corpus. A Markdown table row is not a pipeline.
 **Known gaps, stated rather than hidden:**
 - **Variable indirection.** `c=curl; $c … | sh` needs shell evaluation, which is not static
   analysis.
-- **Decoding is one level only.** A base64 block inside a base64 block is reported as encoded
-  text, not decoded twice.
+- **Decoding is one level only.** *(Built since — see "§15 check 2 — nested encodings are
+  peeled". Four layers, bounded.)*
 - **No language-mismatch detection.** §15 check 2's "content in a language different from the
   rest of the file" needs a language model of its own and is not approximated.
 - **No external delegation.** *(Built since — see "§15 — delegation reads scanner output, it
@@ -6052,3 +6052,64 @@ Eleven changes reverted alone, eleven red (the driver runs the unit and containe
 | P11 | a run with no exit event reads completed | `test_the_sandbox_observation_is_layered_over_the_harness_reading` |
 
 P5 is the row that matters most: with the read moved one line later, past the quiesce stop, the counter is unreadable on every run, the footer says `unobserved`, and the fork storm reads `completed` — which is exactly the failure mode the block exists to make visible rather than silent.
+
+## §15 check 2 — nested encodings are peeled, and the finding names the content
+
+The scanner's known gap: "a base64 block inside a base64 block is reported as encoded text, not
+decoded twice." Measured before building, the gap was narrower and wider than stated. Narrower:
+a nested block *did* fire `BW201`, because base64 text is printable text, so the one-level reading
+called it "text". Wider: the finding's preview was the inner encoded string — a reviewer saw
+`'SWdub3JlIGFsbCBwcmV2…'` where the content was "Ignore all previous instructions…" — and an ELF
+header encoded twice was reported as **text** (`BW201`) rather than an **executable** (`BW202`).
+The two rules share a severity, so the gate was unaffected; the report was wrong about what it had
+found.
+
+### What is built
+
+`_decoded_hits` now peels: after the line-level decoding, while the decoded bytes are, whole, one
+more encoded token, they are decoded again, up to four layers (`_MAX_DECODE_DEPTH`). The finding
+names the innermost content and the chain that hid it — `base64 inside base64 block decodes to
+text: 'Ignore all previous…'`, `hex inside base64 block …`, `base64 inside base64 block decodes to
+an executable`. Three rules keep the peel from reading ordinary text as a layer: the decoding must
+be ASCII (binary stops it); it must *fullmatch* a token shape, so a sentence with spaces is the
+content; and a base64 layer must carry both letter cases, the same rule that keeps a hex digest
+from reading as base64 at line level. Hex is tried before base64 because every hex token is also
+base64 text. The inner floor is 20 characters, lower than the line-level 40: that floor exists to
+keep ordinary long words out of `BW201`, and inside a block already flagged it would only hide a
+short second layer — a test pins an inner token of 32 characters.
+
+**The bound is a finding either way.** Six layers peel to four and the fourth is reported as the
+encoded text it is; `BW201` still fires, and the message says four layers deep. A blob cannot cost
+unbounded decoding, and cannot buy silence by being deep.
+
+### Still not built, stated
+
+Variable indirection and language-mismatch detection, as before. The peel reads *whole* tokens
+only: an inner layer split across several blocks, or wrapped in prose, is reported as whatever
+its outer layer decodes to.
+
+### Executed
+
+`tests/corpus-static/nested-obfuscation` carries the `obfuscated-injection` override encoded
+twice; the scan reports `BW201` high with the instruction and the chain in the finding's message,
+at `SKILL.md`, and `bellwether scan` over the static corpus lists it. Corpus rows for the four
+nested shapes (base64 in base64, hex in base64, base64 in hex, the short inner token) are in the
+`BW201` completeness corpus and the double-encoded ELF in `BW202`'s; the benign corpus (a digest, a
+long path, short and fragmentary base64) still fires nothing above `info`.
+
+### Revert-proving
+
+Eight changes reverted alone: six red, two green and said so.
+
+| # | Reverted | Result |
+|---|---|---|
+| S1 | no peel: the outer decoding is the content (the one-level reading) | red — `test_nested_encodings_are_decoded_to_their_content`, `test_the_nested_corpus_finding_names_the_chain_and_the_instruction`, `test_each_corpus_line_fires_its_rule` |
+| S2 | the depth unbounded | red — `test_the_peel_is_bounded_and_still_fires` |
+| S3 | base64 tried before hex in the inner layer | red — `test_nested_encodings_are_decoded_to_their_content` |
+| S4 | the inner floor raised to the line-level 40 characters | red — `test_nested_encodings_are_decoded_to_their_content` |
+| S5 | the chain dropped from the message (outer encoding named alone) | red — `test_nested_encodings_are_decoded_to_their_content`, `test_the_nested_corpus_finding_names_the_chain_and_the_instruction` |
+| S6 | the executable check run on the outer decoding, not the peeled one | red — `test_nested_encodings_are_decoded_to_their_content`, `test_each_corpus_line_fires_its_rule` |
+| S7 | the inner mixed-case rule removed | stayed green — the inner mixed-case rule is parity with the line-level rule, not a decision: an all-one-case token that is also valid base64 decodes to bytes the ASCII and printable checks behind it reject in every case tried; kept, and recorded as unproved |
+| S8 | a non-ASCII decoding peeled anyway (lossy decode) | stayed green — the token shapes are ASCII-only regular expressions, so a lossy decode's U+FFFD never fullmatches and the strict decode is belt and braces; kept, and recorded as unproved |
+
+S3 was green on first measurement: every hex fixture was single-case, which the base64 mixed-case rule already excludes, so the order of the two tries never mattered to any test. A mixed-case hex inner token — a human-typed digest shape, valid base64 text with both cases — is misread as base64 with the order swapped; the fixture was added and the row measured red.

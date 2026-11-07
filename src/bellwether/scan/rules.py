@@ -533,9 +533,55 @@ def _b64_decode(token: str) -> bytes | None:
     return None
 
 
+#: How many encoding layers are peeled (§15 check 2). A layer is peeled only where the previous
+#: decoding is, whole, one more encoded token, so natural text stops the peel; the reviewer is
+#: shown the innermost content and the chain of layers that hid it. Four is deeper than any
+#: hand-made obfuscation and bounds what a pathological blob can cost.
+_MAX_DECODE_DEPTH = 4
+#: An inner layer is already inside a flagged block, so its floor is lower than the line-level
+#: ``_BASE64`` floor (which keeps ordinary long words out): 20 characters is 15 bytes.
+_INNER_BASE64 = re.compile(r"[A-Za-z0-9+/_-]{20,}={0,2}")
+
+
+def _inner_layer(data: bytes) -> tuple[str, bytes] | None:
+    """One more encoding layer, where ``data`` is, whole, an encoded token; else ``None``.
+
+    Hex is tried before base64 because every hex token is also base64 text, and the mixed-case
+    rule that keeps a digest from reading as base64 at line level applies here too.
+    """
+    try:
+        text = data.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    if _HEX.fullmatch(text):
+        return "hex", bytes.fromhex(text)
+    if _HEX_ESCAPES.fullmatch(text):
+        return "hex escapes", bytes.fromhex(text.replace("\\x", ""))
+    if _INNER_BASE64.fullmatch(text) and re.search(r"[A-Z]", text) and re.search(r"[a-z]", text):
+        decoded = _b64_decode(text)
+        if decoded is not None:
+            return "base64", decoded
+    return None
+
+
+def _peel(encoding: str, data: bytes) -> tuple[list[str], bytes]:
+    """Decode through nested layers, outermost first, up to :data:`_MAX_DECODE_DEPTH`."""
+    layers = [encoding]
+    while len(layers) < _MAX_DECODE_DEPTH:
+        inner = _inner_layer(data)
+        if inner is None:
+            break
+        layers.append(inner[0])
+        data = inner[1]
+    return layers, data
+
+
 def _decoded_hits(line: str, number: int) -> Iterator[LineHit]:
     """BW201/BW202: an encoded block whose decoding is text a reviewer could not read as-is,
-    or an executable. Random-looking decodings — digests, nonces — are not findings."""
+    or an executable. Random-looking decodings — digests, nonces — are not findings. A block
+    whose decoding is itself an encoded block is peeled (:func:`_peel`): the finding names the
+    innermost content and the chain — ``base64 inside hex block`` — rather than reporting the
+    inner encoded text as the content."""
     candidates: list[tuple[str, bytes | None]] = []
     for match in _BASE64.finditer(line):
         token = match.group(0)
@@ -548,14 +594,18 @@ def _decoded_hits(line: str, number: int) -> Iterator[LineHit]:
     for match in _HEX_ESCAPES.finditer(line):
         raw = match.group(0).replace("\\x", "")
         candidates.append(("hex escapes", bytes.fromhex(raw)))
-    for encoding, data in candidates:
-        if data is None or len(data) < 16:
+    for encoding, outer in candidates:
+        if outer is None or len(outer) < 16:
             continue
+        layers, data = _peel(encoding, outer)
+        if len(data) < 16:
+            continue
+        chain = " inside ".join(reversed(layers))
         if _is_executable_blob(data):
-            yield LineHit("BW202", number, f"{encoding} block decodes to an executable")
+            yield LineHit("BW202", number, f"{chain} block decodes to an executable")
         elif _printable_ratio(data) >= 0.9:
             preview = data.decode("ascii", "replace")[:60]
-            yield LineHit("BW201", number, f"{encoding} block decodes to text: {preview!r}")
+            yield LineHit("BW201", number, f"{chain} block decodes to text: {preview!r}")
 
 
 def _mixed_script(word: str) -> bool:
