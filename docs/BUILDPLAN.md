@@ -262,7 +262,8 @@ Phase A and B are done. The bricks since are each one pull request, built to the
 | The description-digest flag on pull requests, `description-changed` | §19.3 | a changed description posts the one comment, a body-only change posts nothing | done (PR #115) |
 | The library baseline-update pull request, `baseline library`, `set_baseline` / `baseline_run_id` | §7.4, §17.5, §18.4 step 5 | both jobs executed in the harness: the bot branch on a bare origin holds exactly `_library.coexistence.json`, the pull request is on the fake GitHub, `main` untouched | done — not fired live |
 | The `pids_limit` exit reason, read from the container cgroup's `pids.events` | §9.2, §11.1, §12.7 | a container test that forks past the limit produces `exit_reason: pids_limit` in the footer, scored `fail` with no assertion failing | done (PR #118) |
-| Nested encodings peeled by the static scanner, `nested-obfuscation` in the static corpus | §15 check 2 | a double-encoded instruction override fires `BW201` with the instruction and the chain in the finding; a double-encoded ELF is `BW202`, not text | done |
+| Nested encodings peeled by the static scanner, `nested-obfuscation` in the static corpus | §15 check 2 | a double-encoded instruction override fires `BW201` with the instruction and the chain in the finding; a double-encoded ELF is `BW202`, not text | done (PR #119) |
+| `encoded-chunked-thief` caught: padded runs decoded in place, padding kept out of the stream frame; `chunked-thief` and `encoded-chunked-thief` in the corpus | §10.4.2, §24 | the strict `xfail` passes and both corpus skills block on the canary gate | done |
 
 **What is next** is kept in one place, `docs/STATUS.md` → "What's next — the development path,
 in order", with the done-when of each remaining brick. The order there is the order to build.

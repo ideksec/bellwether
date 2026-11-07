@@ -21,10 +21,13 @@ Two rules give the search teeth:
   run through base64/base64url/base32/hex/URL/HTML-entity/reversal (and one round of nesting)
   before matching, plus windowed matching for any ≥12-char substring. This module scans one
   corpus string at a time; the concatenation across egress requests and across DNS queries is
-  :mod:`bellwether.capture.canary_stream`, which feeds the joins back through this scan. Written
-  files are still scanned one at a time, and independently-encoded chunking stays a documented
-  limit (§2), slated to ship as the ``encoded-chunked-thief`` expected failure in the acceptance
-  corpus so the gap stays visible in CI.
+  :mod:`bellwether.capture.canary_stream`, which feeds the joins back through this scan. Every
+  embedded run is also decoded *in place* — padding included, the surrounding text kept — so
+  pieces encoded independently *before* being split concatenate once decoded, which is what
+  catches the ``encoded-chunked-thief`` of §24. Written files are still scanned one at a time.
+  What stays a documented limit (§2): pieces whose padding was stripped off an encoding's block
+  boundary, each piece reversed on its own, and a marker inside an encoded payload past
+  :data:`MAX_SCAN_CHARS`.
 
 Redaction happens here, at capture time: a matched value is replaced with a fingerprint
 (``<canary:c1@offset=24,len=40>``) that preserves *what*, *where*, and *how long* without the
@@ -208,6 +211,14 @@ _BASE_DECODERS: tuple[tuple[Callable[[str], str | None], int], ...] = (
     (_b32, 8),
 )
 
+#: An encoded run *with its padding*, for decoding in place (§10.4.2): a piece encoded on its
+#: own and sent beside the next piece's encoding is one run per piece, each ending in the padding
+#: that makes the pieces' encodings fail to concatenate. Decoding every run in place and keeping
+#: the text around it joins the decoded pieces back together. The floor is one base64 group:
+#: a piece can be a single character. Garbage from a word that happens to decode is harmless —
+#: only a marker window is ever looked for in the result.
+_PADDED_RUN_RE = re.compile(r"[A-Za-z0-9+/_-]{4,}={0,6}")
+
 #: Sub-alignment is tried only for runs no longer than this. A run re-aligns after dropping
 #: k < group leading chars, so decoding each phase catches a payload fused to adjacent noise;
 #: the dropped chars become a short garbage prefix on the output and the marker still appears.
@@ -233,10 +244,28 @@ def _decode_alignments(decode: Callable[[str], str | None], token: str, group: i
     return out
 
 
+def _decoded_in_place(text: str, decode: Callable[[str], str | None]) -> str | None:
+    """``text`` with every encoded run replaced by its ``decode``-ing, or ``None`` if none
+    decoded. The padding is consumed with the run; the decoders re-pad for themselves."""
+    changed = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal changed
+        decoded = decode(match.group(0).rstrip("="))
+        if decoded is None:
+            return match.group(0)
+        changed = True
+        return decoded
+
+    out = _PADDED_RUN_RE.sub(replace, text)
+    return out if changed else None
+
+
 def decoded_forms(text: str, *, nest: int = 1) -> set[str]:
     """Every decoded form of ``text`` (§10.4.2): whole-text URL/HTML/reversal transforms, plus
     base64/base32/hex decoding of every embedded encoded *run* — at each of the run's
-    sub-alignments so a payload fused to adjacent alphabet noise still decodes — with one round
+    sub-alignments so a payload fused to adjacent alphabet noise still decodes — every run
+    decoded *in place* so independently encoded pieces concatenate once decoded, with one round
     of nesting.
 
     Decoding embedded runs is what catches the real attack shape — a base64 chunk sitting
@@ -266,6 +295,13 @@ def decoded_forms(text: str, *, nest: int = 1) -> set[str]:
                 for decoded in _decode_alignments(_hex, token, 2 if phases_on else 1):
                     if decoded not in forms:
                         produced.add(decoded)
+            if phases_on:
+                # Pieces encoded one by one *before* the split: each is its own padded run, and
+                # only the decodings, kept in place, are contiguous (§10.4.2, §24).
+                for decode, _group in _BASE_DECODERS:
+                    in_place = _decoded_in_place(candidate, decode)
+                    if in_place is not None and in_place not in forms:
+                        produced.add(in_place)
         forms |= produced
         frontier = produced
     return forms
