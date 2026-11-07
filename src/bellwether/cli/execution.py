@@ -91,6 +91,7 @@ from bellwether.trace import (
     RunFooter,
     RunHeader,
     Sampling,
+    SandboxLimits,
     SandboxRef,
     SkillRef,
     TargetRef,
@@ -100,8 +101,8 @@ from bellwether.trace import (
     dns_reassembly_actions,
     egress_actions,
     egress_body_actions,
-    exit_reason_from_events,
     filesystem_actions,
+    footer_exit_reason,
     harness_actions,
     kernel_plane_actions,
     kernel_plane_coverage,
@@ -519,6 +520,19 @@ class SandboxRunExecutor:
     #: Injected for tests that drive the executor without a privileged host.
     recorder_factory: Callable[[], FanotifyRecorder] = FanotifyRecorder
 
+    def _observe_sandbox_limits(self, prepared: PreparedSandbox) -> SandboxLimits:
+        """What the container cgroup says the sandbox's limits refused (§9.2, §12.7).
+
+        Read while the container exists. A read that fails leaves the hits ``None`` with the
+        reason: the run is then not known to be clean of the limit, and the footer says so
+        rather than reading as a run that never hit it.
+        """
+        try:
+            events = self.backend.pids_events(prepared)
+        except BellwetherError as error:
+            return SandboxLimits(unobserved=f"pids limit not observed: {error}")
+        return SandboxLimits(pids_limit_hits=events.max_hits, pids_limit=events.limit)
+
     def execute(self, plan: RunPlan) -> ExecutedRun:
         # Absolute, always: the sandbox directories become Docker bind-mount sources, and a
         # relative path there is read by the daemon as a (invalid) named volume, not a host
@@ -793,6 +807,13 @@ class SandboxRunExecutor:
             # of this; it happens here, so the process tree is gone before anything is read.
             # `docker rm -f` is idempotent, so the teardown below still calls it and still
             # covers the paths that never reach this line.
+            #
+            # §9.2/§12.7: the pids limit leaves no exit code — a refused fork is EAGAIN to the
+            # process that asked — so the one record of it is the container cgroup's
+            # `pids.events` counter, and that dies with the container. Read it now, before the
+            # removal below; a counter that cannot be read is recorded as unobserved, never as
+            # a clean run.
+            sandbox_limits = self._observe_sandbox_limits(prepared)
             self.backend.stop_persistent(prepared)
             # The container is gone, so nothing more can exec or read: the record is complete.
             activity: RecordedActivity | None = recorder.stop() if recorder is not None else None
@@ -1031,19 +1052,19 @@ class SandboxRunExecutor:
                 ),
                 started_at=started_at,
             )
-            # A run with no exit event never reached an end Bellwether observed; that is a
-            # harness_error (scored a fail, §12.7), never a silent success.
-            exit_reason = exit_reason_from_events(events) or "harness_error"
-            if budget_cap:
-                # The proxy refused a request on an operator limit: whatever the harness made of
-                # the refusal, the run is `budget_exceeded` — not_evaluable, never the skill's
-                # failure (§10.5.1, §12.7).
-                exit_reason = "budget_exceeded"
+            # How the run ended (§12.7): what the harness said, a proxy refusal on an operator
+            # limit over that, and a fork the pids limit refused over everything — see
+            # `footer_exit_reason` for the order and why.
             footer = RunFooter(
                 ended_at=observed_at,
                 wall_clock_ms=int((observed_at - started_at).total_seconds() * 1000),
-                exit_reason=exit_reason,
+                exit_reason=footer_exit_reason(
+                    events,
+                    budget_cap=bool(budget_cap),
+                    pids_limit_hit=bool(sandbox_limits.pids_limit_hits),
+                ),
                 tokens=token_totals_from_events(events),
+                sandbox=sandbox_limits,
             )
 
             # Redact leaked markers before the trace is written (§10.4.3): a canary a skill routed

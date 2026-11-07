@@ -36,6 +36,7 @@ __all__ = [
     "PlaneCoverage",
     "RunFooter",
     "RunHeader",
+    "SandboxLimits",
     "ScopeBlock",
     "TokenTotals",
 ]
@@ -406,6 +407,22 @@ class TokenTotals(ArfModel):
         return self.input + self.output + self.cache_read + self.cache_write
 
 
+class SandboxLimits(ArfModel):
+    """What the sandbox's own limits recorded about the run (§9.2, §12.7).
+
+    ``pids_limit_hits`` is the container cgroup's ``pids.events`` ``max`` counter, read from the
+    host before the container was removed: the number of forks the limit refused. A count above
+    zero is what makes the footer's ``exit_reason`` ``pids_limit``. ``None`` with ``unobserved``
+    set means the counter could not be read — the run is *not* known to be clean of the limit,
+    and the reason says why (§10.7's rule for a missing plane applies to a missing counter).
+    """
+
+    pids_limit_hits: int | None = None
+    #: ``pids.max`` in force, where the kernel reported a number.
+    pids_limit: int | None = None
+    unobserved: str | None = None
+
+
 class RunFooter(ArfModel):
     """The last line of a completed trace.
 
@@ -421,6 +438,8 @@ class RunFooter(ArfModel):
     exit_reason: ExitReason
     tokens: TokenTotals = Field(default_factory=TokenTotals)
     estimated_cost_usd: float | None = None
+    #: The sandbox's own limits (§9.2): absent on a trace written before they were recorded.
+    sandbox: SandboxLimits | None = None
     #: Both redaction passes are recorded: at capture (§10.4.3) and at teardown
     #: (§9.1 step 11), with the count and the rule that matched.
     redaction: dict[str, Any] = Field(default_factory=dict)

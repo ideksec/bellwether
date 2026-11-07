@@ -23,9 +23,10 @@ from bellwether.config import template_path
 from bellwether.config.models.scenarios import AssertionSpec, Scenario
 from bellwether.config.policy_loader import parse_policy
 from bellwether.harness import ModelTurn, RunLimits, ScriptedClient, ToolCallRequest, TurnUsage
-from bellwether.sandbox import DockerBackend, overlay_available
+from bellwether.sandbox import DockerBackend, IsolationProfile, overlay_available
 from bellwether.scan import scan_package
 from bellwether.skill import load_skill
+from bellwether.trace import SandboxLimits
 
 pytestmark = pytest.mark.docker
 
@@ -157,6 +158,9 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
         assert executed.trace.is_complete
         assert executed.trace.exit_reason == "completed"
         assert len(executed.trace.actions_of_kind("skill_activated")) == 1
+        # §9.2: the pids limit was observed on the container's cgroup, not assumed clean.
+        assert executed.trace.footer is not None
+        assert executed.trace.footer.sandbox == SandboxLimits(pids_limit_hits=0, pids_limit=512)
         # §9.2/§12.7: the bounds this run was given are on its header, so a limit-stopped
         # trace says whose ceiling stopped it rather than only that it stopped. The wall
         # clock is §7.2's, not the executor's: the scenario declares none, so the suite's
@@ -215,6 +219,64 @@ def test_benign_stable_walks_end_to_end_in_a_real_sandbox(
     assert result.artifacts.summary_json.exists()
     assert len(result.artifacts.traces) == 6
     assert result.summary.consistency.bci >= 90
+
+
+_FORK_BOMB_TRANSCRIPT = [
+    ModelTurn(
+        stop_reason="tool_use",
+        usage=TurnUsage(input=120, output=40),
+        tool_calls=(
+            ToolCallRequest(id="toolu_01", name="skill", input={"name": "security-review"}),
+            ToolCallRequest(
+                id="toolu_02",
+                name="bash",
+                # Sixteen children under an eight-process limit; each lives a second so the
+                # shell's fork retries succeed and the call returns.
+                input={
+                    "command": "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do sleep 1 & done; wait"
+                },
+            ),
+        ),
+    ),
+    ModelTurn(text="Spawned the workers.", usage=TurnUsage(input=200, output=12)),
+]
+
+
+def test_a_fork_past_the_pids_limit_ends_the_run_pids_limit(
+    backend: DockerBackend, skill_dir: Path, fixture_source: Path, tmp_path: Path
+) -> None:
+    """§12.7: the harness finished normally — the model said its piece — but the sandbox refused
+    forks on the way, and that is the run's exit reason: ``pids_limit``, a fail attributable to
+    the skill and a distinct state, never ``completed`` by the harness's own account."""
+    package = load_skill(skill_dir)
+    target = TargetInfo(harness="api-loop", provider="scripted", model_alias="frontier")
+    executor = SandboxRunExecutor(
+        backend=backend,
+        package=package,
+        fixture=fixture_source,
+        client_factory=lambda _plan: (
+            ScriptedClient(_FORK_BOMB_TRANSCRIPT, model_id_reported="model-as-served"),
+            "frontier-configured",
+        ),
+        eval_id="pids",
+        run_root=tmp_path / "runs",
+        isolation=IsolationProfile(pids_limit=8),
+    )
+    plan = RunPlan(scenario=_scenario(), target=target, repetition=1)
+    executed = executor.execute(plan)
+    footer = executed.trace.footer
+    assert footer is not None and executed.trace.is_complete
+    assert footer.exit_reason == "pids_limit", footer
+    assert footer.sandbox is not None
+    assert footer.sandbox.pids_limit_hits is not None and footer.sandbox.pids_limit_hits >= 1
+    assert footer.sandbox.pids_limit == 8 and footer.sandbox.unobserved is None
+    # The harness itself reported a normal end; the sandbox's observation overrode it.
+    assert len(executed.trace.actions_of_kind("final_output")) == 1
+    # Counted as a distinct state: the run outcome is a fail by exit reason (§12.7), with no
+    # assertion having failed.
+    analysed = analyse_run(plan, executed, scope=None)
+    assert analysed.outcome == "fail"
+    assert analysed.exit_reason == "pids_limit"
 
 
 def test_the_sandbox_is_gone_and_its_workspace_retained_before_evidence_is_read(

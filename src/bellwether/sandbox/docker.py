@@ -29,7 +29,15 @@ from bellwether.sandbox.overlay import OverlayMount, PathChange, mount_overlay, 
 from bellwether.sandbox.session import PreparedSandbox
 from bellwether.sandbox.zones import Zone
 
-__all__ = ["ContainerResult", "DockerBackend", "ExecEnd", "StreamedExec"]
+__all__ = [
+    "ContainerResult",
+    "DockerBackend",
+    "ExecEnd",
+    "PidsEvents",
+    "StreamedExec",
+    "parse_pids_events",
+    "pids_cgroup_dir",
+]
 
 #: Size cap on every fallback ``--tmpfs`` mount. An uncapped tmpfs is a host-DoS: it draws
 #: from host memory and a skill filling ``/tmp`` could exhaust it (§9.2 bounds the sandbox's
@@ -66,6 +74,67 @@ class ContainerResult:
         if self.exit_code == 137:
             return "oom"
         return "harness_error"
+
+
+@dataclass(frozen=True)
+class PidsEvents:
+    """The container cgroup's pids controller, read from the host while the container lives.
+
+    ``max_hits`` is the kernel's ``pids.events`` ``max`` counter: how many times a fork inside
+    the container failed because the cgroup was at ``pids.max`` (§9.2's ``--pids-limit``). Docker
+    gives the limit no exit code of its own — the forking process sees ``EAGAIN`` and does what
+    it likes — so this counter is the only observation of the limit there is, and it dies with
+    the cgroup when the container is removed. It is read before :meth:`DockerBackend.stop_persistent`.
+    """
+
+    max_hits: int
+    #: ``pids.max`` as the kernel holds it; ``None`` where it reads ``max`` (unlimited).
+    limit: int | None
+    current: int | None
+    #: The ``pids.events`` file that was read.
+    source: str
+
+
+def pids_cgroup_dir(proc_cgroup: str, sysfs_root: Path = Path("/sys/fs/cgroup")) -> Path:
+    """The directory holding a process's pids-controller files, from its ``/proc/<pid>/cgroup``.
+
+    The kernel says where the controller is; nothing is inferred from the daemon's driver or
+    version. A v1 line naming the ``pids`` controller (``8:pids:/docker/<id>``) wins: a
+    controller is attached to one hierarchy, and on a hybrid host the unified line (``0::/…``)
+    carries no controllers. With no such line the unified path is the controller's home
+    (cgroup v2). Neither means the process has no pids controller at all.
+    """
+    unified: str | None = None
+    for line in proc_cgroup.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) != 3:
+            continue
+        hierarchy, controllers, path = parts
+        if "pids" in controllers.split(","):
+            return sysfs_root / "pids" / path.lstrip("/")
+        if hierarchy == "0" and controllers == "":
+            unified = path
+    if unified is None:
+        raise BellwetherError("the process is under no pids controller (/proc/<pid>/cgroup)")
+    return sysfs_root / unified.lstrip("/")
+
+
+def parse_pids_events(text: str) -> int:
+    """The ``max`` counter of a ``pids.events`` file."""
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "max" and value.strip().isdigit():
+            return int(value)
+    raise BellwetherError(f"pids.events carries no max counter: {text!r}")
+
+
+def _cgroup_int(path: Path) -> int | None:
+    """An integer cgroup value, or ``None`` where it reads ``max`` or cannot be read."""
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(value) if value.isdigit() else None
 
 
 @dataclass(frozen=True)
@@ -570,6 +639,33 @@ class DockerBackend:
         )
         return StreamedExec(
             process=process, timeout=timeout, stderr_path=stderr_path, _stderr_file=stderr_file
+        )
+
+    def pids_events(self, prepared: PreparedSandbox) -> PidsEvents:
+        """Read the persistent container's pids controller from the host (§9.2, §12.7).
+
+        Found through the container's init pid and its ``/proc/<pid>/cgroup``, so the same
+        read works under cgroup v1 and v2 and either cgroup driver. The cgroup is destroyed
+        when the container exits, so this must run before :meth:`stop_persistent`; a container
+        already gone, or a host whose cgroup filesystem is not where ``/proc`` says, raises
+        with the reason, and the caller records the limit as *unobserved* rather than clean.
+        """
+        pid = self.container_pid(prepared)
+        try:
+            proc_cgroup = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+        except OSError as error:
+            raise BellwetherError(f"cannot read /proc/{pid}/cgroup: {error}") from None
+        directory = pids_cgroup_dir(proc_cgroup)
+        source = directory / "pids.events"
+        try:
+            events = source.read_text(encoding="utf-8")
+        except OSError as error:
+            raise BellwetherError(f"cannot read {source}: {error}") from None
+        return PidsEvents(
+            max_hits=parse_pids_events(events),
+            limit=_cgroup_int(directory / "pids.max"),
+            current=_cgroup_int(directory / "pids.current"),
+            source=str(source),
         )
 
     def stop_persistent(self, prepared: PreparedSandbox) -> None:

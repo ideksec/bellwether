@@ -5970,3 +5970,85 @@ Every row was measured with the one change reverted and the file restored; L3 is
   approval to spend; the baseline job needs a matrix artifact to read, and the repository setting
   "Allow GitHub Actions to create and approve pull requests", which the existing baseline workflow
   also depends on and which cannot be read from here.
+
+## §9.2, §12.7 — the `pids_limit` exit reason, read from the container's cgroup
+
+§11.1 lists `pids_limit` among the exit reasons and §12.7 scores it a fail attributable to the
+skill, never retried (§13.2). The sandbox has enforced `--pids-limit` since Phase A, but nothing
+ever *produced* the reason: Docker gives the limit no exit code — the process whose fork the
+kernel refused sees `EAGAIN` and does what it likes, and the harness around it ends however it
+ends — so every refused fork read as `completed`, `harness_error` or a timeout.
+
+### What is observed, and where it has to be read
+
+The kernel keeps the only record: the container cgroup's `pids.events` file carries a `max`
+counter of forks refused at `pids.max`. It was measured here before it was built. A fork storm
+under an 8-process limit on a live container moved the counter from `max 0` to `max 2` while the
+shell reported `fork: retry: Resource temporarily unavailable`; and the cgroup directory was
+**gone by the time `docker start -a` returned**, so the STATUS suggestion to read it "before the
+container is removed" holds only for a container that is still running. The executor's
+persistent container is: it lives from `start_persistent` to the quiesce `stop_persistent`, and
+every harness and tool process runs inside it, so the counter is read once, right before that
+stop. `DockerBackend.pids_events` finds the file through the container's init pid and its
+`/proc/<pid>/cgroup` — a v1 line naming the `pids` controller wins (a controller is attached to
+one hierarchy, and on a hybrid host, which this project's own development container is, the
+unified line carries no controllers); with none, the unified path is the controller's home. The
+kernel says where the controller is; nothing is inferred from the daemon's driver or version,
+and no path list is kept. The one-shot `run` path (used by tests and `doctor`, not by
+evaluations) is left as it was: its cgroup is destroyed with the container before any read.
+
+### What the footer says
+
+`footer_exit_reason` layers the readings in a fixed order: what the harness's own events say
+(or `harness_error` where the stream ended without an exit event), then a proxy refusal on an
+operator cap (`budget_exceeded`), then a refused fork — `pids_limit` over everything, the
+operator's cut included. The reasoning: the skill spawned past the ceiling §9.2 sets, which is
+attributable to the skill, scored a fail and never retried, and a run that then timed out or was
+then cut hit the limit first; naming the cause beats naming the symptom. The footer also carries
+a new optional `sandbox` block — `pids_limit_hits`, the `pids_limit` in force, and `unobserved`
+with the reason where the counter could not be read (a container already gone, a cgroup
+filesystem not where `/proc` says). §10.7's rule for a missing plane is applied to a missing
+counter: unreadable is recorded as *not observed*, never as "the limit was never hit", and the
+exit reason then stays the harness's. The block is `None` where it was never recorded, and the
+writer omits `None`, so every trace written before this change — the golden traces included —
+renders byte for byte as it did.
+
+**Not added:** a `runs_pids_limit` count on the summary beside `runs_timed_out`. §12.7 asks for
+timeouts to stay a visually distinct category in every rendering and says nothing of the kind for
+`pids_limit`, which is a distinct exit reason on the trace and a `fail` by `EXIT_REASONS`; a
+summary field would churn the schema and three committed artifacts for a distinction the spec
+does not ask for. Also not changed: `oom` is still inferred from exit code 137 on the one-shot
+path; `docker inspect`'s `OOMKilled` would be the honest signal, and is a brick of its own.
+
+### Executed
+
+A container test forks sixteen one-second children under an eight-process limit on a live
+container and reads the counter before (`max 0`, limit 8) and after (at least one hit); once the
+container is stopped the read raises rather than returning zero. The footer-level test runs the
+same storm as a `bash` tool call of a scripted api-loop transcript that then ends normally: the
+footer reads `pids_limit` with the hits and the limit on its `sandbox` block, the harness's own
+`final_output` is still on the trace, and `analyse_run` scores the run `fail` with no assertion
+failing — the distinct state §12.7 names. The benign end-to-end run now also asserts its block
+reads zero hits under the default 512, so a clean run is *observed* clean. Both ran here on a
+cgroup v1 host; CI's runners are cgroup v2, which the same read handles through the unified
+line, and the unit test pins both layouts.
+
+### Revert-proving
+
+Eleven changes reverted alone, eleven red (the driver runs the unit and container tests under root, restoring the file after each):
+
+| # | Reverted | Red test(s) |
+|---|---|---|
+| P1 | a v1 pids line read as the unified path (wrong directory on a v1/hybrid host) | `test_the_v1_pids_hierarchy_wins_on_a_hybrid_host`, `test_a_fork_past_the_pids_limit_is_counted_on_the_container_cgroup`, `test_a_fork_past_the_pids_limit_ends_the_run_pids_limit` |
+| P2 | pids.events parsed as 'the first number', whatever the key | `test_the_max_counter_is_read_and_nothing_else_is` |
+| P3 | the sandbox observation ignored by the footer | `test_the_sandbox_observation_is_layered_over_the_harness_reading`, `test_a_fork_past_the_pids_limit_ends_the_run_pids_limit` |
+| P4 | the operator's cut layered over the refused fork (order swapped) | `test_the_sandbox_observation_is_layered_over_the_harness_reading` |
+| P5 | the counter read after the container is removed | `test_a_fork_past_the_pids_limit_ends_the_run_pids_limit`, `test_benign_stable_walks_end_to_end_in_a_real_sandbox` |
+| P6 | an unreadable counter recorded with no reason (reads as clean) | `test_a_counter_that_cannot_be_read_is_unobserved_not_clean` |
+| P7 | the footer carries no sandbox block | `test_a_fork_past_the_pids_limit_ends_the_run_pids_limit`, `test_benign_stable_walks_end_to_end_in_a_real_sandbox` |
+| P8 | any observation counts as a hit (zero included) | `test_benign_stable_walks_end_to_end_in_a_real_sandbox` |
+| P9 | pids.current read in place of pids.events | `test_a_fork_past_the_pids_limit_is_counted_on_the_container_cgroup`, `test_a_run_that_stays_under_the_limit_counts_no_hit` |
+| P10 | the limit in force never read | `test_a_fork_past_the_pids_limit_is_counted_on_the_container_cgroup`, `test_a_fork_past_the_pids_limit_ends_the_run_pids_limit` |
+| P11 | a run with no exit event reads completed | `test_the_sandbox_observation_is_layered_over_the_harness_reading` |
+
+P5 is the row that matters most: with the read moved one line later, past the quiesce stop, the counter is unreadable on every run, the footer says `unobserved`, and the fork storm reads `completed` — which is exactly the failure mode the block exists to make visible rather than silent.

@@ -22,7 +22,7 @@ runs inside the container (§10.0). Keep it that way.
 
 from __future__ import annotations
 
-from bellwether.sandbox.docker import ContainerResult, DockerBackend
+from bellwether.sandbox.docker import ContainerResult, DockerBackend, PidsEvents
 from bellwether.sandbox.fixtures import (
     DIRECTORY_MODE,
     EXECUTABLE_MODE,
@@ -86,6 +86,7 @@ __all__ = [
     "MaterializedFixture",
     "OverlayMount",
     "PathChange",
+    "PidsEvents",
     "PinnedEnvironment",
     "PreparedSandbox",
     "SandboxBackend",
