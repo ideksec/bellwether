@@ -276,12 +276,13 @@ credibility depends on not overselling.
 - **Measured variance is a lower bound.** Repetitions send near-identical prompts in close
   succession, which is the ideal case for provider-side prompt caching and does not
   resemble the distribution of real deployment contexts.
-- **Exfiltration detection has documented holes.** Canary matching defeats naive copying.
-  It does not defeat independently-encoded chunking, interleaving across sessions, or a
-  skill that instructs the model to *describe* a secret rather than reproduce it. The
-  first is slated to ship as a deliberately-failing test in the acceptance corpus
-  (pre-v0.1 roadmap) so the gap stays visible in CI output rather than assumed closed;
-  the last is out of scope.
+- **Exfiltration detection has documented holes.** Canary matching defeats naive copying,
+  a marker split across requests or DNS lookups, and pieces encoded one by one before the
+  split where each keeps its padding (`chunked-thief` and `encoded-chunked-thief` in the
+  acceptance corpus both block). It does not defeat pieces with their padding stripped off
+  the encoding's block boundary (pinned as a stated limit), interleaving across sessions, or
+  a skill that instructs the model to *describe* a secret rather than reproduce it; the last
+  is out of scope.
 - **The allowlisted model channel is a residual exfiltration path.** A skill wanting to
   exfiltrate does not need `evil.com`; it puts the value in a prompt. The mitigations are
   mandatory and none of them close it. See [THREAT_MODEL.md](THREAT_MODEL.md).
@@ -402,7 +403,7 @@ alone and an unmentioned component would read as one that ran clean.
 | **Read and process capture** (§10.2, §10.3) — a host-side fanotify group on the container's own mounts: every exec with its argv (read while the kernel holds the exec), attributed by process tree; every open of a workspace file or planted credential; the read domain recorded so an absence claim outside it is `not_evaluable`; scored as `security_runtime.credential_reads` and `security_runtime.processes` | done — fanotify rather than the spec's eBPF (see spec-notes) |
 | **Parallel runs** (`execution.concurrency`, §19.3) — the runs of one look execute concurrently; the stopping decision, the runs bought and the bytes of every artifact are the same as at 1 | done |
 | **SARIF** (`findings.sarif`, §17.3) — each blocking or warning critical/high `security_runtime` gate mirrored as one result anchored at `SKILL.md:1`, pointing at the evaluation's record; `reporting.sarif` and `reporting.html` switch the two files | done |
-| **Cross-request canary reassembly** (§10.4.2) — a marker sent in pieces across several requests or DNS lookups is reassembled per destination and across destinations, framing (JSON, query, path, DNS label) stripped by normalisation; bounded memory, degradation recorded | done — independently-encoded off-boundary base64/base32 pieces, out-of-order pieces and cross-run splits remain open |
+| **Cross-request canary reassembly** (§10.4.2) — a marker sent in pieces across several requests or DNS lookups is reassembled per destination and across destinations, framing (JSON, query, path, DNS label) stripped by normalisation; bounded memory, degradation recorded | done — pieces encoded one by one *before* the split are decoded in place and joined (`encoded-chunked-thief`, the §24 row once committed as an expected failure, now blocks); pieces with their padding stripped, out-of-order pieces and cross-run splits remain open |
 | **Harness** — `api-loop` adapter: agent loop, sandboxed tools, scripted provider, golden trace. Its trigger metrics measure Bellwether's own prompt assembly and carry `harness-specific: not portable` | done (WP-6) |
 | **Analysis** — canonicalization + epoch anchoring, platform baseline, assertions + Declared-vs-Observed, metrics (Wilson/Pocock, risk-weighted Jaccard, trajectory clustering, BCI), verdict engine | done (WP-7–11) |
 | §16.4 precondition check (refuse an unsatisfiable policy *before* spending) | done — wired into `run` (refuses before the executor is built) and `doctor` (per-profile rows) |

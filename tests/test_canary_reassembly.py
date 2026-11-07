@@ -256,17 +256,55 @@ def test_independently_encoded_pieces_are_found_where_the_encoding_concatenates(
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="§10.4.2 stated limit: independently base64-encoded pieces off the 3-byte block "
-    "boundary do not concatenate into the encoding of the marker",
-)
 def test_independently_base64_encoded_pieces_off_the_block_boundary(tmp_path: Path) -> None:
+    """The ``encoded-chunked-thief`` shape that used to be the strict expected failure: ten-byte
+    pieces are off base64's 3-byte boundary, so each encoding ends in ``==`` and the encodings
+    do not concatenate into the marker's. Decoding each padded run *in place* joins the
+    decodings instead (§10.4.2)."""
     pieces = [base64.b64encode(part.encode()).decode() for part in _thirds(_SHORT.marker)]
+    assert all(piece.endswith("==") for piece in pieces)  # off the boundary, padded
+    _alone_is_clean(pieces)
     recording, flow_log = _recording(tmp_path)
     for piece in pieces:
         _send(recording, _post(piece))
-    assert _reassembled(read_flow_records(flow_log))
+    found = _reassembled(read_flow_records(flow_log))
+    assert found and found[-1] == (2, "c9", "reassembled:decoded", 30)
+
+
+def test_independently_base32_encoded_pieces_off_the_block_boundary(tmp_path: Path) -> None:
+    """Base32's block is five bytes, so ten-character thirds would sit on it; eight-character
+    pieces are off it and each encoding ends in ``===``."""
+    marker = _SHORT.marker
+    pieces = [base64.b32encode(marker[at : at + 8].encode()).decode() for at in range(0, 30, 8)]
+    assert all(piece.endswith("=") for piece in pieces)
+    _alone_is_clean(pieces)
+    recording, flow_log = _recording(tmp_path)
+    for piece in pieces:
+        _send(recording, _post(piece))
+    found = _reassembled(read_flow_records(flow_log))
+    assert found and found[-1][1:] == ("c9", "reassembled:decoded", 30)
+
+
+def test_pieces_with_their_padding_stripped_stay_a_stated_limit(tmp_path: Path) -> None:
+    """Without the padding the pieces' encodings fuse into one run that decodes to nothing
+    useful: the §2 limit that remains, pinned so a change to it is a measured one."""
+    pieces = [
+        base64.b64encode(part.encode()).decode().rstrip("=") for part in _thirds(_SHORT.marker)
+    ]
+    recording, flow_log = _recording(tmp_path)
+    for piece in pieces:
+        _send(recording, _post(piece))
+    assert _reassembled(read_flow_records(flow_log)) == []
+
+
+def test_in_place_decoding_joins_padded_pieces_in_one_string() -> None:
+    """The helper's own contract, at the scan: three padded encodings in one body decode in
+    place to the contiguous marker, where the one-by-one run decoding leaves three fragments."""
+    from bellwether.capture.canary import decoded_forms
+
+    body = "".join(base64.b64encode(part.encode()).decode() for part in _thirds(_SHORT.marker))
+    assert any(_SHORT.marker in form for form in decoded_forms(body))
+    assert scan_for_canaries(body, _CANARIES, destination="other_host")[0].via == "decoded"
 
 
 def test_a_split_reaches_the_canary_gate_as_a_leak(tmp_path: Path) -> None:
