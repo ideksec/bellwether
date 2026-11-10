@@ -34,6 +34,7 @@ from pathlib import Path, PurePosixPath
 from bellwether.capture import (
     Canary,
     CanaryPlanting,
+    DecodeBudget,
     HostEventSink,
     ModelChannelScanner,
     PlaneStatus,
@@ -134,10 +135,11 @@ __all__ = [
 ClientFactory = Callable[["RunPlan"], tuple[ModelClient, str]]
 
 #: How many bytes of a written file are read for the canary scan. The scan's expensive
-#: decode-and-window pass is bounded by ``MAX_SCAN_CHARS`` inside ``scan_for_canaries`` whatever
-#: this is; past that bound only the linear whole-value pass runs, so this bounds memory, not CPU.
-#: It used to equal ``MAX_SCAN_CHARS`` (256 KiB), which made "put the marker after 256 KiB of
-#: padding" a clean scan. A marker past 16 MiB in one file remains a documented limit.
+#: decode-and-window pass is bounded by the run's ``DecodeBudget`` inside ``scan_for_canaries``
+#: whatever this is; past that budget only the linear whole-value pass runs, so this bounds
+#: memory, not CPU. It used to equal ``MAX_SCAN_CHARS`` (256 KiB), which made "put the marker
+#: after 256 KiB of padding" a clean scan. A marker past 16 MiB in one file remains a documented
+#: limit.
 _CANARY_FILE_SCAN_BYTES = 16 * 1024 * 1024
 
 #: Bounds on the retained final-workspace snapshot (§12.2). The copy runs on the host, outside
@@ -912,7 +914,13 @@ class SandboxRunExecutor:
             # names in Plane E — for the markers planted this run, and correlate each hit back to the
             # source that carried it. The Plane C sequence space follows the other planes.
             plane_c_base = len(plane_a) + len(plane_b) + len(plane_d) + len(plane_e) + len(plane_k)
-            plane_c = canary_actions(plane_a + plane_d + plane_e, canaries, start_seq=plane_c_base)
+            # One decode-and-window budget for the whole run (§10.4.2): the pass costs per
+            # character scanned whatever the strings are, so it is shared by every string this run
+            # scans host-side, and a run that spends it says so on its credentials coverage.
+            decode_budget = DecodeBudget()
+            plane_c = canary_actions(
+                plane_a + plane_d + plane_e, canaries, start_seq=plane_c_base, budget=decode_budget
+            )
             # A marker split *across* DNS queries is in no single name: the names are scanned
             # together too, in query order, and a split is anchored to the query that completed
             # it (§10.4.2). Host-side, because the names are already here in full and the resolver
@@ -935,10 +943,16 @@ class SandboxRunExecutor:
             # leak correlated to the Plane B write that created it (§10.4.1). The content never enters
             # the trace, so there is nothing to redact for it.
             written_leaks, written_reassembly_limit = self._written_file_leaks(
-                prepared, plane_b, canaries, start_seq=plane_c_base + len(plane_c)
+                prepared,
+                plane_b,
+                canaries,
+                start_seq=plane_c_base + len(plane_c),
+                budget=decode_budget,
             )
             plane_c += written_leaks
             reassembly_limit = reassembly_limit or written_reassembly_limit
+            # A scan that ran out of budget is a degraded plane, as a reassembly at its bound is.
+            credentials_limit = reassembly_limit or decode_budget.exhausted
             # The recorded reads on a harness whose model channel is only visible at the proxy:
             # the full text of every tool result the CLI reported, scanned for the run's
             # markers — a hit is the §10.4.1 read (`canary_in_context`, info), anchored to the
@@ -1047,8 +1061,8 @@ class SandboxRunExecutor:
                     credentials=(
                         None
                         if planting is None
-                        else PlaneStatus(fidelity="partial", reason=reassembly_limit)
-                        if reassembly_limit
+                        else PlaneStatus(fidelity="partial", reason=credentials_limit)
+                        if credentials_limit
                         else PlaneStatus(fidelity="full")
                     ),
                     filesystem_reads=reads_status,
@@ -1282,6 +1296,7 @@ class SandboxRunExecutor:
         canaries: list[Canary],
         *,
         start_seq: int,
+        budget: DecodeBudget | None = None,
     ) -> tuple[list[Action], str]:
         """Scan the contents of files the skill wrote for planted markers (§10.4).
 
@@ -1324,7 +1339,7 @@ class SandboxRunExecutor:
             except OSError:
                 continue  # a race or permission error: skip rather than fail the whole run
             sources.append((action, content))
-        per_file = written_file_actions(sources, canaries, start_seq=start_seq)
+        per_file = written_file_actions(sources, canaries, start_seq=start_seq, budget=budget)
         split, limit = written_file_reassembly_actions(
             sources, canaries, start_seq=start_seq + len(per_file)
         )

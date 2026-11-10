@@ -578,7 +578,7 @@ def test_the_executor_reassembles_dns_and_degrades_coverage_at_the_bound() -> No
     ).read_text(encoding="utf-8")
     split = source.index("dns_reassembly_actions(")
     limit = source.index("if flow.canary_reassembly_limit")
-    coverage = source.index('PlaneStatus(fidelity="partial", reason=reassembly_limit)')
+    coverage = source.index('PlaneStatus(fidelity="partial", reason=credentials_limit)')
     header = source.index("header = RunHeader(")
     assert split < limit < header < coverage
     assert source.index("plane_c += dns_split") < header
@@ -588,3 +588,11 @@ def test_the_executor_reassembles_dns_and_degrades_coverage_at_the_bound() -> No
     written = source.index("reassembly_limit = reassembly_limit or written_reassembly_limit")
     assert written_call < written < header
     assert "written_file_reassembly_actions(" in source
+    # One decode budget per run, created before the first host-side scan, handed to every scan,
+    # and its exhaustion folded into the same coverage reason before the header.
+    budget = source.index("decode_budget = DecodeBudget()")
+    assert budget < source.index("plane_c = canary_actions(") < written_call
+    assert source.count("budget=decode_budget") == 2
+    spent = source.index("credentials_limit = reassembly_limit or decode_budget.exhausted")
+    assert written < spent < header
+    assert 'PlaneStatus(fidelity="partial", reason=credentials_limit)' in source[header:]

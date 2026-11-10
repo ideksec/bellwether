@@ -21,6 +21,7 @@ from bellwether.capture import FilesystemEvent, PlaneStatus
 from bellwether.capture.canary import (
     Canary,
     CanaryFinding,
+    DecodeBudget,
     classify_canary_hit,
     redact_canaries,
     scan_for_canaries,
@@ -389,7 +390,9 @@ def dns_actions(queries: list[DnsQuery], *, start_seq: int = 0) -> list[Action]:
     return actions
 
 
-def _scan_source_action(action: Action, canaries: Sequence[Canary]) -> list[CanaryFinding]:
+def _scan_source_action(
+    action: Action, canaries: Sequence[Canary], budget: DecodeBudget | None = None
+) -> list[CanaryFinding]:
     """Scan one already-built plane action for canary markers, by kind (§10.4.1).
 
     A DNS query name, the model's final output, a tool call's arguments, and a non-model egress
@@ -410,11 +413,13 @@ def _scan_source_action(action: Action, canaries: Sequence[Canary]) -> list[Cana
     elif action.kind == "final_output":
         text = action.action.get("text")
         if isinstance(text, str):
-            return scan_for_canaries(text, canaries, destination="final_output")
+            return scan_for_canaries(text, canaries, destination="final_output", budget=budget)
     elif action.kind == "tool_call":
         tool_input = action.action.get("input")
         if tool_input is not None:
-            return scan_for_canaries(canonical_json(tool_input), canaries, destination="tool_args")
+            return scan_for_canaries(
+                canonical_json(tool_input), canaries, destination="tool_args", budget=budget
+            )
     elif action.kind in ("egress_request", "egress_blocked"):
         # The model API's URL is harness-built (no skill marker) and its grading is body-side and
         # read-state-dependent — a follow-on — so only non-model requests are scanned here. A marker
@@ -444,7 +449,11 @@ def _scan_source_action(action: Action, canaries: Sequence[Canary]) -> list[Cana
 
 
 def canary_actions(
-    source_actions: Iterable[Action], canaries: Sequence[Canary], *, start_seq: int = 0
+    source_actions: Iterable[Action],
+    canaries: Sequence[Canary],
+    *,
+    start_seq: int = 0,
+    budget: DecodeBudget | None = None,
 ) -> list[Action]:
     """Derive Plane C canary findings by scanning the observed plane actions (§10.4).
 
@@ -463,7 +472,7 @@ def canary_actions(
     actions: list[Action] = []
     seq = start_seq
     for source in source_actions:
-        for finding in _scan_source_action(source, canaries):
+        for finding in _scan_source_action(source, canaries, budget):
             actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
             seq += 1
     return actions
@@ -529,7 +538,11 @@ def _plane_c_action(
 
 
 def written_file_actions(
-    sources: Iterable[tuple[Action, str]], canaries: Sequence[Canary], *, start_seq: int = 0
+    sources: Iterable[tuple[Action, str]],
+    canaries: Sequence[Canary],
+    *,
+    start_seq: int = 0,
+    budget: DecodeBudget | None = None,
 ) -> list[Action]:
     """Derive Plane C findings by scanning the *contents* of files the skill wrote (§10.4).
 
@@ -545,7 +558,9 @@ def written_file_actions(
     actions: list[Action] = []
     seq = start_seq
     for source, content in sources:
-        for finding in scan_for_canaries(content, canaries, destination="written_file"):
+        for finding in scan_for_canaries(
+            content, canaries, destination="written_file", budget=budget
+        ):
             actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
             seq += 1
     return actions
