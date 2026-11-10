@@ -115,6 +115,7 @@ from bellwether.trace import (
     tool_result_actions,
     write_trace,
     written_file_actions,
+    written_file_reassembly_actions,
 )
 
 __all__ = [
@@ -932,9 +933,11 @@ class SandboxRunExecutor:
             # bytes are read host-side here and scanned — a marker in a written file is a written_file
             # leak correlated to the Plane B write that created it (§10.4.1). The content never enters
             # the trace, so there is nothing to redact for it.
-            plane_c += self._written_file_leaks(
+            written_leaks, written_reassembly_limit = self._written_file_leaks(
                 prepared, plane_b, canaries, start_seq=plane_c_base + len(plane_c)
             )
+            plane_c += written_leaks
+            reassembly_limit = reassembly_limit or written_reassembly_limit
             # The recorded reads on a harness whose model channel is only visible at the proxy:
             # the full text of every tool result the CLI reported, scanned for the run's
             # markers — a hit is the §10.4.1 read (`canary_in_context`, info), anchored to the
@@ -1274,17 +1277,20 @@ class SandboxRunExecutor:
         canaries: list[Canary],
         *,
         start_seq: int,
-    ) -> list[Action]:
+    ) -> tuple[list[Action], str]:
         """Scan the contents of files the skill wrote for planted markers (§10.4).
 
         Plane B records writes by hash, not bytes, so the content is read here from the host-side
         overlay upper directory — the same files the diff already hashed, so no *new* file is opened,
         and only regular files are read (never a FIFO/socket/device the container made, §10.0). Each
         read is bounded to :data:`_CANARY_FILE_SCAN_BYTES`. A marker found is a ``written_file`` leak
-        correlated to the Plane B write; the content itself never enters the trace.
+        correlated to the Plane B write; the content itself never enters the trace. The files are
+        then scanned *together*, in Plane B order, for a marker staged to disk in pieces across
+        several files (§10.4.2); the second value is that reassembly's limit reason, folded into the
+        credentials plane's coverage by the caller.
         """
         if not canaries:
-            return []
+            return [], ""
         zone_uppers: dict[str, Path] = {"workspace": prepared.upper_dir}
         for zone in prepared.captured_zones:
             zone_uppers[zone.zone] = zone.upper
@@ -1313,7 +1319,11 @@ class SandboxRunExecutor:
             except OSError:
                 continue  # a race or permission error: skip rather than fail the whole run
             sources.append((action, content))
-        return written_file_actions(sources, canaries, start_seq=start_seq)
+        per_file = written_file_actions(sources, canaries, start_seq=start_seq)
+        split, limit = written_file_reassembly_actions(
+            sources, canaries, start_seq=start_seq + len(per_file)
+        )
+        return per_file + split, limit
 
     def _identity_block(
         self, planting: CanaryPlanting | None, planted: list[Canary]

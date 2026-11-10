@@ -582,3 +582,9 @@ def test_the_executor_reassembles_dns_and_degrades_coverage_at_the_bound() -> No
     header = source.index("header = RunHeader(")
     assert split < limit < header < coverage
     assert source.index("plane_c += dns_split") < header
+    # The write channel's reassembly runs on the same path: its limit reason reaches the same
+    # coverage field before the header is built, and its actions join Plane C.
+    written_call = source.index("= self._written_file_leaks(")
+    written = source.index("reassembly_limit = reassembly_limit or written_reassembly_limit")
+    assert written_call < written < header
+    assert "written_file_reassembly_actions(" in source

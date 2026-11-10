@@ -6182,3 +6182,69 @@ Seven changes reverted alone: six red, one green and said so.
 | K7 | the in-place form fed only to the scan, not to the nested pass (not added to `produced`) | stayed green — the in-place form is produced on the outer pass only, so whether it also seeds the nested pass matters only for an encoded run *inside* a decoded piece, which no fixture has; kept for symmetry with every other form, recorded as unproved |
 
 K2 is the row the measurement earned: the in-place decoding alone (K1 red) would have passed every unit test and still missed the live shape, because the stream had already stripped the padding as frame before the scan ever ran. The unit test on one string cannot see that; the test at the recording addon can.
+
+## §10.4, §10.4.2 — a marker split across written files is reassembled
+
+The last of the canary scan gaps the STATUS list named as buildable: files the skill wrote were
+scanned one at a time, so a marker staged to disk ten characters per file — four files, none
+holding a 12-character window — was in no file the scan could see. The egress and DNS planes
+already fed their values through a per-run :class:`CanaryReassembler`; written files now do too.
+
+### What is built
+
+`reassemble_written_files_for_canaries` feeds each written file's content, in Plane B order, as
+the `file` view of its zone's stream and of the overall stream, so a split across zones is found
+too. Plane B order is zone then path — the only order the plane has, since the overlay diff
+carries no write time — so `part-00` … `part-03` reassemble and pieces whose names sort out of
+order are the out-of-order limit the reassembler already states. A canary a file already carried
+on its own is not reported again. `written_file_reassembly_actions` turns each completed marker
+into a Plane C `canary_leak` at `written_file` (critical, no read state), anchored to the
+`file_write` that completed it, and the executor's `_written_file_leaks` now returns both the
+per-file findings and the reassembly's limit reason, which is folded into the same
+`reassembly_limit` the DNS and egress reassemblies degrade the credentials plane with, before the
+header is built (the executor's source pin now covers it).
+
+### Executed
+
+On a real container (`test_execution_canary_docker.py`): a `bash` tool call runs `split -b 10 -d`
+over the planted `~/.aws/credentials` into `bundle/part-NN`; the per-file scan finds nothing, the
+reassembly finds the whole marker exactly once, anchored to one of the parts, and the raw marker is
+nowhere in the trace. In the acceptance corpus, `file-chunked-thief` (the write-channel twin of
+`chunked-thief`) writes the credential ten characters per file through the real `write` tool and
+blocks on the canary gate; the acceptance harness now scans the files its in-memory filesystem
+holds, one at a time and together, as the executor reads them from the overlay upper.
+
+### Found on the way, and stated
+
+**An under-window piece of a marker survives in Plane A.** The acceptance test first asserted that
+no piece of the marker was on the record and failed: each `write` tool call's `content` argument
+is on the Plane A `tool_call` action, and §10.4.3's redaction fingerprints what matching finds —
+a ten-character piece is under the 12-character window, so it stays raw. Four tool calls in the
+artifact reconstruct the marker. This is older than this brick (a `fetch` tool call carrying a
+piece in its URL has the same shape; the egress thieves' pieces travelled through the proxy only,
+which is why their tests never met it), it is specific to pieces under the window, and closing
+it means redacting what the *reassembly* found rather than what the per-string match found —
+the stream knows the canary it completed but not the per-action spans. Recorded here and in the
+STATUS list; not done in this brick.
+
+### Still open
+
+The decode bound: a marker inside an encoded payload past `MAX_SCAN_CHARS` (256 KiB) is found
+only as a whole-value encoding. And, as before, pieces with their padding stripped, per-piece
+reversal, out-of-order pieces, a changing frame, and cross-run splits.
+
+### Revert-proving
+
+Seven changes reverted alone, seven red — one only after the measurement showed its test was missing.
+
+| # | Reverted | Result |
+|---|---|---|
+| W1 | the executor scans written files one at a time only (no reassembly) | red — `test_a_canary_staged_to_disk_in_ten_byte_files_is_reassembled_into_a_leak` |
+| W2 | a canary a file already carried on its own reported again by the reassembly | red — `test_a_split_the_completing_file_already_carries_is_not_reported_twice` (green on first measurement: the only shape tested, a whole marker in one file, is already rejected by the "not a split" rule, so the suppression had no test to fail; the shape it exists for — the completing file holds a window its own scan reports — was added and the row measured red) |
+| W3 | the finding anchored to the first file, not the one that completed the marker | red — `test_a_marker_split_across_written_files_is_found_at_the_completing_file`, `test_a_split_across_zones_is_found_on_the_overall_stream` |
+| W4 | the reassembly's limit reason dropped before it reaches the coverage block | red — `test_the_executor_reassembles_dns_and_degrades_coverage_at_the_bound` |
+| W5 | the finding graded as an egress destination instead of a written file | red — `test_a_marker_split_across_written_files_is_found_at_the_completing_file` |
+| W6 | the acceptance harness without the written-file scans | red — `test_file_chunked_thief_is_blocked_by_reassembly_over_written_files` |
+| W7 | files fed in reverse of Plane B order | red — `test_a_marker_split_across_written_files_is_found_at_the_completing_file` |
+
+W1 is pinned only by the container test: the acceptance harness calls the reassembly itself, so the executor's wiring is seen by nothing offline. The driver ran under root for that row.

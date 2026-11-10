@@ -24,7 +24,8 @@ Two rules give the search teeth:
   :mod:`bellwether.capture.canary_stream`, which feeds the joins back through this scan. Every
   embedded run is also decoded *in place* — padding included, the surrounding text kept — so
   pieces encoded independently *before* being split concatenate once decoded, which is what
-  catches the ``encoded-chunked-thief`` of §24. Written files are still scanned one at a time.
+  catches the ``encoded-chunked-thief`` of §24. Written files are scanned one at a time and then
+  together, in Plane B order, by the same reassembly.
   What stays a documented limit (§2): pieces whose padding was stripped off an encoding's block
   boundary, each piece reversed on its own, and a marker inside an encoded payload past
   :data:`MAX_SCAN_CHARS`.

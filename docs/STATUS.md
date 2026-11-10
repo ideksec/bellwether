@@ -5,10 +5,11 @@ package, then `docs/spec.md` for the detail of whatever you are building.
 
 Last updated at the end of the **post-v0.1 bricks** arc (PRs #110–#115 and the one after): every
 v0.1 work package is built, both harnesses have reached `ready` on live labelled pull requests
-(#65, #102), and the first nine bricks beyond v0.1 have landed — the runtime `instrumentation_probe`
+(#65, #102), and the first ten bricks beyond v0.1 have landed — the runtime `instrumentation_probe`
 gate, the generic probe suite, the trigger-collision matrix, its scheduled run with one issue per
 library, the §19.3 flag on pull requests, the library baseline-update pull request, the
-`pids_limit` exit reason, the scanner's nested-encoding peel, and the `encoded-chunked-thief` catch. **Update this file at the end of a session, not the start** — a status
+`pids_limit` exit reason, the scanner's nested-encoding peel, the `encoded-chunked-thief` catch, and the
+written-file reassembly. **Update this file at the end of a session, not the start** — a status
 file that lags is worse than none, because it is trusted.
 
 ## What's next — the development path, in order
@@ -45,12 +46,13 @@ Every one of these spends model tokens. Build nothing here; ask, and run only on
 Each is scoped so the six checks, the offline suite and a revert-proof table can close it in one
 session. Read the named spec-notes entry before starting.
 
-1. **Canary scan gaps, what remains** (spec-notes "§10.4.2, §24 — `encoded-chunked-thief` is
-   caught"): a marker split across *written files* in chunks under 12 characters (files are
-   scanned one at a time; a per-run stream over the overlay diff, in path order, would be the
-   shape), and a marker inside an encoded payload past the 256 KiB decode bound. Pieces with their
-   padding stripped off the block boundary and per-piece reversal are stated limits, each pinned
-   by a test. *Done when* a corpus row with the marker spread over several written files blocks.
+1. **Redact what the reassembly found** (spec-notes "§10.4, §10.4.2 — a marker split across
+   written files is reassembled", found on the way): a piece of a marker under the 12-character
+   window survives raw in Plane A's `tool_call` arguments (a `write` content, a `fetch` URL), so
+   four tool calls in the uploaded artifact reconstruct the marker. §10.4.3 redacts what matching
+   finds; the stream knows which canary it completed but not the per-action spans. *Done when*
+   `file-chunked-thief`'s record holds no piece of the marker and the golden traces are unchanged.
+   Also open: a marker inside an encoded payload past the 256 KiB decode bound.
 2. **The held-out probe set and its rotation** (§3.5, §7.6). A design question first: a set that
    is "undocumented" cannot live in a public repository; spec-notes "§5, §7.6 — the generic probe
    suite" states the contradiction. Decide the shipping channel with the owner before building.
@@ -85,7 +87,20 @@ The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth 
 
 ## How we got here (newest first)
 
-**Latest: `encoded-chunked-thief` is caught (§10.4.2, §24).** The §24 row the spec committed as a
+**Latest: a marker split across written files is reassembled (§10.4, §10.4.2).** Written files
+were scanned one at a time; they are now also fed, in Plane B order (zone then path — the only
+order the plane has), through the same per-run `CanaryReassembler` the egress and DNS planes use,
+per zone and overall, and a marker staged to disk ten characters per file is a critical
+`written_file` leak anchored to the file that completed it. The reassembly's limit reason degrades
+the credentials plane like the others, pinned on the executor's source. Executed on a real
+container (`split -b 10 -d` over the planted credential file into `bundle/part-NN`: nothing per
+file, the whole marker once across them, raw value nowhere in the trace) and in the acceptance
+corpus (`file-chunked-thief` blocks through the real `write` tool). **Found on the way:** a piece
+under the 12-character window survives raw in Plane A's `tool_call` arguments, because redaction
+fingerprints what matching finds; older than this brick, stated, and now the first item of the
+buildable list. Revert table in spec-notes.
+
+**Before that: `encoded-chunked-thief` is caught (§10.4.2, §24).** The §24 row the spec committed as a
 documented expected failure — each ten-character piece of a canary base64-encoded on its own
 before it is sent, so the encodings end in `==` and never concatenate into the marker's — now
 blocks. `decoded_forms` decodes every padded run *in place* and keeps the text around it, so the
@@ -1470,7 +1485,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2801 tests: 2721 offline, 80 under the `docker` mark (64 run locally, 16 CI-only skips with stated reasons; all 80 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2809 tests: 2728 offline, 81 under the `docker` mark (65 run locally, 16 CI-only skips with stated reasons; all 81 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The first independent-review round (twelve findings, at `592e309`)
 
