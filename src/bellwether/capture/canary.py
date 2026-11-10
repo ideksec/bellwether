@@ -42,7 +42,7 @@ import binascii
 import html
 import re
 import urllib.parse
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -52,6 +52,7 @@ __all__ = [
     "DEFAULT_CANARY_POOL",
     "MAX_SCAN_CHARS",
     "MIN_WINDOW",
+    "PIECE_REDACTION_FLOOR",
     "Canary",
     "CanaryFinding",
     "CanaryPlacement",
@@ -496,7 +497,20 @@ def _rank(hit: tuple[int, int, str]) -> tuple[int, int, int, int, str]:
 # ---------------------------------------------------------------------------
 
 
-def redact_canaries(text: str, canaries: Iterable[Canary]) -> str:
+#: A piece of a marker a reassembly found is redacted down to this many characters (§10.4.3). The
+#: per-string match window is :data:`MIN_WINDOW`; a split leak's pieces are shorter by design, and
+#: once the reassembly has found the whole marker across them the artifact must not hold them raw
+#: — four tool calls carrying ten characters each reconstruct the secret. Only a piece that stands
+#: alone between delimiters is redacted, which is also the only shape the reassembly's frame
+#: stripping joins; a three-character piece is below the floor and stays, stated as a limit.
+PIECE_REDACTION_FLOOR = 4
+_PIECE_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_FINGERPRINT_RE = re.compile(r"<canary:[^>]*>")
+
+
+def redact_canaries(
+    text: str, canaries: Iterable[Canary], *, pieces_of: Collection[str] = ()
+) -> str:
     """Replace every exact canary value in ``text`` with an evidentiary fingerprint (§10.4.3).
 
     ``AWS_SECRET=<marker>`` becomes ``AWS_SECRET=<canary:c1@offset=11,len=40>`` — the report
@@ -504,17 +518,66 @@ def redact_canaries(text: str, canaries: Iterable[Canary]) -> str:
     capture time, before any artifact is written; the teardown pass (§9.1 step 11) is a
     second net, not this.
 
-    Only exact occurrences are redacted: a *decoded* leak is reported as a finding but the
-    encoded bytes are left as-is (redacting them would require rewriting an arbitrary
-    encoding, and the finding already records that the value escaped).
+    Exact occurrences are always redacted. For the canaries named in ``pieces_of`` — those a
+    cross-request, cross-query or cross-file reassembly completed this run — every alphanumeric
+    token of at least :data:`PIECE_REDACTION_FLOOR` characters that is a substring of the marker is
+    redacted too, with the piece's own length in the fingerprint, so the pieces a split leak left
+    in tool-call arguments, query names and paths do not reconstruct the secret in the artifact.
+    A *decoded* leak is reported as a finding but the encoded bytes are left as-is (redacting them
+    would require rewriting an arbitrary encoding, and the finding already records that the value
+    escaped).
     """
-    for canary in sorted(canaries, key=lambda c: len(c.marker), reverse=True):
+    ordered = sorted(canaries, key=lambda c: len(c.marker), reverse=True)
+    for canary in ordered:
         if not canary.marker:
             continue
         while (offset := text.find(canary.marker)) >= 0:
             fingerprint = f"<canary:{canary.id}@offset={offset},len={len(canary.marker)}>"
             text = text[:offset] + fingerprint + text[offset + len(canary.marker) :]
+    split = [c for c in ordered if c.id in pieces_of and c.marker]
+    if split:
+        text = _redact_pieces(text, split)
     return text
+
+
+def _redact_pieces(text: str, canaries: Sequence[Canary]) -> str:
+    """Redact every standalone token that is a piece of one of ``canaries``' markers.
+
+    Fingerprints already in the text are skipped, so the pass is idempotent and never reads its
+    own output as a piece. Offsets are into the text as it stands, as the exact pass reports them.
+    """
+    out: list[str] = []
+    position = 0
+    for segment_end, fingerprint in _segments(text):
+        segment = text[position:segment_end]
+        rebuilt: list[str] = []
+        last = 0
+        for match in _PIECE_TOKEN_RE.finditer(segment):
+            token = match.group(0)
+            if len(token) < PIECE_REDACTION_FLOOR:
+                continue
+            owner = next((c for c in canaries if token in c.marker), None)
+            if owner is None:
+                continue
+            rebuilt.append(segment[last : match.start()])
+            offset = position + match.start()
+            rebuilt.append(f"<canary:{owner.id}@offset={offset},len={len(token)}>")
+            last = match.end()
+        rebuilt.append(segment[last:])
+        out.append("".join(rebuilt))
+        out.append(fingerprint)
+        position = segment_end + len(fingerprint)
+    return "".join(out)
+
+
+def _segments(text: str) -> list[tuple[int, str]]:
+    """``(end, fingerprint)`` for each stretch of ``text`` up to the next existing fingerprint,
+    the last stretch running to the end with an empty fingerprint."""
+    segments: list[tuple[int, str]] = []
+    for match in _FINGERPRINT_RE.finditer(text):
+        segments.append((match.start(), match.group(0)))
+    segments.append((len(text), ""))
+    return segments
 
 
 def canary_markers(canaries: Iterable[Canary]) -> list[str]:

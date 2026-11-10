@@ -110,6 +110,7 @@ from bellwether.trace import (
     provider_endpoint_actions,
     provider_rejection_from_events,
     read_trace,
+    reassembled_canary_ids,
     redact_trace_actions,
     token_totals_from_events,
     tool_result_actions,
@@ -1074,8 +1075,12 @@ class SandboxRunExecutor:
             # into its final output or a DNS name would otherwise land raw in the uploaded artifact.
             # Runs after canary_actions (which needed the raw marker to find the leak) and over every
             # plane, so no artifact holds a value the Plane C finding has already recorded escaped.
+            # …and the pieces of any marker a reassembly completed across requests, queries or
+            # files, which the per-string match is too short to see (§10.4.3).
             actions = redact_trace_actions(
-                plane_a + plane_b + plane_d + plane_e + plane_k + plane_c, canaries
+                plane_a + plane_b + plane_d + plane_e + plane_k + plane_c,
+                canaries,
+                pieces_of=reassembled_canary_ids(plane_c),
             )
             trace_path = write_trace(
                 run_dir / "trace.arf.jsonl",
