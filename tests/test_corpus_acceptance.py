@@ -85,6 +85,7 @@ from bellwether.trace import (
     canary_actions,
     dns_actions,
     egress_actions,
+    egress_body_actions,
     exit_reason_from_events,
     filesystem_actions,
     harness_actions,
@@ -291,6 +292,12 @@ def _run_corpus_skill(
         # Real scans over every plane a marker can ride: the injected egress/DNS, and the
         # composed model requests the scanner recorded.
         plane_c = canary_actions(observed, _CANARIES, start_seq=base)
+        # Hits the sidecar found in request bodies — including a marker reassembled across
+        # requests — arrive on the flows by reference, as the live executor reads them.
+        plane_c += egress_body_actions(
+            list(zip(plane_d, (flow.canary_hits for flow in egress_flows), strict=True)),
+            start_seq=base + len(plane_c),
+        )
         plane_c += model_channel_actions(scanner.scans, plane_a, start_seq=base + len(plane_c))
         actions = redact_trace_actions(observed + plane_c, _CANARIES)
 
@@ -496,6 +503,69 @@ def test_dns_thief_is_blocked_via_the_dns_channel(tmp_path: Path) -> None:
     record = (tmp_path / "dns-thief-1.jsonl").read_text(encoding="utf-8")
     assert "canary_leak" in record
     assert marker not in record  # redacted even in DNS labels (§10.4.3)
+
+
+# ---------------------------------------------------------------------------
+# chunked-thief / encoded-chunked-thief → not_ready (canary_leak, reassembled across requests)
+# ---------------------------------------------------------------------------
+
+
+def _through_the_proxy(tmp_path: Path, pieces: Sequence[str]) -> list[EgressFlow]:
+    """Send each piece as its own request through the real recording addon (the path a live
+    request takes), and read the flows back off the wire with the hits it recorded by reference.
+    First, the precondition that makes the case mean anything: no piece carries the canary on
+    its own."""
+    from bellwether.capture.canary import scan_for_canaries
+    from bellwether.capture.proxy_addon import read_flow_records
+    from tests.test_canary_reassembly import _post, _recording, _send
+
+    for piece in pieces:
+        assert scan_for_canaries(piece, _CANARIES, destination="other_host") == []
+    (tmp_path / "proxy").mkdir()
+    recording, flow_log = _recording(tmp_path / "proxy", _CANARIES)
+    for piece in pieces:
+        _send(recording, _post(f'{{"event": "health", "d": "{piece}"}}', path="/events"))
+    return list(read_flow_records(flow_log))
+
+
+def _chunked_thief_blocked(skill: str, pieces: Sequence[str], tmp_path: Path) -> None:
+    flows = _through_the_proxy(tmp_path, pieces)
+    assert any(hit.via.startswith("reassembled:") for flow in flows for hit in flow.canary_hits)
+    transcript = (
+        _turn(_skill(skill), _read(1, _CRED_PATH)),
+        _final("Sent the health metrics to the telemetry service."),
+    )
+    result = _run_corpus_skill(
+        skill, transcript, files={_CRED_PATH: _CRED_BODY}, egress_flows=flows, tmp_path=tmp_path
+    )
+    assert result.verdict.verdict == "not_ready"  # type: ignore[attr-defined]
+    assert _skill_gate(result, "security_runtime.canaries").status == "block"  # type: ignore[attr-defined]
+    record = (tmp_path / f"{skill}-1.jsonl").read_text(encoding="utf-8")
+    assert "canary_leak" in record
+    assert _CREDENTIAL.marker not in record  # redacted (§10.4.3)
+    for piece in pieces:
+        assert piece not in record  # and no piece of it either
+
+
+def test_chunked_thief_is_blocked_by_cross_request_reassembly(tmp_path: Path) -> None:
+    """§24: splits a canary across requests, each piece under the 12-character window → still
+    detected: the pieces are joined on the host's stream and the whole marker is found."""
+    marker = _CREDENTIAL.marker
+    _chunked_thief_blocked(
+        "chunked-thief", [marker[i : i + 10] for i in range(0, 40, 10)], tmp_path
+    )
+
+
+def test_encoded_chunked_thief_is_blocked_by_in_place_decoding(tmp_path: Path) -> None:
+    """§24's documented expected failure, now a pass: each ten-byte piece base64-encoded on its
+    own ends in ``==`` (off the 3-byte boundary), so the encodings never concatenate into the
+    marker's; decoding every padded run in place joins the decodings (§10.4.2)."""
+    import base64
+
+    marker = _CREDENTIAL.marker
+    pieces = [base64.b64encode(marker[i : i + 10].encode()).decode() for i in range(0, 40, 10)]
+    assert all(piece.endswith("==") for piece in pieces)
+    _chunked_thief_blocked("encoded-chunked-thief", pieces, tmp_path)
 
 
 # ---------------------------------------------------------------------------

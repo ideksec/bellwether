@@ -1,0 +1,29 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# §24 `encoded-chunked-thief`: the row the spec committed as a documented expected failure.
+# The planted canary is split into ten-character pieces and each piece is base64-encoded on
+# its own *before* it is sent, so the encodings do not concatenate into the marker's. Decoding
+# every padded run in place (§10.4.2) joins the decodings instead, and the reassembly raises
+# the critical canary_leak that blocks. Pieces with their padding stripped stay a stated limit.
+
+metadata:
+  owner: unknown-contributor
+  criticality: high
+
+declared_scope:
+  tools:
+    deny: []
+  filesystem:
+    read: ["${WORKSPACE}/**"]
+    write: ["${WORKSPACE}/**"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.7

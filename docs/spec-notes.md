@@ -4845,7 +4845,8 @@ the stream's tail. A hit counts only where the join holds a longer match than ei
 Memory is bounded per stream and in stream count; past the count limit views fold into one overflow
 stream that is still scanned, and the credentials plane is marked `partial` with the reason. Still
 open, and named in the module: independently-encoded base64/base32 pieces off the block boundary
-(a strict `xfail`), pieces reversed or reordered, a frame that changes per piece, and a split across
+(a strict `xfail` — *closed since for padded pieces, see "§10.4.2, §24 — `encoded-chunked-thief`
+is caught"*), pieces reversed or reordered, a frame that changes per piece, and a split across
 runs.
 
 ## §10.5.2 — `egress_volume_anomaly` against the peers' median
@@ -6113,3 +6114,71 @@ Eight changes reverted alone: six red, two green and said so.
 | S8 | a non-ASCII decoding peeled anyway (lossy decode) | stayed green — the token shapes are ASCII-only regular expressions, so a lossy decode's U+FFFD never fullmatches and the strict decode is belt and braces; kept, and recorded as unproved |
 
 S3 was green on first measurement: every hex fixture was single-case, which the base64 mixed-case rule already excludes, so the order of the two tries never mattered to any test. A mixed-case hex inner token — a human-typed digest shape, valid base64 text with both cases — is misread as base64 with the order swapped; the fixture was added and the row measured red.
+
+## §10.4.2, §24 — `encoded-chunked-thief` is caught: pieces decoded in place
+
+§2 and §10.4.2 state the limit twice: "independently encoding each chunk before transmission
+defeats windowed matching", committed to the corpus as `encoded-chunked-thief`, a documented
+expected failure. The cross-request reassembly (PR #101) closed the shape wherever the encoding
+*concatenates* — hex, percent- and entity-escapes always, base64 and base32 on their block
+boundaries — and left one strict `xfail`: base64 pieces off the 3-byte boundary. Ten-byte pieces
+each encode to fourteen characters and `==`; three of them in a row are three runs the decoders
+read one by one, and no decoding holds more than ten characters of the marker.
+
+### What is built
+
+**Decode in place.** `decoded_forms` now adds, beside the one-by-one run decodings, a form of the
+whole text in which every encoded run — *with its padding* — is replaced by its decoding and the
+surrounding text kept. Three padded encodings side by side become the three pieces side by side,
+and the marker is contiguous. The run floor for this pass is one base64 group (a piece can be a
+single character), lower than the 16-character floor of the embedded-run pass, which exists to
+keep ordinary words from costing a decode; here a word that decodes to garbage is harmless,
+because only a marker window is ever looked for in the result. The pass runs on the outer layer
+only, so the nested fan-out is unchanged; its output joins the nested pass like any other form.
+
+**Padding is payload, not frame.** The stream's frame heuristic takes what consecutive values
+share as framing: the common suffix, cut forward to its first delimiter. Pieces encoded one by
+one all end in `==`, and `=` is a delimiter, so the shared padding was stripped as frame and the
+in-place decoding never saw it — measured on the reassembler before the fix (frame `(0, 2)`, the
+stream's tail an unpadded fusion). On the suffix side `=` no longer counts as a delimiter: a run
+of `=` ending a value is base64/base32 padding, so `…dw=="}` and `…SA=="}` share the frame `"}`,
+not `=="}`. The prefix side is unchanged (`?d=` is a frame), and a revert row pins the asymmetry:
+treating `=` the same way on the prefix side eats a query-string frame into the payload and the
+query-string split stops being found.
+
+**The corpus rows.** `tests/corpus/chunked-thief` (ten-character pieces, one request each) and
+`tests/corpus/encoded-chunked-thief` (each piece base64-encoded on its own, so every encoding
+ends in `==`) join the behavioural corpus, both `not_ready` on the canary gate with the leak
+anchored to the completing request and no piece of the marker in the record. The acceptance
+harness drives the pieces through the real recording addon — the path a live request takes —
+and now carries the sidecar's by-reference body hits into Plane C through `egress_body_actions`,
+as the executor does; without that hop a reassembled hit never reached the gate, and a revert row
+pins it. The strict `xfail` is a passing test, with a base32 twin (eight-character pieces: ten
+sit on base32's five-byte block) and a unit test of the in-place form on one string.
+
+### What stays open, and is pinned
+
+Pieces with their padding *stripped* off the boundary fuse into one run whose decoding is
+nothing useful; `test_pieces_with_their_padding_stripped_stay_a_stated_limit` pins that the
+reassembly finds nothing, so a change to this limit is a measured one. Also open, as before: each
+piece reversed on its own, pieces out of order or with a frame that changes every time, pieces
+interleaved with other values on one stream, splits across runs, a marker split across *written
+files* (files are scanned one at a time), and a marker inside an encoded payload past
+`MAX_SCAN_CHARS`. §2's and §10.4.2's wording ("documented expected failure") is now narrower than
+the spec says; the spec text is left as revision 3 and this entry is the record.
+
+### Revert-proving
+
+Seven changes reverted alone: six red, one green and said so.
+
+| # | Reverted | Result |
+|---|---|---|
+| K1 | no in-place decoding (runs decoded one by one, as before) | red — `test_in_place_decoding_joins_padded_pieces_in_one_string`, `test_independently_base64_encoded_pieces_off_the_block_boundary`, `test_independently_base32_encoded_pieces_off_the_block_boundary`, `test_encoded_chunked_thief_is_blocked_by_in_place_decoding` |
+| K2 | `=` kept as a suffix-frame delimiter (shared padding stripped as frame) | red — `test_independently_base64_encoded_pieces_off_the_block_boundary`, `test_independently_base32_encoded_pieces_off_the_block_boundary`, `test_encoded_chunked_thief_is_blocked_by_in_place_decoding` (re-measured by hand after the formatter rewrote the anchor the driver carried) |
+| K3 | the in-place run floor raised to the embedded-run floor (16) | red — `test_in_place_decoding_joins_padded_pieces_in_one_string`, `test_independently_base64_encoded_pieces_off_the_block_boundary`, `test_encoded_chunked_thief_is_blocked_by_in_place_decoding` |
+| K4 | the padding left in the text instead of consumed with its run | red — `test_in_place_decoding_joins_padded_pieces_in_one_string`, `test_independently_base64_encoded_pieces_off_the_block_boundary`, `test_encoded_chunked_thief_is_blocked_by_in_place_decoding` |
+| K5 | `=` made a non-delimiter on the prefix side too (a `?d=` frame eaten into the payload) | red — `test_a_split_through_the_query_string_is_found` |
+| K6 | the sidecar's body hits not carried into Plane C by the acceptance harness | red — `test_chunked_thief_is_blocked_by_cross_request_reassembly`, `test_encoded_chunked_thief_is_blocked_by_in_place_decoding` |
+| K7 | the in-place form fed only to the scan, not to the nested pass (not added to `produced`) | stayed green — the in-place form is produced on the outer pass only, so whether it also seeds the nested pass matters only for an encoded run *inside* a decoded piece, which no fixture has; kept for symmetry with every other form, recorded as unproved |
+
+K2 is the row the measurement earned: the in-place decoding alone (K1 red) would have passed every unit test and still missed the live shape, because the stream had already stripped the padding as frame before the scan ever ran. The unit test on one string cannot see that; the test at the recording addon can.

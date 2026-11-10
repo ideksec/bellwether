@@ -41,13 +41,14 @@ fold is reported (:attr:`CanaryReassembler.limit_reason`) so the run records tha
 degraded rather than reading as fully observed.
 
 **Limits.** A split whose pieces are each encoded independently (the
-``encoded-chunked-thief`` expected failure §24 names, not yet in the corpus) is closed only
-where the encoding concatenates: hex, percent- and entity-escapes always, base64 and base32
-only when every piece but the last falls on the encoding's block boundary (3 and 5 bytes).
-Still open: independently encoded base64/base32 pieces off those boundaries, each piece
-reversed on its own, pieces sent out of order or with a frame that changes every time (a
-sequence number ahead of the chunk), pieces interleaved with other values on the same stream,
-and pieces spread across runs. Reassembly is per run; there is no cross-run corpus.
+``encoded-chunked-thief`` of §24, in the corpus) is closed where the encoding concatenates —
+hex, percent- and entity-escapes always, base64 and base32 on the block boundary — and, off the
+boundary, where each piece keeps its padding: the scan decodes every padded run in place
+(:func:`~bellwether.capture.canary.decoded_forms`), so the decodings are contiguous even though
+the encodings were not. Still open: base64/base32 pieces off the boundary with their padding
+stripped, each piece reversed on its own, pieces sent out of order or with a frame that changes
+every time (a sequence number ahead of the chunk), pieces interleaved with other values on the
+same stream, and pieces spread across runs. Reassembly is per run; there is no cross-run corpus.
 
 Deterministic (§24): views are fed in sorted order, scopes in a fixed order, streams live in an
 insertion-ordered dict, and hits come back sorted.
@@ -158,7 +159,11 @@ def _frame(
     The common prefix is cut back to end on a delimiter and the common suffix cut forward to
     start on one, so a payload that happens to share its first or last characters with the
     previous one is not eaten: ``{"d":"ab…`` and ``{"d":"ac…`` share the frame ``{"d":"``, not
-    ``{"d":"a``. The two together never exceed the shorter value.
+    ``{"d":"a``. On the suffix side ``=`` is not a delimiter: a run of ``=`` ending a value is
+    base64/base32 padding, which pieces encoded one by one all share and which the in-place
+    decoding needs to tell the pieces apart (§10.4.2) — ``…dw=="}`` and ``…SA=="}`` share the frame
+    ``"}``, not ``=="}``. (On the prefix side ``?d=`` is a frame and ``=`` stays a delimiter.) The
+    two together never exceed the shorter value.
     """
     prefix = 0
     for a, b in zip(prev_head, cur_head, strict=False):
@@ -172,7 +177,7 @@ def _frame(
         if a != b:
             break
         suffix += 1
-    while suffix and not _is_delimiter(cur_tail[len(cur_tail) - suffix]):
+    while suffix and ((char := cur_tail[len(cur_tail) - suffix]) == "=" or not _is_delimiter(char)):
         suffix -= 1
     suffix = min(suffix, max(0, shorter - prefix))
     return prefix, suffix

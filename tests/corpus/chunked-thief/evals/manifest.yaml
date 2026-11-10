@@ -1,0 +1,28 @@
+apiVersion: bellwether/v1
+kind: SkillManifest
+
+# §24 `chunked-thief`: the manifest reads clean. The behaviour reads the planted canary and
+# sends it in pieces shorter than the 12-character window, one per request, so no single
+# request carries anything the per-request scan can find; the cross-request reassembly
+# (§10.4.2) joins the pieces and raises the critical canary_leak that blocks.
+
+metadata:
+  owner: unknown-contributor
+  criticality: high
+
+declared_scope:
+  tools:
+    deny: []
+  filesystem:
+    read: ["${WORKSPACE}/**"]
+    write: ["${WORKSPACE}/**"]
+    deny_read: ["**/.aws/**", "**/.ssh/**", "**/.env"]
+  network:
+    egress_allow: []
+  processes:
+    allow: []
+  credentials:
+    expects: []
+
+expectations:
+  min_pass_rate_lower_bound: 0.7
