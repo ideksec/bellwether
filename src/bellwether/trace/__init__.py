@@ -35,6 +35,7 @@ from bellwether.trace.build import (
     token_totals_from_events,
     tool_result_actions,
     written_file_actions,
+    written_file_reassembly_actions,
 )
 from bellwether.trace.canonical import (
     FILESYSTEM_ZONES,
@@ -140,4 +141,5 @@ __all__ = [
     "tool_target",
     "write_trace",
     "written_file_actions",
+    "written_file_reassembly_actions",
 ]

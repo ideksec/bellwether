@@ -25,6 +25,7 @@ from bellwether.capture.canary import (
     redact_canaries,
     scan_for_canaries,
 )
+from bellwether.capture.canary_stream import reassemble_written_files_for_canaries
 from bellwether.capture.dns import (
     DnsQuery,
     reassemble_queries_for_canaries,
@@ -61,6 +62,7 @@ __all__ = [
     "token_totals_from_events",
     "tool_result_actions",
     "written_file_actions",
+    "written_file_reassembly_actions",
 ]
 
 
@@ -546,6 +548,32 @@ def written_file_actions(
             actions.append(_plane_c_action(finding, seq=seq, ts=source.ts, anchor_seq=source.seq))
             seq += 1
     return actions
+
+
+def written_file_reassembly_actions(
+    sources: Sequence[tuple[Action, str]], canaries: Sequence[Canary], *, start_seq: int = 0
+) -> tuple[list[Action], str]:
+    """Derive Plane C findings from a marker split *across* the files the skill wrote (§10.4.2).
+
+    :func:`written_file_actions` scans each file on its own; this scans them together, in Plane B
+    order (:func:`~bellwether.capture.canary_stream.reassemble_written_files_for_canaries`), and
+    anchors each finding to the ``file_write`` that completed the marker. A canary that file already
+    carried on its own is not reported again. Returns the actions and the reassembly's limit reason
+    (``""`` unless its stream bound was reached), which the caller records on the credentials
+    plane's coverage so a degraded scan never reads as a full one.
+
+    Deterministic: files are consumed in order and each one's findings come back sorted (§24).
+    """
+    found, limit = reassemble_written_files_for_canaries(
+        [(str(source.action.get("zone", "")), content) for source, content in sources], canaries
+    )
+    actions: list[Action] = []
+    for offset, (index, finding) in enumerate(found):
+        source = sources[index][0]
+        actions.append(
+            _plane_c_action(finding, seq=start_seq + offset, ts=source.ts, anchor_seq=source.seq)
+        )
+    return actions, limit
 
 
 def tool_result_actions(

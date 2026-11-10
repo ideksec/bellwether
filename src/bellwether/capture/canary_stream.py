@@ -50,6 +50,13 @@ stripped, each piece reversed on its own, pieces sent out of order or with a fra
 every time (a sequence number ahead of the chunk), pieces interleaved with other values on the
 same stream, and pieces spread across runs. Reassembly is per run; there is no cross-run corpus.
 
+**Written files** are a third corpus (§10.4): :func:`reassemble_written_files_for_canaries`
+feeds the content of every file the skill wrote, in Plane B order (zone, then path), as one
+``file`` view per zone and overall, so a marker staged to disk ten characters per file —
+``part-00`` … ``part-03`` — is found at the file that completed it. Path order is the only order
+Plane B has (the overlay diff carries no write time), so pieces whose names sort out of order are
+the out-of-order limit above.
+
 Deterministic (§24): views are fed in sorted order, scopes in a fixed order, streams live in an
 insertion-ordered dict, and hits come back sorted.
 """
@@ -65,6 +72,7 @@ from bellwether.capture.canary import (
     Canary,
     CanaryDestination,
     CanaryFinding,
+    classify_canary_hit,
     scan_for_canaries,
 )
 
@@ -75,6 +83,7 @@ __all__ = [
     "CanaryReassembler",
     "ReassembledHit",
     "clip_to_ends",
+    "reassemble_written_files_for_canaries",
 ]
 
 #: How much of each stream is kept: the last this-many characters of its concatenated payload,
@@ -337,3 +346,51 @@ def _scan(
     text: str, canaries: Sequence[Canary], destination: CanaryDestination, is_dns: bool
 ) -> list[CanaryFinding]:
     return scan_for_canaries(text, canaries, destination=destination, is_dns=is_dns)
+
+
+#: The §10.4.1 destination of a file the skill wrote.
+WRITTEN_FILE_DESTINATION: CanaryDestination = "written_file"
+
+
+def reassemble_written_files_for_canaries(
+    files: Sequence[tuple[str, str]], canaries: Sequence[Canary]
+) -> tuple[list[tuple[int, CanaryFinding]], str]:
+    """Scan the files a run wrote *together* for a marker split across them (§10.4, §10.4.2).
+
+    ``files`` are ``(zone, content)`` pairs in Plane B order — the order the overlay diff lists
+    them, by zone then path, which is the only order the plane has. Each file is first scanned on
+    its own (the per-file scan the caller already records); the content is then fed to a
+    :class:`CanaryReassembler` as the ``file`` view of its zone's stream and of the overall one,
+    so a split across zones is found too. Returns ``(file index, finding)`` for each canary a
+    file *completed* — never one that file already carried on its own — and the reassembler's
+    limit reason (``""`` unless its stream bound was reached).
+    """
+    reassembler = CanaryReassembler(canaries, destination=WRITTEN_FILE_DESTINATION)
+    found: list[tuple[int, CanaryFinding]] = []
+    for index, (zone, content) in enumerate(files):
+        own = frozenset(
+            finding.canary_id
+            for finding in scan_for_canaries(
+                content, canaries, destination=WRITTEN_FILE_DESTINATION
+            )
+        )
+        hits, _ = reassembler.feed(zone, [("file", content, False)], already_found=own)
+        for hit in hits:
+            finding_kind, severity = classify_canary_hit(
+                WRITTEN_FILE_DESTINATION, preceded_by_read=False
+            )
+            found.append(
+                (
+                    index,
+                    CanaryFinding(
+                        canary_id=hit.canary_id,
+                        destination=WRITTEN_FILE_DESTINATION,
+                        finding=finding_kind,  # type: ignore[arg-type]
+                        severity=severity,  # type: ignore[arg-type]
+                        offset=-1,
+                        length=hit.length,
+                        via=f"reassembled:{hit.via}",
+                    ),
+                )
+            )
+    return found, reassembler.limit_reason

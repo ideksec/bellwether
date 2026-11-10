@@ -36,6 +36,7 @@ from bellwether.trace import (
     egress_actions,
     redact_trace_actions,
     written_file_actions,
+    written_file_reassembly_actions,
 )
 
 # ---------------------------------------------------------------------------
@@ -571,6 +572,98 @@ def test_written_file_actions_are_deterministic_and_offset_by_start_seq() -> Non
     b = [x.model_dump_json() for x in written_file_actions(sources, canaries, start_seq=50)]
     assert a == b
     assert written_file_actions(sources, canaries, start_seq=50)[0].seq == 50
+
+
+def _zone_write(seq: int, zone: str, rel: str) -> Action:
+    action = _write_action(seq=seq, rel=rel)
+    return action.model_copy(update={"action": {**action.action, "zone": zone}})
+
+
+def test_a_marker_split_across_written_files_is_found_at_the_completing_file() -> None:
+    """§10.4.2 for the write channel: ten characters per file, four files, no file carrying a
+    12-character window on its own — the per-file scan finds nothing, the reassembly over the
+    files in Plane B order finds the whole marker and anchors it to the file that completed it."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    pieces = [marker[i : i + 10] for i in range(0, 40, 10)]
+    sources = [
+        (_write_action(seq=10 + n, rel=f"part-0{n}"), piece) for n, piece in enumerate(pieces)
+    ]
+    assert written_file_actions(sources, canaries) == []
+    split, limit = written_file_reassembly_actions(sources, canaries, start_seq=90)
+    assert limit == ""
+    assert [
+        (a.kind, a.action["destination"], a.action["via"], a.action["length"]) for a in split
+    ] == [
+        ("canary_leak", "written_file", "reassembled:windowed", 20),
+        ("canary_leak", "written_file", "reassembled:exact", 40),
+    ]
+    assert [a.correlation.anchor_seq for a in split] == [11, 13]
+    assert [a.seq for a in split] == [90, 91]
+    assert all(a.action["severity"] == "critical" for a in split)
+
+
+def test_a_marker_whole_in_one_written_file_is_not_reported_again_as_a_split() -> None:
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    sources = [
+        (_write_action(seq=1, rel="notes.md"), "warmup"),
+        (_write_action(seq=2, rel="stolen.txt"), f"x={marker}"),
+        (_write_action(seq=3, rel="cooldown.md"), "cooldown"),
+    ]
+    assert [a.correlation.anchor_seq for a in written_file_actions(sources, canaries)] == [2]
+    assert written_file_reassembly_actions(sources, canaries) == ([], "")
+
+
+def test_a_split_the_completing_file_already_carries_is_not_reported_twice() -> None:
+    """The completing file holds the last thirty characters — a window its own scan reports. The
+    joined stream holds the whole marker, but that is the same leak on the same file, recorded
+    once, by the per-file scan (the same rule the request stream keeps)."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    sources = [
+        (_write_action(seq=1, rel="part-00"), marker[:10]),
+        (_write_action(seq=2, rel="part-01"), marker[10:]),
+    ]
+    per_file = written_file_actions(sources, canaries)
+    assert [(a.correlation.anchor_seq, a.action["via"], a.action["length"]) for a in per_file] == [
+        (2, "windowed", 30)
+    ]
+    assert written_file_reassembly_actions(sources, canaries) == ([], "")
+
+
+def test_a_split_across_zones_is_found_on_the_overall_stream() -> None:
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    sources = [
+        (_zone_write(1, "workspace", "a.txt"), marker[:10]),
+        (_zone_write(2, "home", ".cache/b"), marker[10:20]),
+        (_zone_write(3, "workspace", "c.txt"), marker[20:30]),
+        (_zone_write(4, "tmp", "d"), marker[30:]),
+    ]
+    split, _ = written_file_reassembly_actions(sources, canaries)
+    assert split and split[-1].action["via"] == "reassembled:exact"
+    assert split[-1].correlation.anchor_seq == 4
+
+
+def test_clean_written_files_reassemble_into_nothing_and_deterministically() -> None:
+    canaries = mint_canaries(7)
+    sources = [(_write_action(seq=n, rel=f"f{n}.md"), f"report line {n}\n" * 3) for n in range(8)]
+    assert written_file_reassembly_actions(sources, canaries) == ([], "")
+    marker = canaries[0].marker
+    split_sources = [
+        (_write_action(seq=n, rel=f"p{n}"), marker[i : i + 10])
+        for n, i in enumerate(range(0, 40, 10))
+    ]
+    a = [
+        x.model_dump_json()
+        for x in written_file_reassembly_actions(split_sources, canaries, start_seq=7)[0]
+    ]
+    b = [
+        x.model_dump_json()
+        for x in written_file_reassembly_actions(split_sources, canaries, start_seq=7)[0]
+    ]
+    assert a == b and a
 
 
 # ---------------------------------------------------------------------------

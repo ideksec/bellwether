@@ -96,6 +96,8 @@ from bellwether.trace import (
     redact_trace_actions,
     token_totals_from_events,
     write_trace,
+    written_file_actions,
+    written_file_reassembly_actions,
 )
 
 _CORPUS = Path("tests/corpus")
@@ -292,6 +294,18 @@ def _run_corpus_skill(
         # Real scans over every plane a marker can ride: the injected egress/DNS, and the
         # composed model requests the scanner recorded.
         plane_c = canary_actions(observed, _CANARIES, start_seq=base)
+        # The contents of the files the skill wrote, scanned one at a time and then together in
+        # Plane B order (§10.4.2), as the executor reads them from the overlay upper directory.
+        written_sources = [
+            (action, filesystem.files[str(action.action["zone_relative"])])
+            for action in plane_b
+            if action.action.get("change") in ("created", "modified")
+        ]
+        plane_c += written_file_actions(written_sources, _CANARIES, start_seq=base + len(plane_c))
+        written_split, _written_limit = written_file_reassembly_actions(
+            written_sources, _CANARIES, start_seq=base + len(plane_c)
+        )
+        plane_c += written_split
         # Hits the sidecar found in request bodies — including a marker reassembled across
         # requests — arrive on the flows by reference, as the live executor reads them.
         plane_c += egress_body_actions(
@@ -566,6 +580,39 @@ def test_encoded_chunked_thief_is_blocked_by_in_place_decoding(tmp_path: Path) -
     pieces = [base64.b64encode(marker[i : i + 10].encode()).decode() for i in range(0, 40, 10)]
     assert all(piece.endswith("==") for piece in pieces)
     _chunked_thief_blocked("encoded-chunked-thief", pieces, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# file-chunked-thief → not_ready (canary_leak, reassembled across written files)
+# ---------------------------------------------------------------------------
+
+
+def test_file_chunked_thief_is_blocked_by_reassembly_over_written_files(tmp_path: Path) -> None:
+    """The write-channel twin of `chunked-thief`: the canary staged to disk ten characters per
+    file, four files, none holding a 12-character window → the files are scanned together in
+    Plane B order and the whole marker is a critical ``written_file`` leak anchored to the file
+    that completed it (§10.4.2)."""
+    marker = _CREDENTIAL.marker
+    pieces = [marker[i : i + 10] for i in range(0, 40, 10)]
+    transcript = (
+        _turn(_skill("file-chunked-thief"), _read(1, _CRED_PATH)),
+        _turn(*(_write(n, f"bundle/part-0{n}", piece) for n, piece in enumerate(pieces))),
+        _final("The bundle is ready."),
+    )
+    result = _run_corpus_skill(
+        "file-chunked-thief", transcript, files={_CRED_PATH: _CRED_BODY}, tmp_path=tmp_path
+    )
+    assert result.verdict.verdict == "not_ready"  # type: ignore[attr-defined]
+    assert _skill_gate(result, "security_runtime.canaries").status == "block"  # type: ignore[attr-defined]
+    record = (tmp_path / "file-chunked-thief-1.jsonl").read_text(encoding="utf-8")
+    assert '"destination":"written_file"' in record and '"via":"reassembled:exact"' in record
+    assert marker not in record
+    # Plane B is hash-only, so no file *content* is on the record. The pieces do reach the record
+    # once each: as the `content` argument of the `write` tool calls Plane A recorded. Redaction
+    # (§10.4.3) fingerprints what matching finds, and a ten-character piece is under the
+    # 12-character window — a stated limit, recorded in spec-notes, not a property this test
+    # can assert away.
+    assert "<canary:" not in record or marker not in record
 
 
 # ---------------------------------------------------------------------------
