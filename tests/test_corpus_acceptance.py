@@ -93,6 +93,7 @@ from bellwether.trace import (
     kernel_plane_coverage,
     model_channel_actions,
     read_trace,
+    reassembled_canary_ids,
     redact_trace_actions,
     token_totals_from_events,
     write_trace,
@@ -313,7 +314,9 @@ def _run_corpus_skill(
             start_seq=base + len(plane_c),
         )
         plane_c += model_channel_actions(scanner.scans, plane_a, start_seq=base + len(plane_c))
-        actions = redact_trace_actions(observed + plane_c, _CANARIES)
+        actions = redact_trace_actions(
+            observed + plane_c, _CANARIES, pieces_of=reassembled_canary_ids(plane_c)
+        )
 
         header = RunHeader(
             run_id=f"corpus-{skill_dir}-{repetition:03d}",
@@ -607,12 +610,12 @@ def test_file_chunked_thief_is_blocked_by_reassembly_over_written_files(tmp_path
     record = (tmp_path / "file-chunked-thief-1.jsonl").read_text(encoding="utf-8")
     assert '"destination":"written_file"' in record and '"via":"reassembled:exact"' in record
     assert marker not in record
-    # Plane B is hash-only, so no file *content* is on the record. The pieces do reach the record
-    # once each: as the `content` argument of the `write` tool calls Plane A recorded. Redaction
-    # (§10.4.3) fingerprints what matching finds, and a ten-character piece is under the
-    # 12-character window — a stated limit, recorded in spec-notes, not a property this test
-    # can assert away.
-    assert "<canary:" not in record or marker not in record
+    # Plane B is hash-only, so no file *content* is on the record. The pieces reached Plane A once
+    # each, as the `content` argument of the `write` tool calls; the reassembly found the marker
+    # across them, so each piece is redacted to a fingerprint of its own length (§10.4.3).
+    for piece in pieces:
+        assert piece not in record
+    assert f"<canary:{_CREDENTIAL.id}@offset=" in record and ",len=10>" in record
 
 
 # ---------------------------------------------------------------------------

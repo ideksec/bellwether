@@ -34,6 +34,7 @@ from bellwether.trace import (
     canary_actions,
     dns_actions,
     egress_actions,
+    reassembled_canary_ids,
     redact_trace_actions,
     written_file_actions,
     written_file_reassembly_actions,
@@ -717,6 +718,83 @@ def test_redaction_is_a_no_op_when_nothing_was_planted() -> None:
     clean = _final_output("anything at all", seq=0)
     result = redact_trace_actions([clean], [])
     assert result == [clean]
+
+
+def test_pieces_of_a_reassembled_marker_are_redacted_to_their_own_fingerprints() -> None:
+    """§10.4.3 for a split leak: the per-string match is too short to see a ten-character piece,
+    so once a reassembly has found the marker across pieces, every standalone piece of it is
+    redacted — in a JSON string, a query parameter, a DNS label — with its own length recorded."""
+    canaries = mint_canaries(7)
+    canary = canaries[0]
+    pieces = [canary.marker[i : i + 10] for i in range(0, 40, 10)]
+    text = (
+        f'{{"content": "{pieces[0]}"}} /collect?d={pieces[1]}&n=2 '
+        f"{pieces[2]}.attacker.example tail={pieces[3]}"
+    )
+    assert redact_canaries(text, canaries) == text  # under the window: the exact pass sees nothing
+    redacted = redact_canaries(text, canaries, pieces_of={canary.id})
+    for piece in pieces:
+        assert piece not in redacted
+    assert redacted.count(f"<canary:{canary.id}@offset=") == 4
+    assert ",len=10>" in redacted
+    # Idempotent: a second pass finds no piece inside the fingerprints it wrote.
+    assert redact_canaries(redacted, canaries, pieces_of={canary.id}) == redacted
+
+
+def test_piece_redaction_is_bounded_to_the_canaries_the_reassembly_found() -> None:
+    canaries = mint_canaries(7)
+    first, second = canaries[0], canaries[1]
+    text = f"a={first.marker[:10]} b={second.marker[:10]}"
+    redacted = redact_canaries(text, canaries, pieces_of={first.id})
+    assert first.marker[:10] not in redacted
+    assert (
+        second.marker[:10] in redacted
+    )  # not found split this run: left as the ordinary text it may be
+
+
+def test_piece_redaction_leaves_short_and_embedded_fragments() -> None:
+    """A three-character fragment is below the floor and a window glued inside a longer token is
+    not a standalone piece: neither is the shape the reassembly joins, and both would make the
+    pass bite ordinary text. Stated limits, pinned."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    text = f"x={marker[:3]} y=prefix{marker[:10]}suffix z={marker[:10]}"
+    redacted = redact_canaries(text, canaries, pieces_of={canaries[0].id})
+    assert f"x={marker[:3]} " in redacted
+    assert f"prefix{marker[:10]}suffix" in redacted
+    assert f"z={marker[:10]}" not in redacted
+
+
+def test_redact_trace_actions_redacts_pieces_only_for_reassembled_canaries() -> None:
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    write = Action(
+        seq=3,
+        ts=_CTS,
+        plane="harness",
+        kind="tool_call",
+        action={"tool": "write", "input": {"path": "part-00", "content": marker[:10]}},
+    )
+    untouched = redact_trace_actions([write], canaries)
+    assert untouched[0] is write  # nothing reassembled: the record keeps its identity, as before
+    redacted = redact_trace_actions([write], canaries, pieces_of={canaries[0].id})
+    assert marker[:10] not in canonical_json(redacted[0].action)
+    assert f"<canary:{canaries[0].id}@" in redacted[0].action["input"]["content"]
+
+
+def test_reassembled_canary_ids_reads_the_label_off_plane_c() -> None:
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    sources = [
+        (_write_action(seq=n, rel=f"p{n}"), marker[i : i + 10])
+        for n, i in enumerate(range(0, 40, 10))
+    ]
+    split, _ = written_file_reassembly_actions(sources, canaries)
+    whole = written_file_actions(
+        [(_write_action(seq=9, rel="w"), f"x={canaries[1].marker}")], canaries
+    )
+    assert reassembled_canary_ids(split + whole) == frozenset({canaries[0].id})
+    assert reassembled_canary_ids(whole) == frozenset()
 
 
 def test_the_plane_c_finding_survives_redaction_of_its_source() -> None:

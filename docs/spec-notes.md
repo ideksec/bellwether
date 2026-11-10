@@ -6248,3 +6248,56 @@ Seven changes reverted alone, seven red — one only after the measurement showe
 | W7 | files fed in reverse of Plane B order | red — `test_a_marker_split_across_written_files_is_found_at_the_completing_file` |
 
 W1 is pinned only by the container test: the acceptance harness calls the reassembly itself, so the executor's wiring is seen by nothing offline. The driver ran under root for that row.
+
+## §10.4.3 — the pieces a reassembly found are redacted
+
+Found by the previous brick's acceptance test, which asserted that no piece of a marker was on
+the record and failed: each `write` tool call's `content` argument is on the Plane A `tool_call`
+action, and redaction fingerprinted *exact* marker occurrences only, so a ten-character piece —
+under the 12-character match window by the attacker's design — stayed raw, and four tool calls in
+the uploaded artifact reconstructed the secret the reassembly had just found. Older than that
+brick: a `fetch` URL carrying a piece, or a DNS name carrying a label, has the same shape.
+
+### What is built
+
+`redact_canaries` takes `pieces_of`, the canaries a reassembly completed this run. For those, after
+the exact pass, every alphanumeric token of at least `PIECE_REDACTION_FLOOR` (four) characters that
+is a substring of the marker is replaced by a fingerprint of its own length — `<canary:c1@offset=…,
+len=10>` — so the artifact says a piece was here and how long without holding it. Only a token
+standing alone between delimiters counts, which is also the only shape the reassembly's frame
+stripping joins: a piece glued inside a longer run would not have reassembled either. Fingerprints
+already in the text are skipped, so the pass is idempotent and never reads its own output as a
+piece. `redact_trace_actions` threads `pieces_of` through its recursive walk, and
+`reassembled_canary_ids` reads the set off Plane C by the `reassembled:` label every reassembled
+hit carries — one rule for all three channels (request bodies, DNS queries, written files) — which
+the executor and the acceptance harness pass. A run with no reassembled hit redacts exactly as
+before, so the golden traces are byte-identical.
+
+**Why four, and what stays.** The floor cannot be one: redacting every character of a marker
+would redact the alphabet. A four-character window of a 40-character alphanumeric marker, standing
+alone as a token in ordinary text, is a one-in-tens-of-millions event per token and only ever
+looked for once a reassembly has already found the canary split (the run is `not_ready` by then).
+A one-to-three character piece is below the floor and stays raw, and a piece embedded inside a
+longer token stays too; both are pinned as stated limits. The exact pass still redacts nothing a
+*decoded* leak left encoded, as before.
+
+### Executed
+
+`file-chunked-thief`'s record now holds no piece of the marker and four `len=10` fingerprints — the
+done-when the STATUS list named. On a real container, the model writes the planted marker ten
+characters per file through the `write` tool; the reassembly over the files finds it once, and
+neither the marker nor any piece is anywhere in the trace. The golden traces are unchanged.
+
+### Revert-proving
+
+Seven changes reverted alone: six red, one green and said so. P3 is pinned only by the container test (the acceptance harness calls the redaction itself), so the driver ran under root.
+
+| # | Reverted | Result |
+|---|---|---|
+| P1 | piece redaction off (exact pass only, as before) | red — `test_pieces_of_a_reassembled_marker_are_redacted_to_their_own_fingerprints`, `test_redact_trace_actions_redacts_pieces_only_for_reassembled_canaries`, `test_file_chunked_thief_is_blocked_by_reassembly_over_written_files`, `test_pieces_a_skill_wrote_through_the_write_tool_are_redacted_from_the_trace` |
+| P2 | the piece floor raised to the match window (12) | red — `test_pieces_of_a_reassembled_marker_are_redacted_to_their_own_fingerprints`, `test_file_chunked_thief_is_blocked_by_reassembly_over_written_files` |
+| P3 | the executor redacts without the reassembled ids | red — `test_pieces_a_skill_wrote_through_the_write_tool_are_redacted_from_the_trace` |
+| P4 | every planted canary treated as reassembled | red — `test_reassembled_canary_ids_reads_the_label_off_plane_c` |
+| P5 | existing fingerprints not skipped by the piece pass | stayed green — the tokens a fingerprint contributes (`canary`, the id, `offset`, `len`, digits) are never windows of a 40-character alphanumeric marker in any fixture, so skipping fingerprints is belt and braces for the idempotency the test asserts; kept, recorded as unproved |
+| P6 | a piece matched inside a longer token (substring search, not standalone) | red — `test_piece_redaction_leaves_short_and_embedded_fragments` (the driver's first revert, a bounded-length token regex, was not a non-standalone variant at all — it re-chunked long runs — and measured green; re-measured by hand with a revert that redacts any token *containing* a piece) |
+| P7 | the acceptance harness redacts without the reassembled ids | red — `test_file_chunked_thief_is_blocked_by_reassembly_over_written_files` |

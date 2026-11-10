@@ -58,6 +58,7 @@ __all__ = [
     "footer_exit_reason",
     "harness_actions",
     "model_channel_actions",
+    "reassembled_canary_ids",
     "redact_trace_actions",
     "token_totals_from_events",
     "tool_result_actions",
@@ -690,7 +691,7 @@ def model_channel_actions(
     return actions
 
 
-def _redact_value(value: Any, canaries: Sequence[Canary]) -> Any:
+def _redact_value(value: Any, canaries: Sequence[Canary], pieces_of: Collection[str]) -> Any:
     """Redact every exact canary marker in ``value``, recursing into dicts and lists.
 
     Payloads are free-form (§11.2) — a marker can sit in the model's final-output string, a nested
@@ -699,22 +700,38 @@ def _redact_value(value: Any, canaries: Sequence[Canary]) -> Any:
     marker never legitimately names a field and rewriting a key would corrupt the record's shape.
     """
     if isinstance(value, str):
-        return redact_canaries(value, canaries)
+        return redact_canaries(value, canaries, pieces_of=pieces_of)
     if isinstance(value, dict):
-        return {k: _redact_value(v, canaries) for k, v in value.items()}
+        return {k: _redact_value(v, canaries, pieces_of) for k, v in value.items()}
     if isinstance(value, list):
-        return [_redact_value(v, canaries) for v in value]
+        return [_redact_value(v, canaries, pieces_of) for v in value]
     return value
 
 
-def redact_trace_actions(actions: Iterable[Action], canaries: Sequence[Canary]) -> list[Action]:
+def reassembled_canary_ids(plane_c: Iterable[Action]) -> frozenset[str]:
+    """The canaries a reassembly completed this run — any channel — read off their Plane C findings
+    by the ``reassembled:`` label every reassembled hit carries. What :func:`redact_trace_actions`
+    redacts the pieces of."""
+    return frozenset(
+        str(action.action["canary_id"])
+        for action in plane_c
+        if action.plane == "credentials"
+        and str(action.action.get("via", "")).startswith("reassembled:")
+    )
+
+
+def redact_trace_actions(
+    actions: Iterable[Action], canaries: Sequence[Canary], *, pieces_of: Collection[str] = ()
+) -> list[Action]:
     """Replace every exact planted-canary marker in the actions with its fingerprint (§10.4.3).
 
     The trace is uploaded to CI, so a marker a skill *leaked* — into its final output, a DNS query
     name, an egress path — must never reach the artifact raw. The Plane C finding already records
     that the value escaped and where; this strips the value itself, leaving
     ``<canary:c1@offset=,len=>`` in its place. It runs after :func:`canary_actions` (which needs the
-    raw marker to find the leak) and before the trace is written.
+    raw marker to find the leak) and before the trace is written. For the canaries in ``pieces_of``
+    — those a reassembly completed, :func:`reassembled_canary_ids` — the standalone pieces of the
+    marker are redacted too, so a split leak's tool-call arguments do not reconstruct the secret.
 
     A no-op when nothing was planted, and it copies an action only when a marker was actually present,
     so an unrelated record keeps its identity. Pure per-string rewrite, so the output is byte-stable
@@ -724,7 +741,7 @@ def redact_trace_actions(actions: Iterable[Action], canaries: Sequence[Canary]) 
         return list(actions)
     redacted: list[Action] = []
     for action in actions:
-        new_payload = _redact_value(action.action, canaries)
+        new_payload = _redact_value(action.action, canaries, pieces_of)
         if new_payload == action.action:
             redacted.append(action)
         else:
