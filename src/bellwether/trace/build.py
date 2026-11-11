@@ -290,6 +290,8 @@ def egress_actions(flows: list[EgressFlow], *, start_seq: int = 0) -> list[Actio
             payload["shape_violation"] = flow.shape_violation
         if flow.canary_reassembly_limit:
             payload["canary_reassembly_limit"] = flow.canary_reassembly_limit
+        if flow.canary_decode_limit:
+            payload["canary_decode_limit"] = flow.canary_decode_limit
 
         actions.append(
             Action(

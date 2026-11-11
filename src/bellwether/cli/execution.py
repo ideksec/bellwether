@@ -952,7 +952,12 @@ class SandboxRunExecutor:
             plane_c += written_leaks
             reassembly_limit = reassembly_limit or written_reassembly_limit
             # A scan that ran out of budget is a degraded plane, as a reassembly at its bound is.
-            credentials_limit = reassembly_limit or decode_budget.exhausted
+            # …and so is the sidecar's own budget, where it cut a request body's scan short: the
+            # flow carries the reason across from the proxy.
+            sidecar_decode_limit = next(
+                (flow.canary_decode_limit for flow in egress_flows if flow.canary_decode_limit), ""
+            )
+            credentials_limit = reassembly_limit or decode_budget.exhausted or sidecar_decode_limit
             # The recorded reads on a harness whose model channel is only visible at the proxy:
             # the full text of every tool result the CLI reported, scanned for the run's
             # markers — a hit is the §10.4.1 read (`canary_in_context`, info), anchored to the

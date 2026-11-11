@@ -54,6 +54,7 @@ __all__ = [
     "MAX_SCAN_CHARS",
     "MIN_WINDOW",
     "PIECE_REDACTION_FLOOR",
+    "SIDECAR_DECODE_BUDGET_CHARS",
     "SLICE_OVERLAP",
     "Canary",
     "CanaryFinding",
@@ -524,6 +525,12 @@ def _rank(hit: tuple[int, int, str]) -> tuple[int, int, int, int, str]:
 #: about a minute and a half of CPU a hostile skill can force per run, after which the scan
 #: degrades to the linear whole-value pass and the credentials plane says so (§10.7).
 DECODE_BUDGET_CHARS = 64 * 1024 * 1024
+#: The recording proxy's own allowance (§10.5.2). Smaller than the host's because the sidecar
+#: scans *inline*, before a request is forwarded: the time a slice takes is time every flow
+#: through the proxy waits, the harness's own model calls included. Sixteen MiB is about twenty
+#: seconds of that per run at the measured rate, on top of the first slice every request already
+#: gets. Bodies are scanned before the per-run byte cap is checked, so the cap does not bound this.
+SIDECAR_DECODE_BUDGET_CHARS = 16 * 1024 * 1024
 #: Adjacent slices share this many characters, so an encoded marker that straddles a slice
 #: boundary is whole in one of them: the longest standard encoding of a 40-character marker is
 #: 160 characters of hex escapes, and a wrapper (``tok=<marker>``) adds a few more.
@@ -547,9 +554,14 @@ class DecodeBudget:
     limit: int = DECODE_BUDGET_CHARS
     spent: int = 0
     exhausted: str = ""
+    #: How many slices have been refused. A caller that scans several strings under one budget
+    #: reads this before and after a scan to tell whether *that* scan was cut short — the reason
+    #: alone cannot say, because it is set once and stays.
+    refused: int = 0
 
     def take(self, chars: int) -> bool:
         if self.spent + chars > self.limit:
+            self.refused += 1
             if not self.exhausted:
                 self.exhausted = (
                     f"the decode-and-window canary scan reached its budget of {self.limit} "

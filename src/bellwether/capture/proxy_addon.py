@@ -27,7 +27,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from bellwether.capture.canary import Canary
+from bellwether.capture.canary import SIDECAR_DECODE_BUDGET_CHARS, Canary, DecodeBudget
 from bellwether.capture.canary_stream import STREAM_TAIL_CHARS, CanaryReassembler
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import (
@@ -149,9 +149,14 @@ class ProxyAddon:
     #: per-run stream scan. It lives here, beside the caps, because it is per-run state the
     #: sidecar holds, and because the bodies and unredacted headers it reads never leave the proxy.
     _reassembler: CanaryReassembler = field(init=False, repr=False)
+    #: The run's allowance for the decode-and-window scan past a body's first slice (§10.4.2).
+    #: Per run, like the caps and the reassembler: a skill sending many large bodies must not buy
+    #: a fresh allowance with each. Where it refuses a slice, the flow records why.
+    _decode_budget: DecodeBudget = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._reassembler = CanaryReassembler(self.canaries, destination="other_host")
+        self._decode_budget = DecodeBudget(limit=SIDECAR_DECODE_BUDGET_CHARS)
 
     def on_request(self, request: RequestLike, *, sni: str = "") -> BlockResponse | None:
         """Decide one request, record its flow, and either inject or block.
@@ -186,6 +191,7 @@ class ProxyAddon:
             claimed_host=request.host_header or "",
             sni=sni,
             provider_shapes=self.provider_shapes,
+            decode_budget=self._decode_budget,
         )
         self._flows.append(self._reassembled(_recorded(decision), headers, body))
 
@@ -268,6 +274,7 @@ class ProxyAddon:
             canaries=self.canaries,
             sni=sni,
             provider_shapes=self.provider_shapes,
+            decode_budget=self._decode_budget,
         )
         self._flows.append(self._reassembled(_recorded(decision), {}, content))
         if decision.action == "forward":
@@ -429,6 +436,7 @@ def _flow_to_dict(flow: EgressFlow) -> dict[str, Any]:
         "cap_exceeded": flow.cap_exceeded,
         "shape_violation": flow.shape_violation,
         "canary_reassembly_limit": flow.canary_reassembly_limit,
+        "canary_decode_limit": flow.canary_decode_limit,
         "canary_hits": [
             {
                 "canary_id": hit.canary_id,
@@ -476,6 +484,7 @@ def _flow_from_dict(payload: Mapping[str, Any]) -> EgressFlow:
         cap_exceeded=payload.get("cap_exceeded", ""),
         shape_violation=payload.get("shape_violation", ""),
         canary_reassembly_limit=payload.get("canary_reassembly_limit", ""),
+        canary_decode_limit=payload.get("canary_decode_limit", ""),
     )
 
 

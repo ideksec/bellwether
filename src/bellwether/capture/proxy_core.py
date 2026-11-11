@@ -41,7 +41,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from bellwether.capture.canary import Canary
+from bellwether.capture.canary import Canary, DecodeBudget
 from bellwether.capture.credential import CredentialBroker
 from bellwether.capture.egress import (
     CapLedger,
@@ -97,6 +97,7 @@ def decide_request(
     claimed_host: str = "",
     sni: str = "",
     provider_shapes: Mapping[str, ProviderRequestShape] | None = None,
+    decode_budget: DecodeBudget | None = None,
 ) -> ProxyDecision:
     """Decide one request (§10.5). See the module docstring for the fixed order.
 
@@ -115,6 +116,9 @@ def decide_request(
     ``provider_shapes`` maps a provider endpoint host to the request shape it is expected to
     receive (§10.5.2); a permitted ``model_api`` request to a host with a shape is refused where
     it is not a model call. Matched by the same label-boundary rule as ``provider_of_host``.
+
+    ``decode_budget`` is the run's allowance for the canary scan past a body's first slice
+    (§10.4.2); ``make_flow`` charges it and records on the flow where it was refused.
     """
     # (0)+(1) Check the asserted identity against the real destination, classify, allowlist-check,
     # redact, scan headers and body for canaries, reduce the body — make_flow does all of it and
@@ -134,6 +138,7 @@ def decide_request(
         canaries=canaries,
         claimed_host=claimed_host,
         sni=sni,
+        decode_budget=decode_budget,
     )
     if flow.blocked:
         return ProxyDecision(action="block", flow=flow)
