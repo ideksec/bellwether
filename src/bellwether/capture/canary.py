@@ -27,8 +27,8 @@ Two rules give the search teeth:
   catches the ``encoded-chunked-thief`` of §24. Written files are scanned one at a time and then
   together, in Plane B order, by the same reassembly.
   What stays a documented limit (§2): pieces whose padding was stripped off an encoding's block
-  boundary, each piece reversed on its own, and a marker inside an encoded payload past
-  :data:`MAX_SCAN_CHARS`.
+  boundary, each piece reversed on its own, and a marker inside an encoded payload past the
+  run's :class:`DecodeBudget`.
 
 Redaction happens here, at capture time: a matched value is replaced with a fingerprint
 (``<canary:c1@offset=24,len=40>``) that preserves *what*, *where*, and *how long* without the
@@ -42,20 +42,23 @@ import binascii
 import html
 import re
 import urllib.parse
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from bellwether.determinism import SeededRng, sorted_unique
 
 __all__ = [
+    "DECODE_BUDGET_CHARS",
     "DEFAULT_CANARY_POOL",
     "MAX_SCAN_CHARS",
     "MIN_WINDOW",
     "PIECE_REDACTION_FLOOR",
+    "SLICE_OVERLAP",
     "Canary",
     "CanaryFinding",
     "CanaryPlacement",
+    "DecodeBudget",
     "canary_markers",
     "classify_canary_hit",
     "decoded_forms",
@@ -78,6 +81,12 @@ MIN_WINDOW = 12
 #: marker and its standard whole-value encodings, which is plain substring search and costs what
 #: reading the text costs. The bound used to be a silent truncation — 256 KiB of padding followed
 #: by the marker, verbatim, was a clean scan — and "past the bound" was a free way out, not a limit.
+#:
+#: With a :class:`DecodeBudget` the pass continues past the first slice: the text is scanned in
+#: overlapping slices of this size, each decoded at its encoded run's own alignment, until the
+#: run's budget is spent. The budget is per *run*, not per string, because the cost is per
+#: character scanned (measured at 1.2–1.6 s per MiB) whatever the strings are, and a skill writing
+#: a thousand large files must not buy a thousand budgets.
 MAX_SCAN_CHARS = 262_144
 
 #: Where the finding was seen, which decides severity before the value is even looked at.
@@ -395,6 +404,7 @@ def scan_for_canaries(
     preceded_by_read: bool = False,
     read_canary_ids: set[str] | None = None,
     is_dns: bool = False,
+    budget: DecodeBudget | None = None,
 ) -> list[CanaryFinding]:
     """Scan one corpus string for every canary, decode-then-match (§10.4.2).
 
@@ -407,33 +417,45 @@ def scan_for_canaries(
     never-read one from ``high`` down to ``info``; ``preceded_by_read`` is the whole-body
     fallback used when the per-canary set is not supplied.
 
-    The decode-and-window scan is bounded to :data:`MAX_SCAN_CHARS` (§10.4.2); past it, the
-    whole text is still searched for the marker and its whole-value encodings. Findings are returned sorted by
-    canary id then offset, and ``best`` is chosen by a total order over a sorted view of the
-    haystacks, so the output is byte-identical regardless of match or hash order (§24).
+    The decode-and-window scan runs over the first :data:`MAX_SCAN_CHARS` characters and, with a
+    ``budget``, on through the rest of the text in overlapping, run-aligned slices until the
+    run's budget is spent (§10.4.2); whatever is left unscanned is still searched for the marker
+    and its whole-value encodings. Findings are returned sorted by canary id then offset, and
+    ``best`` is chosen by a total order over a sorted view of the haystacks, so the output is
+    byte-identical regardless of match or hash order (§24).
     """
     full_text = text
-    text = text[:MAX_SCAN_CHARS]
-    haystacks = decoded_forms(text)
-    if is_dns:
-        # De-dotting alone is not enough: each label is too short to be a decodable run, so a
-        # base32 blob split across labels only decodes once reassembled. Decode the reassembled
-        # text (the ``attacker.example`` suffix fuses onto the run, but base32's block structure
-        # and sub-alignment let the marker still surface), and de-dot every decoded form so a
-        # plaintext split is contiguous too.
-        haystacks |= decoded_forms(strip_dns_labels(text))
-        haystacks |= {strip_dns_labels(form) for form in tuple(haystacks)}
+    best_hits: dict[str, tuple[int, int, str]] = {}
+    canaries = tuple(canaries)
+    covered = 0
+    for start, piece in _slices(full_text, budget):
+        covered = start + len(piece)
+        haystacks = decoded_forms(piece)
+        if is_dns:
+            # De-dotting alone is not enough: each label is too short to be a decodable run, so a
+            # base32 blob split across labels only decodes once reassembled. Decode the
+            # reassembled text (the ``attacker.example`` suffix fuses onto the run, but base32's
+            # block structure and sub-alignment let the marker still surface), and de-dot every
+            # decoded form so a plaintext split is contiguous too.
+            haystacks |= decoded_forms(strip_dns_labels(piece))
+            haystacks |= {strip_dns_labels(form) for form in tuple(haystacks)}
+        ordered = sorted(haystacks)
+        for canary in canaries:
+            for form in ordered:
+                hit = _match_offset(canary.marker, form, piece, fold_case=is_dns)
+                if hit is None:
+                    continue
+                if hit[0] >= 0:
+                    hit = (hit[0] + start, hit[1], hit[2])
+                held = best_hits.get(canary.id)
+                if held is None or _rank(hit) < _rank(held):
+                    best_hits[canary.id] = hit
 
-    ordered = sorted(haystacks)
     findings: list[CanaryFinding] = []
     for canary in canaries:
         read = canary.id in read_canary_ids if read_canary_ids is not None else preceded_by_read
-        best: tuple[int, int, str] | None = None
-        for form in ordered:
-            hit = _match_offset(canary.marker, form, text, fold_case=is_dns)
-            if hit is not None and (best is None or _rank(hit) < _rank(best)):
-                best = hit
-        if best is None and len(full_text) > MAX_SCAN_CHARS:
+        best = best_hits.get(canary.id)
+        if best is None and covered < len(full_text):
             best = _unbounded_hits(full_text, canary.marker)
         if best is None:
             continue
@@ -495,6 +517,83 @@ def _rank(hit: tuple[int, int, str]) -> tuple[int, int, int, int, str]:
 # ---------------------------------------------------------------------------
 # §10.4.3 redaction at capture time
 # ---------------------------------------------------------------------------
+
+
+#: How many characters one run's decode-and-window pass may scan in all, across every string
+#: scanned under one :class:`DecodeBudget` (§10.4.2). At the measured 1.2–1.6 s per MiB this is
+#: about a minute and a half of CPU a hostile skill can force per run, after which the scan
+#: degrades to the linear whole-value pass and the credentials plane says so (§10.7).
+DECODE_BUDGET_CHARS = 64 * 1024 * 1024
+#: Adjacent slices share this many characters, so an encoded marker that straddles a slice
+#: boundary is whole in one of them: the longest standard encoding of a 40-character marker is
+#: 160 characters of hex escapes, and a wrapper (``tok=<marker>``) adds a few more.
+SLICE_OVERLAP = 1024
+#: A slice that starts inside an encoded run starts at a multiple of this from the run's own
+#: start — the common multiple of the base64 (4), base32 (8) and hex (2) groups — so the slice
+#: decodes at the run's phase rather than scrambling from a mid-group cut.
+_SLICE_ALIGN = 8
+
+
+@dataclass
+class DecodeBudget:
+    """One run's allowance of decode-and-window scanning, shared by every string it scans.
+
+    :meth:`take` charges a slice before it is scanned and refuses once the allowance is spent,
+    recording why in :attr:`exhausted` — the reason the run's credentials coverage degrades to
+    ``partial`` rather than reading as a full scan (§10.7). The first slice of every string is
+    always scanned, as it was before budgets existed; the budget governs what lies past it.
+    """
+
+    limit: int = DECODE_BUDGET_CHARS
+    spent: int = 0
+    exhausted: str = ""
+
+    def take(self, chars: int) -> bool:
+        if self.spent + chars > self.limit:
+            if not self.exhausted:
+                self.exhausted = (
+                    f"the decode-and-window canary scan reached its budget of {self.limit} "
+                    "characters for this run; text past it was searched for the markers and their "
+                    "whole-value encodings only (§10.4.2)"
+                )
+            return False
+        self.spent += chars
+        return True
+
+
+def _encoded_runs(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of every base64/base32/hex-shaped run in ``text``, in order."""
+    spans = [m.span() for m in _BASE_TOKEN_RE.finditer(text)]
+    spans += [m.span() for m in _HEX_TOKEN_RE.finditer(text)]
+    return sorted(spans)
+
+
+def _slices(text: str, budget: DecodeBudget | None) -> Iterator[tuple[int, str]]:
+    """The slices the decode-and-window pass scans: ``(start, slice)``, in order.
+
+    The first slice is the first :data:`MAX_SCAN_CHARS` characters, as before. Each later slice
+    begins :data:`SLICE_OVERLAP` characters before the previous one ended — snapped forward to the
+    alignment of the encoded run it starts inside, if any — and is scanned only while ``budget``
+    allows; with no budget there is no later slice.
+    """
+    runs = _encoded_runs(text) if budget is not None and len(text) > MAX_SCAN_CHARS else []
+    start = 0
+    while True:
+        end = min(start + MAX_SCAN_CHARS, len(text))
+        yield start, text[start:end]
+        if end >= len(text) or budget is None:
+            return
+        following = end - SLICE_OVERLAP
+        for run_start, run_end in runs:
+            if run_start < following < run_end:
+                phase = (following - run_start) % _SLICE_ALIGN
+                if phase:
+                    following += _SLICE_ALIGN - phase
+                break
+        following = max(following, start + 1)
+        if not budget.take(min(MAX_SCAN_CHARS, len(text) - following)):
+            return
+        start = following
 
 
 #: A piece of a marker a reassembly found is redacted down to this many characters (§10.4.3). The

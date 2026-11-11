@@ -26,7 +26,7 @@ from bellwether.capture import (
     scan_for_canaries,
     strip_dns_labels,
 )
-from bellwether.capture.canary import MAX_SCAN_CHARS, MIN_WINDOW
+from bellwether.capture.canary import MAX_SCAN_CHARS, MIN_WINDOW, DecodeBudget
 from bellwether.capture.egress import _norm_host
 from bellwether.determinism import canonical_json
 from bellwether.trace import (
@@ -304,7 +304,8 @@ def test_the_scan_is_bounded_to_max_scan_chars() -> None:
     assert [(f.canary_id, f.via) for f in encoded] == [(canaries[0].id, "hex")]
 
     # What the linear pass does *not* do: decode a marker embedded in a larger encoded payload.
-    # That needs the bounded decode pass, so past the bound it remains a documented limit.
+    # That needs the decode pass, which past the first slice runs only under a run's budget (the
+    # tests below); with none, as here, it remains the documented limit.
     import base64
 
     # A 4-byte prefix: not a multiple of 3, so the marker's own base64 does not line up inside
@@ -317,6 +318,100 @@ def test_the_scan_is_bounded_to_max_scan_chars() -> None:
     start = time.perf_counter()
     scan_for_canaries(huge, canaries, destination="other_host")
     assert time.perf_counter() - start < 10.0
+
+
+def _deep_payload(marker: str, padding: int, prefix: str = "k=") -> str:
+    """One base64 run with ``marker`` after ``padding`` bytes of filler, behind a short prefix so
+    the run starts off the slice alignment and slicing has to snap to the run's own phase."""
+    import base64
+
+    return prefix + base64.b64encode(("x" * padding + marker + "y" * 64).encode()).decode()
+
+
+def test_a_marker_encoded_deep_in_a_long_payload_is_found_under_a_budget() -> None:
+    """§10.4.2 past the first slice: 300 KiB of padding then the marker, base64-encoded as one
+    run. The whole-value pass cannot see it (the marker's encoding does not line up inside the
+    wrapper's); with a run budget the decode-and-window pass continues in run-aligned slices and
+    finds it. With no budget — the sidecar's and the reassembler's default — it stays the
+    documented limit."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    text = _deep_payload(marker, 300_000)
+    assert len(text) > MAX_SCAN_CHARS
+    assert scan_for_canaries(text, canaries, destination="written_file") == []
+    budget = DecodeBudget()
+    found = scan_for_canaries(text, canaries, destination="written_file", budget=budget)
+    assert [(f.canary_id, f.via, f.length) for f in found] == [(canaries[0].id, "decoded", 40)]
+    assert budget.spent > 0 and budget.exhausted == ""
+
+
+def test_a_wrapped_marker_in_prose_past_the_first_slice_is_found_under_a_budget() -> None:
+    import base64
+
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    filler = "the quick brown fox " * ((MAX_SCAN_CHARS // 20) + 2000)
+    wrapped = base64.b64encode(f"tok={marker}".encode()).decode()
+    text = filler + f"data={wrapped}"
+    assert scan_for_canaries(text, canaries, destination="other_host") == []
+    found = scan_for_canaries(text, canaries, destination="other_host", budget=DecodeBudget())
+    assert [f.via for f in found] == ["decoded"]
+
+
+def test_a_marker_straddling_a_slice_boundary_is_found_whole() -> None:
+    """The slices overlap by SLICE_OVERLAP, so a marker cut by the first slice's end is whole in
+    the second and reported exact at its real offset, not as the window the cut left."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    at = MAX_SCAN_CHARS - 20
+    text = "p" * at + marker + "q" * 4000
+    found = scan_for_canaries(text, canaries, destination="other_host", budget=DecodeBudget())
+    assert [(f.offset, f.length, f.via) for f in found] == [(at, 40, "exact")]
+    # An encoded straddle too: the run's encoding of the marker spans the slice cut.
+    deep = _deep_payload(marker, (MAX_SCAN_CHARS * 3) // 4 - 30)
+    found = scan_for_canaries(deep, canaries, destination="other_host", budget=DecodeBudget())
+    assert [f.via for f in found] == ["decoded"]
+
+
+def test_the_budget_is_shared_spent_and_its_exhaustion_said() -> None:
+    """A budget of two slices over a megabyte: the decode pass stops when it is spent, the
+    remainder gets the whole-value pass (a plain marker there is still found), an encoded one
+    there is not, and the budget says why — the reason the credentials plane degrades."""
+    canaries = mint_canaries(7)
+    marker = canaries[0].marker
+    budget = DecodeBudget(limit=2 * MAX_SCAN_CHARS)
+    filler = "the quick brown fox " * ((1 << 20) // 20)
+    found = scan_for_canaries(filler + marker, canaries, destination="other_host", budget=budget)
+    assert [(f.via, f.offset) for f in found] == [("exact", len(filler))]
+    assert "budget of" in budget.exhausted and "whole-value" in budget.exhausted
+    assert budget.spent <= budget.limit
+    # The same budget, now spent, buys no further slices for the next string: the deep payload
+    # that a fresh budget finds reads clean here, and the reason is already recorded.
+    deep = _deep_payload(marker, 300_000)
+    assert scan_for_canaries(deep, canaries, destination="written_file", budget=budget) == []
+    assert (
+        scan_for_canaries(deep, canaries, destination="written_file", budget=DecodeBudget()) != []
+    )
+
+
+def test_slices_snap_to_the_encoded_run_alignment() -> None:
+    """A run starting two characters in: a slice cut at a bare multiple of the slice size would
+    decode the run from mid-group and scramble it; the slice start is snapped to the run's phase."""
+    from bellwether.capture.canary import _slices
+
+    canaries = mint_canaries(7)
+    text = _deep_payload(canaries[0].marker, 400_000, prefix="k=")
+    starts = [start for start, _ in _slices(text, DecodeBudget())]
+    assert len(starts) >= 2
+    assert all((start - 2) % 8 == 0 for start in starts[1:])
+
+
+def test_scanning_under_a_budget_is_deterministic() -> None:
+    canaries = mint_canaries(7)
+    text = _deep_payload(canaries[0].marker, 600_000) + " and " + canaries[1].marker
+    a = scan_for_canaries(text, canaries, destination="other_host", budget=DecodeBudget())
+    b = scan_for_canaries(text, canaries, destination="other_host", budget=DecodeBudget())
+    assert a == b and len(a) == 2
 
 
 # ---------------------------------------------------------------------------

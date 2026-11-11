@@ -265,7 +265,8 @@ Phase A and B are done. The bricks since are each one pull request, built to the
 | Nested encodings peeled by the static scanner, `nested-obfuscation` in the static corpus | §15 check 2 | a double-encoded instruction override fires `BW201` with the instruction and the chain in the finding; a double-encoded ELF is `BW202`, not text | done (PR #119) |
 | `encoded-chunked-thief` caught: padded runs decoded in place, padding kept out of the stream frame; `chunked-thief` and `encoded-chunked-thief` in the corpus | §10.4.2, §24 | the strict `xfail` passes and both corpus skills block on the canary gate | done (PR #120) |
 | A marker split across written files reassembled; `file-chunked-thief` in the corpus | §10.4, §10.4.2 | the per-file scan finds nothing, the reassembly finds the whole marker once, anchored to the completing file, on a real container and in the acceptance corpus | done (PR #121) |
-| The pieces a reassembly found redacted from the trace | §10.4.3 | `file-chunked-thief`'s record holds no piece of the marker; pieces written through the `write` tool on a real container are gone from the trace; golden traces unchanged | done |
+| The pieces a reassembly found redacted from the trace | §10.4.3 | `file-chunked-thief`'s record holds no piece of the marker; pieces written through the `write` tool on a real container are gone from the trace; golden traces unchanged | done (PR #122) |
+| The decode bound becomes a per-run `DecodeBudget`; sliced, run-aligned decode past 256 KiB | §10.4.2, §10.7 | a 300 KiB padded, base64-encoded credential file is a leak on a real container; a spent budget degrades credentials coverage to `partial` | done |
 
 **What is next** is kept in one place, `docs/STATUS.md` → "What's next — the development path,
 in order", with the done-when of each remaining brick. The order there is the order to build.

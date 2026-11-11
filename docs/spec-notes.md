@@ -6301,3 +6301,72 @@ Seven changes reverted alone: six red, one green and said so. P3 is pinned only 
 | P5 | existing fingerprints not skipped by the piece pass | stayed green — the tokens a fingerprint contributes (`canary`, the id, `offset`, `len`, digits) are never windows of a 40-character alphanumeric marker in any fixture, so skipping fingerprints is belt and braces for the idempotency the test asserts; kept, recorded as unproved |
 | P6 | a piece matched inside a longer token (substring search, not standalone) | red — `test_piece_redaction_leaves_short_and_embedded_fragments` (the driver's first revert, a bounded-length token regex, was not a non-standalone variant at all — it re-chunked long runs — and measured green; re-measured by hand with a revert that redacts any token *containing* a piece) |
 | P7 | the acceptance harness redacts without the reassembled ids | red — `test_file_chunked_thief_is_blocked_by_reassembly_over_written_files` |
+
+## §10.4.2, §10.7 — the decode bound becomes a run budget
+
+The last canary item on the buildable list. The decode-and-window pass ran over the first 256 KiB
+of a string (`MAX_SCAN_CHARS`) and nothing past it: text beyond got the linear whole-value pass,
+which finds a marker or one of its standard encodings but not a marker *inside* a larger encoded
+payload. So 300 KiB of padding and the credential, base64-encoded as one blob, was a clean scan.
+
+### Measured first
+
+The bound exists for a reason: the pass is a CPU-exhaustion vector. Measured here before changing
+anything, `decoded_forms` plus windowed matching costs 1.2 s per MiB on prose and 1.6 s per MiB on
+JSON lines, so an unbounded pass over every written file lets a skill writing a thousand 16 MiB
+files pin a core for hours. Lifting the bound per string would have moved the problem, not solved
+it.
+
+### What is built
+
+The pass continues past the first slice **under a per-run budget**. `scan_for_canaries` takes a
+`DecodeBudget`; with one, the text is scanned in overlapping slices of `MAX_SCAN_CHARS` — each
+later slice begins `SLICE_OVERLAP` (1024) characters before the previous one ended, so an encoded
+marker that straddles a cut is whole in one of them — and each slice that starts inside an
+encoded run is snapped forward to that run's own alignment (a multiple of eight from the run's
+start, the common multiple of the base64, base32 and hex groups), so it decodes at the run's phase
+instead of scrambling from a mid-group cut. The first slice is always scanned, as before; every
+later slice is charged to the budget first. Whatever the budget leaves unscanned still gets the
+whole-value pass, as before.
+
+The budget is **per run, not per string**: the cost is per character scanned whatever the strings
+are, and a skill writing a thousand large files must not buy a thousand budgets. The executor
+creates one `DecodeBudget` (`DECODE_BUDGET_CHARS`, 64 MiB — about a minute and a half of CPU a
+hostile skill can force per run at the measured rate) before its first host-side scan and hands it
+to `canary_actions` and to the written-file scan. A run that spends it is a degraded plane:
+`DecodeBudget.exhausted` carries the reason and the credentials coverage reads `partial` with it,
+through the same field the reassembly bounds use (§10.7). Without a budget — the sidecar's and the
+reassembler's default — the scan is the first slice and the whole-value pass, exactly as before.
+
+### Executed
+
+On a real container, a `bash` tool call pads the planted credential file with 300 KiB, base64-encodes
+the lot as one blob and writes it: the per-slice decode finds the marker (`via: decoded`), anchored
+to the blob's write, with the budget unspent and coverage `full`. Unit tests pin the deep payload
+(clean without a budget, found with one), a wrapper past the first slice in prose, a plain marker
+and an encoded one straddling a slice boundary, slice starts snapped to the run's phase, a spent
+budget stopping the pass and saying so while the whole-value pass still runs, and determinism.
+
+### Still open, stated
+
+The sidecar scans request bodies without a budget (bounded by the policy's `max_request_bytes`),
+so a marker inside an encoded body past 256 KiB at the proxy stays the documented limit; giving the
+sidecar a per-run budget means a state object in the addon and a new field on the flow record, a
+brick of its own. A marker past the 16 MiB file read cap stays, and pieces under four characters,
+padding-stripped pieces, per-piece reversal, out-of-order pieces and cross-run splits as before.
+
+### Revert-proving
+
+Nine changes reverted alone, nine red. B7 is pinned only by the container test (the unit tests build their own budgets), so the driver ran under root.
+
+| # | Reverted | Red test(s) |
+|---|---|---|
+| B1 | the pass never continues past the first slice, budget or not | `test_a_marker_encoded_deep_in_a_long_payload_is_found_under_a_budget`, `test_a_wrapped_marker_in_prose_past_the_first_slice_is_found_under_a_budget`, `test_a_marker_straddling_a_slice_boundary_is_found_whole`, `test_a_marker_encoded_deep_in_a_large_written_file_is_a_leak` |
+| B2 | a slice starting inside a run not snapped to the run's phase | `test_slices_snap_to_the_encoded_run_alignment`, `test_a_marker_encoded_deep_in_a_long_payload_is_found_under_a_budget` |
+| B3 | no overlap between slices | `test_a_marker_straddling_a_slice_boundary_is_found_whole` |
+| B4 | slices not charged to the budget | `test_the_budget_is_shared_spent_and_its_exhaustion_said` |
+| B5 | a spent budget records no reason | `test_the_budget_is_shared_spent_and_its_exhaustion_said` |
+| B6 | the whole-value pass over the unscanned remainder dropped | `test_the_scan_is_bounded_to_max_scan_chars`, `test_the_budget_is_shared_spent_and_its_exhaustion_said` |
+| B7 | the executor scans with no budget | `test_a_marker_encoded_deep_in_a_large_written_file_is_a_leak` |
+| B8 | a spent budget not folded into the credentials coverage | `test_the_executor_reassembles_dns_and_degrades_coverage_at_the_bound` |
+| B9 | an exact hit in a later slice reported at its slice offset, not the text's | `test_a_marker_straddling_a_slice_boundary_is_found_whole` |
