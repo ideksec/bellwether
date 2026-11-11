@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import urlsplit
 
-from bellwether.capture.canary import Canary, scan_for_canaries
+from bellwether.capture.canary import Canary, DecodeBudget, scan_for_canaries
 from bellwether.determinism import stable_hash
 from bellwether.errors import ConfigurationError, UserFacingProblem
 
@@ -386,6 +386,11 @@ class EgressFlow:
     #: reassembled on their own; the reason says so. Empty otherwise. Recorded so a run that hit
     #: the bound reads as degraded coverage, never as fully observed.
     canary_reassembly_limit: str = ""
+    #: Set when the run's decode-and-window budget (§10.4.2) refused a slice of *this* request, so
+    #: part of its body was searched for the markers and their whole-value encodings only; the
+    #: reason says so. Empty otherwise. Recorded for the same reason as the field above: a scan
+    #: that was cut short must read as degraded coverage, never as fully observed (§10.7).
+    canary_decode_limit: str = ""
 
     @property
     def counts_as_egress(self) -> bool:
@@ -394,7 +399,13 @@ class EgressFlow:
         return self.egress_class == "skill_attributed" and not self.blocked
 
 
-def _hits_from(text: str, canaries: Sequence[Canary], *, channel: str) -> list[EgressCanaryHit]:
+def _hits_from(
+    text: str,
+    canaries: Sequence[Canary],
+    *,
+    channel: str,
+    budget: DecodeBudget | None = None,
+) -> list[EgressCanaryHit]:
     """The canary findings in one corpus string, as flow-level hits by reference.
 
     ``channel`` names *where in the request* the corpus came from — the body, or the header
@@ -411,12 +422,16 @@ def _hits_from(text: str, canaries: Sequence[Canary], *, channel: str) -> list[E
             via=finding.via,
             channel=channel,
         )
-        for finding in scan_for_canaries(text, canaries, destination="other_host")
+        for finding in scan_for_canaries(text, canaries, destination="other_host", budget=budget)
     ]
 
 
 def _scan_request_for_canaries(
-    headers: Mapping[str, str], body: bytes, egress_class: EgressClass, canaries: Sequence[Canary]
+    headers: Mapping[str, str],
+    body: bytes,
+    egress_class: EgressClass,
+    canaries: Sequence[Canary],
+    budget: DecodeBudget | None = None,
 ) -> tuple[EgressCanaryHit, ...]:
     """Scan a request's headers *and* body for planted markers, by reference (§10.5.2, §10.4.1).
 
@@ -431,8 +446,9 @@ def _scan_request_for_canaries(
     exfiltration, a critical ``other_host`` leak needing no read state. A model-API request is
     skipped — that is the ``canary_in_context`` vs ``canary_without_read`` grading, which needs
     the per-request read state the host holds, and is the model-channel scanner's job. The scan is
-    bounded inside ``scan_for_canaries``; the body is decoded leniently so binary payloads do not
-    abort it.
+    bounded inside ``scan_for_canaries`` — to its first slice, or with ``budget`` on through the
+    body until the run's allowance is spent (§10.4.2); the body is decoded leniently so binary
+    payloads do not abort it.
     """
     if egress_class == "model_api" or not canaries:
         return ()
@@ -440,9 +456,15 @@ def _scan_request_for_canaries(
     # One corpus per header, so an offset points inside the header that carried the marker
     # rather than into a synthetic join whose coordinates mean nothing to a reader.
     for name, value in sorted(headers.items()):
-        hits.extend(_hits_from(f"{name}: {value}", canaries, channel=f"header:{name.lower()}"))
+        hits.extend(
+            _hits_from(
+                f"{name}: {value}", canaries, channel=f"header:{name.lower()}", budget=budget
+            )
+        )
     if body:
-        hits.extend(_hits_from(body.decode("utf-8", "replace"), canaries, channel="body"))
+        hits.extend(
+            _hits_from(body.decode("utf-8", "replace"), canaries, channel="body", budget=budget)
+        )
     return tuple(hits)
 
 
@@ -492,6 +514,7 @@ def make_flow(
     sni: str = "",
     claimed_host: str = "",
     canaries: Sequence[Canary] = (),
+    decode_budget: DecodeBudget | None = None,
 ) -> EgressFlow:
     """Build a classified, allowlist-checked, redacted :class:`EgressFlow` from a request.
 
@@ -505,7 +528,12 @@ def make_flow(
     are what the client said it was talking to; where either disagrees with ``host`` the flow is
     blocked by :func:`identity_mismatch` before the allowlist is consulted, and the discrepancy is
     recorded on the flow so the attempt is legible.
+
+    ``decode_budget`` is the run's allowance for the decode-and-window scan past a body's first
+    slice (§10.4.2). Where it refuses a slice of this request, the flow says so
+    (``canary_decode_limit``), so the run's coverage degrades rather than reading as a full scan.
     """
+    refused_before = decode_budget.refused if decode_budget is not None else 0
     egress_class = classify_egress(
         host,
         provider_endpoints=provider_endpoints,
@@ -513,6 +541,10 @@ def make_flow(
     )
     mismatch = identity_mismatch(host, claimed_host=claimed_host, sni=sni)
     permitted = not mismatch and allowlist.permits(host, port)
+    canary_hits = _scan_request_for_canaries(
+        request_headers or {}, request_body, egress_class, canaries, decode_budget
+    )
+    cut_short = decode_budget is not None and decode_budget.refused > refused_before
     return EgressFlow(
         ts=ts,
         method=method,
@@ -529,10 +561,11 @@ def make_flow(
         response_size=response_size,
         sni=sni,
         block_reason=mismatch or allowlist.block_reason(host, port),
-        canary_hits=_scan_request_for_canaries(
-            request_headers or {}, request_body, egress_class, canaries
-        ),
+        canary_hits=canary_hits,
         claimed_host=(_norm_host(claimed_host) if mismatch and _norm_host(claimed_host) else ""),
+        canary_decode_limit=(
+            decode_budget.exhausted if cut_short and decode_budget is not None else ""
+        ),
     )
 
 

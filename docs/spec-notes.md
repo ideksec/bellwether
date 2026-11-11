@@ -6370,3 +6370,82 @@ Nine changes reverted alone, nine red. B7 is pinned only by the container test (
 | B7 | the executor scans with no budget | `test_a_marker_encoded_deep_in_a_large_written_file_is_a_leak` |
 | B8 | a spent budget not folded into the credentials coverage | `test_the_executor_reassembles_dns_and_degrades_coverage_at_the_bound` |
 | B9 | an exact hit in a later slice reported at its slice offset, not the text's | `test_a_marker_straddling_a_slice_boundary_is_found_whole` |
+
+## §10.4.2, §10.5.2 — the sidecar's decode budget
+
+The previous entry gave the host-side scans a per-run `DecodeBudget` and left the recording proxy
+as it was: a request body scanned to its first 256 KiB, so a marker inside an encoded body past
+that was found nowhere — not at the proxy, and not on the host, which never sees a body.
+
+### What is built
+
+`ProxyAddon` holds one `DecodeBudget` per run, beside the caps and the reassembler, and hands it
+through `decide_request` to `make_flow`, where the request's headers and body are scanned. Both of
+the addon's scanning paths use it: a request, and each client-to-server WebSocket frame.
+
+**Its limit is the sidecar's own** (`SIDECAR_DECODE_BUDGET_CHARS`, 16 MiB), smaller than the
+host's 64 MiB, because the sidecar scans *inline*, before a request is forwarded: the time a slice
+takes is time every flow through the proxy waits, the harness's own model calls included. Sixteen
+MiB is about twenty seconds of that per run at the measured rate, on top of the first slice every
+request already gets. The per-run byte cap does not bound it: `make_flow` scans before
+`decide_request` checks the cap — and before the allowlist decides, so a body sent to a refused
+host is scanned, and charged, too. Model-API bodies are not scanned at the proxy at all (they are
+graded host-side by read state), so the harness's large model calls spend nothing.
+
+**A cut-short scan is on the flow.** `EgressFlow` gains `canary_decode_limit`: set, with the
+budget's reason, on a flow whose own scan was refused a slice — decided by a refusal counter on
+the budget read before and after the scan, because the reason alone is set once and would mark
+every later flow, including small requests that were scanned in full. The field crosses the
+sidecar↔host record contract (written field by field; an older sidecar's record without it parses
+as not cut short), lands on the Plane D action, and the executor folds it into the reason the
+credentials plane degrades to `partial` with, beside the reassembly bounds and its own budget.
+Even with the budget spent a body still gets the whole-value pass, so a plain marker past it is
+found — with the flow still saying the decode pass was cut short.
+
+### A test the contract was missing
+
+`_flow_to_dict` says it is explicit "so a new field on the dataclass fails the round-trip test
+loudly". No test compared the two: the round-trip tests build flows whose new fields are at their
+defaults, which round-trip whether or not the record carries them. `test_the_flow_record_carries_
+every_flow_field` now compares the record's keys with `fields(EgressFlow)`, and the revert of the
+record line goes red on it.
+
+### Executed, and what was not
+
+At the wiring, as the reassembly tests are: the sidecar's mitmproxy-facing `_RecordingAddon`
+built by `build_addon` from a `SidecarConfig`, the flow log read back through
+`read_flow_records`, and the Plane C action. A 300 KiB padded, base64-encoded body is clean
+without a budget (asserted first) and a `decoded` body hit through the addon; the same in a
+WebSocket frame; the same to a refused host; two such bodies under a one-slice budget — the first
+found, the second cut short with the reason, a small request after them carrying none; the flow
+log byte-identical across two runs. **Not executed:** the real mitmproxy hop. The addon object is
+the one mitmproxy calls and CI's container tests build and drive the image, but no test here
+sends a body over 256 KiB through a running proxy; that mitmproxy hands the request hook a large
+body whole (it does by default; streaming is pinned off) is relied on, not measured.
+
+### Still open, stated
+
+The cross-request reassembler scans its joined tails without a budget; a join is at most twice
+the stream tail (4 KiB), far under the first slice, so there is nothing for one to govern. A
+marker past the 16 MiB file read cap, pieces under four characters, padding-stripped pieces,
+per-piece reversal, out-of-order pieces and cross-run splits stay as stated.
+
+### Revert-proving
+
+Thirteen changes reverted alone, thirteen red. D12 is pinned on the executor's source, as its other wiring is; nothing offline or in the local container suite runs a proxied request through the executor (the sidecar image build is CI-only).
+
+| # | Reverted | Red test(s) |
+|---|---|---|
+| D1 | the addon's request path passes no budget | `test_a_marker_encoded_deep_in_a_request_body_is_found_at_the_proxy`, `test_a_blocked_request_is_scanned_under_the_budget_too`, `test_a_second_large_body_draws_on_what_the_first_left` |
+| D2 | the addon's websocket path passes no budget | `test_a_marker_deep_in_a_websocket_frame_is_found` |
+| D3 | decide_request drops the budget before make_flow | `test_a_marker_encoded_deep_in_a_request_body_is_found_at_the_proxy`, `test_a_marker_deep_in_a_websocket_frame_is_found` |
+| D4 | a fresh budget per request instead of one per run | `test_a_second_large_body_draws_on_what_the_first_left`, `test_a_blocked_request_is_scanned_under_the_budget_too` |
+| D5 | the sidecar's budget at the host's limit | `test_the_sidecar_holds_one_budget_per_run_at_its_own_limit` |
+| D6 | a cut-short scan leaves no reason on the flow | `test_a_second_large_body_draws_on_what_the_first_left`, `test_a_spent_budget_survives_the_wire_and_reaches_plane_d`, `test_a_plain_marker_past_a_spent_budget_is_still_found` |
+| D7 | every flow after exhaustion carries the limit, cut short or not | `test_a_second_large_body_draws_on_what_the_first_left` |
+| D8 | the limit not written to the flow record | `test_the_flow_record_carries_every_flow_field`, `test_a_spent_budget_survives_the_wire_and_reaches_plane_d`, `test_a_second_large_body_draws_on_what_the_first_left` |
+| D9 | the limit not read back from the flow record | `test_a_spent_budget_survives_the_wire_and_reaches_plane_d`, `test_a_second_large_body_draws_on_what_the_first_left` |
+| D10 | a record without the field refused (required key) | `test_a_record_from_a_sidecar_without_the_field_still_parses` |
+| D11 | the limit not carried onto the Plane D action | `test_a_spent_budget_survives_the_wire_and_reaches_plane_d` |
+| D12 | the executor does not fold the sidecar's limit into coverage | `test_the_executor_folds_the_sidecar_limit_into_the_credentials_coverage` |
+| D13 | refusals not counted on the budget | `test_a_second_large_body_draws_on_what_the_first_left`, `test_a_spent_budget_survives_the_wire_and_reaches_plane_d` |
