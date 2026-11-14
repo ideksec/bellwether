@@ -44,7 +44,12 @@ architecture in one line (§10.0).
 sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker
 ```
 
-They skip with a stated reason where either is missing. The interpreter is invoked
+They skip with a stated reason where either is missing — locally. On CI the same suite runs
+with `--skips-are-failures` (`tests/skip_guard.py`): there a skip is a red build, because the
+`container` job once stayed green for twelve merges with sixteen tests skipped (spec-notes,
+"the container job's silent skips"). If your `sudo` prints "'-E' is ignored" (sudo-rs does),
+name what you need instead: `sudo env "BELLWETHER_TEST_IMAGE=$BELLWETHER_TEST_IMAGE" …`.
+The interpreter is invoked
 directly rather than through `uv run`, because `uv` as root would want to resolve and
 possibly rewrite an environment that belongs to the normal user. CI runs them as a separate job
 rather than letting them skip inside the main one: a suite that goes green with these

@@ -6514,3 +6514,162 @@ running `mitmdump` executes. Six changes reverted alone, six red:
 The container form of the test first runs on CI: the docker bridge, the embedded DNS name of the
 peer, and the image's own interpreter are not exercised by the process-level run. TLS is not in
 this test (the interception test covers the https leg); the bodies travel over plain HTTP.
+
+## §24 — the container job's silent skips (a runner image, `sudo -E`, and a guard against any skip)
+
+§24 requires the capture-plane integration tests to run on the project's own CI runner, "so that
+degraded coverage is visible to maintainers". From the merge of #112 (2026-11-05) to the first
+push of #125 they did not, and the degraded coverage was not visible: the `container` job was
+green with sixteen tests skipped — every test that builds a sidecar or resolver image. This entry
+records how that happened, what was claimed while it was happening, and what now stops it.
+
+### How it was found
+
+PR #125 added a container test that sends three 6 MiB bodies through a running mitmproxy, and its
+`container` job finished in 75 seconds — the same as before the test existed. A check that costs
+nothing extra has not run the extra thing. The log said so:
+
+```
+sudo: preserving the entire environment is not supported, '-E' is ignored
+...
+tests/test_sidecar_docker.py ssss
+=============== 67 passed, 17 skipped, 2752 deselected in 57.61s ===============
+```
+
+The job's conclusion was `success`. All eight checks on the PR were green, and the PR description
+said "this PR's `container` job is the first time that runs". It was not.
+
+### What happened
+
+The step was `sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker`. The tests that need open
+egress to build an image are gated on the `CI` variable, which the runner sets and `-E` carried to
+the root process. `ubuntu-latest` then moved to an image whose `sudo` does not implement `-E`: it
+prints the warning above and runs the command without the caller's environment. `CI` did not
+arrive, each gated test read that as "not on CI", and skipped with a reason nobody was shown (the
+step had no `-rs`).
+
+Read from the job logs of every `main` run across the change (not inferred from one):
+
+| Run on `main` | Date | Runner image | Docker | `container` summary |
+|---|---|---|---|---|
+| merge of #108 | 2026-10-19 | — | — | `77 passed, 2492 deselected in 107.94s` |
+| merge of #109 | 2026-10-19 | — | — | `77 passed, 2525 deselected in 123.57s` |
+| merge of #110 | 2026-10-29 | — | — | `77 passed, 2598 deselected in 128.18s` |
+| merge of #111 | 2026-10-29 | `ubuntu-24.04` 20261025.353.1 | 28.0.4, `overlay2` | `77 passed, 2610 deselected in 119.71s` |
+| merge of #112 | 2026-11-05 | `ubuntu-26.04` 20261101.186.1 | 29.4.2, `overlayfs` | `61 passed, 16 skipped, 2622 deselected in 55.61s` |
+| merge of #114 | 2026-11-05 | — | — | `61 passed, 16 skipped, 2643 deselected in 50.03s` |
+| merge of #115 | 2026-11-06 | — | — | `61 passed, 16 skipped, 2657 deselected in 50.93s` |
+| merge of #116 | 2026-11-06 | — | — | `61 passed, 16 skipped, 2657 deselected in 53.50s` |
+| merge of #124 | 2026-11-11 | — | — | `67 passed, 16 skipped, 2752 deselected in 57.99s` |
+
+(— is "not read", not "unchanged".) The warning line is in all the skipping runs read and in none
+of the others. The sixteen are the same in each: `test_concurrency_docker` 1,
+`test_execution_claude_code_docker` 4, `test_execution_proxy_docker` 1,
+`test_execution_resolver_docker` 1, `test_interception_probe_docker` 4, `test_resolver_docker` 2,
+`test_sidecar_docker` 3. No `main` run falls between #111 and #112, so the day the label moved for
+this repository is known only to that week.
+
+That the cause is `CI` not arriving is an inference from the warning line plus an exact match
+between the skipped tests and the tests gated on `CI`; the old logs do not print skip reasons.
+It is confirmed below by the run that carries the variable explicitly.
+
+### What was claimed meanwhile, and was false
+
+- `docs/STATUS.md`'s test-count line: "all 84 run on CI, zero skips" (and "all 83", before). It
+  was true until #111 and repeated, unchecked, in every brick after. `test_docs_accuracy` checks
+  the three numbers on that line against a real collection; it cannot check what CI did.
+- Twelve merged pull requests — #112, #114, #115, #116, #117, #118, #119, #120, #121, #122, #123,
+  #124 — each reported a green `container` job. For each, the sixteen image-building tests were
+  not part of that green. The ones whose changes those tests exist to cover: #124 (the proxy
+  addon's decode budget — the running-sidecar tests never saw it), and #120–#123 (the canary
+  scanner the sidecar imports).
+- The "Not executed … CI-only" sentences in the entries for those bricks read as "CI covers this".
+  CI did not.
+- PR #125's own description, as above.
+
+Nothing in any of those bricks was observed to be wrong on that account; it was unobserved, which
+this project does not treat as the same thing.
+
+### Why the existing guard did not catch it
+
+The job has had a guard since Phase A — "Assert the container tests are collected" — written for
+the case where a marker expression deselects everything and the job passes having asserted
+nothing. It checks pytest's exit code 5. A skipped test is collected. The guard answered the
+question it was asked.
+
+### The fix, in two halves
+
+**The variables are handed over by name.** The step is now `sudo env "CI=${CI}"
+"BELLWETHER_TEST_IMAGE=${BELLWETHER_TEST_IMAGE}" … python -m pytest …`. This form asks nothing of
+sudo's environment handling: sudo runs `env`, and `env` sets what it is given. `sudo
+--preserve-env=CI,…` would be the conventional spelling and is what the four evaluation workflows
+use for the provider key; it was not chosen here because the runner's sudo could not be run in
+the development environment (an attempt to build it locally was not permitted there), and a form
+whose behaviour does not depend on the implementation needs no such measurement.
+
+**A skip on that job is a failure.** `tests/skip_guard.py` adds `--skips-are-failures`; with it,
+a skipped test's report becomes a failed one naming the test and the skip's reason. The step
+passes it. It is a command-line argument and not an environment variable deliberately: the
+failure being guarded against is the environment not arriving. `xfail` is untouched — an expected
+failure ran, or is declared with a reason §24 keeps visible. A skip raised before the test body
+(a `skipif` mark, a fixture) surfaces as an *error at setup*, one raised inside the body as a
+*failure*; both are red and neither is counted as a skip.
+
+The second half is the one that addresses the class. The first repairs this instance; the next
+way for a gate variable to go missing is not known, and does not need to be.
+
+Three smaller things in the same change:
+
+- **A probe for the form the paid workflows rely on.** `bellwether.yml`,
+  `bellwether-claude-code.yml`, `bellwether-nightly.yml` and `bellwether-coexistence.yml` pass
+  `ANTHROPIC_API_KEY` with `sudo --preserve-env=ANTHROPIC_API_KEY`. None runs on an unlabelled pull
+  request, and none has run since the image changed. The `container` job now has a step that sets
+  a variable, asks sudo to carry it by name, and fails if it did not arrive — the same question,
+  asked for free on the same image.
+- **`-rs` on both jobs.** A count of skips says nothing about which or why.
+- **No workflow asks sudo for the whole environment.** A scan over `.github/workflows` fails on
+  `sudo -E` or a bare `--preserve-env`: the spelling that failed without an error.
+
+### The tests, and what the stand-in is
+
+`tests/test_skip_guard.py` executes the workflow's own step text under `WorkflowRunner`, in a
+scratch checkout holding one `CI`-gated container test, with a stand-in `sudo` first on `PATH`.
+The stand-in models one property: the command starts from a reset environment (`env -i` plus
+sudo's fixed `PATH`), `-E` is refused with the runner's warning, and `--preserve-env=A,B` is
+honoured. Its first test runs the **old** step under it and gets the incident back — exit 0, the
+warning, `1 skipped`, the test body never entered. A stand-in that could not reproduce the
+incident would make the rest meaningless; this is the rule about fakes, applied to a tool.
+
+The stand-in is not the runner's sudo. In particular it *honours* `--preserve-env=LIST`, which is
+an assumption about the real one. What the real one does is measured only on CI: by the
+`container` job running the step, and by the probe step.
+
+### Revert-proving
+
+Each change reverted alone, `tests/test_skip_guard.py` run, the file restored.
+
+| | Reverted | Result |
+|---|---|---|
+| G1 | the step back to `sudo -E`, flag kept | red — `test_the_step_carries_ci_to_the_root_process`, `test_the_step_names_every_workflow_variable`, `test_no_workflow_asks_sudo_for_the_whole_environment` |
+| G2 | the step exactly as it was (`sudo -E`, no flag) | red — the three above and `test_the_step_passes_the_flag` |
+| G3 | `CI` not named in the step's list | red — `test_the_step_carries_ci_to_the_root_process`, `test_the_step_names_every_workflow_variable` |
+| G4 | `BELLWETHER_TEST_IMAGE` not named in the step's list | red — the same two |
+| G5 | the flag dropped from the step | red — `test_the_step_passes_the_flag` |
+| G6 | `sudo --preserve-env=LIST` in the step instead of `env` | red — `test_the_step_names_every_workflow_variable` **only** |
+| G7 | the guard leaves a skip a skip | red — `test_a_skip_fails_the_step_even_when_the_variable_is_lost`, `test_the_step_passes_the_flag`, `test_a_skip_is_a_failure_under_the_flag_however_it_was_raised` (all three forms) |
+| G8 | the guard fails an `xfail` too | red — `test_an_expected_failure_is_not_a_skip` |
+| G9 | the guard on without the flag | red — `test_the_old_step_under_a_sudo_that_ignores_dash_e_skips_and_stays_green`, `test_the_step_passes_the_flag`, the three forms |
+| G10 | the guard's message without the skip's reason | red — `test_a_skip_fails_the_step_even_when_the_variable_is_lost`, the three forms |
+| G11 | `conftest.py` does not register the flag | red — `test_the_suite_registers_the_flag` |
+| G12 | the probe accepts whatever sudo returned | red — `test_the_probe_fails_where_sudo_drops_a_named_variable` |
+| G13 | the probe asks with `-E` | red — `test_the_probe_passes_where_sudo_carries_a_named_variable`, `test_no_workflow_asks_sudo_for_the_whole_environment` |
+| G14 | the probe moved after the tests | red — `test_the_probe_runs_before_root_touches_the_checkout` |
+
+G6 is red by the weakest test in the file: an assertion on the *shape* of the step's variable
+list. No test distinguishes the two forms by behaviour, because under the stand-in both work. The
+row is recorded as "pinned by shape, not by behaviour"; the behavioural difference, if there is
+one, exists only on the real runner.
+
+Run by hand, on the real container suite in this environment (classic sudo 1.9.15, no `CI`): the
+new step's command with the flag gives `67 passed, 17 errors`, each error naming its test and
+"… need open egress; CI only". Without the flag: `67 passed, 17 skipped`, exit 0.
