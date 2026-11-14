@@ -6512,7 +6512,9 @@ running `mitmdump` executes. Six changes reverted alone, six red:
 ### Not measured here, stated
 
 The container form of the test first runs on CI: the docker bridge, the embedded DNS name of the
-peer, and the image's own interpreter are not exercised by the process-level run. TLS is not in
+peer, and the image's own interpreter are not exercised by the process-level run. *(It did not
+run on this PR's first push — it was skipped, green, like every gated test since #112; see "the
+container job's silent skips" below. It first ran, and passed, on `9de4b03`.)* TLS is not in
 this test (the interception test covers the https leg); the bodies travel over plain HTTP.
 
 ## §24 — the container job's silent skips (a runner image, `sudo -E`, and a guard against any skip)
@@ -6673,3 +6675,79 @@ one, exists only on the real runner.
 Run by hand, on the real container suite in this environment (classic sudo 1.9.15, no `CI`): the
 new step's command with the flag gives `67 passed, 17 errors`, each error naming its test and
 "… need open egress; CI only". Without the flag: `67 passed, 17 skipped`, exit 0.
+
+### What the first real run showed
+
+The `container` job on `9de4b03` — the first since #111 in which a gated test could not skip:
+
+```
+sudo-rs 0.2.13-0ubuntu1.2
+sudo --preserve-env=NAME carries a named variable
+...
+tests/test_execution_canary_docker.py .F...
+tests/test_execution_claude_code_docker.py ....
+tests/test_interception_probe_docker.py ....
+tests/test_sidecar_docker.py ....
+========== 1 failed, 83 passed, 2767 deselected in 162.55s (0:02:42) ===========
+```
+
+Three things, in the order they matter:
+
+1. **All seventeen gated tests ran and passed** on `ubuntu-26.04` / Docker 29.4.2 / `overlayfs` —
+   the sixteen that had been skipping and the deep-body test this PR began with. The step took
+   163 seconds where the hollow runs took 55. Twelve merges' worth of proxy, resolver and CLI
+   changes were unobserved by these tests and turn out not to have broken them. That is a result,
+   and it was not known until now.
+2. **The probe's answer is yes.** The runner's sudo is `sudo-rs 0.2.13`, and
+   `--preserve-env=NAME` carries a named variable. The evaluation workflows' way of passing the
+   provider key is intact on this image. (Measured for a probe variable; the workflows themselves
+   have still not run there.)
+3. **One failure, in a test that was never gated** — and it is the second half of the incident.
+
+### The second thing the lost environment hid: the image
+
+`test_a_canary_staged_to_disk_in_ten_byte_files_is_reassembled_into_a_leak` (added in #121) has
+its scripted skill run `split -b 10 -d ~/.aws/credentials bundle/part-`. `-d` is GNU split's
+numeric-suffix flag. The image CI pins in `BELLWETHER_TEST_IMAGE` is Alpine, whose BusyBox `split`
+knows `-b`, `-l` and `-a`, prints its usage for `-d`, and writes nothing.
+
+The test passed on every CI run since it was written because `BELLWETHER_TEST_IMAGE` is a
+workflow variable, and `sudo -E` was dropping that too. Each container test reads it with a
+default — an image chosen because it is pullable under a restrictive egress policy, which ships
+GNU coreutils. So for the same twelve merges, the sixty-odd container tests that *did* run on CI
+ran against the tests' fallback image, not the one the workflow pins, pulls, and documents. The
+"Pull the test image" step pulled Alpine; nothing then used it.
+
+Reproduced here before fixing: with `BELLWETHER_TEST_IMAGE` set to the pinned digest, the test
+fails with the same `AssertionError: []`; `docker run <alpine> split -b 10 -d …` exits 1 with the
+usage text. The fix is in the test — `split -b 10` with the default suffixes, which both
+implementations write — because the defect is in the test's command, not in the reassembly: the
+leak is found either way once files exist.
+
+The whole container suite was then run here against **both** images (`67 passed, 17 skipped`
+each; the seventeen are the image-building tests this environment cannot run). Before this
+entry it had only ever been run here against the default, and — as it turns out — only against
+the default on CI too since #112.
+
+The general point, for whoever reads this next: a fallback that keeps a test runnable also keeps
+it green when its configuration is gone. The skip guard does not see this one — nothing skipped.
+What caught it was the variable arriving. The step-level test
+`test_the_step_carries_ci_to_the_root_process` now asserts that `BELLWETHER_TEST_IMAGE` reaches
+the process (row G4).
+
+### Not done, stated
+
+- **`runs-on: ubuntu-latest` is still a mutable label**, in every workflow. It is the root cause:
+  an image changed under a green build. Pinning the runner image is the same discipline
+  `pin_lint` applies to actions and container images, and it is a repository-wide decision with a
+  cost (deliberate bumps) — left to the owner, listed in STATUS.
+- **The offline job is not under the flag.** It has one skip on CI, a test that needs root for
+  `chown`; `-rs` now prints its reason. A flag that fails the job on a legitimate skip would be
+  switched off within a week.
+- **The four evaluation workflows have not run on `ubuntu-26.04`.** The probe covers the one
+  mechanism known to have changed. It does not cover what is not known to have changed.
+- **The runner's sudo was never run in the development environment.** Everything said about it
+  here is read from CI logs.
+- **Local runs default to the fallback image.** `CLAUDE.md`'s container command does not set
+  `BELLWETHER_TEST_IMAGE`; a brick that adds a container test should run it against the pinned
+  image as well where that image is present (it is, in this environment).

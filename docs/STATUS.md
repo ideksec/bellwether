@@ -64,6 +64,12 @@ parse today). Each is a work package, not a brick.
 See "Outstanding actions → Repository settings" below: branch protection to confirm, private
 vulnerability reporting, Dependabot, CodeQL results.
 
+One decision that is not a setting but is the owner's: **pin the runner image.** Every workflow
+says `runs-on: ubuntu-latest`, and that label moving is what hid sixteen tests for twelve merges
+(spec-notes, "the container job's silent skips"). `ubuntu-26.04` is what CI has been green on
+since 2026-11-05; pinning it means bumping it deliberately, as with every other pin here. The
+four evaluation workflows have not run on that image.
+
 ### How a brick is closed here
 
 The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth keeping:
@@ -74,13 +80,31 @@ The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth 
   row that stayed green on first measurement (a helper tested instead of its caller, an anchor the
   formatter had moved, an assertion that missed the one sentence the spec asks for); each was
   fixed and measured again rather than claimed.
+- **A green check that got no slower did not run the new thing.** After adding a container
+  test, read the `container` job's log for that test's line, not the job's conclusion. The job
+  now fails on a skip, which closes the way this went wrong once; it does not close the habit.
 - **Execute the workflow, not the YAML.** `tests/workflow_harness.py` runs a job step by step
   against a fake GitHub with a fake `bellwether run`/`coexistence` dropping fixtures; every CI
   defect this project found was found by running the step.
 
 ## How we got here (newest first)
 
-**Latest: deep bodies through a running mitmproxy (§10.5.2).** The sidecar's decode budget was
+**Latest: the container job had been green with sixteen tests skipped (§24).** Found because
+the brick below added a slow test and its `container` job got no slower. `ubuntu-latest` moved to
+`ubuntu-26.04` between #111 and #112; that image's sudo (`sudo-rs`) ignores `-E` with a warning,
+so `CI` stopped reaching pytest, every test that builds a sidecar or resolver image skipped, and
+the job stayed green for **twelve merges (#112, #114–#124)**. This file said "all run on CI, zero
+skips" throughout. `BELLWETHER_TEST_IMAGE` was dropped the same way, so the tests that did run
+ran against their fallback image, not the pinned one. Fixed in two halves, each executed at the
+workflow step: the variables are handed over by name (`sudo env NAME=value …`), and the job passes
+`--skips-are-failures` (`tests/skip_guard.py`) — there a skip is a red build naming the test and
+its reason. A free probe step asserts `sudo --preserve-env=NAME` still carries a variable, since
+the paid workflows pass the provider key that way. The first real run: all seventeen gated tests
+passed (the deep-body test among them), the probe passed, and one ungated test failed — it used
+GNU-only `split -d` and had never met the pinned Alpine image. Fourteen reverts red; one (G6) by
+shape only, stated. Not done: `runs-on: ubuntu-latest` is still mutable — see D below.
+
+**Before that: deep bodies through a running mitmproxy (§10.5.2).** The sidecar's decode budget was
 proven at the addon and stated one hop short; that hop is now measured. The image's hash-locked
 requirements install into a scratch virtualenv, so the pinned `mitmdump` 12.2.3 ran here as a
 process with the real entry script: a 400 KiB body with a marker deep inside is forwarded whole and
@@ -89,8 +113,8 @@ the cut-short flow saying so. The first run of the experiment was wrong — the 
 `NO_PROXY` and bypassed the proxy with a 200 — and only the missing flow record showed it; the
 client now clears it and the assertions compare recorded flows with requests made. Committed as a
 CI-only container test whose client, peer and assertion function are the very objects the
-process-level run executed. Six reverts red through the proxy. Not measured here: the container
-topology, which first runs on CI.
+process-level run executed. Six reverts red through the proxy. The container topology first ran
+on CI two commits later, once the skip above was fixed, and passed.
 
 **Before that: the sidecar's decode budget (§10.4.2, §10.5.2).** The recording proxy scanned a request
 body to its first 256 KiB only; a marker inside an encoded body past that was found nowhere, since
