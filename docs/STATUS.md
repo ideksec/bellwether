@@ -80,7 +80,19 @@ The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth 
 
 ## How we got here (newest first)
 
-**Latest: the sidecar's decode budget (§10.4.2, §10.5.2).** The recording proxy scanned a request
+**Latest: deep bodies through a running mitmproxy (§10.5.2).** The sidecar's decode budget was
+proven at the addon and stated one hop short; that hop is now measured. The image's hash-locked
+requirements install into a scratch virtualenv, so the pinned `mitmdump` 12.2.3 ran here as a
+process with the real entry script: a 400 KiB body with a marker deep inside is forwarded whole and
+found, the same body to a refused host is scanned too, and three 6 MiB bodies spend the budget with
+the cut-short flow saying so. The first run of the experiment was wrong — the client honoured
+`NO_PROXY` and bypassed the proxy with a 200 — and only the missing flow record showed it; the
+client now clears it and the assertions compare recorded flows with requests made. Committed as a
+CI-only container test whose client, peer and assertion function are the very objects the
+process-level run executed. Six reverts red through the proxy. Not measured here: the container
+topology, which first runs on CI.
+
+**Before that: the sidecar's decode budget (§10.4.2, §10.5.2).** The recording proxy scanned a request
 body to its first 256 KiB only; a marker inside an encoded body past that was found nowhere, since
 the host never sees a body. `ProxyAddon` now holds one `DecodeBudget` per run — 16 MiB, smaller
 than the host's because the sidecar scans inline and every flow waits on it — handed through
@@ -89,7 +101,7 @@ short is recorded on its flow (`canary_decode_limit`, by a refusal counter so on
 actually cut short carry it), crosses the flow-record contract, lands on Plane D and degrades the
 credentials coverage. Model-API bodies spend nothing. The record contract gained the test its own
 docstring claimed: the record's keys against `fields(EgressFlow)`. Executed at the wiring (the
-real recording addon, the flow log, Plane C); **not** through a running mitmproxy. With this, every
+real recording addon, the flow log, Plane C); not then through a running mitmproxy (measured since, above). With this, every
 item on the buildable list that needs no decision is done: what remains needs the owner. Revert
 table in spec-notes.
 
@@ -1517,7 +1529,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2835 tests: 2752 offline, 83 under the `docker` mark (67 run locally, 16 CI-only skips with stated reasons; all 83 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2836 tests: 2752 offline, 84 under the `docker` mark (67 run locally, 17 CI-only skips with stated reasons; all 84 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The first independent-review round (twelve findings, at `592e309`)
 

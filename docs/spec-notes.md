@@ -6421,7 +6421,8 @@ found, the second cut short with the reason, a small request after them carrying
 log byte-identical across two runs. **Not executed:** the real mitmproxy hop. The addon object is
 the one mitmproxy calls and CI's container tests build and drive the image, but no test here
 sends a body over 256 KiB through a running proxy; that mitmproxy hands the request hook a large
-body whole (it does by default; streaming is pinned off) is relied on, not measured.
+body whole (it does by default; streaming is pinned off) is relied on, not measured. *(Measured
+since — see "§10.5.2 — deep bodies through a running mitmproxy".)*
 
 ### Still open, stated
 
@@ -6449,3 +6450,67 @@ Thirteen changes reverted alone, thirteen red. D12 is pinned on the executor's s
 | D11 | the limit not carried onto the Plane D action | `test_a_spent_budget_survives_the_wire_and_reaches_plane_d` |
 | D12 | the executor does not fold the sidecar's limit into coverage | `test_the_executor_folds_the_sidecar_limit_into_the_credentials_coverage` |
 | D13 | refusals not counted on the budget | `test_a_second_large_body_draws_on_what_the_first_left`, `test_a_spent_budget_survives_the_wire_and_reaches_plane_d` |
+
+## §10.5.2 — deep bodies through a running mitmproxy
+
+The sidecar's decode budget (previous entry) was proven at the addon and stated one hop short:
+nothing sent a body over 256 KiB through a running proxy, so that mitmproxy hands the request
+hook a large body whole was relied on, not measured. This entry is the measurement.
+
+### Measured first, as a process
+
+The sidecar image does not build in the restricted environment (its `pip install` step has no
+network under this daemon), which is why the real-proxy tests are CI-only. But the image's whole
+Python closure is hash-locked in `sidecar/proxy/requirements.txt`, and that installs into a scratch
+virtualenv: `mitmdump` 12.2.3, the pinned version, run as a local process with the real
+`proxy_entry.py`, the same `--set` options the launcher passes, and a `SidecarConfig` on disk.
+Through it, on loopback:
+
+- a 400 KiB base64 body with a marker after 300 KiB of padding, **forwarded** to an allowlisted
+  peer: the peer receives all 400,142 bytes, the flow records the same length, and the marker is a
+  `decoded` body hit;
+- the same body to a **refused** host: 403, scanned all the same (the scan precedes the allowlist);
+- three 6 MiB bodies: the first two found, the third cut short with the budget's reason on its
+  flow, and a small request after it carrying none;
+- the inline scan stalls the client about 2.5–3.7 s per 6 MiB body here and breaks nothing; once
+  the budget is spent a 6 MiB body returns in a quarter of a second.
+
+**The first run of the experiment was wrong, and only the flow log said so.** The forwarded leg
+returned 200 in 1.7 ms and left no flow record: the client honoured `NO_PROXY`, which names
+loopback in this environment, and went straight to the peer. A status code would have passed it.
+The client now clears `NO_PROXY` itself, the assertions compare the recorded flows against the
+requests made, and a revert row pins it.
+
+### What is committed
+
+`test_a_marker_deep_in_a_large_body_is_found_through_the_running_proxy` in
+`tests/test_sidecar_docker.py`: CI-only like its neighbours, on the internal bridge, with a peer
+container as the allowlisted collector. Its client script, peer script and assertion function
+(`DEEP_CLIENT`, `COLLECTOR_PEER`, `assert_deep_bodies`) are module-level and parameterised by
+environment (`PROXY_URL`, `PEER_URL`, `PEER_PORT`), and those same three objects are what the
+process-level run above executes — so the test was run against the pinned mitmproxy before it
+reached CI, with only the topology (loopback, not a docker bridge) different. The process-level
+harness itself is not committed: mitmproxy is deliberately absent from the development
+environment (§10.5: its pinned dependencies must not couple to Bellwether's), so a committed
+process test would skip everywhere it is collected, and a test that never runs is the quiet kind
+of wrong.
+
+### Revert-proving, through the proxy
+
+The scratch virtualenv installs Bellwether in editable mode, so a reverted source line is what the
+running `mitmdump` executes. Six changes reverted alone, six red:
+
+| # | Reverted | Result, through the running proxy |
+|---|---|---|
+| M1 | the addon's request path passes no budget (first slice only) | red — `assert hits(forwarded) == [(one.id, "decoded", "body")], context` |
+| M2 | a cut-short scan leaves no reason on the flow | red — `assert "reached its budget of" in big2.canary_decode_limit, context` |
+| M3 | the limit not written to the flow record | red — `assert "reached its budget of" in big2.canary_decode_limit, context` |
+| M4 | a fresh budget per request instead of one per run | red — `assert big2.canary_hits == (), context` |
+| M5 | the sidecar's budget at the host's 64 MiB limit | red — `assert big2.canary_hits == (), context` |
+| M6 | the client does not clear NO_PROXY (the forwarded leg bypasses the proxy) | red — `assert [(f.host, f.path, f.blocked) for f in flows] == [` |
+
+### Not measured here, stated
+
+The container form of the test first runs on CI: the docker bridge, the embedded DNS name of the
+peer, and the image's own interpreter are not exercised by the process-level run. TLS is not in
+this test (the interception test covers the https leg); the bodies travel over plain HTTP.
