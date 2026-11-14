@@ -9,6 +9,9 @@ from typing import Any
 import pytest
 import yaml
 
+# Registers ``--skips-are-failures`` (tests/skip_guard.py), which CI's container job passes.
+pytest_plugins = ("tests.skip_guard",)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = REPO_ROOT / "src" / "bellwether" / "config" / "templates"
 EXAMPLE_SKILL = REPO_ROOT / "examples" / "skills" / "security-review"
