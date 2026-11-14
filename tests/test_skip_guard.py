@@ -336,4 +336,4 @@ def test_the_suite_registers_the_flag(request: pytest.FixtureRequest) -> None:
     the container job dies on an unknown argument. Off unless asked for."""
     assert request.config.getoption(FLAG) in (False, True)
     conftest = (REPO_ROOT / "tests" / "conftest.py").read_text(encoding="utf-8")
-    assert "from tests.skip_guard import pytest_addoption, pytest_runtest_makereport" in conftest
+    assert 'pytest_plugins = ("tests.skip_guard",)' in conftest

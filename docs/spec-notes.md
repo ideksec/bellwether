@@ -6660,7 +6660,7 @@ Each change reverted alone, `tests/test_skip_guard.py` run, the file restored.
 | G8 | the guard fails an `xfail` too | red — `test_an_expected_failure_is_not_a_skip` |
 | G9 | the guard on without the flag | red — `test_the_old_step_under_a_sudo_that_ignores_dash_e_skips_and_stays_green`, `test_the_step_passes_the_flag`, the three forms |
 | G10 | the guard's message without the skip's reason | red — `test_a_skip_fails_the_step_even_when_the_variable_is_lost`, the three forms |
-| G11 | `conftest.py` does not register the flag | red — `test_the_suite_registers_the_flag` |
+| G11 | `conftest.py` does not register the plugin (`pytest_plugins`) | red — `test_the_suite_registers_the_flag` (`ValueError: no option named`) |
 | G12 | the probe accepts whatever sudo returned | red — `test_the_probe_fails_where_sudo_drops_a_named_variable` |
 | G13 | the probe asks with `-E` | red — `test_the_probe_passes_where_sudo_carries_a_named_variable`, `test_no_workflow_asks_sudo_for_the_whole_environment` |
 | G14 | the probe moved after the tests | red — `test_the_probe_runs_before_root_touches_the_checkout` |

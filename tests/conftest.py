@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 import yaml
 
-# Registers ``--skips-are-failures``: a conftest is a plugin, and a hook it imports is a hook it has.
-from tests.skip_guard import pytest_addoption, pytest_runtest_makereport  # noqa: F401
+# Registers ``--skips-are-failures`` (tests/skip_guard.py), which CI's container job passes.
+pytest_plugins = ("tests.skip_guard",)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = REPO_ROOT / "src" / "bellwether" / "config" / "templates"
