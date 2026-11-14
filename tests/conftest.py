@@ -9,6 +9,9 @@ from typing import Any
 import pytest
 import yaml
 
+# Registers ``--skips-are-failures``: a conftest is a plugin, and a hook it imports is a hook it has.
+from tests.skip_guard import pytest_addoption, pytest_runtest_makereport  # noqa: F401
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = REPO_ROOT / "src" / "bellwether" / "config" / "templates"
 EXAMPLE_SKILL = REPO_ROOT / "examples" / "skills" / "security-review"
