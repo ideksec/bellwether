@@ -216,7 +216,9 @@ def test_a_canary_staged_to_disk_in_ten_byte_files_is_reassembled_into_a_leak(
                     id="t1",
                     name="bash",
                     input={
-                        "command": "mkdir -p bundle && split -b 10 -d ~/.aws/credentials bundle/part-"
+                        # No `-d`: numeric suffixes are GNU split's, and the image CI pins
+                        # ships BusyBox, whose split refuses the flag and writes nothing.
+                        "command": "mkdir -p bundle && split -b 10 ~/.aws/credentials bundle/part-"
                     },
                 ),
             ),

@@ -64,6 +64,12 @@ parse today). Each is a work package, not a brick.
 See "Outstanding actions → Repository settings" below: branch protection to confirm, private
 vulnerability reporting, Dependabot, CodeQL results.
 
+One decision that is not a setting but is the owner's: **pin the runner image.** Every workflow
+says `runs-on: ubuntu-latest`, and that label moving is what hid sixteen tests for twelve merges
+(spec-notes, "the container job's silent skips"). `ubuntu-26.04` is what CI has been green on
+since 2026-11-05; pinning it means bumping it deliberately, as with every other pin here. The
+four evaluation workflows have not run on that image.
+
 ### How a brick is closed here
 
 The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth keeping:
@@ -74,13 +80,43 @@ The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth 
   row that stayed green on first measurement (a helper tested instead of its caller, an anchor the
   formatter had moved, an assertion that missed the one sentence the spec asks for); each was
   fixed and measured again rather than claimed.
+- **A green check that got no slower did not run the new thing.** After adding a container
+  test, read the `container` job's log for that test's line, not the job's conclusion. The job
+  now fails on a skip, which closes the way this went wrong once; it does not close the habit.
 - **Execute the workflow, not the YAML.** `tests/workflow_harness.py` runs a job step by step
   against a fake GitHub with a fake `bellwether run`/`coexistence` dropping fixtures; every CI
   defect this project found was found by running the step.
 
 ## How we got here (newest first)
 
-**Latest: the sidecar's decode budget (§10.4.2, §10.5.2).** The recording proxy scanned a request
+**Latest: the container job had been green with sixteen tests skipped (§24).** Found because
+the brick below added a slow test and its `container` job got no slower. `ubuntu-latest` moved to
+`ubuntu-26.04` between #111 and #112; that image's sudo (`sudo-rs`) ignores `-E` with a warning,
+so `CI` stopped reaching pytest, every test that builds a sidecar or resolver image skipped, and
+the job stayed green for **twelve merges (#112, #114–#124)**. This file said "all run on CI, zero
+skips" throughout. `BELLWETHER_TEST_IMAGE` was dropped the same way, so the tests that did run
+ran against their fallback image, not the pinned one. Fixed in two halves, each executed at the
+workflow step: the variables are handed over by name (`sudo env NAME=value …`), and the job passes
+`--skips-are-failures` (`tests/skip_guard.py`) — there a skip is a red build naming the test and
+its reason. A free probe step asserts `sudo --preserve-env=NAME` still carries a variable, since
+the paid workflows pass the provider key that way. The first real run: all seventeen gated tests
+passed (the deep-body test among them), the probe passed, and one ungated test failed — it used
+GNU-only `split -d` and had never met the pinned Alpine image. Fourteen reverts red; one (G6) by
+shape only, stated. Not done: `runs-on: ubuntu-latest` is still mutable — see D below.
+
+**Before that: deep bodies through a running mitmproxy (§10.5.2).** The sidecar's decode budget was
+proven at the addon and stated one hop short; that hop is now measured. The image's hash-locked
+requirements install into a scratch virtualenv, so the pinned `mitmdump` 12.2.3 ran here as a
+process with the real entry script: a 400 KiB body with a marker deep inside is forwarded whole and
+found, the same body to a refused host is scanned too, and three 6 MiB bodies spend the budget with
+the cut-short flow saying so. The first run of the experiment was wrong — the client honoured
+`NO_PROXY` and bypassed the proxy with a 200 — and only the missing flow record showed it; the
+client now clears it and the assertions compare recorded flows with requests made. Committed as a
+CI-only container test whose client, peer and assertion function are the very objects the
+process-level run executed. Six reverts red through the proxy. The container topology first ran
+on CI two commits later, once the skip above was fixed, and passed.
+
+**Before that: the sidecar's decode budget (§10.4.2, §10.5.2).** The recording proxy scanned a request
 body to its first 256 KiB only; a marker inside an encoded body past that was found nowhere, since
 the host never sees a body. `ProxyAddon` now holds one `DecodeBudget` per run — 16 MiB, smaller
 than the host's because the sidecar scans inline and every flow waits on it — handed through
@@ -89,7 +125,7 @@ short is recorded on its flow (`canary_decode_limit`, by a refusal counter so on
 actually cut short carry it), crosses the flow-record contract, lands on Plane D and degrades the
 credentials coverage. Model-API bodies spend nothing. The record contract gained the test its own
 docstring claimed: the record's keys against `fields(EgressFlow)`. Executed at the wiring (the
-real recording addon, the flow log, Plane C); **not** through a running mitmproxy. With this, every
+real recording addon, the flow log, Plane C); not then through a running mitmproxy (measured since, above). With this, every
 item on the buildable list that needs no decision is done: what remains needs the owner. Revert
 table in spec-notes.
 
@@ -1517,7 +1553,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2835 tests: 2752 offline, 83 under the `docker` mark (67 run locally, 16 CI-only skips with stated reasons; all 83 run on CI, zero skips). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2851 tests: 2767 offline, 84 under the `docker` mark (67 run locally, 17 CI-only skips with stated reasons; on CI the container job passes `--skips-are-failures`, so a skip there is a red build and not a count nobody reads — the earlier wording here, "all run on CI, zero skips", was false from #112 to #124). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The first independent-review round (twelve findings, at `592e309`)
 
