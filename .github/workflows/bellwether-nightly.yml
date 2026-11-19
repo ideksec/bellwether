@@ -44,7 +44,7 @@ jobs:
     # The opt-in. A scheduled run with the variable unset is skipped here, before any step —
     # nothing is installed, built or spent.
     if: github.event_name == 'workflow_dispatch' || vars.BELLWETHER_NIGHTLY == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
       contents: read

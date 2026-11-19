@@ -6737,7 +6737,8 @@ the process (row G4).
 
 ### Not done, stated
 
-- **`runs-on: ubuntu-latest` is still a mutable label**, in every workflow. It is the root cause:
+- **`runs-on: ubuntu-latest` is still a mutable label**, in every workflow. *(Pinned since —
+  see "the runner image is a tag too" below.)* It is the root cause:
   an image changed under a green build. Pinning the runner image is the same discipline
   `pin_lint` applies to actions and container images, and it is a repository-wide decision with a
   cost (deliberate bumps) — left to the owner, listed in STATUS.
@@ -6751,3 +6752,134 @@ the process (row G4).
 - **Local runs default to the fallback image.** `CLAUDE.md`'s container command does not set
   `BELLWETHER_TEST_IMAGE`; a brick that adds a container test should run it against the pinned
   image as well where that image is present (it is, in this environment).
+
+## §24 — the runner image is a tag too (`runs-on`, and `pin_lint` rule 5)
+
+The previous entry ended with its root cause left standing: every workflow said `runs-on:
+ubuntu-latest`. This project's lint fails the build on `actions/checkout@v5` and on `alpine:3.20`
+because a tag is mutable — the bytes that ran yesterday are not the bytes that run today — and
+then ran all of it on a label GitHub repoints to the next OS release when it chooses. It did, the
+sudo changed with it, and sixteen tests stopped running under a green check. The owner's answer
+to "pin it?" was to keep building; this is that brick.
+
+### What changed
+
+**The workflows.** All ten jobs in the eight workflow files say `runs-on: ubuntu-26.04`. That is
+the image `ubuntu-latest` has resolved to for this repository since 2026-11-05 (read from the
+jobs' "Set up job" logs in the previous entry), so the change alters nothing about a run today.
+It changes what happens the day the label moves again: nothing, until someone edits ten lines.
+
+**The lint.** `tools/pin_lint.py` rule 5, `check_runners`, called from `main` for every workflow:
+a job's `runs-on` must be a single hosted-runner label that names its OS release —
+`(ubuntu|macos|windows)-<version>` with at most one size or architecture suffix, matched in
+full.
+
+It is written the way this project learned to write a matcher (spec-notes, the
+`sensitive_directories` rounds): **an allowlist over the normalised input, not a list of bad
+spellings.** The other four rules in the file scan lines with regular expressions; this one
+parses the document with `yaml.safe_load` and judges each job's resolved value, because a
+`runs-on` can reach a job without the string appearing on its line:
+
+- through an alias (`runs-on: *runner`);
+- through a merge key (`<<: *defaults`), where the job has no `runs-on` line at all;
+- as a flow or block sequence, or a `group:`/`labels:` mapping;
+- quoted, commented, or as a block scalar that carries a trailing newline.
+
+Everything that is not the one accepted form is refused, with a message that says which kind of
+not-it this is. In particular:
+
+- an **expression** (`${{ matrix.os }}`, `${{ inputs.runner || 'ubuntu-26.04' }}`) is refused
+  because the lint cannot see what it resolves to. "Cannot be evaluated" is not "passed";
+- a **list**, even `[ubuntu-26.04]`, is refused: the rule is one named image, and a list is the
+  shape self-hosted label sets take. Nothing here uses one. If something comes to, its pinned
+  form gets added to the lint deliberately, as rule 4 does for package managers;
+- a workflow that **does not parse** is refused for that reason. The line-based rules would
+  carry on and report nothing; a file whose runners were not judged does not get to look clean.
+
+A job with no `runs-on` — one that calls a reusable workflow — has no runner of its own and is
+not judged. Line numbers come from `yaml.compose`, so a problem points at the `runs-on` value,
+or at the job's key when the value arrived through a merge.
+
+**One image for all of them.** `test_every_project_job_runs_on_one_named_release` asserts the
+ten jobs share a single value. The lint alone would accept `ubuntu-26.04` in CI and
+`ubuntu-24.04` in the nightly workflow — both pinned. That is not acceptable here for a specific
+reason: the `container` job's "Assert sudo carries a named variable" step exists to ask, for
+free, the question the paid workflows would otherwise be first to ask. It speaks for them only
+while they run on the image it ran on. Row R11 is this property and nothing else: the lint exits
+0, the test is red.
+
+### What a release label does not pin
+
+`ubuntu-26.04` names an OS release, not an image. GitHub rebuilds and republishes that image
+about weekly (the two builds seen in the previous entry: `20261025.353.1` for 24.04,
+`20261101.186.1` for 26.04), and offers no label for one build. So the packages inside the
+pinned release still move — Docker went 28.0.4 to 29.4.2 across the *release* change, and a
+point release can arrive within one. This is the same limit rule 4 states for `apt-get`: the
+origin is fixed, the contents are not. A digest-pinned job container would close it and would
+cost the project its use of the runner's own Docker daemon and root, which the capture
+architecture needs. Not done, and not planned without a reason.
+
+What catches a change *inside* the release is the previous brick, not this one: the container
+job fails on a skip, and the sudo probe fails if a named variable stops arriving.
+
+### Nothing bumps this pin
+
+Dependabot bumps the action SHAs; it does not read `runs-on`. GitHub retires an image some time
+after its successor ships, announcing it first. A bump is therefore a human decision with a
+deadline nobody here is tracking. When it is made: change all ten lines in one pull request,
+and read the `container` job's log — the summary line and the sudo probe's two lines — rather
+than its conclusion. STATUS section D carries this.
+
+### Revert-proving
+
+Each change reverted alone; `tests/test_pin_lint.py` run, and `tools/pin_lint.py` run over the
+real workflows; the file restored. "Lint" is the lint's exit code on the repository.
+
+| | Reverted | Tests | Lint |
+|---|---|---|---|
+| R1 | `main` does not call the runner check | red — `test_the_lint_fails_the_build_on_a_mutable_runner` | 0 |
+| R2 | the label matched as a prefix, not in full | red — 2 cases of `test_anything_but_one_named_release_is_refused` (a pinned label followed by anything; the block scalar) | 0 |
+| R3 | a blacklist instead: refuse only strings ending `-latest` or holding `${{` | red — 7 cases (`self-hosted`, `ubuntu`, `ubuntu-slim`, the capitalised one, …) | 0 |
+| R4 | non-string values pass (lists, groups, a number) | red — 7 cases | 0 |
+| R5 | an expression passes | red — 3 cases, and `test_every_job_is_judged_and_each_problem_names_its_line` | 0 |
+| R6 | judged line by line instead of on the document | red — 17 failing, among them `test_a_runner_that_arrives_through_an_alias_or_a_merge_key_is_judged` | 0 |
+| R7 | an unparseable workflow passes | red — `test_a_workflow_that_does_not_parse_is_refused_not_passed` | 0 |
+| R8 | problems carry the job's line, never the `runs-on` line | red — 24 failing (the line assertions) | 0 |
+| R9 | the pattern admits an unversioned label | red — 10 failing: the five `-latest` cases, `ubuntu`, `ubuntu-slim`, the alias test, the line test, the entry-point test | 0 |
+| R10 | `ci.yml`'s `container` job back to `ubuntu-latest` | red — `test_every_project_job_runs_on_one_named_release` | 1 |
+| R11 | one paid workflow on a *different pinned* release (nightly on 24.04) | red — the same test | **0** |
+| R12 | one paid workflow back to `ubuntu-latest` (coexistence) | red — the same test | 1 |
+
+Two rows need their caveats said:
+
+- **R6** is red, but the mutation is crude. "Line by line" was simulated by replacing the parsed
+  document with a regular expression over the text, and that regular expression also mis-reads
+  some *accepted* workflows, so seventeen tests fail where the alias-and-merge test is the one
+  that matters. The row shows the corpus notices a non-document reading; it does not isolate
+  which case would catch a careful line-based implementation. The alias-and-merge test fails
+  under it for the stated reason (the merged job is not seen).
+- **R9** was first measured with a mutation that broke accepted labels too, and was re-measured
+  with one that only widens the pattern. The numbers above are the second measurement.
+
+The lint column is the point of R1–R9: reverting the *lint* leaves the repository's lint green,
+because the workflows are pinned either way. Only the tests see those. That is the argument for
+testing the rule on a corpus and not on the project's own files.
+
+### Not proven here, stated
+
+- **That `ubuntu-26.04` is a label GitHub serves** was not checkable offline. A label with no
+  runner does not fail — the job waits. The pull request's own checks are the measurement, and
+  what to read on them is that the jobs *start*.
+- **The four jobs that do not run on a pull request** (`baseline-pr`, `nightly`, `coexistence`,
+  `library-baseline-pr`) carry the same label as the jobs that do, and have not run with it.
+  The two `evaluate` jobs start on every pull request, but their paid path has not run with it
+  either. Their first live firing is section A's.
+- The workflow harness does not model `runs-on`; nothing in `tests/workflow_harness.py` would
+  notice a wrong label. The lint and the one-image test are the whole of the offline check.
+
+### The previous entry's loose end
+
+That entry records the first honest `container` run (83 passed, 1 failed) and the fix, and
+was merged before the run that confirmed it. For the record: on PR #125's final head, `fa86341`,
+the `container` job's summary line was `84 passed, 2767 deselected in 178.31s (0:02:58)` — every
+container test, none skipped, with `tests/test_sidecar_docker.py ....` among them.

@@ -73,7 +73,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.baseline_run_id == '')
       || (github.event_name == 'schedule' && vars.BELLWETHER_COEXISTENCE == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 180
     permissions:
       contents: read
@@ -203,7 +203,7 @@ jobs:
     if: >-
       always() && github.event_name == 'workflow_dispatch' && inputs.set_baseline == 'true'
       && needs.coexistence.result != 'cancelled'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       # The bot branch is pushed (never main), and the pull request opened from it.

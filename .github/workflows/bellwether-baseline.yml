@@ -58,7 +58,7 @@ env:
 
 jobs:
   baseline-pr:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       # The bot branch is pushed (never main), and the pull request opened from it.

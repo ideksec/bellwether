@@ -137,11 +137,17 @@ arguing against itself. So every supply-chain input is pinned to an immutable di
   non-blocking advisory rather than a config-validation refusal — a moving tag makes two
   evaluations non-comparable, so it is reported, not rejected (`examples/live` intentionally
   uses a moving tag);
+- every job names its runner image by OS release (`runs-on: ubuntu-26.04`), never
+  `ubuntu-latest`. That label is a tag like any other: it moved to a new release under a green
+  build and hid sixteen container tests for twelve merges. All workflows share one image, so a
+  bump is one change to all of them — and on the pull request that makes it, read the
+  `container` job's log, not its conclusion. What this cannot pin is the image *build*: GitHub
+  republishes each release's image roughly weekly and has no label for a single build;
 - Python dependencies are hash-pinned in `uv.lock`, and `uv sync --frozen` verifies every
   recorded hash on install;
 - `uv` itself and the Python version are pinned in CI.
 
-`tools/pin_lint.py` enforces the first two over the workflow files and fails the build on a
+`tools/pin_lint.py` enforces the first three over the workflow files and fails the build on a
 mutable tag. `.github/dependabot.yml` keeps the pins from going stale — a pin that never
 updates is its own risk. When you add an action or an image, pin it; the lint will remind
 you if you forget.

@@ -29,6 +29,17 @@ graph are enforced — by failing the build, not by convention:
    refused until its locked form is added here. OS packages (``apt-get``) are out of scope:
    they come from a signed distribution archive, which pins their origin but not their version.
 
+5. **Every job names the runner image it runs on.** ``ubuntu-latest`` is a tag like any other:
+   GitHub moves it to the next OS release when it chooses, and the project found out what that
+   costs when it moved under a green build (spec-notes, "the container job's silent skips").
+   The check is an allowlist of one form — a hosted-runner label that carries its release,
+   ``ubuntu-26.04`` — applied to what the YAML *means* (aliases and merge keys resolved), not to
+   how a line is spelled. A ``-latest`` label, an expression (``${{ matrix.os }}``: the lint
+   cannot see what it resolves to), a list of labels and a runner group are all refused until
+   their pinned form is added here. What this does **not** pin is the image *build*: GitHub
+   republishes ``ubuntu-26.04`` roughly weekly and offers no label for one build. The release
+   is fixed; the packages inside it still move.
+
 Run: ``uv run python tools/pin_lint.py`` (CI runs it on every push).
 """
 
@@ -37,6 +48,8 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+
+import yaml
 
 #: A pinned action ref: owner/repo (optionally with a /subdir) @ 40 hex chars.
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -164,6 +177,90 @@ def check_workflow(path: Path) -> list[str]:
                     f"{path}:{number}: 'docker run' image {val!r} is not digest-pinned; "
                     f"append '@sha256:...'"
                 )
+    return problems
+
+
+#: The one accepted form of ``runs-on``: a GitHub-hosted label that names its OS release
+#: (``ubuntu-26.04``, ``macos-15``, ``windows-2025``, optionally with one size or architecture
+#: suffix). An allowlist: every other value is refused, whatever its shape.
+_PINNED_RUNNER = re.compile(r"(?:ubuntu|macos|windows)-\d+(?:\.\d+)?(?:-[a-z0-9]+)?")
+
+
+def _runner_problem(value: object) -> str | None:
+    """Why ``value`` (a job's resolved ``runs-on``) is not a pinned runner image, or ``None``."""
+    if isinstance(value, str):
+        if _PINNED_RUNNER.fullmatch(value):
+            return None
+        if "${{" in value:
+            return (
+                f"runs-on {value!r} is an expression; the lint cannot see which image it "
+                f"resolves to — name the image"
+            )
+        if value.endswith("-latest"):
+            return (
+                f"runs-on {value!r} is a mutable label: GitHub moves it to the next OS "
+                f"release under a green build — name the release (e.g. 'ubuntu-26.04')"
+            )
+        return (
+            f"runs-on {value!r} is not a hosted-runner label that names its OS release "
+            f"(e.g. 'ubuntu-26.04'); add its pinned form to tools/pin_lint.py if it has one"
+        )
+    if isinstance(value, list):
+        kind = "a list of labels"
+    elif isinstance(value, dict):
+        kind = "a runner group or mapping"
+    else:
+        kind = f"a {type(value).__name__}"
+    return (
+        f"runs-on is {kind}, which does not name one runner "
+        f"image; use a single label that names its OS release (e.g. 'ubuntu-26.04')"
+    )
+
+
+def _job_lines(text: str) -> dict[str, tuple[int, int | None]]:
+    """For each job id: the 1-based line of its key and of its own ``runs-on`` value, if it has
+    one directly (a ``runs-on`` that arrives through a merge key has no line in the job)."""
+    lines: dict[str, tuple[int, int | None]] = {}
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode):
+        return lines
+    for key, value in root.value:
+        if key.value != "jobs" or not isinstance(value, yaml.MappingNode):
+            continue
+        for job_key, job in value.value:
+            runs_on: int | None = None
+            if isinstance(job, yaml.MappingNode):
+                for field, field_value in job.value:
+                    if field.value == "runs-on":
+                        runs_on = field_value.start_mark.line + 1
+            lines[str(job_key.value)] = (job_key.start_mark.line + 1, runs_on)
+    return lines
+
+
+def check_runners(path: Path) -> list[str]:
+    """Rule 5: every job's ``runs-on`` names a runner image by its OS release.
+
+    Judged on the parsed document, so an alias, a merge key, a quoted scalar or a flow sequence
+    is read as what it means. A job with no ``runs-on`` (one that calls a reusable workflow) has
+    no runner of its own and is not judged; a workflow that does not parse cannot be judged at
+    all, and is refused for that reason."""
+    text = path.read_text(encoding="utf-8")
+    try:
+        document = yaml.safe_load(text)
+        lines = _job_lines(text)
+    except yaml.YAMLError as error:
+        return [f"{path}:1: not parseable as YAML, so its runners cannot be judged ({error})"]
+    jobs = document.get("jobs") if isinstance(document, dict) else None
+    if not isinstance(jobs, dict):
+        return []
+    problems: list[str] = []
+    for job_id, job in jobs.items():
+        if not isinstance(job, dict) or "runs-on" not in job:
+            continue
+        problem = _runner_problem(job["runs-on"])
+        if problem is not None:
+            job_line, runs_on_line = lines.get(str(job_id), (1, None))
+            problems.append(f"{path}:{runs_on_line or job_line}: job {job_id!r}: {problem}")
     return problems
 
 
@@ -315,6 +412,7 @@ def main(argv: list[str]) -> int:
     problems: list[str] = []
     for path in workflows:
         problems.extend(check_workflow(path))
+        problems.extend(check_runners(path))
     for path in dockerfiles:
         problems.extend(check_dockerfile(path))
     for path in [*workflows, *dockerfiles, *scripts]:
@@ -324,15 +422,15 @@ def main(argv: list[str]) -> int:
         print("\n".join(problems), file=sys.stderr)
         print(
             f"\n{len(problems)} unpinned supply-chain input(s). Bellwether pins every action "
-            f"by commit SHA, every image by digest and every installed package by a lock that "
-            f"records its bytes; see tools/pin_lint.py.",
+            f"by commit SHA, every image by digest, every installed package by a lock that "
+            f"records its bytes and every runner by its OS release; see tools/pin_lint.py.",
             file=sys.stderr,
         )
         return 1
 
     print(
         f"pin-lint: {len(workflows)} workflow + {len(dockerfiles)} Dockerfile + {len(scripts)} "
-        f"script input(s) — every action and image is pinned, every install is locked."
+        f"script input(s) — every action, image and runner is pinned, every install is locked."
     )
     return 0
 
