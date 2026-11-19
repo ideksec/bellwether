@@ -32,7 +32,12 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # The runner image is named by its release in every workflow, and tools/pin_lint.py
+    # refuses `ubuntu-latest`: that label moved to this release under a green build and hid
+    # sixteen container tests for twelve merges. Bump it deliberately, everywhere at once
+    # (tests/test_pin_lint.py holds the workflows to one image), and read the `container`
+    # job's log — not its conclusion — on the pull request that does.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -96,7 +101,7 @@ jobs:
   # green with these quietly skipped is the clean-looking failure this tool exists to
   # distrust — so this job asserts they were collected, and fails if they were not.
   container:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
