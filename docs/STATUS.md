@@ -64,11 +64,11 @@ parse today). Each is a work package, not a brick.
 See "Outstanding actions → Repository settings" below: branch protection to confirm, private
 vulnerability reporting, Dependabot, CodeQL results.
 
-One decision that is not a setting but is the owner's: **pin the runner image.** Every workflow
-says `runs-on: ubuntu-latest`, and that label moving is what hid sixteen tests for twelve merges
-(spec-notes, "the container job's silent skips"). `ubuntu-26.04` is what CI has been green on
-since 2026-11-05; pinning it means bumping it deliberately, as with every other pin here. The
-four evaluation workflows have not run on that image.
+The runner image is pinned (`ubuntu-26.04` in every job; `pin_lint` refuses `ubuntu-latest`).
+Two things about it remain the owner's: **when to bump it** — nothing bumps it automatically,
+Dependabot does not read `runs-on`, and GitHub retires old images on its own schedule — and the
+fact that **the four evaluation workflows have still not run on that image**; their first live
+firing (section A) is also their first run there.
 
 ### How a brick is closed here
 
@@ -89,7 +89,21 @@ The cadence is in `CLAUDE.md`. Two practices from the last six bricks are worth 
 
 ## How we got here (newest first)
 
-**Latest: the container job had been green with sixteen tests skipped (§24).** Found because
+**Latest: the runner image is pinned, and the lint refuses a mutable one.** The root cause of
+the incident below was `runs-on: ubuntu-latest` — a tag, in a project whose lint refuses tags.
+All ten jobs in the eight workflows now say `ubuntu-26.04`, the image CI has run on since
+2026-11-05, so the change alters nothing about today's runs; it stops the next move happening
+unannounced. `tools/pin_lint.py` gained rule 5: a job's `runs-on` must be one hosted-runner
+label that names its OS release. It is an allowlist judged on the parsed document — a `-latest`
+label, an expression, a list, a runner group, an alias or merge key that resolves to any of
+those, and a file that does not parse are all refused, none by being listed. A test holds every
+job to the *same* image, because CI's free sudo probe only speaks for the paid workflows while
+they share a runner. Twelve reverts red (one, R6, by a crude mutation — stated). Not pinned,
+because it cannot be: the image *build*, which GitHub republishes about weekly. The record from
+the previous brick is also completed here: on its final head the `container` job read
+`84 passed, 2767 deselected in 178.31s` — every container test, none skipped.
+
+**Before that: the container job had been green with sixteen tests skipped (§24).** Found because
 the brick below added a slow test and its `container` job got no slower. `ubuntu-latest` moved to
 `ubuntu-26.04` between #111 and #112; that image's sudo (`sudo-rs`) ignores `-E` with a warning,
 so `CI` stopped reaching pytest, every test that builds a sidecar or resolver image skipped, and
@@ -102,7 +116,8 @@ its reason. A free probe step asserts `sudo --preserve-env=NAME` still carries a
 the paid workflows pass the provider key that way. The first real run: all seventeen gated tests
 passed (the deep-body test among them), the probe passed, and one ungated test failed — it used
 GNU-only `split -d` and had never met the pinned Alpine image. Fourteen reverts red; one (G6) by
-shape only, stated. Not done: `runs-on: ubuntu-latest` is still mutable — see D below.
+shape only, stated. Not done then: `runs-on: ubuntu-latest` was still mutable — pinned in the
+brick above.
 
 **Before that: deep bodies through a running mitmproxy (§10.5.2).** The sidecar's decode budget was
 proven at the addon and stated one hop short; that hop is now measured. The image's hash-locked
@@ -1553,7 +1568,7 @@ commands exhaustively instead of counting them.
 | **§15 scanner delegation** — external scanners' SARIF ingested with `--scanner-sarif` (on `run` and `scan`), attributed by resolved path, graded by `security-severity`/level, merged into the `static` gate and `findings.sarif` (delegated rule descriptors); `gates.static.required_scanners` refuses a run missing one before the executor is built; Bellwether never runs a scanner | **done** |
 | **WP-17 `claude-code` adapter** — the real CLI runs headless *inside* the sandbox (`harness/claude_code.py`): its stream-json output is Plane A, its `PreToolUse`/`PostToolUse` hooks write to the host-owned sink FIFO and are cross-checked against stdout (`trace_inconsistency` on disagreement), its model calls leave only through the proxy carrying the sandbox-scoped token, telemetry is disabled and its hosts declared infrastructure; `Read`/`Write`/`Edit`/… map onto the same capabilities as api-loop's tools through one vocabulary table; trigger metrics are portable | **done** — proven offline against a real headless session of CLI 2.1.257 (golden fixture + a live local run where the binary is present); the in-container proof is the CI-only `test_execution_claude_code_docker.py` |
 
-2851 tests: 2767 offline, 84 under the `docker` mark (67 run locally, 17 CI-only skips with stated reasons; on CI the container job passes `--skips-are-failures`, so a skip there is a red build and not a count nobody reads — the earlier wording here, "all run on CI, zero skips", was false from #112 to #124). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
+2885 tests: 2801 offline, 84 under the `docker` mark (67 run locally, 17 CI-only skips with stated reasons; on CI the container job passes `--skips-are-failures`, so a skip there is a red build and not a count nobody reads — the earlier wording here, "all run on CI, zero skips", was false from #112 to #124). All green. These three numbers are asserted against a real collection in `tests/test_docs_accuracy.py` — this line drifted inside the very change that added a test against drifting prose numbers, which is argument enough.
 
 ## The first independent-review round (twelve findings, at `592e309`)
 

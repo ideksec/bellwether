@@ -479,7 +479,8 @@ retrofitted:
   `tools/language_lint.py` fails the build on the words that would.
 - **Supply-chain pinning.** Every third-party GitHub Action is pinned to a full commit
   SHA, every container image (in workflows *and* Dockerfile `FROM` lines) to a `@sha256:`
-  digest; `tools/pin_lint.py` fails the build on a mutable tag. A tool about supply chain
+  digest, every job's runner to a named OS release (`ubuntu-26.04`, never `ubuntu-latest`);
+  `tools/pin_lint.py` fails the build on a mutable tag. A tool about supply chain
   must not pull mutable tags in its own CI. Python dependencies are hash-pinned in
   `uv.lock` (`uv sync --frozen` verifies every hash). Digest-pinning the runtime
   sandbox/egress image, by contrast, is a **non-blocking advisory**, not a hard refusal: a

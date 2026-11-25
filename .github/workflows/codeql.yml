@@ -33,7 +33,7 @@ concurrency:
 jobs:
   analyze:
     name: Analyze Python
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       # The result upload is the whole point; without it the analysis runs and reports nowhere.
